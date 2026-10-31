@@ -105,7 +105,7 @@ class IsolatedServiceSandboxRuntimeTest {
                 // The isolated worker died; the instrumentation host process must remain alive.
             }
             assertTrue(waitUntil(5_000) { !session.isAlive })
-            assertEquals("instrumentation process remains responsive", 2 + 2)
+            assertEquals(4, 2 + 2)
         } finally {
             session.kill()
         }
