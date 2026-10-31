@@ -21,4 +21,4 @@ The app and test packages were installed only for this test and then removed. Th
 
 ## Limits
 
-These tests do not prove security against a hostile JS interpreter, malformed raw Binder parcels, app-wide memory or CPU pressure, or Doze/background lifecycle interruptions. Production `SandboxManager` still uses `UnavailableIsolatedSandboxRuntime`; no local plugin execution is enabled. Next gates: targeted raw Binder fuzzing, resource pressure measurements and background interruption/recovery before S3 engine selection.
+S2.1 alone did not test raw Binder parcels. S2.2 now covers four deterministic malformed raw frame shapes, but not comprehensive parcel fuzzing, app-wide memory or CPU pressure, or Doze/background lifecycle interruptions. Production `SandboxManager` still uses `UnavailableIsolatedSandboxRuntime`; no local plugin execution is enabled. See [S2.2 results](sandbox-s22-binder-boundaries.md); remaining gates include broader Binder fuzzing, resource pressure measurements and background interruption/recovery before S3 engine selection.

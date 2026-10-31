@@ -201,3 +201,9 @@ The fixed probe admits at most one active Binder operation per isolated instance
 Remaining security work includes binder parcel fuzzing, explicit memory/battery pressure limits, a hard wall-clock bound on every host-to-worker Binder call, Doze/background lifecycle, and proving revocation after process death. `UnavailableIsolatedSandboxRuntime` remains the production default; no JS/plugin execution is enabled by this step.
 
 API 29's initial S2.1 run exposed a zero-queue `SynchronousQueue` handoff race: `Future.get()` returned before the worker became idle, causing a false rejection of the next sequential call. The explicit one-call permit plus bounded handoff slot resolved this on both emulator API levels and on the physical device.
+
+### S2.2 — Fixed-probe frame boundary tests (validated, limited scope)
+
+GitHub Actions run `41219780526` at commit `d9a93ba` passed **13/13** on both API 29 and API 35 emulators; the same CI APKs passed **13/13 twice** on vivo V2463A / Android 16 / API 36. Tests send a valid raw Binder transaction as a positive control, then four malformed frames: wrong interface token, truncated fields, oversized payload and trailing bytes. The service rejects these, also rejecting a deterministic 8,193-byte output above its 8,192-byte reply cap; 64 repeated 4,096-byte requests leave the worker responsive. The initial test run discovered that generated AIDL dispatch accepted trailing fields; the service now validates total Parcel size and exact field consumption before delegating to the generated dispatcher. See [S2.2 test report](../testing/sandbox-s22-binder-boundaries.md).
+
+These are bounded fixed-probe mutations, **not comprehensive fuzzing or measured resource stress**. Raw Binder edge cases beyond the tested frames, CPU/heap pressure, Doze/background restrictions and JS interpreter properties remain open. The production plugin runtime remains unavailable.
