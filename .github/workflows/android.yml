@@ -32,3 +32,24 @@ jobs:
         with:
           name: cordiact-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
+
+  isolated-service-proof:
+    name: Android isolated-service proof
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Run isolated-process instrumentation tests on Android 35
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d
+        with:
+          api-level: 35
+          target: default
+          arch: x86_64
+          profile: pixel_7_pro
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
+          script: ./gradlew connectedDebugAndroidTest --no-daemon

@@ -185,3 +185,9 @@ Decide whether third-party local plugins are v1, Play distribution implications,
 - Google Play Developer Program Policy (runtime interpreted code): `https://support.google.com/googleplay/android-developer/answer/18258653?hl=en`.
 - AOSP Android Virtualization Framework: `https://source.android.com/docs/core/virtualization`.
 - CordiAct's checked-out DSH `packages/experimental/webworker-runtime`, `packages/ptc-runtime/ptc-runtime-node`, and filesystem sandbox sources.
+
+### S2 — Android isolated-service proof of concept (implementation in progress)
+
+A fixed-operation probe service and typed AIDL boundary have been added with `android:isolatedProcess="true"`, a private manifest component, Binder caller-UID checking, per-session nonce binding, size/deadline limits, an independent service-main-loop watchdog, self-termination, and host disconnect tracking. The client uses `Context.bindIsolatedService` (API 29+); API 26–28 fail closed instead of sharing a process. This probe deliberately supports only `echo`, bounded `sleep`, `hang`, and `crash`; it does not load JS, plugins, capabilities, files, network, or credentials.
+
+A dedicated Android 35 emulator instrumentation job is pinned to the reviewed `reactivecircus/android-emulator-runner` commit `a421e43855164a8197daf9d8d40fe71c6996bb0d`. It checks isolated UID reporting, distinct app/service UID and concurrent process identities, nonce rejection, frame limits, timeout kill, process crash containment, and a fresh session after a crash. Until this job passes—and later device/API tests are complete—the probe is not wired into production Sandbox Manager and cannot run Cordis code.

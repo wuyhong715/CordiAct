@@ -84,3 +84,7 @@ Current implementation boundaries: the app bootstrap has no bundled plugin imple
 - The app-owned catalog trusts only the exact bundled IDs, version `0.1.0`, Android target, and declared capability set. Startup registers and enables both through `PluginLifecycleManager` after crash recovery; neither can be uninstalled through the ordinary plugin path.
 
 This is the conversation service foundation, not yet a complete chat screen/provider connection. Sending a message end-to-end requires a configured provider plugin and UI orchestration.
+
+## Sandbox S2 probe (not production execution)
+
+`app/src/main/java/com/cordiact/app/sandbox/` contains a private isolated service and the Android binding adapter used only by S2 tests. It exposes a tiny fixed probe protocol and no interpreter or plugin bridge. `connectedDebugAndroidTest` runs on an Android 35 emulator in a separate pinned CI job. The production Sandbox Manager still injects `UnavailableIsolatedSandboxRuntime`; do not switch it until the isolated process, caller identity, cancellation/deadline, kill, crash, and recovery gates pass on the emulator and representative devices.
