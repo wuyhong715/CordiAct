@@ -7,12 +7,15 @@ import com.cordiact.app.plugin.AndroidPluginRuntimeResources
 import com.cordiact.app.plugin.AndroidPluginStorage
 import com.cordiact.core.conversation.modelAdapterPluginSpec
 import com.cordiact.core.conversation.sessionManagerPluginSpec
+import com.cordiact.core.sandbox.sandboxManagerPluginSpec
 import com.cordiact.core.plugin.BundledPluginVerifier
 import com.cordiact.core.plugin.PluginLifecycleException
 import com.cordiact.core.plugin.PluginLifecycleManager
 import com.cordiact.core.plugin.PluginOrigin
 import com.cordiact.core.plugin.PluginOwnedData
 import com.cordiact.core.plugin.PluginState
+import com.cordiact.core.sandbox.SandboxLaunchRequest
+import com.cordiact.core.sandbox.SandboxLimits
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -81,6 +84,26 @@ class BundledConversationPluginCatalogTest {
     }
 
     @Test
+    fun sandboxManagerIsRegisteredAsProtectedButLocalExecutionRemainsClosed() {
+        val sandboxManager = BundledConversationPluginCatalog.createSandboxManager(context.applicationInfo.uid)
+        assertEquals(PluginState.REGISTERED, manager.registerBundledSystem(sandboxManager).state)
+        assertEquals(PluginState.ENABLED, manager.enable(sandboxManager.spec.id).state)
+        val launch = SandboxLaunchRequest(
+            plugin = com.cordiact.core.sandbox.BundledPluginIdentity("plugin.example", "1.0.0", "a".repeat(64)),
+            workspaceId = "workspace-1",
+            requestedCapabilities = emptySet(),
+            limits = SandboxLimits(1_000, 1024, 1024, 1),
+        )
+        try {
+            sandboxManager.launch(launch)
+            throw AssertionError("Local runtime must stay closed until isolated service is implemented")
+        } catch (expected: IllegalStateException) {
+            assertTrue(expected.message!!.contains("verified APK-bundled"))
+        }
+        assertEquals(PluginState.ENABLED, manager.get(sandboxManager.spec.id)?.state)
+    }
+
+    @Test
     fun catalogRejectsAlteredBundledManifest() {
         val plugin = BundledConversationPluginCatalog.create(conversationStore).first()
         assertTrue(BundledConversationPluginCatalog.verifier.isTrustedBundled(plugin.spec))
@@ -89,6 +112,7 @@ class BundledConversationPluginCatalogTest {
         val untrusted = BundledPluginVerifier { false }
         assertFalse(untrusted.isTrustedBundled(modelAdapterPluginSpec()))
         assertTrue(BundledConversationPluginCatalog.verifier.isTrustedBundled(sessionManagerPluginSpec()))
+        assertTrue(BundledConversationPluginCatalog.verifier.isTrustedBundled(sandboxManagerPluginSpec()))
     }
 
     private companion object {

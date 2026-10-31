@@ -12,6 +12,8 @@ import com.cordiact.core.conversation.SessionManagerService
 import com.cordiact.core.plugin.ManagedPlugin
 import com.cordiact.core.plugin.PluginLifecycleException
 import com.cordiact.core.plugin.PluginState
+import com.cordiact.core.sandbox.SandboxManagerPlugin
+import com.cordiact.core.sandbox.SandboxManagerService
 
 /** Opens the plugin host, recovers durable state, then registers and enables core conversation plugins. */
 class CordiActApplication : Application() {
@@ -23,7 +25,10 @@ class CordiActApplication : Application() {
         private set
     lateinit var sessionManagerPlugin: SessionManagerPlugin
         private set
+    lateinit var sandboxManagerPlugin: SandboxManagerPlugin
+        private set
 
+    val sandboxManager: SandboxManagerService get() = sandboxManagerPlugin
     val modelAdapter: ModelAdapterService get() = modelAdapterPlugin
     val sessions: SessionManagerService get() = sessionManagerPlugin
 
@@ -39,7 +44,8 @@ class CordiActApplication : Application() {
         val plugins = BundledConversationPluginCatalog.create(conversationStore)
         modelAdapterPlugin = plugins.filterIsInstance<ModelAdapterPlugin>().single()
         sessionManagerPlugin = plugins.filterIsInstance<SessionManagerPlugin>().single()
-        plugins.forEach(::registerAndEnableSystemPlugin)
+        sandboxManagerPlugin = BundledConversationPluginCatalog.createSandboxManager(applicationInfo.uid)
+        (plugins + sandboxManagerPlugin).forEach(::registerAndEnableSystemPlugin)
     }
 
     private fun registerAndEnableSystemPlugin(plugin: ManagedPlugin) {

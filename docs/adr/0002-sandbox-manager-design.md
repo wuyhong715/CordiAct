@@ -1,6 +1,6 @@
 # ADR 0002: Sandbox Manager as a first-class plugin and security boundary
 
-- Status: Proposed — requires product decision on third-party local plugins for v1
+- Status: Accepted for v1 execution policy; Android isolated-process implementation remains gated
 - Date: 2026-10-31
 
 ## Problem
@@ -29,6 +29,13 @@ CordiAct's “everything is a plugin” model needs a first-class place to descr
 - A rooted/compromised device, Android kernel/SELinux exploit, compromised app signing key, or vulnerabilities in the Android runtime/JS engine that escape the OS isolation boundary
 - Hard real-time guarantees or strict CPU fairness against a privileged OS process
 - Reversing external side effects already completed (for example a remote message already sent)
+
+## V1 product decision (accepted 2026-10-31)
+
+- Local Cordis/JavaScript execution is restricted to code bundled in the signed APK and present in a host-owned exact allowlist. No post-install public third-party local plugin installation in v1.
+- Third-party DeepSeek Harness plugins remain available through the remote Harness/Gateway path; they do not execute in the Android app process.
+- The local sandbox execution path remains disabled until the isolated-service proof of concept and the production acceptance gates below pass. A signed bundle is provenance, not proof that in-process execution is safe.
+- The `core.sandbox-manager` system plugin is registered/enabled as an orchestration service before the runtime exists; its default runtime refuses execution. No in-process fallback.
 
 ## Core security decision
 
@@ -139,13 +146,13 @@ Before enabling post-install interpreted plugin code in a Google Play build, rev
 
 ### S0 — Threat model and profile contract (this ADR)
 
-Agree on whether v1 supports user-installed third-party local plugins. Keep production local execution disabled until the following gates pass.
+The product decision is now set: local code must be signed and bundled; third-party Harness plugins remain remote. Keep local execution disabled until the following gates pass.
 
-### S1 — Sandbox Manager contracts and fake runtime
+### S1 — Sandbox Manager contracts and fail-closed orchestration (implemented)
 
-Add core JVM contracts for sandbox profile, instance/session identity, capability request, quotas, state machine, crash and termination results. Test startup/disable/uninstall/recovery and “no fallback to host process” using a deterministic fake runtime.
+Core now defines sandbox identity/profile, bounded IPC/deadline limits, host-resolved capabilities, trusted APK-bundle verification, isolated-runtime attestation, instance/termination states, and protected `core.sandbox-manager` orchestration. App startup registers the Sandbox Manager as a protected system plugin. The default Android runtime is explicitly unavailable, so all local launch requests fail closed; no in-process fallback exists. Core tests use a deterministic fake isolated runtime to exercise admission, capability subset checks, limits, termination, revocation, and failure retention. This does not implement an Android isolated service or prove actual OS isolation.
 
-### S2 — Android isolated-service proof of concept
+### S2 — Next: Android isolated-service proof of concept
 
 Build a non-exported isolated service with a tiny fixed test payload, strict Binder schema, UID/session validation, bounded payloads, timeout, cancellation, kill, and crash/restart tests. Confirm behavior on minimum supported API and at least one modern API/device. No third-party plugin code yet.
 
