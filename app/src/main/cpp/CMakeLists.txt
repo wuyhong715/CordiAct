@@ -4,6 +4,7 @@ project(cordiact_s3_quickjs LANGUAGES C)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS ON)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 # Keep this source list aligned with QuickJS-NG v0.17.0's upstream `qjs` core target.
 # Deliberately do not compile quickjs-libc.c: it supplies std/os modules and file helpers.
