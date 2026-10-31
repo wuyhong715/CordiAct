@@ -7,6 +7,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.Process
+import android.os.Parcel
 import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
@@ -34,6 +35,30 @@ class SandboxProbeService : Service() {
     )
 
     private val binder = object : ISandboxProbe.Stub() {
+        override fun onTransact(code: Int, data: Parcel, reply: Parcel?, flags: Int): Boolean {
+            val argumentCount = when (code - IBinder.FIRST_CALL_TRANSACTION) {
+                0, 1, 2 -> 0 // UID, isolation state, active request count
+                3, 4 -> 5 // openSession or executeProbe
+                5 -> 3 // cancelProbe
+                6 -> 2 // closeSession
+                else -> return super.onTransact(code, data, reply, flags)
+            }
+            enforceHostCaller()
+            // AIDL-generated stubs in supported Android builds may ignore extra trailing
+            // bytes. Validate the *whole* frame before invoking any generated dispatch.
+            require(data.dataSize() <= MAX_BINDER_FRAME_BYTES) { "Binder frame exceeds limit" }
+            val savedPosition = data.dataPosition()
+            try {
+                data.enforceInterface(PROBE_DESCRIPTOR)
+                repeat(argumentCount) { data.readString() }
+                if (code == IBinder.FIRST_CALL_TRANSACTION + 4) data.readLong()
+                require(data.dataAvail() == 0) { "Trailing Binder frame data" }
+            } finally {
+                data.setDataPosition(savedPosition)
+            }
+            return super.onTransact(code, data, reply, flags)
+        }
+
         override fun getProcessUid(): Int {
             enforceHostCaller()
             return Process.myUid()
@@ -187,6 +212,9 @@ class SandboxProbeService : Service() {
         const val OP_SLEEP = "sleep"
         const val OP_HANG = "hang"
         const val OP_CRASH = "crash"
+        // Parcel writes strings as UTF-16 plus interface/token and metadata overhead.
+        const val MAX_BINDER_FRAME_BYTES = 12 * 1024
+        const val PROBE_DESCRIPTOR = "com.cordiact.app.sandbox.ISandboxProbe"
         const val MAX_REQUEST_BYTES = 4 * 1024
         const val MAX_RESPONSE_BYTES = 8 * 1024
         const val MAX_DEADLINE_MILLIS = 30_000L
