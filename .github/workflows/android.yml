@@ -53,7 +53,7 @@ jobs:
           sudo chmod 0666 /dev/kvm
           test -r /dev/kvm && test -w /dev/kvm
           ls -l /dev/kvm
-      - name: Run isolated-process instrumentation tests on Android 35
+      - name: Run isolated-process instrumentation tests
         uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d
         with:
           api-level: ${{ matrix.api-level }}
