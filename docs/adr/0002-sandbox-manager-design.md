@@ -160,11 +160,11 @@ Four instrumentation tests pass on both **API 29** (the named-isolated-instance 
 
 **Physical-device result:** vivo V2463A / Android 16 / API 36 / arm64-v8a passed all four tests from CI run `41208793283`; details are in [the S2 device report](../testing/sandbox-s2-physical-device.md). The production Sandbox Manager remains wired to `UnavailableIsolatedSandboxRuntime`; the probe does not load Cordis or any plugin code. No local plugin execution is enabled. Binder fuzz/resource-pressure and Doze/background tests remain open.
 
-### S3 — JS engine inside the isolated service (selected engine; PoC validation pending)
+### S3 — JS engine inside the isolated service (QuickJS-NG fixed-script PoC validated on CI)
 
 Select QuickJS-NG v0.17.0, pinned at commit `6d46d07d04041b40f4f49eaa7fdebe44c314c699` under `third_party/quickjs-ng`. The MIT license is preserved in the APK resources. The test PoC builds the core with Android NDK and omits `quickjs-libc.c`; no module loader, Java/JNI host object, filesystem/network bridge or arbitrary source input is exposed. Only hash-pinned APK raw resources are executed by `SandboxJsPocService` in its own non-exported isolated service process. Script bytes are capped at 16 KiB, QuickJS heap at 8 MiB, stack at 256 KiB, and wall time at 5 seconds; a QuickJS interrupt callback and independent service watchdog terminate the isolated process on deadline. Fixed memory/stack/loop vectors exercise those boundaries.
 
-This remains an isolated-service experiment, **not** a production plugin runtime: the AIDL has no code-upload method; tests execute only bundled fixed scripts; `SandboxManager` still uses `UnavailableIsolatedSandboxRuntime`; v1 third-party local plugins remain disabled. These C API bounds do not impose whole-process RSS or strict CPU quotas. The source comparison and precise gates are in [the S3 engine/PoC report](../testing/sandbox-s3-js-engine-and-poc.md). API 29/35 and API 36 results remain pending until the GitHub Actions build and same-run artifact are executed and reviewed.
+This remains an isolated-service experiment, **not** a production plugin runtime: the AIDL has no code-upload method; tests execute only bundled fixed scripts; `SandboxManager` still uses `UnavailableIsolatedSandboxRuntime`; v1 third-party local plugins remain disabled. These C API bounds do not impose whole-process RSS or strict CPU quotas. The source comparison and precise gates are in [the S3 engine/PoC report](../testing/sandbox-s3-js-engine-and-poc.md). GitHub Actions run `41238872330` passed the build and 19/19 instrumentation tests on each API 29 and API 35 emulator. The same-run APK artifact is staged for the vivo API 36 test, but the phone is currently locked at the package-installer screen, so this iteration has no API 36 result yet; see the S3 report for hashes and recovery steps.
 
 ### S4 — Capability broker and plugin integration
 
@@ -176,7 +176,7 @@ V1 local plugins are signed and bundled only; third-party DeepSeek Harness plugi
 
 ## Acceptance gates before production use
 
-- **Validated:** Android 29 and 35 emulators plus vivo API 36 physical device report isolated UIDs distinct from the app; concurrent named instances also receive distinct UIDs. Plugin-level data-leak isolation is not tested because this probe exposes no plugin code or workspace data.
+- **Validated:** Android 29 and 35 emulators plus vivo API 36 physical device (prior S2/S2.1/S2.2 runs) report isolated UIDs distinct from the app; concurrent named instances also receive distinct UIDs. The S3/QuickJS code has CI emulator coverage but is pending physical API 36 execution. Plugin-level data-leak isolation is not tested because this probe exposes no plugin code or workspace data.
 - Malicious test cannot read another plugin's files, session content, app preferences, API key, or Android permission; broker rejects malformed/unauthorized requests.
 - **Validated on API 29/35 emulators and vivo API 36 device:** the watchdog kills an infinite fixed probe, worker crash does not crash the host, and a fresh isolated process starts afterward. Interpreter cancellation/late-event behavior remains untested because no JS engine is loaded.
 - Disable/uninstall closes IPC, kills the process, revokes grants, clears owned temporary/permanent state, and survives forced process death at each cleanup checkpoint.

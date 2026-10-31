@@ -31,3 +31,8 @@ This proves the fixed-operation Android isolated-service probe on one physical A
 ## S2.1 status
 
 The preceding 4/4 result covers S2 only. S2.1 was rerun with APKs from CI run `41215976392` (code commit `ad44a44`): **10/10 passed** on this vivo API 36 device. See [the S2.1 report](sandbox-s21-ipc-hardening.md). Both test packages and temporary APKs were removed after verification.
+
+
+## S3 / S2.3 device rerun status
+
+Do not treat the earlier S2.1/S2.2 10/10 or 13/13 runs as S3 validation. The S3 CI artifact was staged on the vivo API 36 device, but Android 16 showed the lock-screen installer and the app/test packages remained absent. Installation and the 19-test S3 run are still pending device unlock; see [the S3 CI/device status](sandbox-s3-js-engine-and-poc.md).
