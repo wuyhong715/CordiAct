@@ -97,7 +97,7 @@ class PluginLifecycleTest {
         val restarted = PluginLifecycleManager(records, runtime, grants, data)
         assertEquals(emptyList(), restarted.recoverAfterProcessRestart())
         assertEquals(PluginState.DISABLED, restarted.get(plugin.spec.id)?.state)
-        assertEquals(listOf("quiesce", "drain", "suspend"), events)
+        assertEquals(listOf("quiesce", "drain", "suspend", "detach"), events)
     }
 
     @Test
