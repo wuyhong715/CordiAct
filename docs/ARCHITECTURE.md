@@ -18,7 +18,7 @@ The UI should see one plugin registry and one typed action/event model. The regi
 
 ## System plugins and protection
 
-System plugins use the same manifest, lifecycle, and events as ordinary plugins, but their protection is enforced by the native host and signed app metadata—not by trusting a self-declared flag. Examples may include the conversation shell, workspace service, policy/consent service, Android file-picker integration, and Gateway connection provider. The kernel/plugin manager, manifest verifier, permission gate, and minimal crash recovery remain host infrastructure.
+System plugins use the same manifest, lifecycle, and events as ordinary plugins, but their protection is enforced by the native host and signed app metadata—not by trusting a self-declared flag. The first bundled system plugins are **Model Adapter** (`core.model-adapter`) and **Session Manager** (`core.session-manager`); together they are the conversation foundation. Model Adapter exposes a provider-neutral model catalog/generation API and owns in-flight request cancellation. Session Manager owns workspace-scoped durable sessions/messages. Concrete model providers will register through the adapter boundary; this core plugin does not claim a provider/network implementation by itself. The kernel/plugin manager, manifest verifier, permission gate, and minimal crash recovery remain host infrastructure.
 
 User-uninstallable plugins can be disabled or removed through the plugin manager. Protected plugins can be updated as part of an app release or an explicitly trusted system-plugin update path; the user interface must say which applies. A plugin failure must not disable the policy gate or corrupt workspace data.
 
@@ -69,6 +69,7 @@ The DSH experimental WebWorker runtime is useful prior art for packaging a Harne
 ## Initial modules
 
 - `app`: native shell, plugin manager/registry, unified conversation UI
+- protected system plugins, first batch: Model Adapter and Session Manager (`core` contracts + Android session persistence)
 - `core`: plugin contracts, workspace, policy/consent, events, lifecycle, audit
 - `app` Android adapters: SQLite lifecycle/consent store, runtime controller registry, scoped data/cache/artifact cleanup, startup recovery
 - `plugins-android`: protected and optional native Android capability plugins (planned)

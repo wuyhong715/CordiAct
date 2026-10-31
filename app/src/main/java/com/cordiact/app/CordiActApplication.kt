@@ -2,20 +2,52 @@ package com.cordiact.app
 
 import android.app.Application
 import android.util.Log
+import com.cordiact.app.conversation.AndroidConversationSessionStore
+import com.cordiact.app.conversation.BundledConversationPluginCatalog
 import com.cordiact.app.plugin.AndroidPluginLifecycle
-import com.cordiact.core.plugin.BundledPluginVerifier
+import com.cordiact.core.conversation.ModelAdapterPlugin
+import com.cordiact.core.conversation.ModelAdapterService
+import com.cordiact.core.conversation.SessionManagerPlugin
+import com.cordiact.core.conversation.SessionManagerService
+import com.cordiact.core.plugin.ManagedPlugin
+import com.cordiact.core.plugin.PluginLifecycleException
+import com.cordiact.core.plugin.PluginState
 
-/** Creates the lifecycle host and completes fail-closed recovery before any plugin dispatch starts. */
+/** Opens the plugin host, recovers durable state, then registers and enables core conversation plugins. */
 class CordiActApplication : Application() {
     lateinit var pluginLifecycle: AndroidPluginLifecycle
         private set
+    lateinit var conversationStore: AndroidConversationSessionStore
+        private set
+    lateinit var modelAdapterPlugin: ModelAdapterPlugin
+        private set
+    lateinit var sessionManagerPlugin: SessionManagerPlugin
+        private set
+
+    val modelAdapter: ModelAdapterService get() = modelAdapterPlugin
+    val sessions: SessionManagerService get() = sessionManagerPlugin
 
     override fun onCreate() {
         super.onCreate()
-        pluginLifecycle = AndroidPluginLifecycle(this, BundledPluginVerifier { false })
+        pluginLifecycle = AndroidPluginLifecycle(this, BundledConversationPluginCatalog.verifier)
         val needsRepair = pluginLifecycle.recoverBeforeDispatch()
         if (needsRepair.isNotEmpty()) {
             Log.e(TAG, "Plugin lifecycle recovery remains incomplete; blocked plugin ids: $needsRepair")
+        }
+
+        conversationStore = AndroidConversationSessionStore(this)
+        val plugins = BundledConversationPluginCatalog.create(conversationStore)
+        modelAdapterPlugin = plugins.filterIsInstance<ModelAdapterPlugin>().single()
+        sessionManagerPlugin = plugins.filterIsInstance<SessionManagerPlugin>().single()
+        plugins.forEach(::registerAndEnableSystemPlugin)
+    }
+
+    private fun registerAndEnableSystemPlugin(plugin: ManagedPlugin) {
+        try {
+            val current = pluginLifecycle.manager.registerBundledSystem(plugin)
+            if (current.state != PluginState.ENABLED) pluginLifecycle.manager.enable(plugin.spec.id)
+        } catch (failure: PluginLifecycleException) {
+            Log.e(TAG, "Protected conversation plugin '${plugin.spec.id}' failed to start", failure)
         }
     }
 
