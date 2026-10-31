@@ -152,7 +152,7 @@ The product decision is now set: local code must be signed and bundled; third-pa
 
 Core now defines sandbox identity/profile, bounded IPC/deadline limits, host-resolved capabilities, trusted APK-bundle verification, isolated-runtime attestation, instance/termination states, and protected `core.sandbox-manager` orchestration. App startup registers the Sandbox Manager as a protected system plugin. The default Android runtime is explicitly unavailable, so all local launch requests fail closed; no in-process fallback exists. Core tests use a deterministic fake isolated runtime to exercise admission, capability subset checks, limits, termination, revocation, and failure retention. The Android 35 emulator proof is implemented separately as a fixed probe service; it is not yet connected to production plugin dispatch.
 
-### S2 — Android isolated-service proof of concept (probe passes Android 35 emulator; device/API floor still open)
+### S2 — Android isolated-service proof of concept (passes API 29/35 emulators and vivo API 36 device)
 
 A non-exported `android:isolatedProcess="true"` service and typed AIDL Binder probe now run in unique `Context.bindIsolatedService` instances (API 29+). It verifies the isolated UID, checks the host caller UID and per-session nonce, limits frames/deadlines, and supports only fixed `echo`, bounded `sleep`, intentional `hang`, and `crash` test operations. An independent service-main-loop watchdog kills a hung worker process. The isolated process skips all normal host `Application` initialization and receives no database/provider, credential, workspace, or capability broker.
 
@@ -174,11 +174,11 @@ V1 local plugins are signed and bundled only; third-party DeepSeek Harness plugi
 
 ## Acceptance gates before production use
 
-- **Partially validated:** Android 35 emulator reports an isolated UID distinct from the app and distinct UIDs for concurrent named instances; The API 29 emulator matrix and the vivo API 36 device have now both been verified.
+- **Validated:** Android 29 and 35 emulators plus vivo API 36 physical device report isolated UIDs distinct from the app; concurrent named instances also receive distinct UIDs. Plugin-level data-leak isolation is not tested because this probe exposes no plugin code or workspace data.
 - Malicious test cannot read another plugin's files, session content, app preferences, API key, or Android permission; broker rejects malformed/unauthorized requests.
-- **Validated on Android 35 emulator:** the watchdog kills an infinite fixed probe, worker crash does not crash the host, and a fresh isolated process starts afterward. Interpreter cancellation/late-event behavior remains untested because no JS engine is loaded.
+- **Validated on API 29/35 emulators and vivo API 36 device:** the watchdog kills an infinite fixed probe, worker crash does not crash the host, and a fresh isolated process starts afterward. Interpreter cancellation/late-event behavior remains untested because no JS engine is loaded.
 - Disable/uninstall closes IPC, kills the process, revokes grants, clears owned temporary/permanent state, and survives forced process death at each cleanup checkpoint.
-- **Partially validated:** oversized fixed-probe frame rejected; Binder fuzzing, memory pressure, and no-ANR guarantees remain untested.
+- **Partially validated:** oversized fixed-probe frame rejected on emulators and API 36 device; Binder fuzzing, memory pressure, and no-ANR guarantees remain untested.
 - Release/signing/Play policy review is complete for the intended distribution channel.
 
 ## Evidence reviewed
