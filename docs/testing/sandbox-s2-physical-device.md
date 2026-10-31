@@ -36,3 +36,8 @@ The preceding 4/4 result covers S2 only. S2.1 was rerun with APKs from CI run `4
 ## S3 / S2.3 device rerun status
 
 Do not treat the earlier S2.1/S2.2 10/10 or 13/13 runs as S3 validation. The S3 CI artifact was staged on the vivo API 36 device, but Android 16 showed the lock-screen installer and the app/test packages remained absent. Installation and the 19-test S3 run are still pending device unlock; see [the S3 CI/device status](sandbox-s3-js-engine-and-poc.md).
+
+
+## S3 physical-device completion
+
+The API 36 run initially paused at the lock-screen installer. After user unlock, CI artifact `13056996615` passed 19/19 on vivo V2463A / Android 16 / API 36. Packages and staged APKs were removed afterward. Details: [S3 PoC report](sandbox-s3-js-engine-and-poc.md).
