@@ -3,11 +3,13 @@ package com.cordiact.app.sandbox
 import android.app.Service
 import android.content.Intent
 import android.os.Binder
+import android.os.Debug
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
-import android.os.Process
 import android.os.Parcel
+import android.os.Process
+import android.os.SystemClock
 import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
@@ -138,6 +140,34 @@ class SandboxProbeService : Service() {
                         Thread.sleep(sleepMillis)
                         "slept:$sleepMillis"
                     }
+                    OP_CPU_STRESS -> {
+                        val iterations = payload.toIntOrNull() ?: throw IllegalArgumentException("cpu-stress payload must be iterations")
+                        require(iterations in 1..MAX_CPU_ITERATIONS) { "CPU stress exceeds probe bound" }
+                        val wallStart = SystemClock.elapsedRealtime()
+                        val cpuStart = SystemClock.currentThreadTimeMillis()
+                        var checksum = 1L
+                        repeat(iterations) { index -> checksum = checksum * 31L + index + 17L }
+                        val cpuMillis = SystemClock.currentThreadTimeMillis() - cpuStart
+                        val wallMillis = SystemClock.elapsedRealtime() - wallStart
+                        "cpu:$iterations:$cpuMillis:$wallMillis:$checksum"
+                    }
+                    OP_HEAP_STRESS -> {
+                        val kibibytes = payload.toIntOrNull() ?: throw IllegalArgumentException("heap-stress payload must be KiB")
+                        require(kibibytes in MIN_HEAP_STRESS_KIB..MAX_HEAP_STRESS_KIB) { "Heap stress exceeds probe bound" }
+                        val runtime = Runtime.getRuntime()
+                        val heapBefore = runtime.totalMemory() - runtime.freeMemory()
+                        val pssBefore = Debug.getPss()
+                        val bytes = ByteArray(kibibytes * 1024)
+                        var checksum = 0L
+                        for (offset in bytes.indices step PAGE_TOUCH_BYTES) {
+                            bytes[offset] = (offset / PAGE_TOUCH_BYTES).toByte()
+                            checksum += bytes[offset].toLong()
+                        }
+                        val heapDuring = runtime.totalMemory() - runtime.freeMemory()
+                        val pssDuring = Debug.getPss()
+                        checksum += bytes[0].toLong()
+                        "heap:$kibibytes:$pssBefore:$pssDuring:$heapBefore:$heapDuring:$checksum"
+                    }
                     OP_HANG -> {
                         // Deliberately ignores interruption. The independent watchdog must kill this process.
                         while (true) {
@@ -210,6 +240,8 @@ class SandboxProbeService : Service() {
         const val OP_ECHO = "echo"
         const val OP_OVERSIZED_OUTPUT = "oversized-output"
         const val OP_SLEEP = "sleep"
+        const val OP_CPU_STRESS = "cpu-stress"
+        const val OP_HEAP_STRESS = "heap-stress"
         const val OP_HANG = "hang"
         const val OP_CRASH = "crash"
         // Parcel writes strings as UTF-16 plus interface/token and metadata overhead.
@@ -219,6 +251,10 @@ class SandboxProbeService : Service() {
         const val MAX_RESPONSE_BYTES = 8 * 1024
         const val MAX_DEADLINE_MILLIS = 30_000L
         const val MAX_SLEEP_MILLIS = 60_000L
+        const val MAX_CPU_ITERATIONS = 5_000_000
+        const val MIN_HEAP_STRESS_KIB = 64
+        const val MAX_HEAP_STRESS_KIB = 4_096
+        const val PAGE_TOUCH_BYTES = 4_096
         const val CLOSE_KILL_DELAY_MILLIS = 50L
         val SESSION_PATTERN = Regex("[A-Za-z0-9._:-]{1,128}")
         val NONCE_PATTERN = Regex("[a-f0-9]{64}")

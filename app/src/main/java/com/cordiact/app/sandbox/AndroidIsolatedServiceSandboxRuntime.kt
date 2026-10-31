@@ -210,9 +210,10 @@ class AndroidIsolatedServiceSandboxRuntime(context: Context) : IsolatedSandboxRu
 
         /** Bounded raw AIDL-frame mutations for instrumentation only, never a plugin API. */
         fun malformedBinderFrameRejectedForTest(kind: String): Boolean {
-            // executeProbe is the fifth method in ISandboxProbe.aidl. Fail closed if the
-            // interface changes: the instrumented worker must stay alive after each mutation.
-            val code = IBinder.FIRST_CALL_TRANSACTION + 4
+            // executeProbe is the fifth method in ISandboxProbe.aidl. This corpus is
+            // deliberately fixed and bounded; it is not a general-purpose parcel fuzzer.
+            val code = if (kind == "wrong-transaction") IBinder.FIRST_CALL_TRANSACTION + 42
+                else IBinder.FIRST_CALL_TRANSACTION + 4
             val data = Parcel.obtain()
             val reply = Parcel.obtain()
             try {
@@ -220,17 +221,27 @@ class AndroidIsolatedServiceSandboxRuntime(context: Context) : IsolatedSandboxRu
                     data.writeInterfaceToken("not.cordiact.ISandboxProbe")
                 } else {
                     data.writeInterfaceToken("com.cordiact.app.sandbox.ISandboxProbe")
-                    data.writeString(sessionId)
+                    data.writeString(if (kind == "bad-session") "other-session" else sessionId)
                     if (kind != "truncated") {
-                        data.writeString(nonce)
-                        data.writeString("raw-frame")
-                        data.writeString("echo")
+                        data.writeString(if (kind == "bad-nonce") "not-a-nonce" else nonce)
+                        data.writeString(if (kind == "bad-request-id") "!" else "raw-frame")
+                        data.writeString(if (kind == "bad-operation") "not-supported" else "echo")
                         data.writeString(if (kind == "large-input") "x".repeat(65_536) else "ok")
-                        data.writeLong(2_000L)
+                        data.writeLong(
+                            when (kind) {
+                                "negative-deadline" -> -1L
+                                "over-deadline" -> 60_000L
+                                else -> 2_000L
+                            },
+                        )
                         if (kind == "trailing-data") data.writeInt(42)
                     }
                 }
-                require(kind in setOf("valid-control", "wrong-token", "truncated", "large-input", "trailing-data"))
+                require(kind in setOf(
+                    "valid-control", "wrong-transaction", "wrong-token", "truncated", "large-input",
+                    "trailing-data", "bad-session", "bad-nonce", "bad-request-id", "bad-operation",
+                    "negative-deadline", "over-deadline",
+                ))
                 var accepted = false
                 try {
                     if (binder.transact(code, data, reply, 0)) {

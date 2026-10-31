@@ -2,6 +2,8 @@ package com.cordiact.app.sandbox
 
 import android.content.Context
 import android.os.Build
+import android.os.ParcelFileDescriptor
+import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.cordiact.core.sandbox.BundledPluginIdentity
@@ -245,12 +247,80 @@ class IsolatedServiceSandboxRuntimeTest {
         try {
             assertFalse("Raw transaction code must dispatch a valid executeProbe frame",
                 session.malformedBinderFrameRejectedForTest("valid-control"))
-            for (kind in listOf("wrong-token", "truncated", "large-input", "trailing-data")) {
+            val mutations = listOf(
+                "wrong-transaction", "wrong-token", "truncated", "large-input", "trailing-data",
+                "bad-session", "bad-nonce", "bad-request-id", "bad-operation",
+                "negative-deadline", "over-deadline",
+            )
+            for (kind in mutations) {
                 assertTrue("Raw Binder frame accepted: $kind", session.malformedBinderFrameRejectedForTest(kind))
                 assertTrue("Malformed frame killed isolated worker: $kind", session.isAlive)
                 assertEquals("ok", session.executeProbe("echo", "ok", 2_000))
             }
         } finally { session.terminate(2_000) }
+    }
+
+    @Test
+    fun boundedCpuAndHeapPressureReportsMetricsAndKeepsWorkerResponsive() {
+        assumeTrue(Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
+        val session = runtime.start(profile("plugin.probe.s23.pressure")) as AndroidIsolatedServiceSandboxRuntime.ProbeSession
+        try {
+            val cpu = session.executeProbe("cpu-stress", "2000000", 5_000)
+            val cpuParts = cpu.split(':')
+            assertEquals("cpu", cpuParts[0])
+            assertEquals("2000000", cpuParts[1])
+            val cpuMillis = cpuParts[2].toLong()
+            val wallMillis = cpuParts[3].toLong()
+            assertTrue("CPU probe exceeded 5s bound: $cpu", wallMillis in 0..5_000)
+            Log.i("CordiActS23", "cpu api=${Build.VERSION.SDK_INT} threadMs=$cpuMillis wallMs=$wallMillis result=$cpu")
+
+            val heap = session.executeProbe("heap-stress", "2048", 5_000)
+            val heapParts = heap.split(':')
+            assertEquals("heap", heapParts[0])
+            assertEquals("2048", heapParts[1])
+            val pssBeforeKb = heapParts[2].toLong()
+            val pssDuringKb = heapParts[3].toLong()
+            val heapBefore = heapParts[4].toLong()
+            val heapDuring = heapParts[5].toLong()
+            assertTrue("PSS sample unavailable: $heap", pssDuringKb > 0)
+            assertTrue("Java heap sample unavailable: $heap", heapDuring > 0)
+            Log.i(
+                "CordiActS23",
+                "heap api=${Build.VERSION.SDK_INT} requestedKiB=2048 pssBeforeKiB=$pssBeforeKb " +
+                    "pssDuringKiB=$pssDuringKb javaHeapBefore=$heapBefore javaHeapDuring=$heapDuring result=$heap",
+            )
+            assertTrue(session.isAlive)
+            assertEquals("responsive", session.executeProbe("echo", "responsive", 2_000))
+        } finally {
+            session.terminate(2_000)
+        }
+    }
+
+    @Test
+    fun fixedProbeRespondsWhileDeviceIsForcedIdleAndPackageInactive() {
+        assumeTrue(Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
+        val session = runtime.start(profile("plugin.probe.s23.doze")) as AndroidIsolatedServiceSandboxRuntime.ProbeSession
+        val initialForceIdle = deviceIdleForceFlag()
+        val initialInactive = packageInactiveFlag()
+        var forcedByTest = false
+        try {
+            if (!initialForceIdle) {
+                runShell("cmd deviceidle force-idle")
+                forcedByTest = true
+                val reachedForcedIdle = awaitForceFlag(true)
+                assertTrue("Device did not enter forced idle", reachedForcedIdle)
+            }
+            runShell("am set-inactive com.cordiact.app true")
+            assertTrue("Package did not become inactive", awaitInactiveFlag(true))
+            assertEquals("doze-responsive", session.executeProbe("echo", "doze-responsive", 5_000))
+            Log.i("CordiActS23", "background probe succeeded api=${Build.VERSION.SDK_INT} forceIdle=true inactive=true")
+        } finally {
+            runShell("am set-inactive com.cordiact.app $initialInactive")
+            if (forcedByTest) runShell("cmd deviceidle unforce")
+            session.terminate(2_000)
+        }
+        assertEquals("Force-idle state was not restored", initialForceIdle, deviceIdleForceFlag())
+        assertEquals("Package inactive state was not restored", initialInactive, packageInactiveFlag())
     }
 
     @Test
@@ -292,6 +362,41 @@ class IsolatedServiceSandboxRuntimeTest {
         limits = SandboxLimits(5_000, 4_096, 8_192, 1),
         target = SandboxTarget.LOCAL_CORDIS_JS,
     )
+
+    private fun runShell(command: String): String {
+        val descriptor = InstrumentationRegistry.getInstrumentation().uiAutomation.executeShellCommand(command)
+        return ParcelFileDescriptor.AutoCloseInputStream(descriptor).bufferedReader().use { it.readText() }
+    }
+
+    private fun deviceIdleForceFlag(): Boolean {
+        val output = runShell("dumpsys deviceidle")
+        val value = Regex("mForceIdle=(true|false)").find(output)?.groupValues?.get(1)
+        return requireNotNull(value) { "Could not parse dumpsys deviceidle force state" }.toBoolean()
+    }
+
+    private fun packageInactiveFlag(): Boolean {
+        val output = runShell("am get-inactive com.cordiact.app").trim()
+        val value = Regex("(?i)(true|false)\\s*$").find(output)?.groupValues?.get(1)
+        return requireNotNull(value) { "Could not parse app inactive state: $output" }.toBoolean()
+    }
+
+    private fun awaitForceFlag(expected: Boolean): Boolean {
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
+        while (System.nanoTime() < deadline) {
+            if (deviceIdleForceFlag() == expected) return true
+            Thread.sleep(250)
+        }
+        return deviceIdleForceFlag() == expected
+    }
+
+    private fun awaitInactiveFlag(expected: Boolean): Boolean {
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+        while (System.nanoTime() < deadline) {
+            if (packageInactiveFlag() == expected) return true
+            Thread.sleep(250)
+        }
+        return packageInactiveFlag() == expected
+    }
 
     private fun waitUntil(timeoutMillis: Long, predicate: () -> Boolean): Boolean {
         val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMillis)
