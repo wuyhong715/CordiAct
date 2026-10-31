@@ -16,7 +16,8 @@ import com.cordiact.core.sandbox.SandboxTermination
 import java.security.SecureRandom
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.ExecutionException
-import java.util.concurrent.Executors
+import java.util.concurrent.SynchronousQueue
+import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicBoolean
@@ -160,9 +161,12 @@ class AndroidIsolatedServiceSandboxRuntime(context: Context) : IsolatedSandboxRu
         private val bound: AtomicBoolean,
         private val unbind: () -> Unit,
     ) : SandboxRuntimeSession {
-        private val calls = Executors.newCachedThreadPool { runnable ->
-            Thread(runnable, "cordiact-sandbox-probe-call").apply { isDaemon = true }
-        }
+        // No queue and no unbounded cached threads. Each isolated instance admits one active call.
+        private val calls = ThreadPoolExecutor(
+            0, 1, 60, TimeUnit.SECONDS, SynchronousQueue(),
+            { runnable -> Thread(runnable, "cordiact-sandbox-probe-call").apply { isDaemon = true } },
+            ThreadPoolExecutor.AbortPolicy(),
+        )
         override val isolationKind = SandboxIsolationKind.ANDROID_ISOLATED_SERVICE
         override val isAlive: Boolean get() = !disconnected.get() && binder.isBinderAlive
 
@@ -177,6 +181,7 @@ class AndroidIsolatedServiceSandboxRuntime(context: Context) : IsolatedSandboxRu
             try {
                 return future.get(deadlineMillis + HOST_TIMEOUT_GRACE_MILLIS, TimeUnit.MILLISECONDS)
             } catch (timeout: TimeoutException) {
+                future.cancel(true)
                 runCatching { probe.cancelProbe(sessionId, nonce, requestId) }
                 requestSelfTermination()
                 awaitDeath(deadlineMillis.coerceAtMost(MAX_DEATH_WAIT_MILLIS))
@@ -186,6 +191,12 @@ class AndroidIsolatedServiceSandboxRuntime(context: Context) : IsolatedSandboxRu
                 throw (failure.cause ?: failure)
             }
         }
+
+        /** S2.1 direct Binder probes; do not expose these fixed operations as a plugin API. */
+        fun activeProbeCountForTest(): Int = probe.activeProbeCount
+        fun executeRawForTest(requestId: String, operation: String, payload: String, deadlineMillis: Long): String =
+            probe.executeProbe(sessionId, nonce, requestId, operation, payload, deadlineMillis)
+        fun cancelRawForTest(requestId: String) = probe.cancelProbe(sessionId, nonce, requestId)
 
         /** S2 test hook for verifying an unguessable session nonce is enforced by the service. */
         fun executeWithNonceForTest(testNonce: String, operation: String, payload: String): String =

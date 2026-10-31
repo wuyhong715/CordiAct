@@ -193,3 +193,9 @@ V1 local plugins are signed and bundled only; third-party DeepSeek Harness plugi
 ### Physical-device validation procedure
 
 The Android 35 CI matrix job publishes the exact tested `app-debug.apk` and `app-debug-androidTest.apk` as `cordiact-device-validation-apks`. Install both APKs on the test device via `adb install -r`/`pm install -r`, then run `am instrument -w -r com.cordiact.app.test/androidx.test.runner.AndroidJUnitRunner`. Record build fingerprint/API/ABI, test output, isolated worker UID(s), and logcat crash evidence. Do not install a locally built APK; the project policy is GitHub Actions-only packaging. Remove the two test packages after validation if desired; this does not affect user data because the device is not expected to have an existing CordiAct install.
+
+### S2.1 — Binder and lifecycle hardening (validation pending)
+
+The fixed probe now admits at most one active Binder operation per isolated instance, with close and admission sharing a lock; the host also uses a single-worker, zero-queue executor. The service checks request IDs, UTF-8 frame lengths, deadlines, per-session nonce, and an independent watchdog; rejected requests must leave the service usable. New device tests target malformed IDs/operations/deadlines/frames, concurrency floods, duplicate cancellation, and shutdown while a call is active. These are **fixed probe** properties, not a production Cordis capability broker. The tests must pass on both API 29 and 35 before claiming the gate, and the vivo API 36 test should then be rerun with the same CI-built APKs.
+
+Remaining security work includes binder parcel fuzzing, explicit memory/battery pressure limits, a hard wall-clock bound on every host-to-worker Binder call, Doze/background lifecycle, and proving revocation after process death. `UnavailableIsolatedSandboxRuntime` remains the production default; no JS/plugin execution is enabled by this step.

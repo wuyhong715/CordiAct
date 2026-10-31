@@ -27,3 +27,7 @@ Android 16's Package Manager could not read the APK directly from shared Downloa
 ## Scope and limits
 
 This proves the fixed-operation Android isolated-service probe on one physical API 36 device, plus CI emulators at API 29 and API 35. The probe executes only fixed `echo`, `sleep`, `hang`, and `crash` operations. It does **not** load Cordis, JavaScript, plugin code, a capability broker, or user data, and it is not wired to production `SandboxManager`. Binder fuzzing, resource pressure, Doze/background process behavior, and an actual JS engine remain untested.
+
+## S2.1 status
+
+The preceding four-test result applies to S2 only. S2.1 adds concurrency and race hardening and must be retested on emulators and on this device using new CI-built APKs before extending the physical-device claim.

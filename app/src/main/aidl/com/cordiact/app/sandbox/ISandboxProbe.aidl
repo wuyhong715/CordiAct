@@ -4,6 +4,7 @@ package com.cordiact.app.sandbox;
 interface ISandboxProbe {
     int getProcessUid();
     boolean isProcessIsolated();
+    int getActiveProbeCount();
     boolean openSession(String sessionId, String nonce, String pluginId, String pluginVersion, String sha256);
     String executeProbe(String sessionId, String nonce, String requestId, String operation, String payload, long deadlineMillis);
     void cancelProbe(String sessionId, String nonce, String requestId);

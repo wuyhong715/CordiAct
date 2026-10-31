@@ -22,6 +22,8 @@ class SandboxProbeService : Service() {
     private val sessionLock = Any()
     private var session: ProbeIdentity? = null
     private val closing = AtomicBoolean(false)
+    // Admission and close share sessionLock; only one Binder operation per isolated instance.
+    private var activeRequest = false
 
     private data class ProbeIdentity(
         val sessionId: String,
@@ -42,6 +44,11 @@ class SandboxProbeService : Service() {
             return Process.isIsolated()
         }
 
+        override fun getActiveProbeCount(): Int {
+            enforceHostCaller()
+            return synchronized(sessionLock) { if (activeRequest) 1 else 0 }
+        }
+
         override fun openSession(
             sessionId: String,
             nonce: String,
@@ -58,9 +65,8 @@ class SandboxProbeService : Service() {
             require(pluginVersion.isNotBlank() && pluginVersion.length <= 64)
             require(sha256.matches(SHA256_PATTERN))
             synchronized(sessionLock) {
-                check(session == null) { "This isolated process already has a session" }
+                check(session == null && !closing.get()) { "This isolated process already has a session" }
                 session = ProbeIdentity(sessionId, nonce, pluginId, pluginVersion, sha256)
-                closing.set(false)
             }
             return true
         }
@@ -74,23 +80,29 @@ class SandboxProbeService : Service() {
             deadlineMillis: Long,
         ): String {
             enforceHostCaller()
-            requireSession(sessionId, nonce)
-            require(requestId.matches(REQUEST_PATTERN))
-            require(payload.toByteArray(Charsets.UTF_8).size <= MAX_REQUEST_BYTES) { "Probe input exceeds frame limit" }
+            require(requestId.matches(REQUEST_PATTERN)) { "Invalid probe request id" }
+            require(payload.length <= MAX_REQUEST_BYTES && payload.toByteArray(Charsets.UTF_8).size <= MAX_REQUEST_BYTES) {
+                "Probe input exceeds frame limit"
+            }
             require(deadlineMillis in 1..MAX_DEADLINE_MILLIS) { "Probe deadline exceeds host limit" }
-            check(!closing.get()) { "Sandbox session is closing" }
 
             val currentThread = Thread.currentThread()
-            check(requests.putIfAbsent(requestId, currentThread) == null) { "Duplicate probe request id" }
+            synchronized(sessionLock) {
+                requireSession(sessionId, nonce)
+                check(!closing.get()) { "Sandbox session is closing" }
+                check(!activeRequest) { "Sandbox concurrent request limit reached" }
+                check(requests.putIfAbsent(requestId, currentThread) == null) { "Duplicate probe request id" }
+                activeRequest = true
+            }
             val deadline = Runnable {
                 if (requests.containsKey(requestId)) {
                     // The service main looper is independent of this Binder worker thread.
                     Process.killProcess(Process.myPid())
                 }
             }
-            watchdogs[requestId] = deadline
-            mainHandler.postDelayed(deadline, deadlineMillis)
             try {
+                watchdogs[requestId] = deadline
+                check(mainHandler.postDelayed(deadline, deadlineMillis)) { "Sandbox watchdog unavailable" }
                 return when (operation) {
                     OP_ECHO -> payload
                     OP_SLEEP -> {
@@ -112,24 +124,31 @@ class SandboxProbeService : Service() {
                     require(result.toByteArray(Charsets.UTF_8).size <= MAX_RESPONSE_BYTES) { "Probe output exceeds frame limit" }
                 }
             } finally {
-                requests.remove(requestId, currentThread)
+                synchronized(sessionLock) {
+                    requests.remove(requestId, currentThread)
+                    activeRequest = false
+                }
                 watchdogs.remove(requestId)?.let(mainHandler::removeCallbacks)
             }
         }
 
         override fun cancelProbe(sessionId: String, nonce: String, requestId: String) {
             enforceHostCaller()
+            require(requestId.matches(REQUEST_PATTERN)) { "Invalid probe request id" }
             requireSession(sessionId, nonce)
             requests[requestId]?.interrupt()
         }
 
         override fun closeSession(sessionId: String, nonce: String) {
             enforceHostCaller()
-            requireSession(sessionId, nonce)
-            if (closing.compareAndSet(false, true)) {
-                requests.values.forEach(Thread::interrupt)
-                // Reply first; then terminate this dedicated isolated process.
-                mainHandler.postDelayed({ Process.killProcess(Process.myPid()) }, CLOSE_KILL_DELAY_MILLIS)
+            val toInterrupt = synchronized(sessionLock) {
+                requireSession(sessionId, nonce)
+                if (closing.compareAndSet(false, true)) requests.values.toList() else emptyList()
+            }
+            toInterrupt.forEach(Thread::interrupt)
+            // Termination is not optional: a failed handler post kills the worker immediately.
+            if (!mainHandler.postDelayed({ Process.killProcess(Process.myPid()) }, CLOSE_KILL_DELAY_MILLIS)) {
+                Process.killProcess(Process.myPid())
             }
         }
     }

@@ -10,6 +10,9 @@ import com.cordiact.core.sandbox.SandboxProfile
 import com.cordiact.core.sandbox.SandboxTarget
 import java.util.UUID
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.Executors
+import java.util.concurrent.ExecutionException
+import java.util.concurrent.RejectedExecutionException
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -107,6 +110,118 @@ class IsolatedServiceSandboxRuntimeTest {
             assertTrue(waitUntil(5_000) { !session.isAlive })
             assertEquals(4, 2 + 2)
         } finally {
+            session.kill()
+        }
+    }
+
+    @Test
+    fun malformedRequestsFailClosedWithoutBreakingTheIsolatedWorker() {
+        assumeTrue(Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
+        val session = runtime.start(profile("plugin.probe.invalid")) as AndroidIsolatedServiceSandboxRuntime.ProbeSession
+        try {
+            fun rejected(requestId: String, operation: String, payload: String, deadline: Long) {
+                try {
+                    session.executeRawForTest(requestId, operation, payload, deadline)
+                    throw AssertionError("Invalid request was accepted: $requestId")
+                } catch (_: IllegalArgumentException) { /* expected from isolated service */ }
+            }
+            rejected("invalid/id", "echo", "x", 1_000)
+            rejected("bad-op", "arbitrary-code", "x", 1_000)
+            rejected("bad-time", "echo", "x", 30_001)
+            rejected("bad-frame", "echo", "x".repeat(4_097), 1_000)
+            assertEquals(0, session.activeProbeCountForTest())
+            assertEquals("healthy", session.executeProbe("echo", "healthy", 2_000))
+        } finally { session.terminate(2_000) }
+    }
+
+    @Test
+    fun concurrentBinderFloodIsRejectedWithoutGrowingTheWorkerQueue() {
+        assumeTrue(Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
+        val session = runtime.start(profile("plugin.probe.flood")) as AndroidIsolatedServiceSandboxRuntime.ProbeSession
+        val workers = Executors.newSingleThreadExecutor()
+        try {
+            val held = workers.submit<String> { session.executeRawForTest("held", "sleep", "4000", 8_000) }
+            assertTrue("first Binder call must be active", waitUntil(3_000) { session.activeProbeCountForTest() == 1 })
+            repeat(12) { index ->
+                try {
+                    session.executeRawForTest("flood-$index", "echo", "x", 1_000)
+                    throw AssertionError("Concurrent call $index was incorrectly admitted")
+                } catch (_: IllegalStateException) { /* server rejects excess work */ }
+            }
+            assertEquals(1, session.activeProbeCountForTest())
+            assertEquals("slept:4000", held.get(7, TimeUnit.SECONDS))
+            assertEquals(0, session.activeProbeCountForTest())
+        } finally {
+            workers.shutdownNow()
+            session.terminate(2_000)
+        }
+    }
+
+    @Test
+    fun hostExecutorRejectsExcessCallsAndCannotQueueUnboundedWork() {
+        assumeTrue(Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
+        val session = runtime.start(profile("plugin.probe.hostlimit")) as AndroidIsolatedServiceSandboxRuntime.ProbeSession
+        val workers = Executors.newSingleThreadExecutor()
+        try {
+            val held = workers.submit<String> { session.executeProbe("sleep", "2500", 5_000) }
+            assertTrue(waitUntil(3_000) { session.activeProbeCountForTest() == 1 })
+            try {
+                session.executeProbe("echo", "unexpected", 2_000)
+                throw AssertionError("Host accepted a second in-flight request")
+            } catch (_: RejectedExecutionException) { /* bounded host executor */ }
+            assertEquals("slept:2500", held.get(6, TimeUnit.SECONDS))
+            assertEquals("still alive", session.executeProbe("echo", "still alive", 2_000))
+        } finally {
+            workers.shutdownNow()
+            session.terminate(2_000)
+        }
+    }
+
+    @Test
+    fun repeatedCancellationAndShutdownDoNotPermitLateResults() {
+        assumeTrue(Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
+        val session = runtime.start(profile("plugin.probe.cancel")) as AndroidIsolatedServiceSandboxRuntime.ProbeSession
+        val workers = Executors.newSingleThreadExecutor()
+        try {
+            val running = workers.submit<String> { session.executeRawForTest("cancellable", "sleep", "5000", 9_000) }
+            assertTrue(waitUntil(3_000) { session.activeProbeCountForTest() == 1 })
+            session.cancelRawForTest("cancellable")
+            session.cancelRawForTest("cancellable")
+            try {
+                running.get(3, TimeUnit.SECONDS)
+                throw AssertionError("Cancelled probe returned a late success")
+            } catch (_: ExecutionException) { /* cancelled sleep does not complete normally */ }
+            assertTrue(waitUntil(2_000) { session.activeProbeCountForTest() == 0 })
+            assertEquals("ready", session.executeProbe("echo", "ready", 2_000))
+            session.terminate(2_000)
+            assertFalse(session.isAlive)
+        } finally {
+            workers.shutdownNow()
+            session.kill()
+        }
+    }
+
+    @Test
+    fun shutdownDuringActiveRequestClosesAdmissionAndPreventsLateSuccess() {
+        assumeTrue(Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
+        val session = runtime.start(profile("plugin.probe.shutdown")) as AndroidIsolatedServiceSandboxRuntime.ProbeSession
+        val workers = Executors.newSingleThreadExecutor()
+        try {
+            val running = workers.submit<String> { session.executeRawForTest("late", "sleep", "5000", 9_000) }
+            assertTrue(waitUntil(3_000) { session.activeProbeCountForTest() == 1 })
+            val stopped = session.terminate(2_000)
+            assertTrue("shutdown must confirm the process is dead", stopped.processStopped)
+            assertFalse(session.isAlive)
+            try {
+                running.get(3, TimeUnit.SECONDS)
+                throw AssertionError("Closing session allowed late output")
+            } catch (_: ExecutionException) { /* dead worker cannot deliver a success */ }
+            try {
+                session.executeProbe("echo", "unexpected", 1_000)
+                throw AssertionError("Closed session accepted a new request")
+            } catch (_: IllegalStateException) { /* admission remains closed */ }
+        } finally {
+            workers.shutdownNow()
             session.kill()
         }
     }
