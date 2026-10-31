@@ -189,3 +189,7 @@ V1 local plugins are signed and bundled only; third-party DeepSeek Harness plugi
 - Google Play Developer Program Policy (runtime interpreted code): `https://support.google.com/googleplay/android-developer/answer/18258653?hl=en`.
 - AOSP Android Virtualization Framework: `https://source.android.com/docs/core/virtualization`.
 - CordiAct's checked-out DSH `packages/experimental/webworker-runtime`, `packages/ptc-runtime/ptc-runtime-node`, and filesystem sandbox sources.
+
+### Physical-device validation procedure
+
+The Android 35 CI matrix job publishes the exact tested `app-debug.apk` and `app-debug-androidTest.apk` as `cordiact-device-validation-apks`. Install both APKs on the test device via `adb install -r`/`pm install -r`, then run `am instrument -w -r com.cordiact.app.test/androidx.test.runner.AndroidJUnitRunner`. Record build fingerprint/API/ABI, test output, isolated worker UID(s), and logcat crash evidence. Do not install a locally built APK; the project policy is GitHub Actions-only packaging. Remove the two test packages after validation if desired; this does not affect user data because the device is not expected to have an existing CordiAct install.
