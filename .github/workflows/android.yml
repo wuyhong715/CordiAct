@@ -51,6 +51,14 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+      - name: Reclaim disposable runner space for emulator
+        run: |
+          df -h "$HOME"
+          if [ -d /usr/share/dotnet ]; then
+            du -sh /usr/share/dotnet
+            sudo rm -rf -- /usr/share/dotnet
+          fi
+          df -h "$HOME"
       - name: Install Android native build toolchain
         run: |
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "platform-tools" "platforms;android-35" "build-tools;35.0.0" "ndk;27.2.12479018" "cmake;3.22.1"
@@ -67,13 +75,12 @@ jobs:
           target: google_apis
           arch: x86_64
           profile: pixel_2
-          disk-size: 3072M
           cores: 4
           ram-size: 4096M
           heap-size: 1024M
           disable-linux-hw-accel: false
           disable-animations: true
-          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -partition-size 3072
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
           script: |
             set +e
             prior_force_idle="$(adb shell dumpsys deviceidle | sed -n 's/.*mForceIdle=\(true\|false\).*/\1/p' | head -n1 | tr -d '\r')"
