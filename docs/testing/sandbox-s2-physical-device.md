@@ -30,4 +30,4 @@ This proves the fixed-operation Android isolated-service probe on one physical A
 
 ## S2.1 status
 
-The preceding four-test result applies to S2 only. S2.1 adds concurrency and race hardening and must be retested on emulators and on this device using new CI-built APKs before extending the physical-device claim.
+The preceding 4/4 result covers S2 only. S2.1 was rerun with APKs from CI run `41215976392` (code commit `ad44a44`): **10/10 passed** on this vivo API 36 device. See [the S2.1 report](sandbox-s21-ipc-hardening.md). Both test packages and temporary APKs were removed after verification.
