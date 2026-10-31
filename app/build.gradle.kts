@@ -4,6 +4,13 @@ plugins {
 }
 
 android { namespace = "com.cordiact.app"; compileSdk = 35
+    ndkVersion = "27.2.12479018"
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
+    }
     buildFeatures {
         compose = true
         aidl = true
@@ -15,6 +22,7 @@ android { namespace = "com.cordiact.app"; compileSdk = 35
         versionCode = 1
         versionName = "0.1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        ndk { abiFilters += setOf("arm64-v8a", "x86_64") }
     }
     testOptions { unitTests.isIncludeAndroidResources = true }
 }

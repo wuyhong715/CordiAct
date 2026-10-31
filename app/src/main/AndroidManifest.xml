@@ -5,6 +5,11 @@
             android:exported="false"
             android:isolatedProcess="true"
             android:process=":sandbox" />
+        <service
+            android:name=".sandbox.SandboxJsPocService"
+            android:exported="false"
+            android:isolatedProcess="true"
+            android:process=":sandbox_js_poc" />
         <activity android:name=".MainActivity" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

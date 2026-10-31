@@ -14,6 +14,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: true
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
@@ -25,7 +27,7 @@ jobs:
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
       - name: Install Android SDK packages
         run: |
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platform-tools" "platforms;android-35" "build-tools;35.0.0" "ndk;27.2.12479018" "cmake;3.22.1"
       - name: Build and test
         run: ./gradlew test assembleDebug --no-daemon
       - uses: actions/upload-artifact@v4
@@ -43,10 +45,15 @@ jobs:
         api-level: [29, 35]
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: true
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
+      - name: Install Android native build toolchain
+        run: |
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "platform-tools" "platforms;android-35" "build-tools;35.0.0" "ndk;27.2.12479018" "cmake;3.22.1"
       - name: Grant the runner user access to KVM
         run: |
           test -e /dev/kvm
@@ -69,6 +76,10 @@ jobs:
           script: |
             set +e
             prior_force_idle="$(adb shell dumpsys deviceidle | sed -n 's/.*mForceIdle=\(true\|false\).*/\1/p' | head -n1 | tr -d '\r')"
+            case "$prior_force_idle" in
+              true|false) ;;
+              *) echo "Cannot determine emulator force-idle state; refusing Doze instrumentation" >&2; exit 1 ;;
+            esac
             restore_device_idle() {
               if [ "$prior_force_idle" = "false" ]; then
                 adb shell cmd deviceidle unforce >/dev/null 2>&1 || true

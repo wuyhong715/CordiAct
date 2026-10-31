@@ -22,7 +22,7 @@ This is a deterministic boundary corpus, not random or coverage-guided Binder fu
 
 ### Background / Doze sample
 
-The instrumentation test reads the initial `mForceIdle` and `am get-inactive` values, temporarily forces DeviceIdle and marks `com.cordiact.app` inactive, then checks one existing isolated Binder echo. A `finally` block restores the exact observed values and asserts the restored state. The CI runner adds an EXIT trap that issues `cmd deviceidle unforce` only when the emulator was not force-idle before the test. For physical-device validation, run instrumentation inside an outer shell trap with the same before/after state capture; do not alter battery-optimization exemptions or persistent Settings.
+The instrumentation test reads the initial DeviceIdle `mForceIdle`, `mState`, `mLightState`, and `am get-inactive` values. It skips the mutation unless both DeviceIdle states are `ACTIVE` and the test did not already force idle. It temporarily forces DeviceIdle and marks `com.cordiact.app` inactive, then checks one existing isolated Binder echo. A `finally` block restores the initial force/inactive values; after the test it waits for both original idle-state fields to return and asserts the restored state. The CI runner adds an EXIT trap that issues `cmd deviceidle unforce` only when the emulator was not force-idle before the test. For physical-device validation, run instrumentation inside an outer shell trap with the same before/after state capture; do not alter battery-optimization exemptions or persistent Settings.
 
 ## Verification results
 

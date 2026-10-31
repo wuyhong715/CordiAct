@@ -1,6 +1,6 @@
 # ADR 0002: Sandbox Manager as a first-class plugin and security boundary
 
-- Status: Accepted for v1 execution policy; Android isolated-process implementation remains gated
+- Status: Accepted for v1 execution policy; S3 test-only fixed-script PoC is being implemented; production execution remains gated on validation and acceptance criteria
 - Date: 2026-10-31
 
 ## Problem
@@ -160,9 +160,11 @@ Four instrumentation tests pass on both **API 29** (the named-isolated-instance 
 
 **Physical-device result:** vivo V2463A / Android 16 / API 36 / arm64-v8a passed all four tests from CI run `41208793283`; details are in [the S2 device report](../testing/sandbox-s2-physical-device.md). The production Sandbox Manager remains wired to `UnavailableIsolatedSandboxRuntime`; the probe does not load Cordis or any plugin code. No local plugin execution is enabled. Binder fuzz/resource-pressure and Doze/background tests remain open.
 
-### S3 — JS engine inside the isolated service
+### S3 — JS engine inside the isolated service (selected engine; PoC validation pending)
 
-Select an engine only after validating maintained upstream support, license, ABI coverage, memory controls, interrupt/cancel behavior, and module-loading security. Run untrusted test corpus/fuzz tests; ensure no host APIs are exposed outside the typed bridge.
+Select QuickJS-NG v0.17.0, pinned at commit `6d46d07d04041b40f4f49eaa7fdebe44c314c699` under `third_party/quickjs-ng`. The MIT license is preserved in the APK resources. The test PoC builds the core with Android NDK and omits `quickjs-libc.c`; no module loader, Java/JNI host object, filesystem/network bridge or arbitrary source input is exposed. Only hash-pinned APK raw resources are executed by `SandboxJsPocService` in its own non-exported isolated service process. Script bytes are capped at 16 KiB, QuickJS heap at 8 MiB, stack at 256 KiB, and wall time at 5 seconds; a QuickJS interrupt callback and independent service watchdog terminate the isolated process on deadline. Fixed memory/stack/loop vectors exercise those boundaries.
+
+This remains an isolated-service experiment, **not** a production plugin runtime: the AIDL has no code-upload method; tests execute only bundled fixed scripts; `SandboxManager` still uses `UnavailableIsolatedSandboxRuntime`; v1 third-party local plugins remain disabled. These C API bounds do not impose whole-process RSS or strict CPU quotas. The source comparison and precise gates are in [the S3 engine/PoC report](../testing/sandbox-s3-js-engine-and-poc.md). API 29/35 and API 36 results remain pending until the GitHub Actions build and same-run artifact are executed and reviewed.
 
 ### S4 — Capability broker and plugin integration
 
@@ -207,3 +209,9 @@ API 29's initial S2.1 run exposed a zero-queue `SynchronousQueue` handoff race: 
 GitHub Actions run `41219780526` at commit `d9a93ba` passed **13/13** on both API 29 and API 35 emulators; the same CI APKs passed **13/13 twice** on vivo V2463A / Android 16 / API 36. Tests send a valid raw Binder transaction as a positive control, then four malformed frames: wrong interface token, truncated fields, oversized payload and trailing bytes. The service rejects these, also rejecting a deterministic 8,193-byte output above its 8,192-byte reply cap; 64 repeated 4,096-byte requests leave the worker responsive. The initial test run discovered that generated AIDL dispatch accepted trailing fields; the service now validates total Parcel size and exact field consumption before delegating to the generated dispatcher. See [S2.2 test report](../testing/sandbox-s22-binder-boundaries.md).
 
 These are bounded fixed-probe mutations, **not comprehensive fuzzing or measured resource stress**. Raw Binder edge cases beyond the tested frames, CPU/heap pressure, Doze/background restrictions and JS interpreter properties remain open. The production plugin runtime remains unavailable.
+
+### S2.3 — Bounded Binder/resource/background validation (implementation pending execution)
+
+The current S2.3 instrumentation extends the raw-frame corpus with unknown transaction code, wrong token, truncated fields, oversized string, trailing data, bad session/nonce/request ID/operation and invalid/over-limit deadline; each is followed by a valid echo. It adds a bounded two-million-iteration CPU sample and a 2 MiB touched-heap sample with thread CPU/wall, PSS and Java heap metrics. A Doze/background test only proceeds when the pre-test DeviceIdle/light-idle states are ACTIVE and the force-idle flag is false; it temporarily forces DeviceIdle and app-inactive state, tests one isolated Binder echo, restores prior values in `finally`, and checks the original states. CI also registers an EXIT trap to clear force-idle if the emulator was not forced before the test. The set is a fixed validation corpus, not general-purpose Parcel fuzzing, a CPU quota, RSS quota or battery test. See [S2.3 report](../testing/sandbox-s23-resource-background.md).
+
+At this revision the instrumentation and report exist locally, but the attempted workspace Gradle test did not resolve AGP 9.4.1, and GitHub Actions has not yet run because commit `b4b50ec` has not been pushed. Therefore all S2.3 outcome fields remain pending; do not describe these tests as passing.

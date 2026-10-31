@@ -301,15 +301,19 @@ class IsolatedServiceSandboxRuntimeTest {
         assumeTrue(Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
         val session = runtime.start(profile("plugin.probe.s23.doze")) as AndroidIsolatedServiceSandboxRuntime.ProbeSession
         val initialForceIdle = deviceIdleForceFlag()
+        val initialStates = deviceIdleStates()
         val initialInactive = packageInactiveFlag()
         var forcedByTest = false
         try {
-            if (!initialForceIdle) {
-                runShell("cmd deviceidle force-idle")
-                forcedByTest = true
-                val reachedForcedIdle = awaitForceFlag(true)
-                assertTrue("Device did not enter forced idle", reachedForcedIdle)
-            }
+            assumeTrue(
+                "Skip Doze mutation unless the initial state is active and not already forced: " +
+                    "forceIdle=$initialForceIdle states=$initialStates",
+                !initialForceIdle && initialStates == ("ACTIVE" to "ACTIVE"),
+            )
+            runShell("cmd deviceidle force-idle")
+            forcedByTest = true
+            val reachedForcedIdle = awaitForceFlag(true)
+            assertTrue("Device did not enter forced idle", reachedForcedIdle)
             runShell("am set-inactive com.cordiact.app true")
             assertTrue("Package did not become inactive", awaitInactiveFlag(true))
             assertEquals("doze-responsive", session.executeProbe("echo", "doze-responsive", 5_000))
@@ -319,7 +323,8 @@ class IsolatedServiceSandboxRuntimeTest {
             if (forcedByTest) runShell("cmd deviceidle unforce")
             session.terminate(2_000)
         }
-        assertEquals("Force-idle state was not restored", initialForceIdle, deviceIdleForceFlag())
+        assertEquals("Force-idle flag was not restored", initialForceIdle, deviceIdleForceFlag())
+        assertTrue("DeviceIdle states were not restored: ${deviceIdleStates()}", awaitDeviceIdleStates(initialStates))
         assertEquals("Package inactive state was not restored", initialInactive, packageInactiveFlag())
     }
 
@@ -368,6 +373,14 @@ class IsolatedServiceSandboxRuntimeTest {
         return ParcelFileDescriptor.AutoCloseInputStream(descriptor).bufferedReader().use { it.readText() }
     }
 
+    private fun deviceIdleStates(): Pair<String, String> {
+        val output = runShell("dumpsys deviceidle")
+        val state = Regex("mState=([A-Z_]+)").find(output)?.groupValues?.get(1)
+        val lightState = Regex("mLightState=([A-Z_]+)").find(output)?.groupValues?.get(1)
+        return (requireNotNull(state) { "Could not parse DeviceIdle state" }) to
+            (requireNotNull(lightState) { "Could not parse light DeviceIdle state" })
+    }
+
     private fun deviceIdleForceFlag(): Boolean {
         val output = runShell("dumpsys deviceidle")
         val value = Regex("mForceIdle=(true|false)").find(output)?.groupValues?.get(1)
@@ -378,6 +391,15 @@ class IsolatedServiceSandboxRuntimeTest {
         val output = runShell("am get-inactive com.cordiact.app").trim()
         val value = Regex("(?i)(true|false)\\s*$").find(output)?.groupValues?.get(1)
         return requireNotNull(value) { "Could not parse app inactive state: $output" }.toBoolean()
+    }
+
+    private fun awaitDeviceIdleStates(expected: Pair<String, String>): Boolean {
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
+        while (System.nanoTime() < deadline) {
+            if (deviceIdleStates() == expected) return true
+            Thread.sleep(250)
+        }
+        return deviceIdleStates() == expected
     }
 
     private fun awaitForceFlag(expected: Boolean): Boolean {
