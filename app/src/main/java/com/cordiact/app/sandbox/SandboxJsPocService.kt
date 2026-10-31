@@ -9,6 +9,7 @@ import android.os.IBinder
 import android.os.Parcel
 import android.os.Process
 import android.os.SystemClock
+import com.cordiact.app.R
 import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
