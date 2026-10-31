@@ -52,4 +52,13 @@ jobs:
           profile: pixel_7_pro
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
-          script: ./gradlew connectedDebugAndroidTest --no-daemon
+          script: ./gradlew connectedDebugAndroidTest --no-daemon --stacktrace --info
+      - name: Preserve sandbox instrumentation reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: isolated-service-test-reports
+          path: |
+            app/build/reports/androidTests/connected/debug/**
+            app/build/outputs/androidTest-results/connected/debug/**
+          if-no-files-found: warn
