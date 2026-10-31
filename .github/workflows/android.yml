@@ -73,7 +73,7 @@ jobs:
           heap-size: 1024M
           disable-linux-hw-accel: false
           disable-animations: true
-          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -partition-size 3072
           script: |
             set +e
             prior_force_idle="$(adb shell dumpsys deviceidle | sed -n 's/.*mForceIdle=\(true\|false\).*/\1/p' | head -n1 | tr -d '\r')"
