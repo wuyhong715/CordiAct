@@ -129,7 +129,7 @@ class SandboxJsPocService : Service() {
         const val MAX_SOURCE_BYTES = 16 * 1024
         const val MAX_BINDER_FRAME_BYTES = 4 * 1024
         const val PROBE_DESCRIPTOR = "com.cordiact.app.sandbox.ISandboxJsPoc"
-        const val FIXED_SHA256 = "702e554c1431094f8e5c4c7260f545cdb80b6ff5a53eab8902375123d2866953"
+        const val FIXED_SHA256 = "85db124b2d9ae593502570434ee947c4941f4693610c60cb7571fc3f892d2f86"
         const val TIMEOUT_SHA256 = "2d63ea6d8fbc0786bad2ca1e6d4d42082ab8ff34e9f8e921474d53041a1f561c"
         const val MEMORY_SHA256 = "5c4a8c8e4ffc4962729c54893b1e59875f35b65c6d74e6d9ce36768299f476b4"
         const val STACK_SHA256 = "a7c2ee51c346aa4a3fd8d53de56d72f75c7a034dccbec8785e6155c44cd99d15"

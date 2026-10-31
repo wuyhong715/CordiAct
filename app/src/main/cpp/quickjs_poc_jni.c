@@ -1,6 +1,8 @@
 #include <jni.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <time.h>
 
 #include "quickjs.h"
@@ -80,11 +82,24 @@ Java_com_cordiact_app_sandbox_SandboxJsPocService_nativeEvaluate(
     if (property_result < 0) {
         result = JS_EXCEPTION;
     } else {
+        /* JNI byte-array storage has no guaranteed sentinel; the parser can read
+         * at the end of input. Make a bounded terminated copy and keep its exact
+         * byte length for JS_Eval, without changing the signed resource bytes. */
+        char *terminated_source = (char *) malloc((size_t) source_length + 1U);
+        if (terminated_source == NULL) {
+            (*env)->ReleaseByteArrayElements(env, source, source_bytes, JNI_ABORT);
+            JS_FreeContext(context);
+            JS_FreeRuntime(runtime);
+            return error_string(env, "source-buffer-allocation-failed");
+        }
+        memcpy(terminated_source, source_bytes, (size_t) source_length);
+        terminated_source[source_length] = 0;
         result = JS_Eval(context,
-                         (const char *) source_bytes,
+                         terminated_source,
                          (size_t) source_length,
                          "<signed-apk-fixed-script>",
                          JS_EVAL_TYPE_GLOBAL);
+        free(terminated_source);
     }
     (*env)->ReleaseByteArrayElements(env, source, source_bytes, JNI_ABORT);
 
