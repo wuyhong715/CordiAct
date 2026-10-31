@@ -150,11 +150,15 @@ The product decision is now set: local code must be signed and bundled; third-pa
 
 ### S1 — Sandbox Manager contracts and fail-closed orchestration (implemented)
 
-Core now defines sandbox identity/profile, bounded IPC/deadline limits, host-resolved capabilities, trusted APK-bundle verification, isolated-runtime attestation, instance/termination states, and protected `core.sandbox-manager` orchestration. App startup registers the Sandbox Manager as a protected system plugin. The default Android runtime is explicitly unavailable, so all local launch requests fail closed; no in-process fallback exists. Core tests use a deterministic fake isolated runtime to exercise admission, capability subset checks, limits, termination, revocation, and failure retention. This does not implement an Android isolated service or prove actual OS isolation.
+Core now defines sandbox identity/profile, bounded IPC/deadline limits, host-resolved capabilities, trusted APK-bundle verification, isolated-runtime attestation, instance/termination states, and protected `core.sandbox-manager` orchestration. App startup registers the Sandbox Manager as a protected system plugin. The default Android runtime is explicitly unavailable, so all local launch requests fail closed; no in-process fallback exists. Core tests use a deterministic fake isolated runtime to exercise admission, capability subset checks, limits, termination, revocation, and failure retention. The Android 35 emulator proof is implemented separately as a fixed probe service; it is not yet connected to production plugin dispatch.
 
-### S2 — Next: Android isolated-service proof of concept
+### S2 — Android isolated-service proof of concept (probe passes Android 35 emulator; device/API floor still open)
 
-Build a non-exported isolated service with a tiny fixed test payload, strict Binder schema, UID/session validation, bounded payloads, timeout, cancellation, kill, and crash/restart tests. Confirm behavior on minimum supported API and at least one modern API/device. No third-party plugin code yet.
+A non-exported `android:isolatedProcess="true"` service and typed AIDL Binder probe now run in unique `Context.bindIsolatedService` instances (API 29+). It verifies the isolated UID, checks the host caller UID and per-session nonce, limits frames/deadlines, and supports only fixed `echo`, bounded `sleep`, intentional `hang`, and `crash` test operations. An independent service-main-loop watchdog kills a hung worker process. The isolated process skips all normal host `Application` initialization and receives no database/provider, credential, workspace, or capability broker.
+
+Four Android 35 emulator instrumentation tests now pass: isolated UID differs from host, concurrent sessions receive distinct isolated UIDs, malformed identity/oversized frames are rejected, the deadline watchdog kills an infinite test operation, an intentional worker crash leaves the host responsive, a fresh isolated process can start afterward, and graceful termination works. The CI runner grants the disposable user access to `/dev/kvm`; software-only emulation proved too slow/unresponsive. Android rejected hyphens in `bindIsolatedService` instance names, so names are restricted to `[A-Za-z0-9_.]+`. Android also instantiates `CordiActApplication` in each process, so `Process.isIsolated()` now prevents the worker UID from initializing SQLite/providers/host plugins.
+
+**Still not proven:** API 29 minimum runtime behavior, the user's/representative physical device, adversarial Binder fuzzing/resource pressure, or a production JS runtime. The production Sandbox Manager remains wired to `UnavailableIsolatedSandboxRuntime`; the probe does not load Cordis or any plugin code. No local plugin execution is enabled.
 
 ### S3 — JS engine inside the isolated service
 
@@ -164,17 +168,17 @@ Select an engine only after validating maintained upstream support, license, ABI
 
 Integrate workspace/model operations as host-owned service calls; bind every permission to a short-lived sandbox identity; verify lifecycle cleanup, process death, and startup recovery. Keep network off unless proxy policy is implemented.
 
-### S5 — Distribution decision
+### S5 — Distribution review (v1 scope already chosen)
 
-Decide whether third-party local plugins are v1, Play distribution implications, signing/approval/update controls, and public plugin supply-chain policy. If undecided, allow only bundled JS samples and keep external plugins remote-only/disabled.
+V1 local plugins are signed and bundled only; third-party DeepSeek Harness plugins remain remote. Complete Play policy review, signing/update/rollback controls, and supply-chain review before any public third-party local plugin distribution.
 
 ## Acceptance gates before production use
 
-- Prove sandbox UID/process isolation and no in-process fallback on supported APIs/devices.
+- **Partially validated:** Android 35 emulator reports an isolated UID distinct from the app and distinct UIDs for concurrent named instances; API 29 and representative physical devices remain untested.
 - Malicious test cannot read another plugin's files, session content, app preferences, API key, or Android permission; broker rejects malformed/unauthorized requests.
-- Infinite loop times out and process dies; cancellation prevents later events; crash does not crash host or create restart loop.
+- **Validated on Android 35 emulator:** the watchdog kills an infinite fixed probe, worker crash does not crash the host, and a fresh isolated process starts afterward. Interpreter cancellation/late-event behavior remains untested because no JS engine is loaded.
 - Disable/uninstall closes IPC, kills the process, revokes grants, clears owned temporary/permanent state, and survives forced process death at each cleanup checkpoint.
-- Fuzzed/oversized Binder messages fail safely with bounded memory and no ANR.
+- **Partially validated:** oversized fixed-probe frame rejected; Binder fuzzing, memory pressure, and no-ANR guarantees remain untested.
 - Release/signing/Play policy review is complete for the intended distribution channel.
 
 ## Evidence reviewed
@@ -185,11 +189,3 @@ Decide whether third-party local plugins are v1, Play distribution implications,
 - Google Play Developer Program Policy (runtime interpreted code): `https://support.google.com/googleplay/android-developer/answer/18258653?hl=en`.
 - AOSP Android Virtualization Framework: `https://source.android.com/docs/core/virtualization`.
 - CordiAct's checked-out DSH `packages/experimental/webworker-runtime`, `packages/ptc-runtime/ptc-runtime-node`, and filesystem sandbox sources.
-
-### S2 — Android isolated-service proof of concept (implementation in progress)
-
-A fixed-operation probe service and typed AIDL boundary have been added with `android:isolatedProcess="true"`, a private manifest component, Binder caller-UID checking, per-session nonce binding, size/deadline limits, an independent service-main-loop watchdog, self-termination, and host disconnect tracking. The client uses `Context.bindIsolatedService` (API 29+); API 26–28 fail closed instead of sharing a process. This probe deliberately supports only `echo`, bounded `sleep`, `hang`, and `crash`; it does not load JS, plugins, capabilities, files, network, or credentials.
-
-A dedicated Android 35 emulator instrumentation job is pinned to the reviewed `reactivecircus/android-emulator-runner` commit `a421e43855164a8197daf9d8d40fe71c6996bb0d`. It checks isolated UID reporting, distinct app/service UID and concurrent process identities, nonce rejection, frame limits, timeout kill, process crash containment, and a fresh session after a crash. Until this job passes—and later device/API tests are complete—the probe is not wired into production Sandbox Manager and cannot run Cordis code.
-
-The first Android 35 emulator job could not execute tests because the runner lacked `/dev/kvm` access; the emulator fell back to software acceleration and became unresponsive. The workflow now grants the disposable runner user KVM access, explicitly enables hardware acceleration, uses a Pixel 2 AVD, and preserves reports. After that runner fix, the emulator started the isolated service but all four tests timed out: Android instantiates the configured `Application` in every process, and the host `CordiActApplication` attempted ContentProvider-backed SQLite initialization. Android correctly rejected that call from the isolated UID (`Isolated process not allowed to call getContentProvider`). The Application now detects `Process.isIsolated()` and skips all host graph/persistence initialization in that process. Rerun the emulator tests; the S2 gate remains open until they pass.
