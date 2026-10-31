@@ -43,10 +43,14 @@ A remote plugin is still a CordiAct-visible plugin, but its implementation and e
 ### Compatibility classes
 
 - **`mobile-native`**: Kotlin implementation using Android capabilities; runs locally after policy/consent.
-- **`mobile-cordis`**: Cordis/JavaScript implementation using only validated mobile APIs and declared CordiAct capabilities; runs in the embedded JS runtime.
+- **`mobile-cordis`**: Cordis/JavaScript implementation using only validated mobile APIs and declared CordiAct capabilities; intended to run in an Android isolated-service process managed by Sandbox Manager, not directly in the app process.
 - **`harness-hosted`**: DSH/Node implementation needing Node built-ins, subprocess, host filesystem, sandbox, PTC, or DSH host services; runs on the Harness host through Gateway.
 
 The plugin descriptor should state its target, API version, dependencies, requested capabilities, and install/protection class. A plugin must not be advertised as portable across targets without tests. Unsupported requirements fail closed with an actionable explanation.
+
+## Sandbox Manager
+
+Sandbox Manager is a protected first-class system plugin that manages execution profiles, process health, deadlines, crash recovery, and user-visible sandbox status. The native kernel/host remains the final reference monitor: it validates identity and authorizes every capability request outside plugin code. The candidate local boundary for untrusted Cordis/JS plugins is a non-exported Android isolated-service process behind typed Binder IPC. Trusted bundled Kotlin plugins remain trusted app code—not “sandboxed.” Remote Harness isolation is owned by the remote host. If the device cannot provide the requested local isolation, the plugin is remote-only or disabled; there is no silent in-process fallback. The design remains proposed pending the v1 third-party-plugin decision; see [ADR 0002](adr/0002-sandbox-manager-design.md).
 
 ## Request flow
 
@@ -69,7 +73,7 @@ The DSH experimental WebWorker runtime is useful prior art for packaging a Harne
 ## Initial modules
 
 - `app`: native shell, plugin manager/registry, unified conversation UI
-- protected system plugins, first batch: Model Adapter and Session Manager (`core` contracts + Android session persistence)
+- protected system plugins: Model Adapter, Session Manager, then Sandbox Manager (design proposed in ADR 0002)
 - `core`: plugin contracts, workspace, policy/consent, events, lifecycle, audit
 - `app` Android adapters: SQLite lifecycle/consent store, runtime controller registry, scoped data/cache/artifact cleanup, startup recovery
 - `plugins-android`: protected and optional native Android capability plugins (planned)
@@ -87,4 +91,4 @@ The DSH experimental WebWorker runtime is useful prior art for packaging a Harne
 - Offline behavior when no DSH Gateway is reachable
 - Workspace synchronization strategy
 
-See [ADR 0001: Android and DSH runtime boundaries](adr/0001-android-dsh-runtime-boundaries.md).
+See [ADR 0001: Android and DSH runtime boundaries](adr/0001-android-dsh-runtime-boundaries.md) and [ADR 0002: Sandbox Manager design](adr/0002-sandbox-manager-design.md).

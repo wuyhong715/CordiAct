@@ -1,0 +1,180 @@
+# ADR 0002: Sandbox Manager as a first-class plugin and security boundary
+
+- Status: Proposed — requires product decision on third-party local plugins for v1
+- Date: 2026-10-31
+
+## Problem
+
+CordiAct's “everything is a plugin” model needs a first-class place to describe, provision, monitor, stop, and clean up plugin execution environments. A file-scope policy or a JavaScript engine alone is not a security sandbox. The design must preserve the native-first product, protect workspace/model credentials/device capabilities, and keep the Node-based DeepSeek Harness ecosystem available remotely.
+
+## Threat model
+
+### Protect
+
+- Model/provider credentials and authentication material
+- Workspace files, sessions, messages, and private plugin data
+- Android permissions and device capabilities
+- Other plugins' state, grants, processes, and availability
+- User and system resources (memory, CPU time, network, battery)
+
+### Treat as potentially hostile or faulty
+
+- User-installed or third-party interpreted plugin code
+- Buggy plugins that loop forever, overproduce output, crash, or retain work after disable
+- Malformed/forged plugin manifests and capability requests
+- Remote Harness output and requests (untrusted data; cannot directly exercise Android APIs)
+
+### Out of scope for v1
+
+- A rooted/compromised device, Android kernel/SELinux exploit, compromised app signing key, or vulnerabilities in the Android runtime/JS engine that escape the OS isolation boundary
+- Hard real-time guarantees or strict CPU fairness against a privileged OS process
+- Reversing external side effects already completed (for example a remote message already sent)
+
+## Core security decision
+
+**Sandbox Manager is a protected system plugin and a first-class product service; the final reference monitor remains in the tiny native kernel/host.**
+
+The Manager owns profiles, sandbox lifecycle, quotas/deadlines, process health, crash handling, and user-visible status. It may request work, but it cannot grant itself privileges. The native kernel/host must mediate every capability operation and can reject the Manager or any plugin. The policy check cannot be delegated to an interpreted sandbox or to a self-declared plugin manifest.
+
+## Execution classes
+
+| Class | Code | Execution boundary | v1 rule |
+| --- | --- | --- | --- |
+| `trusted-system` | Signed, app-shipped Kotlin plugins (currently Model Adapter and Session Manager) | Main app UID/process; trusted app code | Allowed only from a host-owned exact catalog; not described as sandboxed |
+| `mobile-isolated-js` | Interpreted Cordis/mobile plugin | Dedicated Android isolated service process + narrow Binder IPC capability broker | Candidate local untrusted-plugin target; no in-process fallback |
+| `harness-remote` | Node-only DeepSeek Harness plugins/tools | DSH host and its own isolation controls; native Gateway client | Supported remotely; device-side manager cannot certify remote isolation |
+| `native-third-party` | Downloaded/installed Kotlin, DEX/JAR, or `.so` code | No safe generic in-app plugin boundary | Prohibited in v1; require app-store/install/signing/security redesign before considering |
+
+A bundled Kotlin plugin is still trusted app code even though it is represented by a plugin manifest. The plugin abstraction does not turn same-process native code into an OS security boundary.
+
+## Platform mechanism considered
+
+### Recommended candidate: Android isolated service process
+
+Use a non-exported, `android:isolatedProcess="true"` service as the execution host for untrusted local interpreted code. Android documents the attribute and its service semantics; the AOSP Application Sandbox documentation describes per-app Linux UIDs and process-level kernel isolation. The isolated service must not receive app permissions, the main app's `Context`, raw database handles, provider API keys, or direct Android object references. Communication is only through a small, versioned typed Binder protocol.
+
+Where the platform API supports named isolated service instances, assign a distinct instance/process to each mutually untrusted plugin. Otherwise, use one plugin per isolated process lifetime and terminate it before switching identity. Never share a sandbox process across unrelated third-party plugins merely to save memory. If a device/API cannot provide the required isolation, mark local execution unavailable and route to the Harness host or disable the plugin; never silently execute in the app process.
+
+At service startup, verify the process is isolated and bind the runtime to the expected plugin/profile identity. Require a private, non-exported service component and authenticate the calling UID/session on all IPC. The host creates an unforgeable session nonce and binds it to plugin ID, version, profile, workspace, granted capabilities, and expiry.
+
+### Why not an in-process JavaScript “sandbox”
+
+An embedded JS engine is useful for execution compatibility, but it is not by itself the security boundary: host functions, native bindings, engine bugs, unbounded memory, or leaked handles can cross the intended boundary. It may run inside the isolated service, behind Android's process/UID boundary. In-process execution is acceptable only for code trusted as part of the signed app, not arbitrary plugins.
+
+### Why not run third-party Kotlin/Dex in a sandbox
+
+Loading arbitrary DEX/JAR/native code into the host gives it the app's process identity and reachable host APIs. A separate service does not make arbitrary plugin class loading safe unless a strict, audited IPC/module boundary exists. V1 will not dynamically load third-party native code. Any later native extension format requires a separate signed-package, loader, distribution-policy, and security review.
+
+### Why not Android Virtualization Framework (AVF) for v1
+
+AVF/pVM offers stronger isolation for security-oriented use cases, but is an optional device capability (AOSP documents ARM64 support constraints) with higher startup, packaging, image, and IPC costs. Keep it as a future high-assurance execution profile only if a concrete plugin threat justifies those costs; do not make it the baseline Android requirement.
+
+## Capability broker
+
+The isolated runtime starts with no ambient file, network, account, or Android-device authority. It submits typed capability requests to the native broker. The broker evaluates each operation against:
+
+- Host-verified plugin identity, signature/hash, target, and requested capability set
+- User consent and current plugin/session/workspace state
+- Action policy, risk, scope, rate/size limits, and permission freshness
+- Sandbox session nonce and expiry
+
+Return only the result needed for the operation. Do not pass raw filesystem paths, database objects, long-lived tokens, Android `Context`, or general-purpose reflection/eval handles. Provider credentials stay in the Model Adapter/provider host; workspace access stays in the Session Manager/workspace host. A plugin asks for a model action or scoped data operation; it never receives the host's backing credentials or unrestricted storage.
+
+Network is denied inside the isolated process by default. If plugins need network access, v1 should use a host proxy/broker with explicit policy and origin/rate/size controls; otherwise classify the work as `harness-remote`. File selection is a host-mediated picker operation with a scoped returned handle, not arbitrary file access.
+
+## Manifest and profile
+
+A host-validated sandbox profile is derived from a signed/approved plugin descriptor and policy—not trusted verbatim from plugin code. Proposed fields:
+
+- plugin ID, version, code digest/signature, runtime target, plugin API version
+- declared capabilities and capability-schema versions
+- data namespace and workspace scope
+- network mode (`none` by default, brokered only by explicit policy)
+- execution policy: concurrency, deadline, message/output bounds, restart policy
+- install class (`system` / `user`) and trust tier (host-assigned)
+
+Do not let a plugin request a weaker isolation profile than host policy allows. Unknown capabilities or runtime versions fail closed.
+
+## Lifecycle and revocation
+
+Sandbox instances join the existing plugin lifecycle; they are not a second, competing lifecycle:
+
+1. Plugin Manager validates the signed descriptor and host-owned trust class.
+2. Kernel policy resolves requested capabilities and user consent.
+3. Sandbox Manager allocates an isolated session and starts the runtime with a short-lived identity.
+4. Each request/event is bounded, authenticated, and brokered. Host checks identity, lifecycle state, scope, and capability on every request.
+5. Disable/uninstall first closes the action gate, cancels requests, closes Binder/IPC, kills the isolated process, suspends/revokes capabilities, drains registered Android resources, and then applies the existing owned-data cleanup/tombstone protocol.
+6. Process death means plugin is no longer trusted as running; host revokes session grants, marks it crashed/disabled, records bounded diagnostics, and requires policy-controlled restart. No automatic restart loop.
+
+Uninstall completion requires confirmed sandbox termination and all plugin-owned cleanup stages succeeding. If a process cannot be killed/confirmed, the tombstone remains and the UI reports incomplete cleanup; do not delete the only identity record first.
+
+## Resource controls and honest limits
+
+V1 should enforce what can be enforced and state what cannot:
+
+- Hard caps on IPC frame size, response/event count, concurrent requests, and plugin-owned persistent/temporary bytes
+- Wall-clock deadline with cooperative cancel followed by isolated-process termination
+- JS-engine heap/stack limits if the chosen engine exposes enforceable limits; verify with adversarial tests before claiming them
+- Monitor process death/memory pressure and terminate runaway work; treat Android OS memory management as a backstop, not a quota API
+- No claim of strict CPU quota or protection from kernel/engine zero-days
+- Bounded crash logs and no plugin secret/user-content dumps in diagnostics
+
+## DeepSeek Harness boundary
+
+The Android Sandbox Manager manages **local** isolated processes only. `harness-remote` plugins stay on the DSH host and require that host's configured sandbox/policy. CordiAct can display the remote runtime and require local confirmation before applying a returned action, but must not advertise a remote Harness policy as Android-enforced isolation. DSH filesystem policy sandboxes can be useful defense-in-depth, but they are not by themselves the same thing as an OS-enforced process boundary.
+
+## Distribution and policy gate
+
+Before enabling post-install interpreted plugin code in a Google Play build, review the then-current Play Device and Network Abuse policy and dynamic-code-loading guidance. Android's security guidance warns about tampered/substituted dynamic code; Play policy permits only constrained interpreted/VM cases and prohibits interpreted code from enabling policy violations. V1 must not fetch executable DEX/JAR/`.so` files outside Play. Signed plugin provenance, review/moderation, update/rollback, and user disclosure need an explicit product plan before public third-party plugin distribution.
+
+## Alternatives
+
+1. **Policy-only filesystem “sandbox”** — insufficient against arbitrary code; useful as defense-in-depth for trusted tools only.
+2. **JS-engine-only isolation** — portable but not an OS boundary; rejected for untrusted code.
+3. **Android isolated service + typed broker** — recommended baseline candidate for local interpreted plugins.
+4. **AVF/pVM** — stronger optional future profile; not baseline.
+5. **Remote-only execution** — safest initial distribution option for plugins whose local sandbox/Play policy is unproven; may trade off offline/mobile behavior.
+
+## Phased implementation proposal
+
+### S0 — Threat model and profile contract (this ADR)
+
+Agree on whether v1 supports user-installed third-party local plugins. Keep production local execution disabled until the following gates pass.
+
+### S1 — Sandbox Manager contracts and fake runtime
+
+Add core JVM contracts for sandbox profile, instance/session identity, capability request, quotas, state machine, crash and termination results. Test startup/disable/uninstall/recovery and “no fallback to host process” using a deterministic fake runtime.
+
+### S2 — Android isolated-service proof of concept
+
+Build a non-exported isolated service with a tiny fixed test payload, strict Binder schema, UID/session validation, bounded payloads, timeout, cancellation, kill, and crash/restart tests. Confirm behavior on minimum supported API and at least one modern API/device. No third-party plugin code yet.
+
+### S3 — JS engine inside the isolated service
+
+Select an engine only after validating maintained upstream support, license, ABI coverage, memory controls, interrupt/cancel behavior, and module-loading security. Run untrusted test corpus/fuzz tests; ensure no host APIs are exposed outside the typed bridge.
+
+### S4 — Capability broker and plugin integration
+
+Integrate workspace/model operations as host-owned service calls; bind every permission to a short-lived sandbox identity; verify lifecycle cleanup, process death, and startup recovery. Keep network off unless proxy policy is implemented.
+
+### S5 — Distribution decision
+
+Decide whether third-party local plugins are v1, Play distribution implications, signing/approval/update controls, and public plugin supply-chain policy. If undecided, allow only bundled JS samples and keep external plugins remote-only/disabled.
+
+## Acceptance gates before production use
+
+- Prove sandbox UID/process isolation and no in-process fallback on supported APIs/devices.
+- Malicious test cannot read another plugin's files, session content, app preferences, API key, or Android permission; broker rejects malformed/unauthorized requests.
+- Infinite loop times out and process dies; cancellation prevents later events; crash does not crash host or create restart loop.
+- Disable/uninstall closes IPC, kills the process, revokes grants, clears owned temporary/permanent state, and survives forced process death at each cleanup checkpoint.
+- Fuzzed/oversized Binder messages fail safely with bounded memory and no ANR.
+- Release/signing/Play policy review is complete for the intended distribution channel.
+
+## Evidence reviewed
+
+- Android `<service>` manifest reference: `https://developer.android.com/guide/topics/manifest/service-element`.
+- AOSP Application Sandbox: `https://source.android.com/security/app-sandbox`.
+- Android dynamic code loading security guidance: `https://developer.android.com/privacy-and-security/risks/dynamic-code-loading`.
+- Google Play Developer Program Policy (runtime interpreted code): `https://support.google.com/googleplay/android-developer/answer/18258653?hl=en`.
+- AOSP Android Virtualization Framework: `https://source.android.com/docs/core/virtualization`.
+- CordiAct's checked-out DSH `packages/experimental/webworker-runtime`, `packages/ptc-runtime/ptc-runtime-node`, and filesystem sandbox sources.
