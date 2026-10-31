@@ -202,6 +202,18 @@ class IsolatedServiceSandboxRuntimeTest {
     }
 
     @Test
+    fun repeatedSequentialCallsDoNotRaceTheBoundedWorkerHandoff() {
+        assumeTrue(Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
+        val session = runtime.start(profile("plugin.probe.sequence")) as AndroidIsolatedServiceSandboxRuntime.ProbeSession
+        try {
+            repeat(24) { index ->
+                assertEquals(index.toString(), session.executeProbe("echo", index.toString(), 2_000))
+            }
+            assertEquals(0, session.activeProbeCountForTest())
+        } finally { session.terminate(2_000) }
+    }
+
+    @Test
     fun shutdownDuringActiveRequestClosesAdmissionAndPreventsLateSuccess() {
         assumeTrue(Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
         val session = runtime.start(profile("plugin.probe.shutdown")) as AndroidIsolatedServiceSandboxRuntime.ProbeSession

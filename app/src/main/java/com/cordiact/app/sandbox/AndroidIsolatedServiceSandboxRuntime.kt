@@ -16,7 +16,9 @@ import com.cordiact.core.sandbox.SandboxTermination
 import java.security.SecureRandom
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.ExecutionException
-import java.util.concurrent.SynchronousQueue
+import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.Semaphore
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
@@ -161,9 +163,11 @@ class AndroidIsolatedServiceSandboxRuntime(context: Context) : IsolatedSandboxRu
         private val bound: AtomicBoolean,
         private val unbind: () -> Unit,
     ) : SandboxRuntimeSession {
-        // No queue and no unbounded cached threads. Each isolated instance admits one active call.
+        // One admitted caller; one worker; one handoff slot allows sequential calls even when
+        // Future.get() completes before the previous worker thread has returned to the pool.
+        private val callPermit = Semaphore(1, true)
         private val calls = ThreadPoolExecutor(
-            0, 1, 60, TimeUnit.SECONDS, SynchronousQueue(),
+            1, 1, 0, TimeUnit.MILLISECONDS, ArrayBlockingQueue(1),
             { runnable -> Thread(runnable, "cordiact-sandbox-probe-call").apply { isDaemon = true } },
             ThreadPoolExecutor.AbortPolicy(),
         )
@@ -174,21 +178,26 @@ class AndroidIsolatedServiceSandboxRuntime(context: Context) : IsolatedSandboxRu
         fun executeProbe(operation: String, payload: String, deadlineMillis: Long): String {
             check(isAlive) { "Sandbox process is not alive" }
             require(deadlineMillis in 1..MAX_PROBE_DEADLINE_MILLIS)
-            val requestId = java.util.UUID.randomUUID().toString()
-            val future = calls.submit<String> {
-                probe.executeProbe(sessionId, nonce, requestId, operation, payload, deadlineMillis)
-            }
+            if (!callPermit.tryAcquire()) throw RejectedExecutionException("Sandbox client already has an active call")
             try {
-                return future.get(deadlineMillis + HOST_TIMEOUT_GRACE_MILLIS, TimeUnit.MILLISECONDS)
-            } catch (timeout: TimeoutException) {
-                future.cancel(true)
-                runCatching { probe.cancelProbe(sessionId, nonce, requestId) }
-                requestSelfTermination()
-                awaitDeath(deadlineMillis.coerceAtMost(MAX_DEATH_WAIT_MILLIS))
-                throw TimeoutException("Sandbox probe exceeded ${deadlineMillis}ms; processAlive=$isAlive")
-            } catch (failure: ExecutionException) {
-                if (!isAlive) dead.countDown()
-                throw (failure.cause ?: failure)
+                val requestId = java.util.UUID.randomUUID().toString()
+                val future = calls.submit<String> {
+                    probe.executeProbe(sessionId, nonce, requestId, operation, payload, deadlineMillis)
+                }
+                try {
+                    return future.get(deadlineMillis + HOST_TIMEOUT_GRACE_MILLIS, TimeUnit.MILLISECONDS)
+                } catch (timeout: TimeoutException) {
+                    future.cancel(true)
+                    runCatching { probe.cancelProbe(sessionId, nonce, requestId) }
+                    requestSelfTermination()
+                    awaitDeath(deadlineMillis.coerceAtMost(MAX_DEATH_WAIT_MILLIS))
+                    throw TimeoutException("Sandbox probe exceeded ${deadlineMillis}ms; processAlive=$isAlive")
+                } catch (failure: ExecutionException) {
+                    if (!isAlive) dead.countDown()
+                    throw (failure.cause ?: failure)
+                }
+            } finally {
+                callPermit.release()
             }
         }
 
