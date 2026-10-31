@@ -90,7 +90,8 @@ class SandboxManagerPluginTest {
         manager.onEnable()
         val instance = manager.launch(request)
         manager.onDisable()
-        assertTrue(runtime.sessions.single().killed)
+        assertTrue(!runtime.sessions.single().isAlive)
+        assertTrue(!runtime.sessions.single().killed) // graceful stop succeeded; force kill was unnecessary
         assertTrue(manager.instances().isEmpty())
         assertEquals(listOf(instance.sessionId), revoked)
     }
