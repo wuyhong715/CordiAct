@@ -95,7 +95,7 @@ class AndroidIsolatedServiceSandboxRuntime(context: Context) : IsolatedSandboxRu
         connectionRef[0] = connection
 
         val intent = Intent(appContext, SandboxProbeService::class.java)
-        val instanceName = "ca-${profile.sessionId.filter(Char::isLetterOrDigit).take(28)}"
+        val instanceName = "ca_${profile.sessionId.filter(Char::isLetterOrDigit).take(28)}"
         val didBind = appContext.bindIsolatedService(
             intent,
             Context.BIND_AUTO_CREATE,
