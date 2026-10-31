@@ -230,7 +230,7 @@ class AndroidIsolatedServiceSandboxRuntime(context: Context) : IsolatedSandboxRu
                         if (kind == "trailing-data") data.writeInt(42)
                     }
                 }
-                require(kind in setOf("wrong-token", "truncated", "large-input", "trailing-data"))
+                require(kind in setOf("valid-control", "wrong-token", "truncated", "large-input", "trailing-data"))
                 var accepted = false
                 try {
                     if (binder.transact(code, data, reply, 0)) {

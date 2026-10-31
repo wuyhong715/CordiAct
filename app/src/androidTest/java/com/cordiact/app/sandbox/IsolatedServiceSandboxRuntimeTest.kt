@@ -243,6 +243,8 @@ class IsolatedServiceSandboxRuntimeTest {
         assumeTrue(Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
         val session = runtime.start(profile("plugin.probe.rawframe")) as AndroidIsolatedServiceSandboxRuntime.ProbeSession
         try {
+            assertFalse("Raw transaction code must dispatch a valid executeProbe frame",
+                session.malformedBinderFrameRejectedForTest("valid-control"))
             for (kind in listOf("wrong-token", "truncated", "large-input", "trailing-data")) {
                 assertTrue("Raw Binder frame accepted: $kind", session.malformedBinderFrameRejectedForTest(kind))
                 assertTrue("Malformed frame killed isolated worker: $kind", session.isAlive)
