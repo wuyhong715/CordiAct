@@ -59,3 +59,20 @@ The current `core` implementation provides a lifecycle coordinator with registra
 This coordinator is not yet production persistence: `PluginRecordStore`, `PluginRuntimeResources`, `PluginCapabilities`, and `PluginOwnedData` still require Android implementations. The host must persist cleanup progress transactionally and own a resource ledger for jobs, subscriptions, secrets, and files; plugin hooks alone cannot guarantee cleanup after process death. Remote uninstall additionally needs a Gateway revocation/retention response, and cannot reverse external side effects already completed.
 
 Registration failure is also transactional from the host's perspective: a failed user-plugin registration is immediately rolled back through the uninstall cleanup pipeline; if rollback is incomplete, an `UNINSTALLING` tombstone stays blocked and retryable. A failed bundled system plugin remains in the signed APK but is quiesced, drained, detached, and marked `FAILED` for repair/update.
+
+## Android host adapters added
+
+The Android `app` module now provides:
+
+- `AndroidPluginLifecycleStore`: SQLite-backed transactional lifecycle records and user-consent rows. State updates use in-place updates (not SQLite `REPLACE`, which would delete foreign-key children). Capability consent is cleared when a plugin version changes or drops a requested capability. Removing the plugin row cascades its grants.
+- `AndroidPluginRuntimeResources`: a host-owned registry of runtime controllers for quiesce/resume/drain/detach; detach removes a binding only after successful cleanup so retries remain possible.
+- `AndroidPluginStorage`: app-private, per-plugin data/cache roots and a separate no-backup artifact root. IDs are validated, paths are canonicalized, symlinks are deleted as links rather than traversed, and uninstall only touches the named plugin's directories.
+- `AndroidPluginLifecycle`: composition root, wired into `CordiActApplication`; startup recovery runs before Activity/plugin dispatch. The current bootstrap has no trusted bundled plugin implementations, so the system-plugin verifier is intentionally closed until an APK-signed catalog is added.
+
+Robolectric integration tests cover SQLite persistence/cascade behavior, version-bound consent reset, recovery after process restart, ordered uninstall through the Android adapters, isolation from sibling plugin data, traversal rejection, symlink-safe deletion, and protected system-plugin rejection.
+
+The persistence layer stores CordiAct consent only. Android OS runtime permissions remain separate and must be checked at each native capability call. Remote Harness-side uninstall/revocation is not yet implemented; it needs a Gateway acknowledgement/retention contract and must not report success while unreachable.
+
+Android runtime `stopAndDrain` now also drains the durable host resource ledger. Thus disabling a plugin cancels tracked host resources (for example scheduled work/observers) as well as in-process jobs, and suspends live consent while retaining the user's consent choice for a later explicit re-enable. A resource kind without a trusted registered cleaner deliberately blocks disable/uninstall and remains in the ledger for retry.
+
+Current implementation boundaries: the app bootstrap has no bundled plugin implementation/catalog yet, so system-plugin admission is fail-closed. The persistent external-resource ledger and trusted cleaner SPI are implemented, but no Android `WorkManager`/alarm/observer producers exist yet; adding any such capability must register its trusted cleaner and persist ownership before creating the side effect. Workspace-wide rows are not yet owner-tagged; the current zero-residue guarantee covers CordiAct plugin-owned app data/cache, consent, tracked host resources, runtime bindings, and plugin artifacts—not arbitrary records in future shared workspace databases. The database has an explicit migration boundary; schema upgrades must add non-destructive migrations before incrementing its version.

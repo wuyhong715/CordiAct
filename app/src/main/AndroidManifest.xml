@@ -1,5 +1,5 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <application android:theme="@style/Theme.CordiAct" android:label="CordiAct" android:allowBackup="false">
+    <application android:name=".CordiActApplication" android:theme="@style/Theme.CordiAct" android:label="CordiAct" android:allowBackup="false">
         <activity android:name=".MainActivity" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

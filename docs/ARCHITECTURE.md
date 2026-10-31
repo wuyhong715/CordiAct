@@ -70,6 +70,7 @@ The DSH experimental WebWorker runtime is useful prior art for packaging a Harne
 
 - `app`: native shell, plugin manager/registry, unified conversation UI
 - `core`: plugin contracts, workspace, policy/consent, events, lifecycle, audit
+- `app` Android adapters: SQLite lifecycle/consent store, runtime controller registry, scoped data/cache/artifact cleanup, startup recovery
 - `plugins-android`: protected and optional native Android capability plugins (planned)
 - `runtime-cordis`: embedded JS host and Cordis capability bridge (planned)
 - `integration`: native DSH Gateway transport/protocol adapter

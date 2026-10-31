@@ -48,6 +48,8 @@ interface PluginRuntimeResources {
 
 /** Every operation must be scoped by plugin id; implementations must not touch other owners' data. */
 interface PluginCapabilities {
+    /** Re-activate only previously consented capabilities; this must not create new consent. */
+    fun activateConsentedAccess(id: String)
     /** Revoke live runtime tokens while retaining user consent for a later re-enable. */
     fun suspendRuntimeAccess(id: String)
     /** Remove consent records and all live tokens permanently. */
@@ -139,10 +141,13 @@ class PluginLifecycleManager(
             PluginState.REGISTERED, PluginState.DISABLED -> Unit
             else -> throw PluginLifecycleException("Cannot enable '$id' from ${current.state}")
         }
+        val plugin = bindings[id]
+            ?: throw PluginLifecycleException("Plugin '$id' must be loaded and registered before enable")
         val enabling = current.copy(state = PluginState.ENABLING, lastError = null)
         records.put(enabling)
         try {
-            bindings[id]?.onEnable()
+            capabilities.activateConsentedAccess(id)
+            plugin.onEnable()
             runtime.resume(id)
             enabling.copy(state = PluginState.ENABLED).also(records::put)
         } catch (failure: Exception) {
@@ -150,7 +155,8 @@ class PluginLifecycleManager(
             runCleanup("quiesce after failed enable", id) { runtime.quiesce(id) }
             runCleanup("disable after failed enable", id) { bindings[id]?.onDisable() }
             runCleanup("drain after failed enable", id) { runtime.stopAndDrain(id) }
-            runCleanup("revoke after failed enable", id) { capabilities.revokeAll(id) }
+            runCleanup("detach after failed enable", id) { runtime.detach(id) }
+            runCleanup("suspend capabilities after failed enable", id) { capabilities.suspendRuntimeAccess(id) }
             records.put(enabling.copy(state = PluginState.FAILED, lastError = failure.message ?: failure::class.simpleName))
             throw PluginLifecycleException("Enable failed for '$id'", failure)
         }
@@ -175,7 +181,7 @@ class PluginLifecycleManager(
             // A failed disable must not leave the plugin accepting calls.
             runCleanup("quiesce after failed disable", id) { runtime.quiesce(id) }
             runCleanup("drain after failed disable", id) { runtime.stopAndDrain(id) }
-            runCleanup("revoke after failed disable", id) { capabilities.revokeAll(id) }
+            runCleanup("suspend after failed disable", id) { capabilities.suspendRuntimeAccess(id) }
             records.put(disabling.copy(state = PluginState.FAILED, lastError = failure.message ?: failure::class.simpleName))
             throw PluginLifecycleException("Disable failed for '$id'", failure)
         }
@@ -223,15 +229,57 @@ class PluginLifecycleManager(
         bindings.remove(id)
     }
 
-    /** Resume durable uninstall tombstones on app startup. Returns IDs still blocked by cleanup failures. */
+    /**
+     * Fail-closed startup recovery. Must run before exposing the plugin registry to dispatch.
+     * Returns IDs that still require repair; those records remain blocked from action routing.
+     */
+    fun recoverAfterProcessRestart(): List<String> = synchronized(lock) {
+        val needsRepair = mutableListOf<String>()
+        records.all().forEach { record ->
+            val id = record.spec.id
+            try {
+                when {
+                    record.state == PluginState.UNINSTALLING ||
+                        (record.state == PluginState.REGISTERING && record.origin == PluginOrigin.USER_INSTALLED) -> uninstall(id)
+                    record.state == PluginState.REGISTERING && record.origin == PluginOrigin.BUNDLED_SYSTEM -> {
+                        runtime.quiesce(id)
+                        runtime.stopAndDrain(id)
+                        capabilities.revokeAll(id)
+                        runtime.detach(id)
+                        records.put(record.copy(state = PluginState.FAILED, lastError = "Interrupted system-plugin registration"))
+                    }
+                    record.state in setOf(PluginState.ENABLING, PluginState.ENABLED, PluginState.DISABLING) -> {
+                        runtime.quiesce(id)
+                        runtime.stopAndDrain(id)
+                        capabilities.suspendRuntimeAccess(id)
+                        runtime.detach(id)
+                        records.put(record.copy(state = PluginState.DISABLED, lastError = "Recovered after process restart; re-enable required"))
+                    }
+                    record.state == PluginState.FAILED -> {
+                        runtime.quiesce(id)
+                        runtime.stopAndDrain(id)
+                        capabilities.suspendRuntimeAccess(id)
+                        runtime.detach(id)
+                        needsRepair += id // Keep it blocked until an explicit repair or uninstall.
+                    }
+                    else -> Unit // REGISTERED and DISABLED are stable and non-routable until enabled.
+                }
+            } catch (_: Exception) {
+                val latest = records.get(id)
+                if (latest != null && latest.state != PluginState.UNINSTALLING) {
+                    records.put(latest.copy(state = PluginState.FAILED, lastError = "Startup recovery failed; plugin remains blocked"))
+                }
+                needsRepair += id
+            }
+        }
+        needsRepair
+    }
+
+    /** Resume only durable uninstall tombstones; other startup recovery is explicit and separate. */
     fun recoverPendingUninstalls(): List<String> = synchronized(lock) {
         val stillPending = mutableListOf<String>()
         records.all().filter { it.state == PluginState.UNINSTALLING }.forEach { record ->
-            try {
-                uninstall(record.spec.id)
-            } catch (_: PluginLifecycleException) {
-                stillPending += record.spec.id
-            }
+            try { uninstall(record.spec.id) } catch (_: Exception) { stillPending += record.spec.id }
         }
         stillPending
     }

@@ -23,7 +23,15 @@ class PluginLifecycleTest {
         assertEquals(PluginState.ENABLED, manager.enable(plugin.spec.id).state)
         assertEquals(PluginState.DISABLED, manager.disable(plugin.spec.id).state)
         assertEquals(PluginState.DISABLED, manager.disable(plugin.spec.id).state)
-        assertEquals(listOf("register", "enable", "resume", "quiesce", "disable", "drain", "suspend"), events)
+        assertEquals(listOf("register", "activate", "enable", "resume", "quiesce", "disable", "drain", "suspend"), events)
+    }
+
+    @Test
+    fun cannotEnablePersistedPluginUntilImplementationIsLoaded() {
+        records.put(PluginRecord(plugin.spec, PluginOrigin.USER_INSTALLED, PluginState.DISABLED))
+        assertFailsWith<PluginLifecycleException> { manager.enable(plugin.spec.id) }
+        assertEquals(PluginState.DISABLED, manager.get(plugin.spec.id)?.state)
+        assertTrue(events.isEmpty())
     }
 
     @Test
@@ -42,7 +50,7 @@ class PluginLifecycleTest {
         manager.uninstall(plugin.spec.id)
         assertNull(manager.get(plugin.spec.id))
         assertEquals(
-            listOf("register", "enable", "resume", "quiesce", "disable", "drain", "revoke", "uninstall", "detach", "erase", "remove-artifacts"),
+            listOf("register", "activate", "enable", "resume", "quiesce", "disable", "drain", "revoke", "uninstall", "detach", "erase", "remove-artifacts"),
             events,
         )
         manager.uninstall(plugin.spec.id) // idempotent when already gone
@@ -82,6 +90,25 @@ class PluginLifecycleTest {
     }
 
     @Test
+    fun startupRecoveryDisablesPreviouslyEnabledPluginsBeforeRegistryUse() {
+        manager.register(plugin)
+        manager.enable(plugin.spec.id)
+        events.clear()
+        val restarted = PluginLifecycleManager(records, runtime, grants, data)
+        assertEquals(emptyList(), restarted.recoverAfterProcessRestart())
+        assertEquals(PluginState.DISABLED, restarted.get(plugin.spec.id)?.state)
+        assertEquals(listOf("quiesce", "drain", "suspend"), events)
+    }
+
+    @Test
+    fun interruptedUserRegistrationIsUninstalledOnStartup() {
+        records.put(PluginRecord(plugin.spec, PluginOrigin.USER_INSTALLED, PluginState.REGISTERING))
+        assertEquals(emptyList(), manager.recoverAfterProcessRestart())
+        assertNull(manager.get(plugin.spec.id))
+        assertTrue(events.containsAll(listOf("revoke", "erase", "remove-artifacts")))
+    }
+
+    @Test
     fun bundledOriginRequiresHostVerification() {
         val denied = PluginLifecycleManager(records, runtime, grants, data)
         assertFailsWith<PluginLifecycleException> { denied.registerBundledSystem(FakePlugin(events, pluginId = "core.unknown")) }
@@ -94,7 +121,7 @@ class PluginLifecycleTest {
         manager.register(broken)
         assertFailsWith<PluginLifecycleException> { manager.enable(broken.spec.id) }
         assertEquals(PluginState.FAILED, manager.get(broken.spec.id)?.state)
-        assertTrue(events.containsAll(listOf("quiesce", "drain", "revoke")))
+        assertTrue(events.containsAll(listOf("activate", "quiesce", "drain", "detach", "suspend")))
     }
 
     private class FakePlugin(
@@ -127,6 +154,7 @@ class PluginLifecycleTest {
     }
 
     private class FakeCapabilities(private val events: MutableList<String>) : PluginCapabilities {
+        override fun activateConsentedAccess(id: String) { events += "activate" }
         override fun suspendRuntimeAccess(id: String) { events += "suspend" }
         override fun revokeAll(id: String) { events += "revoke" }
     }
