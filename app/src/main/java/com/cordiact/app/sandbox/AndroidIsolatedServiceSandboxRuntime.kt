@@ -6,6 +6,7 @@ import android.content.Intent
 import android.content.ServiceConnection
 import android.os.Build
 import android.os.IBinder
+import android.os.Parcel
 import android.os.Looper
 import android.os.RemoteException
 import com.cordiact.core.sandbox.IsolatedSandboxRuntime
@@ -206,6 +207,45 @@ class AndroidIsolatedServiceSandboxRuntime(context: Context) : IsolatedSandboxRu
         fun executeRawForTest(requestId: String, operation: String, payload: String, deadlineMillis: Long): String =
             probe.executeProbe(sessionId, nonce, requestId, operation, payload, deadlineMillis)
         fun cancelRawForTest(requestId: String) = probe.cancelProbe(sessionId, nonce, requestId)
+
+        /** Bounded raw AIDL-frame mutations for instrumentation only, never a plugin API. */
+        fun malformedBinderFrameRejectedForTest(kind: String): Boolean {
+            // executeProbe is the fifth method in ISandboxProbe.aidl. Fail closed if the
+            // interface changes: the instrumented worker must stay alive after each mutation.
+            val code = IBinder.FIRST_CALL_TRANSACTION + 4
+            val data = Parcel.obtain()
+            val reply = Parcel.obtain()
+            try {
+                if (kind == "wrong-token") {
+                    data.writeInterfaceToken("not.cordiact.ISandboxProbe")
+                } else {
+                    data.writeInterfaceToken("com.cordiact.app.sandbox.ISandboxProbe")
+                    data.writeString(sessionId)
+                    if (kind != "truncated") {
+                        data.writeString(nonce)
+                        data.writeString("raw-frame")
+                        data.writeString("echo")
+                        data.writeString(if (kind == "large-input") "x".repeat(65_536) else "ok")
+                        data.writeLong(2_000L)
+                        if (kind == "trailing-data") data.writeInt(42)
+                    }
+                }
+                require(kind in setOf("wrong-token", "truncated", "large-input", "trailing-data"))
+                var accepted = false
+                try {
+                    if (binder.transact(code, data, reply, 0)) {
+                        reply.readException()
+                        accepted = true
+                    }
+                } catch (_: Exception) {
+                    // Rejection is expected. The test also checks that the worker survives.
+                }
+                return !accepted
+            } finally {
+                reply.recycle()
+                data.recycle()
+            }
+        }
 
         /** S2 test hook for verifying an unguessable session nonce is enforced by the service. */
         fun executeWithNonceForTest(testNonce: String, operation: String, payload: String): String =

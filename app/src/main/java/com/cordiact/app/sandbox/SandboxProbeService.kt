@@ -105,6 +105,8 @@ class SandboxProbeService : Service() {
                 check(mainHandler.postDelayed(deadline, deadlineMillis)) { "Sandbox watchdog unavailable" }
                 return when (operation) {
                     OP_ECHO -> payload
+                    // Fixed 8193-byte probe verifies the output frame guard without user code.
+                    OP_OVERSIZED_OUTPUT -> "X".repeat(MAX_RESPONSE_BYTES + 1)
                     OP_SLEEP -> {
                         val sleepMillis = payload.toLongOrNull() ?: throw IllegalArgumentException("sleep payload must be milliseconds")
                         require(sleepMillis in 0..MAX_SLEEP_MILLIS)
@@ -181,6 +183,7 @@ class SandboxProbeService : Service() {
 
     private companion object {
         const val OP_ECHO = "echo"
+        const val OP_OVERSIZED_OUTPUT = "oversized-output"
         const val OP_SLEEP = "sleep"
         const val OP_HANG = "hang"
         const val OP_CRASH = "crash"

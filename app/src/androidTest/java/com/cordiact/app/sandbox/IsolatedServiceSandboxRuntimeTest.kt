@@ -238,6 +238,50 @@ class IsolatedServiceSandboxRuntimeTest {
         }
     }
 
+    @Test
+    fun rawAidlFrameMutationsAreRejectedWithoutWorkerDeath() {
+        assumeTrue(Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
+        val session = runtime.start(profile("plugin.probe.rawframe")) as AndroidIsolatedServiceSandboxRuntime.ProbeSession
+        try {
+            for (kind in listOf("wrong-token", "truncated", "large-input", "trailing-data")) {
+                assertTrue("Raw Binder frame accepted: $kind", session.malformedBinderFrameRejectedForTest(kind))
+                assertTrue("Malformed frame killed isolated worker: $kind", session.isAlive)
+                assertEquals("ok", session.executeProbe("echo", "ok", 2_000))
+            }
+        } finally { session.terminate(2_000) }
+    }
+
+    @Test
+    fun deterministicOversizedOutputFailsAtTheServiceBoundary() {
+        assumeTrue(Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
+        val session = runtime.start(profile("plugin.probe.output")) as AndroidIsolatedServiceSandboxRuntime.ProbeSession
+        try {
+            try {
+                session.executeRawForTest("large-output", "oversized-output", "", 2_000)
+                throw AssertionError("Fixed 8193-byte output was accepted")
+            } catch (expected: IllegalArgumentException) {
+                assertTrue(expected.message.orEmpty().contains("output exceeds frame limit"))
+            }
+            assertTrue(session.isAlive)
+            assertEquals("bounded", session.executeProbe("echo", "bounded", 2_000))
+        } finally { session.terminate(2_000) }
+    }
+
+    @Test
+    fun repeatedMaxSizedRequestsLeaveTheWorkerResponsive() {
+        assumeTrue(Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
+        val session = runtime.start(profile("plugin.probe.pressure")) as AndroidIsolatedServiceSandboxRuntime.ProbeSession
+        val payload = "x".repeat(4_096)
+        try {
+            repeat(64) { index ->
+                assertEquals("boundary request $index", payload,
+                    session.executeProbe("echo", payload, 3_000))
+            }
+            assertEquals(0, session.activeProbeCountForTest())
+            assertTrue(session.isAlive)
+        } finally { session.terminate(2_000) }
+    }
+
     private fun profile(pluginId: String) = SandboxProfile(
         sessionId = UUID.randomUUID().toString(),
         plugin = BundledPluginIdentity(pluginId, "0.1.0", "a".repeat(64)),
