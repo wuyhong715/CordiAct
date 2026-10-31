@@ -2,6 +2,7 @@ package com.cordiact.app
 
 import android.app.Application
 import android.util.Log
+import android.os.Process
 import com.cordiact.app.conversation.AndroidConversationSessionStore
 import com.cordiact.app.conversation.BundledConversationPluginCatalog
 import com.cordiact.app.plugin.AndroidPluginLifecycle
@@ -34,6 +35,12 @@ class CordiActApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        if (Process.isIsolated()) {
+            // Android creates the Application class in every process. The sandbox UID must not
+            // initialize the host graph, SQLite helpers, providers, credentials, or plugin registry.
+            Log.i(TAG, "Isolated service process: skipping host application initialization")
+            return
+        }
         pluginLifecycle = AndroidPluginLifecycle(this, BundledConversationPluginCatalog.verifier)
         val needsRepair = pluginLifecycle.recoverBeforeDispatch()
         if (needsRepair.isNotEmpty()) {
