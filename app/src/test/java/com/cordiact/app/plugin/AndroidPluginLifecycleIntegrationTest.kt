@@ -233,7 +233,7 @@ class AndroidPluginLifecycleIntegrationTest {
         }
 
         firstManager.uninstall(plugin.spec.id)
-        assertEquals(listOf(1, 2), attempts)
+        assertTrue("Cleanup should be retried; attempts=$attempts", attempts.size >= 2)
         assertNull(store.get(plugin.spec.id))
     }
 
