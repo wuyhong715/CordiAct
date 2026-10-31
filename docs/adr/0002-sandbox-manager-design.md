@@ -158,7 +158,7 @@ A non-exported `android:isolatedProcess="true"` service and typed AIDL Binder pr
 
 Four instrumentation tests pass on both **API 29** (the named-isolated-instance floor) and **API 35** emulators — 4 passed / 0 skipped on each (run `41208793283`, code commit `8c3f653`): isolated UID differs from host, concurrent sessions receive distinct isolated UIDs, malformed identity/oversized frames are rejected, the deadline watchdog kills an infinite test operation, an intentional worker crash leaves the host responsive, a fresh isolated process can start afterward, and graceful termination works. The CI runner grants the disposable user access to `/dev/kvm`; software-only emulation proved too slow/unresponsive. Android rejected hyphens in `bindIsolatedService` instance names, so names are restricted to `[A-Za-z0-9_.]+`. Android also instantiates `CordiActApplication` in each process, so `Process.isIsolated()` now prevents the worker UID from initializing SQLite/providers/host plugins.
 
-**Still not proven:** representative physical devices, adversarial Binder fuzzing/resource pressure, background/Doze lifecycle behavior, or a production JS runtime. The production Sandbox Manager remains wired to `UnavailableIsolatedSandboxRuntime`; the probe does not load Cordis or any plugin code. No local plugin execution is enabled.
+**Physical-device result:** vivo V2463A / Android 16 / API 36 / arm64-v8a passed all four tests from CI run `41208793283`; details are in [the S2 device report](../testing/sandbox-s2-physical-device.md). The production Sandbox Manager remains wired to `UnavailableIsolatedSandboxRuntime`; the probe does not load Cordis or any plugin code. No local plugin execution is enabled. Binder fuzz/resource-pressure and Doze/background tests remain open.
 
 ### S3 — JS engine inside the isolated service
 
@@ -174,7 +174,7 @@ V1 local plugins are signed and bundled only; third-party DeepSeek Harness plugi
 
 ## Acceptance gates before production use
 
-- **Partially validated:** Android 35 emulator reports an isolated UID distinct from the app and distinct UIDs for concurrent named instances; The API 29 emulator matrix and representative physical devices remain to be verified.
+- **Partially validated:** Android 35 emulator reports an isolated UID distinct from the app and distinct UIDs for concurrent named instances; The API 29 emulator matrix and the vivo API 36 device have now both been verified.
 - Malicious test cannot read another plugin's files, session content, app preferences, API key, or Android permission; broker rejects malformed/unauthorized requests.
 - **Validated on Android 35 emulator:** the watchdog kills an infinite fixed probe, worker crash does not crash the host, and a fresh isolated process starts afterward. Interpreter cancellation/late-event behavior remains untested because no JS engine is loaded.
 - Disable/uninstall closes IPC, kills the process, revokes grants, clears owned temporary/permanent state, and survives forced process death at each cleanup checkpoint.
