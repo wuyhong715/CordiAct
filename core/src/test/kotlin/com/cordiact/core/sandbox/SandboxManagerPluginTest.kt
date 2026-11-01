@@ -104,6 +104,7 @@ class SandboxManagerPluginTest {
         var failFirstRevoke = true
         val manager = manager(
             runtime = runtime,
+            ceilings = SandboxLimitCeilings(maxInstancesPerPlugin = 2),
             sessionIdFactory = { "session-${runtime.startedProfiles.size + 1}" },
             revoker = { id ->
                 attempts += id
@@ -152,12 +153,14 @@ class SandboxManagerPluginTest {
         verified: Boolean = true,
         revoker: (String) -> Unit = { revoked += it },
         sessionIdFactory: () -> String = { "sandbox-session" },
+        ceilings: SandboxLimitCeilings = SandboxLimitCeilings(),
     ) = SandboxManagerPlugin(
         appUid = APP_UID,
         bundledVerifier = BundledPluginVerifier { verified && it == identity },
         capabilityPolicy = SandboxCapabilityPolicy { granted },
         sessionRevoker = SandboxSessionRevoker(revoker),
         runtime = runtime,
+        ceilings = ceilings,
         idFactory = sessionIdFactory,
     )
 
