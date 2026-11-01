@@ -4,6 +4,7 @@ import com.cordiact.core.plugin.ManagedPlugin
 import com.cordiact.core.plugin.PluginSpec
 import com.cordiact.core.plugin.PluginTarget
 import java.io.File
+import java.nio.file.Files
 import java.util.UUID
 
 const val WORKSPACE_MANAGER_PLUGIN_ID = "core.workspace-manager"
@@ -150,8 +151,14 @@ class WorkspaceManagerPlugin(
     }
 
     private fun resolveContainedPath(relative: String): File {
+        require(!Files.isSymbolicLink(privateRoot.toPath())) { "Private storage root cannot be a symbolic link" }
         val base = privateRoot.canonicalFile
-        val root = File(base, relative).canonicalFile
+        var current = base
+        relative.split('/').filter(String::isNotEmpty).forEach { segment ->
+            current = File(current, segment)
+            require(!Files.isSymbolicLink(current.toPath())) { "Workspace root cannot contain symbolic links" }
+        }
+        val root = current.canonicalFile
         require(root.toPath().startsWith(base.toPath()) && root != base) { "Workspace root escapes private storage" }
         return root
     }

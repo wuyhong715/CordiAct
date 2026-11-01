@@ -13,13 +13,14 @@ import com.cordiact.core.workspace.DEFAULT_WORKSPACE_ID
 import com.cordiact.core.workspace.DEFAULT_WORKSPACE_NAME
 import com.cordiact.core.workspace.Workspace
 import com.cordiact.core.workspace.WorkspaceStore
+import com.cordiact.core.tool.MutableToolPreferenceStore
 import java.util.UUID
 
 /** Shared durable source of truth for Workspace and conversation records. */
 class AndroidConversationSessionStore(
     context: Context,
     databaseName: String = DATABASE_NAME,
-) : SQLiteOpenHelper(context.applicationContext, databaseName, null, DATABASE_VERSION), ConversationSessionStore, WorkspaceStore {
+) : SQLiteOpenHelper(context.applicationContext, databaseName, null, DATABASE_VERSION), ConversationSessionStore, WorkspaceStore, MutableToolPreferenceStore {
 
     override fun onConfigure(db: SQLiteDatabase) {
         super.onConfigure(db)
@@ -30,11 +31,33 @@ class AndroidConversationSessionStore(
         createWorkspaceSchema(db)
         createSessionSchema(db, TABLE_SESSIONS)
         createMessageSchema(db, TABLE_MESSAGES, TABLE_SESSIONS)
+        createToolPreferenceSchema(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
         if (oldVersion < 2 && newVersion >= 2) migrateV1ToV2(db)
+        if (oldVersion < 3 && newVersion >= 3) migrateV2ToV3(db)
         if (newVersion > DATABASE_VERSION) throw IllegalStateException("Unsupported conversation database version $newVersion")
+    }
+
+    private fun migrateV2ToV3(db: SQLiteDatabase) {
+        db.beginTransaction()
+        try {
+            createToolPreferenceSchema(db)
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    private fun createToolPreferenceSchema(db: SQLiteDatabase) {
+        db.execSQL("""CREATE TABLE IF NOT EXISTS $TABLE_TOOL_PREFERENCES (
+            $COL_WORKSPACE_ID TEXT NOT NULL REFERENCES $TABLE_WORKSPACES($COL_WORKSPACE_ID) ON DELETE CASCADE,
+            $COL_TOOL_ID TEXT NOT NULL,
+            $COL_TOOL_ENABLED INTEGER NOT NULL CHECK($COL_TOOL_ENABLED IN (0,1)),
+            $COL_TOOL_UPDATED INTEGER NOT NULL,
+            PRIMARY KEY($COL_WORKSPACE_ID,$COL_TOOL_ID)
+        )""".trimIndent())
     }
 
     private fun migrateV1ToV2(db: SQLiteDatabase) {
@@ -220,6 +243,44 @@ class AndroidConversationSessionStore(
         TABLE_WORKSPACES, arrayOf(COL_WORKSPACE_ROOT), "$COL_WORKSPACE_ID = ?", arrayOf(id), null, null, null,
     ).use { if (it.moveToFirst()) it.getString(0) else null }
 
+    override fun isEnabled(workspaceId: String, toolId: String): Boolean? = readableDatabase.query(
+        TABLE_TOOL_PREFERENCES,
+        arrayOf(COL_TOOL_ENABLED),
+        "$COL_WORKSPACE_ID = ? AND $COL_TOOL_ID = ?",
+        arrayOf(workspaceId, toolId), null, null, null,
+    ).use { cursor ->
+        if (cursor.moveToFirst()) cursor.getInt(0) != 0 else null
+    }
+
+    override fun setEnabled(workspaceId: String, toolId: String, enabled: Boolean?) {
+        val db = writableDatabase
+        val workspaceIsActive = db.query(
+            TABLE_WORKSPACES,
+            arrayOf(COL_WORKSPACE_ID),
+            "$COL_WORKSPACE_ID = ? AND $COL_WORKSPACE_ARCHIVED IS NULL",
+            arrayOf(workspaceId),
+            null,
+            null,
+            null,
+        ).use { it.moveToFirst() }
+        check(workspaceIsActive) { "Workspace does not exist or is archived" }
+        if (enabled == null) {
+            writableDatabase.delete(
+                TABLE_TOOL_PREFERENCES,
+                "$COL_WORKSPACE_ID = ? AND $COL_TOOL_ID = ?",
+                arrayOf(workspaceId, toolId),
+            )
+            return
+        }
+        val values = ContentValues().apply {
+            put(COL_WORKSPACE_ID, workspaceId)
+            put(COL_TOOL_ID, toolId)
+            put(COL_TOOL_ENABLED, if (enabled) 1 else 0)
+            put(COL_TOOL_UPDATED, System.currentTimeMillis())
+        }
+        writableDatabase.insertWithOnConflict(TABLE_TOOL_PREFERENCES, null, values, SQLiteDatabase.CONFLICT_REPLACE)
+    }
+
     override fun findSessionWorkspace(id: String): Workspace? = readableDatabase.query(
         TABLE_WORKSPACES, WORKSPACE_COLUMNS, "$COL_WORKSPACE_ID = ? AND $COL_WORKSPACE_ARCHIVED IS NULL", arrayOf(id), null, null, null,
     ).use { if (it.moveToFirst()) it.toWorkspace() else null }
@@ -310,8 +371,12 @@ class AndroidConversationSessionStore(
 
     private companion object {
         const val DATABASE_NAME = "cordiact-conversations.db"
-        const val DATABASE_VERSION = 2
+        const val DATABASE_VERSION = 3
         const val TABLE_WORKSPACES = "workspaces"
+        const val TABLE_TOOL_PREFERENCES = "workspace_tool_preferences"
+        const val COL_TOOL_ID = "tool_id"
+        const val COL_TOOL_ENABLED = "enabled"
+        const val COL_TOOL_UPDATED = "updated_at"
         const val TABLE_WORKSPACE_STATE = "workspace_state"
         const val TABLE_SESSIONS = "conversation_sessions"
         const val TABLE_SESSIONS_NEW = "conversation_sessions_v2"
