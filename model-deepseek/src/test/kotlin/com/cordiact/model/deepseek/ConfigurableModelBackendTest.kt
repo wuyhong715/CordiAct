@@ -22,15 +22,15 @@ class ConfigurableModelBackendTest {
     @Test
     fun streamsEveryProtocolAndUsesItsExpectedRequestAndAuthentication() {
         val cases = listOf(
-            Case(ModelProtocol.OPENAI_CHAT_COMPLETIONS, "/v1/chat/completions", "chat-provider", "model", "Bearer",
+            Case(ModelProtocol.OPENAI_CHAT_COMPLETIONS, "/v1/chat/completions", "chat-provider", "model", "Authorization", "Bearer test-secret",
                 "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"},\"finish_reason\":null}]}\n\n" +
                     "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n" + "data: [DONE]\n\n"),
-            Case(ModelProtocol.ANTHROPIC_MESSAGES, "/v1/messages", "anthropic-provider", "model", "x-api-key",
+            Case(ModelProtocol.ANTHROPIC_MESSAGES, "/v1/messages", "anthropic-provider", "model", "x-api-key", "test-secret",
                 "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n\n" +
                     "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"),
-            Case(ModelProtocol.GEMINI_GENERATE_CONTENT, "/v1beta/models/{model}:streamGenerateContent?alt=sse", "gemini-provider", "gemini-test", "x-goog-api-key",
+            Case(ModelProtocol.GEMINI_GENERATE_CONTENT, "/v1beta/models/{model}:streamGenerateContent?alt=sse", "gemini-provider", "gemini-test", "x-goog-api-key", "test-secret",
                 "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"hello\"}]},\"finishReason\":\"STOP\"}]}\n\n"),
-            Case(ModelProtocol.OPENAI_RESPONSES, "/v1/responses", "responses-provider", "model", "Bearer",
+            Case(ModelProtocol.OPENAI_RESPONSES, "/v1/responses", "responses-provider", "model", "Authorization", "Bearer test-secret",
                 "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n" +
                     "event: response.completed\ndata: {\"type\":\"response.completed\"}\n\n"),
         )
@@ -170,7 +170,7 @@ class ConfigurableModelBackendTest {
             assertEquals("hello", events.filterIsInstance<ModelEvent.Delta>().joinToString("") { it.text })
             assertTrue(events.last() is ModelEvent.Completed, "${case.protocol}: $events")
             assertEquals(1, server.requests)
-            assertEquals("test-secret", server.authHeaders[case.authHeader.lowercase()])
+            assertEquals(case.authValue, server.authHeaders[case.authHeader.lowercase()])
             assertTrue(server.requestBody.contains("\"model\":\"${case.modelId}\"") || case.protocol == ModelProtocol.GEMINI_GENERATE_CONTENT)
             assertTrue(server.requestBody.contains("hello user"))
             if (case.protocol == ModelProtocol.ANTHROPIC_MESSAGES) {
@@ -289,6 +289,7 @@ class ConfigurableModelBackendTest {
         val providerId: String,
         val modelId: String,
         val authHeader: String,
+        val authValue: String,
         val response: String,
     )
 

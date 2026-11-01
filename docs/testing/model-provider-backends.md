@@ -37,8 +37,9 @@ APK builds are not run locally; project policy assigns APK packaging to GitHub A
 - Commit `d5449bfd2a7d591402b3a046fd2170aa11ca1e81` was pushed to `feat/tool-file-system-plugins`; PR #4 targets `main`: https://github.com/wuyhong715/CordiAct/pull/4 (open, not merged).
 - CI run `41309023742` passed its `repository-check`; Android build run `41309023685` failed. The next PR head, `86539432b7331fe30a486e687f19cef72682fb9a`, was pushed to record the first run's results and triggered run `41309794058`; its `repository-check` passed, but Android build, API 29, and API 35 jobs failed.
 - Workflow logs for run `41309794058` identify the build failure: Kotlin compilation at `ConfigurableModelBackend.kt:233` reported `Unresolved reference 'emitDelta'` and could not infer the lambda type. The API 29/35 jobs failed at `:model-deepseek:compileKotlin` for the same source error before instrumentation tests ran.
-- Corrected the Gemini `generateContent` JSON response branch to emit `ModelEvent.Delta` directly. Existing `geminiGenerateContentJsonResponseIsAdaptedWhenEndpointUsesGenerateContent` exercises this path. The fix awaits a fresh CI run; local Gradle cannot resolve AGP 9.4.1, so local tests do not verify it.
-- Do not consider the implementation verified until the new head's build and required tests pass.
+- On the fix commit `cb56cb212082f7c746dc2ecc7e14421bad23b28e`, run `41310961774` compiled the sources and ran `:model-deepseek:test`: 13 tests completed, one failed in `streamsEveryProtocolAndUsesItsExpectedRequestAndAuthentication` at `ConfigurableModelBackendTest.kt:173`. The assertion incorrectly compared the literal `test-secret` with the complete `Authorization` value (`Bearer test-secret`); the production auth header was correct. API 29 and API 35 isolated-service proof jobs both passed, and `repository-check` passed.
+- Corrected the test case model/assertion to independently specify the authentication header name and value (`Authorization` / `Bearer test-secret`, `x-api-key` / `test-secret`, `x-goog-api-key` / `test-secret`). This test correction awaits a fresh CI run. Local Gradle cannot resolve AGP 9.4.1, so local tests do not verify it.
+- Do not consider the implementation verified until the new head's backend tests and build pass.
 
 ## Security boundaries
 
