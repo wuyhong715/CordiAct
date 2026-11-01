@@ -34,7 +34,11 @@ APK builds are not run locally; project policy assigns APK packaging to GitHub A
 
 ## Remote verification
 
-Pending push/PR creation and GitHub Actions results. Do not treat the source or tests as verified until CI runs successfully.
+- Commit `d5449bfd2a7d591402b3a046fd2170aa11ca1e81` was pushed to `feat/tool-file-system-plugins`; remote ref was confirmed to match the local HEAD.
+- PR #4: https://github.com/wuyhong715/CordiAct/pull/4 (open, targeting `main`).
+- GitHub Actions run `41309023742` (`CI`) completed successfully; its `repository-check` passed.
+- Android build run `41309023685` completed with failure. Its `build`, `Android isolated-service proof (API 29)`, and `Android isolated-service proof (API 35)` checks all concluded `failure`.
+- Available check annotations only report process/shell exit code 1 and do not include the underlying failure. The authorized token can read check status and annotations, but GitHub's job/run log download endpoints return HTTP 401 for this credential; unauthenticated log access returns 404. Therefore the CI failure cause could not be diagnosed or repaired in this run. Do not treat code or tests as verified by CI.
 
 ## Security boundaries
 
