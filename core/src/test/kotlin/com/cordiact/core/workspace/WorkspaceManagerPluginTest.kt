@@ -111,8 +111,9 @@ class WorkspaceManagerPluginTest {
             if (activeId == id) activeId = DEFAULT_WORKSPACE_ID
         }
 
-        override fun restoreWorkspace(id: String, nowMillis: Long): Workspace = update(id) {
-            it.copy(archivedAtMillis = null, updatedAtMillis = nowMillis)
+        override fun restoreWorkspace(id: String, nowMillis: Long): Workspace {
+            val current = workspaces[id] ?: throw IllegalArgumentException("missing")
+            return current.copy(archivedAtMillis = null, updatedAtMillis = nowMillis).also { workspaces[id] = it }
         }
 
         override fun selectWorkspace(id: String, nowMillis: Long): Workspace =
