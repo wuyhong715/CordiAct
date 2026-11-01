@@ -93,7 +93,7 @@ class InMemoryToolDefinitionRegistry : ToolDefinitionRegistry {
 
     @Synchronized
     override fun register(definition: ToolDefinition) {
-        val descriptor = snapshot(definition.descriptor)
+        val descriptor = snapshotDescriptor(definition.descriptor)
         validateDescriptor(descriptor)
         require(definitions.putIfAbsent(descriptor.id, ToolDefinition(descriptor, definition.executor)) == null) {
             "Tool '${descriptor.id}' is already registered"
@@ -214,7 +214,7 @@ class ToolManagerPlugin(
             throw failure(ToolManagerException.Code.CAPABILITY_DENIED, "Required capability is not granted")
         }
         validateArguments(descriptor.inputSchema, arguments)
-        synchronized(dispatchLock) {
+        return synchronized(dispatchLock) {
             checkManagerLocallyEnabled()
             if (!isEnabled(context.workspaceId, descriptor)) {
                 throw failure(ToolManagerException.Code.TOOL_DISABLED, "Tool is disabled for this workspace")

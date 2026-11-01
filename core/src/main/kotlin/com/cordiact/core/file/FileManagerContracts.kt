@@ -116,7 +116,7 @@ class FileManagerPlugin(
         }
 
     private fun <T> withRoot(workspaceId: String, block: (java.io.File) -> T): T {
-        synchronized(operationLock) {
+        return synchronized(operationLock) {
             if (!enabled) throw fileFailure(WorkspaceFileException.Code.WORKSPACE_UNAVAILABLE, "File Manager is unavailable")
             val root = try {
                 workspaces.resolveSessionWorkspace(workspaceId)
