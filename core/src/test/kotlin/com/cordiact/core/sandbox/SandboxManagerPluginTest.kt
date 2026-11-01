@@ -97,6 +97,45 @@ class SandboxManagerPluginTest {
     }
 
     @Test
+    fun disableContinuesAcrossRevocationFailuresAndKeepsFailedSessionsForRetry() {
+        val runtime = FakeRuntime()
+        val attempts = mutableListOf<String>()
+        val failingId = "session-1"
+        var failFirstRevoke = true
+        val manager = manager(
+            runtime = runtime,
+            ceilings = SandboxLimitCeilings(maxInstancesPerPlugin = 2),
+            sessionIdFactory = { "session-${runtime.startedProfiles.size + 1}" },
+            revoker = { id ->
+                attempts += id
+                if (id == failingId && failFirstRevoke) {
+                    failFirstRevoke = false
+                    throw IllegalStateException("policy store unavailable")
+                }
+                revoked += id
+            },
+        )
+        manager.onEnable()
+        val first = manager.launch(request)
+        val second = manager.launch(request)
+
+        val error = assertFailsWith<IllegalStateException> { manager.onDisable() }
+        assertTrue(error.message.orEmpty().contains("could not be fully terminated"))
+        assertTrue(manager.instances().any { it.sessionId == first.sessionId && it.state == SandboxInstanceState.FAILED })
+        assertTrue(manager.instances().none { it.sessionId == second.sessionId })
+        assertEquals(2, attempts.size)
+        assertEquals(listOf(first.sessionId, second.sessionId), attempts)
+        assertEquals(listOf(second.sessionId), revoked)
+
+        val recovered = manager.terminate(first.sessionId)
+        assertEquals(SandboxInstanceState.STOPPED, recovered.state)
+        assertTrue(manager.instances().isEmpty())
+        assertEquals(3, attempts.size)
+        assertEquals(first.sessionId, attempts.last())
+        assertEquals(listOf(second.sessionId, first.sessionId), revoked)
+    }
+
+    @Test
     fun failedKillKeepsSessionVisibleAndDisableFailsClosed() {
         val runtime = FakeRuntime(neverDies = true)
         val manager = manager(runtime = runtime)
@@ -112,13 +151,17 @@ class SandboxManagerPluginTest {
         runtime: IsolatedSandboxRuntime,
         granted: Set<String> = request.requestedCapabilities,
         verified: Boolean = true,
+        revoker: (String) -> Unit = { revoked += it },
+        sessionIdFactory: () -> String = { "sandbox-session" },
+        ceilings: SandboxLimitCeilings = SandboxLimitCeilings(),
     ) = SandboxManagerPlugin(
         appUid = APP_UID,
         bundledVerifier = BundledPluginVerifier { verified && it == identity },
         capabilityPolicy = SandboxCapabilityPolicy { granted },
-        sessionRevoker = SandboxSessionRevoker { revoked += it },
+        sessionRevoker = SandboxSessionRevoker(revoker),
         runtime = runtime,
-        idFactory = { "sandbox-session" },
+        ceilings = ceilings,
+        idFactory = sessionIdFactory,
     )
 
     private class FakeRuntime(

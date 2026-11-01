@@ -248,7 +248,7 @@ class IsolatedServiceSandboxRuntimeTest {
             assertFalse("Raw transaction code must dispatch a valid executeProbe frame",
                 session.malformedBinderFrameRejectedForTest("valid-control"))
             val mutations = listOf(
-                "wrong-transaction", "wrong-token", "truncated", "large-input", "trailing-data",
+                "wrong-transaction", "wrong-token", "truncated", "large-input", "oversized-frame", "trailing-data",
                 "bad-session", "bad-nonce", "bad-request-id", "bad-operation",
                 "negative-deadline", "over-deadline",
             )
@@ -257,6 +257,30 @@ class IsolatedServiceSandboxRuntimeTest {
                 assertTrue("Malformed frame killed isolated worker: $kind", session.isAlive)
                 assertEquals("ok", session.executeProbe("echo", "ok", 2_000))
             }
+        } finally { session.terminate(2_000) }
+    }
+
+    @Test
+    fun boundedSeededParcelMutationsNeverKillTheIsolatedProbe() {
+        assumeTrue(Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
+        val session = runtime.start(profile("plugin.probe.parcel-seed")) as AndroidIsolatedServiceSandboxRuntime.ProbeSession
+        val random = java.util.Random(0x53414E44424F58L)
+        try {
+            assertFalse(session.malformedBinderFrameRejectedForTest("valid-control"))
+            val kinds = listOf(
+                "wrong-transaction", "wrong-token", "truncated", "large-input", "oversized-frame", "trailing-data",
+                "bad-session", "bad-nonce", "bad-request-id", "bad-operation", "negative-deadline", "over-deadline",
+            )
+            repeat(64) { index ->
+                val kind = kinds[index % kinds.size]
+                assertTrue("seed=0x53414E44424F58 index=$index kind=$kind",
+                    session.malformedBinderFrameRejectedForTest(kind, random.nextInt()))
+                assertTrue("worker died after seeded Parcel index=$index", session.isAlive)
+                if (index % 8 == 7) {
+                    assertEquals("seed-recovery-$index", session.executeProbe("echo", "seed-recovery-$index", 2_000))
+                }
+            }
+            assertEquals(0, session.activeProbeCountForTest())
         } finally { session.terminate(2_000) }
     }
 
@@ -309,11 +333,17 @@ class IsolatedServiceSandboxRuntimeTest {
                     "forceIdle=$initialForceIdle states=$initialStates",
                 !initialForceIdle && initialStates == ("ACTIVE" to "ACTIVE"),
             )
-            runShell("cmd deviceidle force-idle")
-            forcedByTest = true
-            assertTrue("Device did not enter forced idle", awaitForceFlag(true))
-            assertEquals("doze-responsive", session.executeProbe("echo", "doze-responsive", 5_000))
-            Log.i("CordiActS23", "background probe succeeded api=${Build.VERSION.SDK_INT} forceIdle=true")
+            repeat(3) { cycle ->
+                runShell("cmd deviceidle force-idle")
+                forcedByTest = true
+                assertTrue("Device did not enter forced idle cycle=$cycle", awaitForceFlag(true))
+                assertEquals("doze-responsive-$cycle", session.executeProbe("echo", "doze-responsive-$cycle", 5_000))
+                runShell("cmd deviceidle unforce")
+                forcedByTest = false
+                assertTrue("Force-idle flag stuck after cycle=$cycle", awaitForceFlag(false))
+                assertTrue("DeviceIdle states not active after cycle=$cycle", awaitDeviceIdleStates("ACTIVE" to "ACTIVE"))
+            }
+            Log.i("CordiActS23", "3 background recovery cycles passed api=${Build.VERSION.SDK_INT}")
         } finally {
             if (forcedByTest) runShell("cmd deviceidle unforce")
             session.terminate(2_000)
