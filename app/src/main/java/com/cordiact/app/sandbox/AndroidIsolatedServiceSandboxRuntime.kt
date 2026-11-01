@@ -209,11 +209,14 @@ class AndroidIsolatedServiceSandboxRuntime(context: Context) : IsolatedSandboxRu
         fun cancelRawForTest(requestId: String) = probe.cancelProbe(sessionId, nonce, requestId)
 
         /** Bounded raw AIDL-frame mutations for instrumentation only, never a plugin API. */
-        fun malformedBinderFrameRejectedForTest(kind: String): Boolean {
+        fun malformedBinderFrameRejectedForTest(kind: String, mutationSeed: Int = 0): Boolean {
             // executeProbe is the fifth method in ISandboxProbe.aidl. This corpus is
             // deliberately fixed and bounded; it is not a general-purpose parcel fuzzer.
-            val code = if (kind == "wrong-transaction") IBinder.FIRST_CALL_TRANSACTION + 42
-                else IBinder.FIRST_CALL_TRANSACTION + 4
+            val code = if (kind == "wrong-transaction") {
+                IBinder.FIRST_CALL_TRANSACTION + 42
+            } else {
+                IBinder.FIRST_CALL_TRANSACTION + 4
+            }
             val data = Parcel.obtain()
             val reply = Parcel.obtain()
             try {
@@ -226,7 +229,7 @@ class AndroidIsolatedServiceSandboxRuntime(context: Context) : IsolatedSandboxRu
                         data.writeString(if (kind == "bad-nonce") "not-a-nonce" else nonce)
                         data.writeString(if (kind == "bad-request-id") "!" else "raw-frame")
                         data.writeString(if (kind == "bad-operation") "not-supported" else "echo")
-                        data.writeString(if (kind == "large-input") "x".repeat(65_536) else "ok")
+                        data.writeString(if (kind == "large-input") "x".repeat(4_100 + (mutationSeed and 511)) else "ok")
                         data.writeLong(
                             when (kind) {
                                 "negative-deadline" -> -1L
@@ -234,11 +237,23 @@ class AndroidIsolatedServiceSandboxRuntime(context: Context) : IsolatedSandboxRu
                                 else -> 2_000L
                             },
                         )
-                        if (kind == "trailing-data") data.writeInt(42)
+                        when (kind) {
+                            "trailing-data" -> {
+                                repeat(1 + (mutationSeed and 7)) { index ->
+                                    data.writeInt(mutationSeed xor index)
+                                    data.writeByteArray(byteArrayOf(
+                                        (mutationSeed ushr 24).toByte(), (mutationSeed ushr 16).toByte(),
+                                        (mutationSeed ushr 8).toByte(), (mutationSeed + index).toByte(),
+                                    ))
+                                }
+                            }
+                            "large-input" -> data.writeString("x".repeat(4_100 + (mutationSeed and 511)))
+                            "oversized-frame" -> data.writeString("x".repeat(7_000))
+                        }
                     }
                 }
                 require(kind in setOf(
-                    "valid-control", "wrong-transaction", "wrong-token", "truncated", "large-input",
+                    "valid-control", "wrong-transaction", "wrong-token", "truncated", "large-input", "oversized-frame",
                     "trailing-data", "bad-session", "bad-nonce", "bad-request-id", "bad-operation",
                     "negative-deadline", "over-deadline",
                 ))
