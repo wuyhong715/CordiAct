@@ -3,6 +3,7 @@ package com.cordiact.core.conversation
 import com.cordiact.core.plugin.ManagedPlugin
 import com.cordiact.core.plugin.PluginSpec
 import com.cordiact.core.plugin.PluginTarget
+import com.cordiact.core.workspace.WorkspaceSessionResolver
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -42,7 +43,6 @@ interface ModelBackend {
     fun generate(request: ModelGenerationRequest, onEvent: (ModelEvent) -> Unit): ModelCall
 }
 
-/** Core system plugin service for discovering and invoking model-provider adapters. */
 interface ModelAdapterService {
     fun models(): List<ModelDescriptor>
     fun generate(request: ModelGenerationRequest, onEvent: (ModelEvent) -> Unit): ModelCall
@@ -95,6 +95,7 @@ fun sessionManagerPluginSpec() = PluginSpec(
     id = SESSION_MANAGER_PLUGIN_ID,
     version = CORE_CONVERSATION_PLUGIN_VERSION,
     target = PluginTarget.ANDROID_NATIVE,
+    dependencies = setOf(com.cordiact.core.workspace.WORKSPACE_MANAGER_PLUGIN_ID),
 )
 
 /** Lifecycle-managed, protected system plugin. Provider plugins register backends through the host. */
@@ -206,6 +207,7 @@ class ModelAdapterPlugin : ManagedPlugin, ModelAdapterService {
 /** Lifecycle-managed system plugin for durable workspace-scoped conversation history. */
 class SessionManagerPlugin(
     private val store: ConversationSessionStore,
+    private val workspaces: WorkspaceSessionResolver,
     private val clockMillis: () -> Long = System::currentTimeMillis,
     private val idFactory: () -> String = { java.util.UUID.randomUUID().toString() },
 ) : ManagedPlugin, SessionManagerService {
@@ -219,6 +221,7 @@ class SessionManagerPlugin(
     override fun createSession(workspaceId: String, title: String): ConversationSession {
         requireEnabled()
         require(workspaceId.isNotBlank()) { "Workspace id must not be blank" }
+        requireNotNull(workspaces.findSessionWorkspace(workspaceId)) { "Workspace does not exist or is archived" }
         val normalizedTitle = title.trim().ifBlank { "New conversation" }.take(160)
         val id = idFactory()
         require(id.isNotBlank()) { "Session id factory returned a blank id" }
@@ -230,7 +233,10 @@ class SessionManagerPlugin(
     }
 
     override fun listSessions(workspaceId: String): List<ConversationSession> {
-        requireEnabled(); require(workspaceId.isNotBlank()); return store.list(workspaceId)
+        requireEnabled()
+        require(workspaceId.isNotBlank()) { "Workspace id must not be blank" }
+        requireNotNull(workspaces.findSessionWorkspace(workspaceId)) { "Workspace does not exist or is archived" }
+        return store.list(workspaceId)
     }
 
     override fun appendMessage(sessionId: String, role: MessageRole, content: String): ConversationMessage {

@@ -1,5 +1,7 @@
 package com.cordiact.core.conversation
 
+import com.cordiact.core.workspace.Workspace
+import com.cordiact.core.workspace.WorkspaceSessionResolver
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -54,16 +56,22 @@ class ConversationPluginsTest {
     @Test
     fun sessionManagerUsesStableGeneratedIdAndWorkspaceScopedStore() {
         val store = FakeSessionStore()
-        val plugin = SessionManagerPlugin(store, clockMillis = { 100L }, idFactory = { "session-1" })
+        val plugin = SessionManagerPlugin(
+            store,
+            WorkspaceSessionResolver { id -> if (id == "workspace-1") Workspace(id, "Test", 1L, 1L) else null },
+            clockMillis = { 100L },
+            idFactory = { "session-1" },
+        )
         assertFailsWith<IllegalStateException> { plugin.listSessions("workspace-a") }
         plugin.onEnable()
-        val created = plugin.createSession("workspace-a", "  Notes  ")
+        assertFailsWith<IllegalArgumentException> { plugin.createSession("missing", "No workspace") }
+        val created = plugin.createSession("workspace-1", "  Notes  ")
         assertEquals("session-1", created.id)
         assertEquals("Notes", created.title)
         plugin.appendMessage(created.id, MessageRole.USER, "Hi")
         assertEquals(1, plugin.messages(created.id).size)
-        assertEquals(listOf(created), plugin.listSessions("workspace-a"))
-        assertTrue(plugin.listSessions("workspace-b").isEmpty())
+        assertEquals(listOf(created), plugin.listSessions("workspace-1"))
+        assertFailsWith<IllegalArgumentException> { plugin.listSessions("workspace-b") }
         plugin.onDisable()
         assertFailsWith<IllegalStateException> { plugin.messages(created.id) }
     }

@@ -48,6 +48,21 @@ class AndroidPluginLifecycleIntegrationTest {
     }
 
     @Test
+    fun workspaceDependencySurvivesStoreReopen() {
+        val plugin = PluginSpec(
+            id = "core.session-manager",
+            version = "1.0.0",
+            target = PluginTarget.ANDROID_NATIVE,
+            dependencies = setOf("core.workspace-manager"),
+        )
+        store.put(PluginRecord(plugin, PluginOrigin.BUNDLED_SYSTEM, PluginState.DISABLED))
+        store.close()
+        store = AndroidPluginLifecycleStore(context, TEST_DATABASE)
+
+        assertEquals(setOf("core.workspace-manager"), store.get(plugin.id)?.spec?.dependencies)
+    }
+
+    @Test
     fun lifecycleStateAndConsentsSurviveDatabaseReopenWithoutReplaceCascade() {
         val record = record(state = PluginState.REGISTERED)
         store.put(record)

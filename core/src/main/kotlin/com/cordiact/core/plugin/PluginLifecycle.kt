@@ -8,6 +8,7 @@ data class PluginSpec(
     val version: String,
     val target: PluginTarget,
     val requestedCapabilities: Set<String> = emptySet(),
+    val dependencies: Set<String> = emptySet(),
 )
 
 enum class PluginOrigin { BUNDLED_SYSTEM, USER_INSTALLED }
@@ -143,6 +144,12 @@ class PluginLifecycleManager(
         }
         val plugin = bindings[id]
             ?: throw PluginLifecycleException("Plugin '$id' must be loaded and registered before enable")
+        current.spec.dependencies.forEach { dependencyId ->
+            val dependency = records.get(dependencyId)
+            if (dependency?.state != PluginState.ENABLED) {
+                throw PluginLifecycleException("Plugin '$id' requires enabled dependency '$dependencyId'")
+            }
+        }
         val enabling = current.copy(state = PluginState.ENABLING, lastError = null)
         records.put(enabling)
         try {
@@ -164,6 +171,10 @@ class PluginLifecycleManager(
 
     fun disable(id: String): PluginRecord = synchronized(lock) {
         val current = requireRecord(id)
+        val dependents = records.all().filter { id in it.spec.dependencies }
+        if (dependents.isNotEmpty()) {
+            throw PluginLifecycleException("Cannot disable '$id'; dependent plugins: ${dependents.joinToString { it.spec.id }}")
+        }
         when (current.state) {
             PluginState.DISABLED, PluginState.REGISTERED -> return@synchronized current
             PluginState.ENABLED -> Unit
