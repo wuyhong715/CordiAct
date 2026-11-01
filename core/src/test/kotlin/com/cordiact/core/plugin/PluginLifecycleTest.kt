@@ -35,6 +35,24 @@ class PluginLifecycleTest {
     }
 
     @Test
+    fun enabledDependenciesGateEnableAndPreventProviderShutdown() {
+        val workspace = FakePlugin(events, pluginId = "core.workspace-manager")
+        val session = FakePlugin(
+            events,
+            pluginId = "core.session-manager",
+            dependencies = setOf("core.workspace-manager"),
+        )
+        manager.registerBundledSystem(workspace)
+        manager.registerBundledSystem(session)
+
+        assertFailsWith<PluginLifecycleException> { manager.enable(session.spec.id) }
+        manager.enable(workspace.spec.id)
+        manager.enable(session.spec.id)
+        assertFailsWith<PluginLifecycleException> { manager.disable(workspace.spec.id) }
+        assertEquals(PluginState.ENABLED, manager.get(workspace.spec.id)?.state)
+    }
+
+    @Test
     fun protectedSystemPluginCannotBeUninstalled() {
         val systemPlugin = FakePlugin(events, pluginId = "core.shell")
         manager.registerBundledSystem(systemPlugin)
@@ -129,8 +147,9 @@ class PluginLifecycleTest {
         private val throwsOnEnable: Boolean = false,
         pluginId: String = "sample.notes",
         private val throwsOnRegister: Boolean = false,
+        dependencies: Set<String> = emptySet(),
     ) : ManagedPlugin {
-        override val spec = PluginSpec(pluginId, "1.0.0", PluginTarget.ANDROID_NATIVE, setOf("workspace.read"))
+        override val spec = PluginSpec(pluginId, "1.0.0", PluginTarget.ANDROID_NATIVE, setOf("workspace.read"), dependencies)
         override fun onRegister() { events += "register"; if (throwsOnRegister) error("register test failure") }
         override fun onEnable() { events += "enable"; if (throwsOnEnable) error("enable test failure") }
         override fun onDisable() { events += "disable" }

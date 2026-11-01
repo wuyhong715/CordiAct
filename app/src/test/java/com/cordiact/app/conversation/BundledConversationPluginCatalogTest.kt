@@ -7,6 +7,7 @@ import com.cordiact.app.plugin.AndroidPluginRuntimeResources
 import com.cordiact.app.plugin.AndroidPluginStorage
 import com.cordiact.core.conversation.modelAdapterPluginSpec
 import com.cordiact.core.conversation.sessionManagerPluginSpec
+import com.cordiact.core.workspace.workspaceManagerPluginSpec
 import com.cordiact.core.sandbox.sandboxManagerPluginSpec
 import com.cordiact.core.plugin.BundledPluginVerifier
 import com.cordiact.core.plugin.PluginLifecycleException
@@ -64,10 +65,12 @@ class BundledConversationPluginCatalogTest {
 
     @Test
     fun firstConversationPluginsRegisterEnableAndRemainProtected() {
-        val plugins = BundledConversationPluginCatalog.create(conversationStore)
-        assertEquals(setOf("core.model-adapter", "core.session-manager"), plugins.map { it.spec.id }.toSet())
+        val catalog = BundledConversationPlugins.create(conversationStore, context.noBackupFilesDir)
+        val plugins = catalog.create()
+        assertEquals(listOf("core.workspace-manager", "core.model-adapter", "core.session-manager"), plugins.map { it.spec.id })
 
-        plugins.forEach { plugin ->
+        plugins.forEachIndexed { index, plugin ->
+            if (index == 2) assertEquals(PluginState.ENABLED, manager.get("core.workspace-manager")?.state)
             assertEquals(PluginState.REGISTERED, manager.registerBundledSystem(plugin).state)
             assertEquals(PluginState.ENABLED, manager.enable(plugin.spec.id).state)
             assertEquals(PluginOrigin.BUNDLED_SYSTEM, manager.get(plugin.spec.id)?.origin)
@@ -105,12 +108,13 @@ class BundledConversationPluginCatalogTest {
 
     @Test
     fun catalogRejectsAlteredBundledManifest() {
-        val plugin = BundledConversationPluginCatalog.create(conversationStore).first()
-        assertTrue(BundledConversationPluginCatalog.verifier.isTrustedBundled(plugin.spec))
-        assertFalse(BundledConversationPluginCatalog.verifier.isTrustedBundled(plugin.spec.copy(version = "99.0")))
-        assertFalse(BundledConversationPluginCatalog.verifier.isTrustedBundled(plugin.spec.copy(requestedCapabilities = setOf("android.shell"))))
+        val modelSpec = modelAdapterPluginSpec()
+        assertTrue(BundledConversationPluginCatalog.verifier.isTrustedBundled(modelSpec))
+        assertFalse(BundledConversationPluginCatalog.verifier.isTrustedBundled(modelSpec.copy(version = "99.0")))
+        assertFalse(BundledConversationPluginCatalog.verifier.isTrustedBundled(modelSpec.copy(requestedCapabilities = setOf("android.shell"))))
         val untrusted = BundledPluginVerifier { false }
-        assertFalse(untrusted.isTrustedBundled(modelAdapterPluginSpec()))
+        assertFalse(untrusted.isTrustedBundled(modelSpec))
+        assertTrue(BundledConversationPluginCatalog.verifier.isTrustedBundled(workspaceManagerPluginSpec()))
         assertTrue(BundledConversationPluginCatalog.verifier.isTrustedBundled(sessionManagerPluginSpec()))
         assertTrue(BundledConversationPluginCatalog.verifier.isTrustedBundled(sandboxManagerPluginSpec()))
     }
