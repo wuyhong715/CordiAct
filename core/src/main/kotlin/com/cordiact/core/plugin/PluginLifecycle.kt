@@ -297,6 +297,8 @@ class PluginLifecycleManager(
 
     fun get(id: String): PluginRecord? = synchronized(lock) { records.get(id) }
 
+    fun all(): List<PluginRecord> = synchronized(lock) { records.all() }
+
     private fun requireRecord(id: String): PluginRecord =
         records.get(id) ?: throw PluginLifecycleException("Plugin '$id' is not registered")
 

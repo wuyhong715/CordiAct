@@ -12,12 +12,35 @@ import com.cordiact.core.sandbox.sandboxManagerPluginSpec
 import com.cordiact.core.workspace.WorkspaceManagerPlugin
 import com.cordiact.core.workspace.WorkspaceManagerService
 import com.cordiact.core.workspace.workspaceManagerPluginSpec
+import com.cordiact.core.file.FileManagerPlugin
+import com.cordiact.core.file.WorkspaceFileService
+import com.cordiact.core.file.fileManagerPluginSpec
+import com.cordiact.core.plugin.PluginState
+import com.cordiact.core.tool.InMemoryToolDefinitionRegistry
+import com.cordiact.core.tool.ToolArguments
+import com.cordiact.core.tool.ToolDefinition
+import com.cordiact.core.tool.ToolDescriptor
+import com.cordiact.core.tool.ToolInputSchema
+import com.cordiact.core.tool.ToolInvocationContext
+import com.cordiact.core.tool.ToolManagerPlugin
+import com.cordiact.core.tool.ToolManagerService
+import com.cordiact.core.tool.ToolParameter
+import com.cordiact.core.tool.ToolPluginStateLookup
+import com.cordiact.core.tool.ToolResult
+import com.cordiact.core.tool.ToolValue
+import com.cordiact.core.tool.ToolValueType
+import com.cordiact.core.tool.ToolExecutor
+import com.cordiact.core.tool.toolManagerPluginSpec
+import com.cordiact.app.file.AndroidWorkspaceFileBackend
+import com.cordiact.app.file.registerWorkspaceFileTools
 import java.io.File
 
 /** Host-owned allowlist for protected built-in plugins. */
 object BundledConversationPluginCatalog {
     private val trustedSpecs = setOf(
         workspaceManagerPluginSpec(),
+        toolManagerPluginSpec(),
+        fileManagerPluginSpec(),
         modelAdapterPluginSpec(),
         sessionManagerPluginSpec(),
         sandboxManagerPluginSpec(),
@@ -37,14 +60,31 @@ object BundledConversationPluginCatalog {
 class BundledConversationPlugins private constructor(
     val conversationStore: AndroidConversationSessionStore,
     val workspacePlugin: WorkspaceManagerPlugin,
+    val fileManagerPlugin: FileManagerPlugin,
+    private val registry: InMemoryToolDefinitionRegistry,
 ) {
     val workspaceManager: WorkspaceManagerService get() = workspacePlugin
+    val fileManager: WorkspaceFileService get() = fileManagerPlugin
+    lateinit var toolManagerPlugin: ToolManagerPlugin
+        private set
+    val toolManagerService: ToolManagerService get() = toolManagerPlugin
 
-    fun create(): List<ManagedPlugin> = listOf(
-        workspacePlugin,
-        ModelAdapterPlugin(),
-        SessionManagerPlugin(conversationStore, workspaceManager),
-    )
+    fun create(stateLookup: ToolPluginStateLookup): List<ManagedPlugin> {
+        registerWorkspaceFileTools(registry, fileManager)
+        toolManagerPlugin = ToolManagerPlugin(
+            registry = registry,
+            preferences = conversationStore,
+            workspaces = workspaceManager,
+            pluginStates = stateLookup,
+        )
+        return listOf(
+            workspacePlugin,
+            fileManagerPlugin,
+            toolManagerPlugin,
+            ModelAdapterPlugin(),
+            SessionManagerPlugin(conversationStore, workspaceManager),
+        )
+    }
 
     companion object {
         fun create(context: Context): BundledConversationPlugins {
@@ -55,7 +95,8 @@ class BundledConversationPlugins private constructor(
 
         fun create(store: AndroidConversationSessionStore, privateRoot: File): BundledConversationPlugins {
             val workspace = WorkspaceManagerPlugin(store, privateRoot)
-            return BundledConversationPlugins(store, workspace)
+            val fileManager = FileManagerPlugin(workspace, AndroidWorkspaceFileBackend())
+            return BundledConversationPlugins(store, workspace, fileManager, InMemoryToolDefinitionRegistry())
         }
     }
 }

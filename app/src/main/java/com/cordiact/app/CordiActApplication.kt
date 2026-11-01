@@ -14,6 +14,8 @@ import com.cordiact.core.conversation.SessionManagerService
 import com.cordiact.core.plugin.ManagedPlugin
 import com.cordiact.core.plugin.PluginLifecycleException
 import com.cordiact.core.plugin.PluginState
+import com.cordiact.core.tool.ToolManagerService
+import com.cordiact.core.file.WorkspaceFileService
 import com.cordiact.core.sandbox.SandboxManagerPlugin
 import com.cordiact.core.sandbox.SandboxManagerService
 import com.cordiact.core.workspace.WorkspaceManagerService
@@ -38,6 +40,8 @@ class CordiActApplication : Application() {
     val sandboxManager: SandboxManagerService get() = sandboxManagerPlugin
     val modelAdapter: ModelAdapterService get() = modelAdapterPlugin
     val sessions: SessionManagerService get() = sessionManagerPlugin
+    val tools: ToolManagerService get() = conversationCatalog.toolManagerService
+    val workspaceFiles: WorkspaceFileService get() = conversationCatalog.fileManager
 
     override fun onCreate() {
         super.onCreate()
@@ -56,7 +60,7 @@ class CordiActApplication : Application() {
             Log.e(TAG, "Plugin lifecycle recovery remains incomplete; blocked plugin ids: $needsRepair")
         }
 
-        val plugins = conversationCatalog.create()
+        val plugins = conversationCatalog.create { pluginId -> pluginLifecycle.manager.get(pluginId)?.state }
         modelAdapterPlugin = plugins.filterIsInstance<ModelAdapterPlugin>().single()
         sessionManagerPlugin = plugins.filterIsInstance<SessionManagerPlugin>().single()
         sandboxManagerPlugin = BundledConversationPluginCatalog.createSandboxManager(applicationInfo.uid)
