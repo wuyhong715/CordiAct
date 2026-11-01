@@ -1,9 +1,20 @@
 package com.cordiact.app.conversation
 
 import android.content.Context
+import com.cordiact.app.model.AndroidDeepSeekApiKeyStore
+import com.cordiact.app.model.AndroidModelProviderConfigStore
+import com.cordiact.app.model.AndroidProviderApiKeyStore
 import com.cordiact.core.conversation.ModelAdapterPlugin
 import com.cordiact.core.conversation.SessionManagerPlugin
 import com.cordiact.core.conversation.modelAdapterPluginSpec
+import com.cordiact.model.deepseek.ApiKeyProvider
+import com.cordiact.model.deepseek.DeepSeekBackend
+import com.cordiact.model.deepseek.DeepSeekBackendPlugin
+import com.cordiact.model.deepseek.deepSeekBackendPluginSpec
+import com.cordiact.model.deepseek.ModelProviderConfigStore
+import com.cordiact.model.deepseek.InMemoryModelProviderConfigStore
+import com.cordiact.model.deepseek.ModelProviderRegistryPlugin
+import com.cordiact.model.deepseek.modelProviderRegistryPluginSpec
 import com.cordiact.core.conversation.sessionManagerPluginSpec
 import com.cordiact.core.plugin.BundledPluginVerifier
 import com.cordiact.core.plugin.ManagedPlugin
@@ -43,6 +54,8 @@ object BundledConversationPluginCatalog {
         fileManagerPluginSpec(),
         modelAdapterPluginSpec(),
         sessionManagerPluginSpec(),
+        deepSeekBackendPluginSpec(),
+        modelProviderRegistryPluginSpec(),
         sandboxManagerPluginSpec(),
     )
 
@@ -62,12 +75,18 @@ class BundledConversationPlugins private constructor(
     val workspacePlugin: WorkspaceManagerPlugin,
     val fileManagerPlugin: FileManagerPlugin,
     private val registry: InMemoryToolDefinitionRegistry,
+    val apiKeyProvider: ApiKeyProvider,
+    private val providerConfigStore: ModelProviderConfigStore,
+    private val providerCredentialFor: (String) -> ApiKeyProvider,
+    private val forgetProviderCredential: (String) -> Unit,
 ) {
     val workspaceManager: WorkspaceManagerService get() = workspacePlugin
     val fileManager: WorkspaceFileService get() = fileManagerPlugin
     lateinit var toolManagerPlugin: ToolManagerPlugin
         private set
     val toolManagerService: ToolManagerService get() = toolManagerPlugin
+    lateinit var modelProviderRegistryPlugin: ModelProviderRegistryPlugin
+        private set
 
     fun create(stateLookup: ToolPluginStateLookup): List<ManagedPlugin> {
         registerWorkspaceFileTools(registry, fileManager)
@@ -77,26 +96,64 @@ class BundledConversationPlugins private constructor(
             workspaces = workspaceManager,
             pluginStates = stateLookup,
         )
+        val modelAdapter = ModelAdapterPlugin()
+        modelProviderRegistryPlugin = ModelProviderRegistryPlugin(
+            modelAdapter,
+            providerCredentialFor,
+            providerConfigStore,
+            forgetProviderCredential,
+        )
         return listOf(
             workspacePlugin,
             fileManagerPlugin,
             toolManagerPlugin,
-            ModelAdapterPlugin(),
+            modelAdapter,
             SessionManagerPlugin(conversationStore, workspaceManager),
+            DeepSeekBackendPlugin(modelAdapter, DeepSeekBackend(apiKeyProvider)),
+            modelProviderRegistryPlugin,
         )
     }
 
     companion object {
-        fun create(context: Context): BundledConversationPlugins {
+        fun create(
+            context: Context,
+            apiKeyProvider: ApiKeyProvider = AndroidDeepSeekApiKeyStore(context),
+        ): BundledConversationPlugins {
             val store = AndroidConversationSessionStore(context)
             val privateRoot = File(context.noBackupFilesDir, "cordiact")
-            return create(store, privateRoot)
+            val providerKeys = AndroidProviderApiKeyStore(context)
+            return create(
+                store,
+                privateRoot,
+                apiKeyProvider,
+                AndroidModelProviderConfigStore(context),
+                { providerId -> if (providerId == "deepseek") apiKeyProvider else providerKeys.provider(providerId) },
+                providerKeys::clear,
+            )
         }
 
-        fun create(store: AndroidConversationSessionStore, privateRoot: File): BundledConversationPlugins {
+        fun create(
+            store: AndroidConversationSessionStore,
+            privateRoot: File,
+            apiKeyProvider: ApiKeyProvider = ApiKeyProvider { null },
+            providerConfigStore: ModelProviderConfigStore = InMemoryModelProviderConfigStore(),
+            providerCredentialFor: ((String) -> ApiKeyProvider)? = null,
+            forgetProviderCredential: (String) -> Unit = {},
+        ): BundledConversationPlugins {
             val workspace = WorkspaceManagerPlugin(store, privateRoot)
             val fileManager = FileManagerPlugin(workspace, AndroidWorkspaceFileBackend())
-            return BundledConversationPlugins(store, workspace, fileManager, InMemoryToolDefinitionRegistry())
+            return BundledConversationPlugins(
+                store,
+                workspace,
+                fileManager,
+                InMemoryToolDefinitionRegistry(),
+                apiKeyProvider,
+                providerConfigStore,
+                providerCredentialFor ?: { providerId ->
+                    if (providerId == "deepseek") apiKeyProvider else ApiKeyProvider { null }
+                },
+                forgetProviderCredential,
+            )
         }
     }
 }
