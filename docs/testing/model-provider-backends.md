@@ -1,0 +1,48 @@
+# Model Provider Backend Validation
+
+Date: 2026-11-01
+
+## Scope
+
+This change adds DeepSeek-compatible Chat Completions (existing backend retained), configurable Anthropic Messages SSE, Gemini `streamGenerateContent` SSE and `generateContent` JSON handling, OpenAI Responses SSE, provider metadata persistence, per-provider encrypted API keys, and provider registry lifecycle wiring.
+
+## Test coverage added
+
+- `model-deepseek/src/test/kotlin/com/cordiact/model/deepseek/ConfigurableModelBackendTest.kt`: loopback request/response checks for all four protocol formats, protocol auth headers, Gemini JSON mode, missing credentials, endpoint policy, default DeepSeek model, provider registry add/remove, and cancellation of an open stream.
+- `app/src/test/java/com/cordiact/app/conversation/BundledConversationPluginCatalogTest.kt`: protected provider-registry catalog registration and provider metadata persistence without credentials.
+- Existing `DeepSeekBackendTest` conversation-turn tests continue to cover user-message persistence, assistant reply write-back on completion, and cancellation delegation.
+
+## Local verification
+
+Command:
+
+```text
+./gradlew :model-deepseek:test --console=plain --no-daemon
+```
+
+Result: blocked before compilation. Root build configuration could not resolve `com.android.application:com.android.application.gradle.plugin:9.4.1` from Google, Maven Central, or Gradle Plugin Portal. No Kotlin source or test was compiled/executed by this attempt.
+
+The app unit test task was also attempted:
+
+```text
+./gradlew :app:testDebugUnitTest --console=plain --no-daemon
+```
+
+It failed at the same root AGP plugin resolution step, before project evaluation or compilation. A final rerun of both module and app test tasks on 2026-11-01 produced the same result. `git diff --check` passed during implementation review.
+
+APK builds are not run locally; project policy assigns APK packaging to GitHub Actions.
+
+## Remote verification
+
+Pending push/PR creation and GitHub Actions results. Do not treat the source or tests as verified until CI runs successfully.
+
+## Security boundaries
+
+Provider metadata is stored separately from SQLite and contains no key field. API keys are resolved through Android Keystore-backed AES-GCM storage. Missing keys fail before network connection. App provider endpoints require HTTPS. The public config constructors do not expose loopback overrides; loopback HTTP can only be constructed through module-internal test factories, and the app registry rejects test-only endpoints on load/registration. Endpoint userinfo/fragments and credential-like query parameters are rejected. Provider errors do not include response bodies or credentials.
+
+Official API references checked on 2026-11-01 (provider pages do not declare publication dates):
+
+- https://api-docs.deepseek.com/api/create-chat-completion
+- https://docs.anthropic.com/en/api/messages-streaming
+- https://ai.google.dev/api/generate-content
+- https://platform.openai.com/docs/guides/streaming-responses

@@ -1,4 +1,5 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.INTERNET" />
     <application android:name=".CordiActApplication" android:theme="@style/Theme.CordiAct" android:label="CordiAct" android:allowBackup="false">
         <service
             android:name=".sandbox.SandboxProbeService"

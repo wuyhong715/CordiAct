@@ -6,6 +6,10 @@ import com.cordiact.app.plugin.AndroidPluginResourceLedger
 import com.cordiact.app.plugin.AndroidPluginRuntimeResources
 import com.cordiact.app.plugin.AndroidPluginStorage
 import com.cordiact.core.conversation.modelAdapterPluginSpec
+import com.cordiact.model.deepseek.deepSeekBackendPluginSpec
+import com.cordiact.model.deepseek.modelProviderRegistryPluginSpec
+import com.cordiact.app.model.AndroidModelProviderConfigStore
+import com.cordiact.model.deepseek.ModelProviderPresets
 import com.cordiact.core.conversation.sessionManagerPluginSpec
 import com.cordiact.core.workspace.workspaceManagerPluginSpec
 import com.cordiact.core.sandbox.sandboxManagerPluginSpec
@@ -64,13 +68,35 @@ class BundledConversationPluginCatalogTest {
     }
 
     @Test
+    fun providerConfigurationPersistsWithoutApiCredentials() {
+        val preferencesName = "model_provider_config"
+        context.getSharedPreferences(preferencesName, Context.MODE_PRIVATE).edit().clear().commit()
+        val store = AndroidModelProviderConfigStore(context)
+        val provider = ModelProviderPresets.openAiResponses(
+            models = listOf("custom-model"),
+            providerId = "custom-provider",
+            displayName = "Private gateway",
+            endpoint = "https://models.example.test/v1/responses",
+        )
+        store.save(provider)
+
+        assertEquals(listOf(provider), AndroidModelProviderConfigStore(context).load())
+        val raw = context.getSharedPreferences(preferencesName, Context.MODE_PRIVATE).getString("providers_json", "")
+        assertFalse(raw.orEmpty().contains("apiKey"))
+        assertFalse(raw.orEmpty().contains("secret"))
+
+        store.remove(provider.providerId)
+        assertTrue(store.load().isEmpty())
+    }
+
+    @Test
     fun firstConversationPluginsRegisterEnableAndRemainProtected() {
         val catalog = BundledConversationPlugins.create(conversationStore, context.noBackupFilesDir)
         val plugins = catalog.create { pluginId ->
             if (pluginId == "core.workspace-manager") PluginState.ENABLED else null
         }
         assertEquals(
-            listOf("core.workspace-manager", "core.file-manager", "core.tool-manager", "core.model-adapter", "core.session-manager"),
+            listOf("core.workspace-manager", "core.file-manager", "core.tool-manager", "core.model-adapter", "core.session-manager", "model.deepseek", "model.providers"),
             plugins.map { it.spec.id },
         )
 
@@ -121,6 +147,7 @@ class BundledConversationPluginCatalogTest {
         assertFalse(untrusted.isTrustedBundled(modelSpec))
         assertTrue(BundledConversationPluginCatalog.verifier.isTrustedBundled(workspaceManagerPluginSpec()))
         assertTrue(BundledConversationPluginCatalog.verifier.isTrustedBundled(sessionManagerPluginSpec()))
+        assertTrue(BundledConversationPluginCatalog.verifier.isTrustedBundled(modelProviderRegistryPluginSpec()))
         assertTrue(BundledConversationPluginCatalog.verifier.isTrustedBundled(sandboxManagerPluginSpec()))
     }
 

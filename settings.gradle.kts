@@ -4,4 +4,4 @@ dependencyResolutionManagement {
     repositories { google(); mavenCentral() }
 }
 rootProject.name = "CordiAct"
-include(":app", ":core", ":integration")
+include(":app", ":core", ":integration", ":model-deepseek")

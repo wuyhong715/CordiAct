@@ -7,8 +7,12 @@ import com.cordiact.app.conversation.AndroidConversationSessionStore
 import com.cordiact.app.conversation.BundledConversationPluginCatalog
 import com.cordiact.app.conversation.BundledConversationPlugins
 import com.cordiact.app.plugin.AndroidPluginLifecycle
+import com.cordiact.app.model.AndroidDeepSeekApiKeyStore
+import com.cordiact.app.model.AndroidProviderApiKeyStore
 import com.cordiact.core.conversation.ModelAdapterPlugin
+import com.cordiact.model.deepseek.ConversationTurnService
 import com.cordiact.core.conversation.ModelAdapterService
+import com.cordiact.model.deepseek.ModelProviderRegistryService
 import com.cordiact.core.conversation.SessionManagerPlugin
 import com.cordiact.core.conversation.SessionManagerService
 import com.cordiact.core.plugin.ManagedPlugin
@@ -32,6 +36,12 @@ class CordiActApplication : Application() {
         private set
     lateinit var modelAdapterPlugin: ModelAdapterPlugin
         private set
+    lateinit var deepSeekApiKeyStore: AndroidDeepSeekApiKeyStore
+        private set
+    lateinit var providerApiKeyStore: AndroidProviderApiKeyStore
+        private set
+    lateinit var turnService: ConversationTurnService
+        private set
     lateinit var sessionManagerPlugin: SessionManagerPlugin
         private set
     lateinit var sandboxManagerPlugin: SandboxManagerPlugin
@@ -39,6 +49,7 @@ class CordiActApplication : Application() {
 
     val sandboxManager: SandboxManagerService get() = sandboxManagerPlugin
     val modelAdapter: ModelAdapterService get() = modelAdapterPlugin
+    val modelProviders: ModelProviderRegistryService get() = conversationCatalog.modelProviderRegistryPlugin
     val sessions: SessionManagerService get() = sessionManagerPlugin
     val tools: ToolManagerService get() = conversationCatalog.toolManagerService
     val workspaceFiles: WorkspaceFileService get() = conversationCatalog.fileManager
@@ -52,7 +63,9 @@ class CordiActApplication : Application() {
             return
         }
         pluginLifecycle = AndroidPluginLifecycle(this, BundledConversationPluginCatalog.verifier)
-        conversationCatalog = BundledConversationPlugins.create(this)
+        deepSeekApiKeyStore = AndroidDeepSeekApiKeyStore(this)
+        providerApiKeyStore = AndroidProviderApiKeyStore(this)
+        conversationCatalog = BundledConversationPlugins.create(this, deepSeekApiKeyStore)
         conversationStore = conversationCatalog.conversationStore
         workspaceManager = conversationCatalog.workspacePlugin
         val needsRepair = pluginLifecycle.recoverBeforeDispatch()
@@ -63,6 +76,7 @@ class CordiActApplication : Application() {
         val plugins = conversationCatalog.create { pluginId -> pluginLifecycle.manager.get(pluginId)?.state }
         modelAdapterPlugin = plugins.filterIsInstance<ModelAdapterPlugin>().single()
         sessionManagerPlugin = plugins.filterIsInstance<SessionManagerPlugin>().single()
+        turnService = ConversationTurnService(sessionManagerPlugin, modelAdapterPlugin)
         sandboxManagerPlugin = BundledConversationPluginCatalog.createSandboxManager(applicationInfo.uid)
         (plugins + sandboxManagerPlugin).forEach(::registerAndEnableSystemPlugin)
     }
@@ -70,7 +84,12 @@ class CordiActApplication : Application() {
     private fun registerAndEnableSystemPlugin(plugin: ManagedPlugin) {
         try {
             val current = pluginLifecycle.manager.registerBundledSystem(plugin)
-            if (current.state != PluginState.ENABLED) pluginLifecycle.manager.enable(plugin.spec.id)
+            if (current.state != PluginState.ENABLED) {
+                pluginLifecycle.manager.enable(plugin.spec.id)
+            } else {
+                // Rebind in-memory services after process recovery; hooks are required to be idempotent.
+                plugin.onEnable()
+            }
         } catch (failure: PluginLifecycleException) {
             Log.e(TAG, "Protected conversation plugin '${plugin.spec.id}' failed to start", failure)
         }
