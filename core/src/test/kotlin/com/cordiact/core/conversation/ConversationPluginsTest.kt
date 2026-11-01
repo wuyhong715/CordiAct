@@ -2,6 +2,7 @@ package com.cordiact.core.conversation
 
 import com.cordiact.core.workspace.Workspace
 import com.cordiact.core.workspace.WorkspaceSessionResolver
+import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
