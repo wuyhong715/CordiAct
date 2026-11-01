@@ -34,11 +34,11 @@ APK builds are not run locally; project policy assigns APK packaging to GitHub A
 
 ## Remote verification
 
-- Commit `d5449bfd2a7d591402b3a046fd2170aa11ca1e81` was pushed to `feat/tool-file-system-plugins`; remote ref was confirmed to match the local HEAD.
-- PR #4: https://github.com/wuyhong715/CordiAct/pull/4 (open, targeting `main`).
-- GitHub Actions run `41309023742` (`CI`) completed successfully; its `repository-check` passed.
-- Android build run `41309023685` completed with failure. Its `build`, `Android isolated-service proof (API 29)`, and `Android isolated-service proof (API 35)` checks all concluded `failure`.
-- Available check annotations only report process/shell exit code 1 and do not include the underlying failure. The authorized token can read check status and annotations, but GitHub's job/run log download endpoints return HTTP 401 for this credential; unauthenticated log access returns 404. Therefore the CI failure cause could not be diagnosed or repaired in this run. Do not treat code or tests as verified by CI.
+- Commit `d5449bfd2a7d591402b3a046fd2170aa11ca1e81` was pushed to `feat/tool-file-system-plugins`; PR #4 targets `main`: https://github.com/wuyhong715/CordiAct/pull/4 (open, not merged).
+- CI run `41309023742` passed its `repository-check`; Android build run `41309023685` failed. The next PR head, `86539432b7331fe30a486e687f19cef72682fb9a`, was pushed to record the first run's results and triggered run `41309794058`; its `repository-check` passed, but Android build, API 29, and API 35 jobs failed.
+- Workflow logs for run `41309794058` identify the build failure: Kotlin compilation at `ConfigurableModelBackend.kt:233` reported `Unresolved reference 'emitDelta'` and could not infer the lambda type. The API 29/35 jobs failed at `:model-deepseek:compileKotlin` for the same source error before instrumentation tests ran.
+- Corrected the Gemini `generateContent` JSON response branch to emit `ModelEvent.Delta` directly. Existing `geminiGenerateContentJsonResponseIsAdaptedWhenEndpointUsesGenerateContent` exercises this path. The fix awaits a fresh CI run; local Gradle cannot resolve AGP 9.4.1, so local tests do not verify it.
+- Do not consider the implementation verified until the new head's build and required tests pass.
 
 ## Security boundaries
 

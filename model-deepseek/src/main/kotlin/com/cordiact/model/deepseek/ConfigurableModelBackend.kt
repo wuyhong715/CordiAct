@@ -230,7 +230,9 @@ class ConfigurableModelBackend(
                                 } else if (json.has("error") && !json.get("error").isJsonNull) {
                                     emitEvent(ModelEvent.Failed("provider_error", "${config.displayName} returned an error"))
                                 } else {
-                                    extractGeminiText(json).takeIf(String::isNotEmpty)?.let(::emitDelta)
+                                    extractGeminiText(json).takeIf(String::isNotEmpty)?.let { text ->
+                                        emitEvent(ModelEvent.Delta(text))
+                                    }
                                     emitEvent(ModelEvent.Completed())
                                 }
                                 terminal = true
