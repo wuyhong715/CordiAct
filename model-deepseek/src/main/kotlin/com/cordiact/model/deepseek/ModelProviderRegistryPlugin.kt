@@ -20,6 +20,12 @@ interface ModelProviderRegistryService {
     fun providers(): List<ModelProviderConfig>
     fun addProvider(config: ModelProviderConfig)
     fun removeProvider(providerId: String)
+
+    /**
+     * Replaces an existing provider's configuration in place, keeping its id and stored credential.
+     * Used to adjust sampling defaults or any other non-secret setting.
+     */
+    fun updateProvider(config: ModelProviderConfig)
 }
 
 interface ModelProviderConfigStore {
@@ -105,6 +111,28 @@ class ModelProviderRegistryPlugin(
         } catch (failure: Exception) {
             configs.remove(config.providerId)
             configStore.remove(config.providerId)
+            throw failure
+        }
+    }
+
+    @Synchronized
+    override fun updateProvider(config: ModelProviderConfig) {
+        check(enabled) { "Model Provider Registry is not enabled" }
+        require(!config.allowInsecureLoopbackForTests) { "Test-only loopback endpoints cannot be registered by the app" }
+        require(config.providerId != "deepseek") { "Provider id 'deepseek' is reserved for the bundled DeepSeek backend" }
+        val existing = configs[config.providerId]
+            ?: throw IllegalArgumentException("Provider '${config.providerId}' is not configured")
+        // A protocol, endpoint or model change invalidates the live backend, so rebuild it.
+        val safeConfig = config.duplicate(models = config.models.toList())
+        detach(config.providerId)
+        try {
+            configStore.save(safeConfig.duplicate(allowInsecureLoopbackForTests = false))
+            configs[config.providerId] = safeConfig
+            attach(safeConfig)
+        } catch (failure: Exception) {
+            configs[config.providerId] = existing
+            runCatching { configStore.save(existing.duplicate(allowInsecureLoopbackForTests = false)) }
+            runCatching { attach(existing) }
             throw failure
         }
     }

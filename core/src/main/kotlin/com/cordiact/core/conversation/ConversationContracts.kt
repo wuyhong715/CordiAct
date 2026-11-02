@@ -20,12 +20,43 @@ enum class MessageRole { SYSTEM, USER, ASSISTANT, TOOL }
 
 data class ModelMessage(val role: MessageRole, val content: String)
 
+/** Provider-neutral sampling parameters. Null means "not specified at this layer". */
+data class GenerationParameters(
+    val temperature: Double? = null,
+    val maxOutputTokens: Int? = null,
+    val topP: Double? = null,
+) {
+    init {
+        require(temperature == null || temperature in 0.0..MAX_TEMPERATURE) {
+            "temperature must be within 0..$MAX_TEMPERATURE"
+        }
+        require(topP == null || topP in 0.0..1.0) { "topP must be within 0..1" }
+        require(maxOutputTokens == null || maxOutputTokens in 1..MAX_OUTPUT_TOKENS) {
+            "maxOutputTokens must be within 1..$MAX_OUTPUT_TOKENS"
+        }
+    }
+
+    /** Per-request values win; nulls fall through to the provider defaults. */
+    fun mergedWith(overrides: GenerationParameters?): GenerationParameters =
+        if (overrides == null) this else GenerationParameters(
+            temperature = overrides.temperature ?: temperature,
+            maxOutputTokens = overrides.maxOutputTokens ?: maxOutputTokens,
+            topP = overrides.topP ?: topP,
+        )
+
+    companion object {
+        const val MAX_TEMPERATURE = 2.0
+        const val MAX_OUTPUT_TOKENS = 1_000_000
+        val NONE = GenerationParameters()
+    }
+}
+
 data class ModelGenerationRequest(
     val sessionId: String,
     val model: ModelId,
     val messages: List<ModelMessage>,
-    val temperature: Double? = null,
-    val maxOutputTokens: Int? = null,
+    /** Per-turn overrides; the provider's stored defaults fill any null field. */
+    val parameters: GenerationParameters? = null,
 )
 
 sealed interface ModelEvent {

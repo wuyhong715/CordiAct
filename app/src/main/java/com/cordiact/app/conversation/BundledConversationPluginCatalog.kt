@@ -8,8 +8,9 @@ import com.cordiact.core.conversation.ModelAdapterPlugin
 import com.cordiact.core.conversation.SessionManagerPlugin
 import com.cordiact.core.conversation.modelAdapterPluginSpec
 import com.cordiact.model.deepseek.ApiKeyProvider
-import com.cordiact.model.deepseek.DeepSeekBackend
+import com.cordiact.model.deepseek.ConfigurableModelBackend
 import com.cordiact.model.deepseek.DeepSeekBackendPlugin
+import com.cordiact.model.deepseek.DeepSeekPreset
 import com.cordiact.model.deepseek.deepSeekBackendPluginSpec
 import com.cordiact.model.deepseek.ModelProviderConfigStore
 import com.cordiact.model.deepseek.InMemoryModelProviderConfigStore
@@ -152,7 +153,7 @@ class BundledConversationPlugins private constructor(
                 executor = InteractionCommandExecutor { envelope, modelId, submitter, onEvent ->
                     CommandExecutionResult(
                         completed = false,
-                        modelCall = submitter.submit(envelope.copy(submittedText = envelope.commandInput), modelId, onEvent),
+                        modelCall = submitter.submit(envelope.copy(submittedText = envelope.commandInput), modelId, parameters = null, onEvent = onEvent),
                     )
                 },
             ),
@@ -163,7 +164,7 @@ class BundledConversationPlugins private constructor(
             toolManagerPlugin,
             modelAdapter,
             sessionManager,
-            DeepSeekBackendPlugin(modelAdapter, DeepSeekBackend(apiKeyProvider)),
+            DeepSeekBackendPlugin(modelAdapter, ConfigurableModelBackend(DeepSeekPreset.config(), apiKeyProvider)),
             modelProviderRegistryPlugin,
             interactionPlugin,
         )

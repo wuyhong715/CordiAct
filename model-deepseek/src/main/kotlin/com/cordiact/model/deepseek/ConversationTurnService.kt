@@ -1,5 +1,6 @@
 package com.cordiact.model.deepseek
 
+import com.cordiact.core.conversation.GenerationParameters
 import com.cordiact.core.conversation.MessageRole
 import com.cordiact.core.conversation.ModelAdapterService
 import com.cordiact.core.conversation.ModelCall
@@ -23,13 +24,14 @@ class ConversationTurnService(
         model: ModelId,
         text: String,
         onEvent: (ModelEvent) -> Unit,
-    ): ModelCall = submit(sessionId, model, text, emptyList(), onEvent)
+    ): ModelCall = submit(sessionId, model, text, emptyList(), null, onEvent)
 
     fun submit(
         sessionId: String,
         model: ModelId,
         text: String,
         transientContext: List<String>,
+        parameters: GenerationParameters? = null,
         onEvent: (ModelEvent) -> Unit,
     ): ModelCall {
         require(text.isNotBlank()) { "Message must not be blank" }
@@ -56,7 +58,7 @@ class ConversationTurnService(
 
         val delegate = try {
             models.generate(
-                ModelGenerationRequest(sessionId = sessionId, model = model, messages = history),
+                ModelGenerationRequest(sessionId = sessionId, model = model, messages = history, parameters = parameters),
             ) { event ->
                 synchronized(callbackLock) {
                     if (terminal.get()) return@generate

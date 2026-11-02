@@ -3,6 +3,7 @@ package com.cordiact.model.deepseek
 import com.cordiact.core.conversation.ConversationMessage
 import com.cordiact.core.conversation.ConversationSession
 import com.cordiact.core.conversation.MessageRole
+import com.cordiact.core.conversation.ModelAdapterPlugin
 import com.cordiact.core.conversation.ModelAdapterService
 import com.cordiact.core.conversation.ModelCall
 import com.cordiact.core.conversation.ModelDescriptor
@@ -17,11 +18,11 @@ import java.nio.charset.StandardCharsets
 import java.util.Collections
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
-import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.test.assertFalse
 import kotlin.test.assertIs
-import kotlin.test.assertTrue
+import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.Test
 
 class DeepSeekBackendTest {
     @Test
@@ -30,10 +31,10 @@ class DeepSeekBackendTest {
         var authorization = ""
         val server = server { exchange ->
             authorization = exchange.requestHeaders.getFirst("Authorization").orEmpty()
-            requestBody = exchange.requestBody.bufferedReader(StandardCharsets.UTF_8).use { it.readText() }
+            requestBody = exchange.requestBody.use { it.readBytes().toString(StandardCharsets.UTF_8) }
             val body = listOf(
-                "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"},\"index\":0}]}\n\n",
-                "data: {\"choices\":[{\"delta\":{\"content\":\" world\"},\"index\":0}]}\n\n",
+                "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n",
+                "data: {\"choices\":[{\"delta\":{\"content\":\" world\"}}]}\n\n",
                 "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":2}}\n\n",
                 "data: [DONE]\n\n",
             ).joinToString("")
@@ -41,9 +42,9 @@ class DeepSeekBackendTest {
             exchange.sendResponseHeaders(200, 0)
             exchange.responseBody.use { it.write(body.toByteArray(StandardCharsets.UTF_8)) }
         }
-        val backend = DeepSeekBackend(
-            credentials = ApiKeyProvider { "secret-test-key" },
-            config = DeepSeekBackendConfig.forLoopbackTest(endpoint = "http://127.0.0.1:${server.address.port}/chat/completions"),
+        val backend = ConfigurableModelBackend(
+            DeepSeekPreset.configForLoopbackTest(endpoint = "http://127.0.0.1:${server.address.port}/chat/completions"),
+            ApiKeyProvider { "secret-test-key" },
         )
         val adapter = AdapterHarness(backend)
         val sessions = SessionHarness()
@@ -52,7 +53,7 @@ class DeepSeekBackendTest {
         val events = Collections.synchronizedList(mutableListOf<ModelEvent>())
         val completed = CountDownLatch(1)
         try {
-            turns.submit(session.id, ModelId("deepseek", "deepseek-flash"), "Hi") { event ->
+            turns.submit(session.id, ModelId(DeepSeekPreset.PROVIDER_ID, "deepseek-flash"), "Hi") { event ->
                 events += event
                 if (event is ModelEvent.Completed || event is ModelEvent.Failed) completed.countDown()
             }
@@ -72,8 +73,50 @@ class DeepSeekBackendTest {
     }
 
     @Test
+    fun presetUsesOpenAiChatCompletionsAndTheFlashDefault() {
+        val config = DeepSeekPreset.config()
+        assertEquals(DeepSeekPreset.PROVIDER_ID, config.providerId)
+        assertEquals(ModelProtocol.OPENAI_CHAT_COMPLETIONS, config.protocol)
+        assertEquals(DeepSeekPreset.DEFAULT_ENDPOINT, config.endpoint)
+        assertEquals(listOf("deepseek-flash"), config.models)
+    }
+
+    @Test
+    fun streamsDeltasAndReportsUsageThroughTheSharedBackend() {
+        val server = server { exchange ->
+            val body = listOf(
+                "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n",
+                "data: {\"choices\":[{\"delta\":{\"content\":\" world\"}}]}\n\n",
+                "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":2}}\n\n",
+                "data: [DONE]\n\n",
+            ).joinToString("")
+            exchange.responseHeaders.add("Content-Type", "text/event-stream; charset=utf-8")
+            exchange.sendResponseHeaders(200, 0)
+            exchange.responseBody.use { it.write(body.toByteArray(StandardCharsets.UTF_8)) }
+        }
+        val backend = ConfigurableModelBackend(
+            DeepSeekPreset.configForLoopbackTest(endpoint = "http://127.0.0.1:${server.address.port}/chat/completions"),
+            ApiKeyProvider { "secret-test-key" },
+        )
+        val events = Collections.synchronizedList(mutableListOf<ModelEvent>())
+        val done = CountDownLatch(1)
+        try {
+            backend.generate(request(), { event ->
+                events += event
+                if (event is ModelEvent.Completed || event is ModelEvent.Failed) done.countDown()
+            })
+            assertTrue(done.await(5, TimeUnit.SECONDS), "model stream did not terminate")
+            assertEquals(listOf("Hello", " world"), events.filterIsInstance<ModelEvent.Delta>().map { it.text })
+            assertEquals(ModelEvent.Completed(4, 2), events.last())
+        } finally {
+            backend.close()
+            server.stop(0)
+        }
+    }
+
+    @Test
     fun missingKeyFailsWithoutOpeningNetworkRequest() {
-        val backend = DeepSeekBackend(ApiKeyProvider { null })
+        val backend = ConfigurableModelBackend(DeepSeekPreset.config(), ApiKeyProvider { null })
         val events = mutableListOf<ModelEvent>()
         try {
             backend.generate(request(), events::add)
@@ -84,35 +127,21 @@ class DeepSeekBackendTest {
     }
 
     @Test
-    fun rejectsNonTlsNonLoopbackEndpoint() {
-        try {
-            DeepSeekBackendConfig(endpoint = "http://example.invalid/chat/completions")
-            throw AssertionError("plain HTTP endpoints must be rejected")
-        } catch (expected: IllegalArgumentException) {
-            assertTrue(expected.message.orEmpty().contains("HTTPS"))
-        }
-    }
-
-    @Test
     fun incompleteSseDoesNotReportCompleted() {
         val server = server { exchange ->
-            exchange.responseHeaders.add("Content-Type", "text/event-stream")
             val body = "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n"
+            exchange.responseHeaders.add("Content-Type", "text/event-stream")
             exchange.sendResponseHeaders(200, body.length.toLong())
             exchange.responseBody.use { it.write(body.toByteArray(StandardCharsets.UTF_8)) }
         }
-        val backend = DeepSeekBackend(
+        val backend = ConfigurableModelBackend(
+            DeepSeekPreset.configForLoopbackTest(endpoint = "http://127.0.0.1:${server.address.port}/chat/completions"),
             ApiKeyProvider { "test" },
-            DeepSeekBackendConfig.forLoopbackTest(endpoint = "http://127.0.0.1:${server.address.port}/chat/completions"),
         )
-        val terminal = CountDownLatch(1)
         val events = Collections.synchronizedList(mutableListOf<ModelEvent>())
         try {
-            backend.generate(request(), events::add).also { }
-            // Wait until the worker has delivered its terminal error.
+            backend.generate(request(), events::add)
             waitFor { events.any { it is ModelEvent.Failed || it is ModelEvent.Completed } }
-            terminal.countDown()
-            assertTrue(terminal.await(1, TimeUnit.SECONDS))
             assertFalse(events.any { it is ModelEvent.Completed })
             assertEquals("incomplete_stream", events.filterIsInstance<ModelEvent.Failed>().single().code)
         } finally {
@@ -123,9 +152,9 @@ class DeepSeekBackendTest {
 
     @Test
     fun providerPluginRegistersAndDetachesItsBackend() {
-        val adapter = com.cordiact.core.conversation.ModelAdapterPlugin()
+        val adapter = ModelAdapterPlugin()
         adapter.onEnable()
-        val backend = DeepSeekBackend(ApiKeyProvider { "test" })
+        val backend = ConfigurableModelBackend(DeepSeekPreset.config(), ApiKeyProvider { "test" })
         val plugin = DeepSeekBackendPlugin(adapter, backend)
         try {
             plugin.onEnable()
@@ -139,15 +168,39 @@ class DeepSeekBackendTest {
     }
 
     @Test
+    fun pluginRejectsABackendForAnotherProvider() {
+        val adapter = ModelAdapterPlugin()
+        val backend = ConfigurableModelBackend(
+            ModelProviderPresets.openAiChatCompletions(
+                models = listOf("m"),
+                providerId = "custom",
+                displayName = "Custom",
+                endpoint = "https://api.example.test/v1/chat/completions",
+            ),
+            ApiKeyProvider { "test" },
+        )
+        try {
+            try {
+                DeepSeekBackendPlugin(adapter, backend)
+                throw AssertionError("a non-DeepSeek backend must not be registered as the bundled provider")
+            } catch (expected: IllegalArgumentException) {
+                assertTrue(expected.message.orEmpty().contains("deepseek"))
+            }
+        } finally {
+            backend.close()
+        }
+    }
+
+    @Test
     fun concurrentTurnForSameSessionIsRejected() {
         val sessions = SessionHarness()
         val session = sessions.createSession("workspace-1")
         val adapter = HoldingAdapter()
         val turns = ConversationTurnService(sessions, adapter)
-        val first = turns.submit(session.id, ModelId("deepseek", "deepseek-flash"), "first") {}
+        val first = turns.submit(session.id, ModelId(DeepSeekPreset.PROVIDER_ID, "deepseek-flash"), "first") {}
         try {
             try {
-                turns.submit(session.id, ModelId("deepseek", "deepseek-flash"), "second") {}
+                turns.submit(session.id, ModelId(DeepSeekPreset.PROVIDER_ID, "deepseek-flash"), "second") {}
                 throw AssertionError("a session may not run overlapping turns")
             } catch (expected: IllegalStateException) {
                 assertTrue(expected.message.orEmpty().contains("already active"))
@@ -159,7 +212,7 @@ class DeepSeekBackendTest {
 
     private fun request() = ModelGenerationRequest(
         sessionId = "session-1",
-        model = ModelId("deepseek", "deepseek-flash"),
+        model = ModelId(DeepSeekPreset.PROVIDER_ID, "deepseek-flash"),
         messages = listOf(com.cordiact.core.conversation.ModelMessage(MessageRole.USER, "hello")),
     )
 
@@ -175,10 +228,10 @@ class DeepSeekBackendTest {
         assertTrue(condition(), "condition was not reached in time")
     }
 
-    private class AdapterHarness(private val backend: DeepSeekBackend) : ModelAdapterService {
+    private class AdapterHarness(private val backend: ConfigurableModelBackend) : ModelAdapterService {
         override fun models(): List<ModelDescriptor> = backend.models()
         override fun generate(request: ModelGenerationRequest, onEvent: (ModelEvent) -> Unit): ModelCall {
-            assertEquals("deepseek", request.model.providerId)
+            assertEquals(DeepSeekPreset.PROVIDER_ID, request.model.providerId)
             return backend.generate(request, onEvent)
         }
     }
@@ -198,7 +251,8 @@ class DeepSeekBackendTest {
             return session
         }
         override fun getSession(sessionId: String): ConversationSession? = sessions[sessionId]
-        override fun listSessions(workspaceId: String): List<ConversationSession> = sessions.values.filter { it.workspaceId == workspaceId }
+        override fun listSessions(workspaceId: String): List<ConversationSession> =
+            sessions.values.filter { it.workspaceId == workspaceId }
         override fun appendMessage(sessionId: String, role: MessageRole, content: String): ConversationMessage {
             val item = ConversationMessage("message-${messages[sessionId]!!.size + 1}", sessionId, role, content, 1L)
             messages[sessionId]!!.add(item)

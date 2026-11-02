@@ -1,6 +1,7 @@
 package com.cordiact.app.model
 
 import android.content.Context
+import com.cordiact.core.conversation.GenerationParameters
 import com.cordiact.model.deepseek.ModelProviderConfig
 import com.cordiact.model.deepseek.ModelProviderConfigStore
 import com.cordiact.model.deepseek.ModelProtocol
@@ -27,6 +28,13 @@ class AndroidModelProviderConfigStore(context: Context) : ModelProviderConfigSto
                     models = item.getJSONArray("models").let { models ->
                         List(models.length()) { modelIndex -> models.getString(modelIndex) }
                     },
+                    defaults = item.optJSONObject("defaults")?.let { defaults ->
+                        GenerationParameters(
+                            temperature = defaults.optDouble("temperature").takeIf { defaults.has("temperature") },
+                            maxOutputTokens = defaults.optInt("maxOutputTokens").takeIf { defaults.has("maxOutputTokens") },
+                            topP = defaults.optDouble("topP").takeIf { defaults.has("topP") },
+                        )
+                    } ?: GenerationParameters.NONE,
                 )
             }
         } catch (_: Exception) {
@@ -55,6 +63,14 @@ class AndroidModelProviderConfigStore(context: Context) : ModelProviderConfigSto
                 put("protocol", config.protocol.name)
                 put("endpoint", config.endpoint)
                 put("models", JSONArray().apply { config.models.forEach { put(it) } })
+                val defaults = config.defaults
+                if (defaults.temperature != null || defaults.maxOutputTokens != null || defaults.topP != null) {
+                    put("defaults", JSONObject().apply {
+                        defaults.temperature?.let { put("temperature", it) }
+                        defaults.maxOutputTokens?.let { put("maxOutputTokens", it) }
+                        defaults.topP?.let { put("topP", it) }
+                    })
+                }
             })
         }
         check(preferences.edit().putString(CONFIGS, array.toString()).commit()) {

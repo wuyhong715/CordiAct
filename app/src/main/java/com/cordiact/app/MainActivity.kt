@@ -167,9 +167,9 @@ private fun InteractionScreen(app: CordiActApplication) {
         }
         activeCall = try {
             if (envelope.command == null) {
-                app.interactionService.submitOrdinary(current, DEFAULT_MODEL, callback)
+                app.interactionService.submitOrdinary(current, DEFAULT_MODEL, onEvent = callback)
             } else {
-                app.interactionService.dispatch(current, DEFAULT_MODEL, callback).modelCall
+                app.interactionService.dispatch(current, DEFAULT_MODEL, onEvent = callback).modelCall
             }
         } catch (failure: Exception) {
             error = failure.message ?: "发送失败"

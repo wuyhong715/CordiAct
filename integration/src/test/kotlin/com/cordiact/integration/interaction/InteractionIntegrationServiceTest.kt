@@ -41,14 +41,14 @@ class InteractionIntegrationServiceTest {
     fun synchronousCompletionDoesNotLeaveCallRegistered() {
         val tracker = InMemoryInteractionTaskTracker()
         val cancelCount = AtomicInteger()
-        val submitter = InteractionModelSubmitter { _, _, onEvent ->
+        val submitter = InteractionModelSubmitter { _, _, _, onEvent ->
             onEvent(ModelEvent.Completed())
             ModelCall { cancelCount.incrementAndGet() }
         }
         val service = service(tracker, submitter) { envelope, model, submit, onEvent ->
             CommandExecutionResult(
                 completed = false,
-                modelCall = submit.submit(envelope, model, onEvent),
+                modelCall = submit.submit(envelope, model, null, onEvent),
             )
         }
         service.setEnabled(true)
@@ -67,7 +67,7 @@ class InteractionIntegrationServiceTest {
         val cancelCount = AtomicInteger()
         val service = service(
             tracker = tracker,
-            submitter = InteractionModelSubmitter { _, _, _ ->
+            submitter = InteractionModelSubmitter { _, _, _, _ ->
                 ModelCall { cancelCount.incrementAndGet() }
             },
             commandExecutor = { _, _, _, _ -> error("ordinary input must not dispatch commands") },
@@ -88,11 +88,11 @@ class InteractionIntegrationServiceTest {
         val tracker = InMemoryInteractionTaskTracker()
         val cancelCount = AtomicInteger()
         lateinit var service: InteractionIntegrationService
-        val submitter = InteractionModelSubmitter { _, _, _ ->
+        val submitter = InteractionModelSubmitter { _, _, _, _ ->
             ModelCall { cancelCount.incrementAndGet() }
         }
         service = service(tracker, submitter) { envelope, model, submit, onEvent ->
-            val call = submit.submit(envelope, model, onEvent)
+            val call = submit.submit(envelope, model, null, onEvent)
             service.setEnabled(false)
             CommandExecutionResult(completed = false, modelCall = call)
         }
@@ -104,6 +104,50 @@ class InteractionIntegrationServiceTest {
         assertEquals(null, result.modelCall)
         assertEquals(1, cancelCount.get())
         assertTrue(tracker.active().isEmpty())
+    }
+
+    @Test
+    fun ordinarySubmissionCarriesSamplingOverridesToTheSubmitter() {
+        val tracker = InMemoryInteractionTaskTracker()
+        val seen = java.util.concurrent.atomic.AtomicReference<com.cordiact.core.conversation.GenerationParameters?>()
+        val submitter = InteractionModelSubmitter { _, _, parameters, _ ->
+            seen.set(parameters)
+            ModelCall { }
+        }
+        val service = service(tracker, submitter) { _, _, _, _ -> error("command path not used") }
+        service.setEnabled(true)
+        val prepared = service.prepare("hello", context)
+        val overrides = com.cordiact.core.conversation.GenerationParameters(
+            temperature = 0.6,
+            maxOutputTokens = 700,
+            topP = 0.75,
+        )
+
+        service.submitOrdinary(prepared, modelId, overrides) { }
+
+        assertEquals(overrides, seen.get())
+    }
+
+    @Test
+    fun ordinarySubmissionWithoutOverridesPassesNullSoProviderDefaultsApply() {
+        val tracker = InMemoryInteractionTaskTracker()
+        val seen = java.util.concurrent.atomic.AtomicReference<com.cordiact.core.conversation.GenerationParameters?>(
+            com.cordiact.core.conversation.GenerationParameters(temperature = 1.5),
+        )
+        var called = false
+        val submitter = InteractionModelSubmitter { _, _, parameters, _ ->
+            called = true
+            seen.set(parameters)
+            ModelCall { }
+        }
+        val service = service(tracker, submitter) { _, _, _, _ -> error("command path not used") }
+        service.setEnabled(true)
+        val prepared = service.prepare("hello", context)
+
+        service.submitOrdinary(prepared, modelId) { }
+
+        assertTrue(called)
+        assertNull(seen.get())
     }
 
     private fun service(
