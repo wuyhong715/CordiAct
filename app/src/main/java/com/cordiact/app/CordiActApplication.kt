@@ -68,6 +68,29 @@ class CordiActApplication : Application() {
     val modelProviders: ModelProviderRegistryService get() = conversationCatalog.modelProviderRegistryPlugin
     val sessions: SessionManagerService get() = sessionManagerPlugin
     val tools: ToolManagerService get() = conversationCatalog.toolManagerService
+
+    /** Skill catalog and index rendering. Lazily built: neither is needed until the first turn. */
+    private val skillPlugin: SkillPlugin by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+        SkillPlugin(AndroidSkillFileSource(conversationCatalog.fileManager)).apply { onEnable() }
+    }
+
+    private val skillIndexRenderer = SkillIndexRenderer()
+
+    /**
+     * The skill catalog for a Workspace, as a system-prompt block.
+     *
+     * Rebuilt per turn rather than cached for the session: a skill added or removed between
+     * turns must take effect immediately, and a stale index would offer the model a file that
+     * no longer exists.
+     */
+    private fun skillIndexFor(workspaceId: String): String? = try {
+        val catalog = skillPlugin.catalog(workspaceId)
+        val index = skillIndexRenderer.render(catalog)
+        index.text.takeIf { it.isNotBlank() }
+    } catch (e: Exception) {
+        // A broken catalog must not block the user's message.
+        null
+    }
     val workspaceFiles: WorkspaceFileService get() = conversationCatalog.fileManager
 
     override fun onCreate() {
@@ -112,6 +135,7 @@ class CordiActApplication : Application() {
                 onEvent = onEvent,
                 transientContext = referencedFiles,
                 parameters = parameters,
+                systemContext = skillIndexFor(envelope.context.workspaceId),
             )
         })
         sandboxManagerPlugin = BundledConversationPluginCatalog.createSandboxManager(applicationInfo.uid)
