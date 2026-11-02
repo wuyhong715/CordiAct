@@ -7,16 +7,23 @@
 
 ---
 
-## 零、四条已定的产品决定
+## 零、已定的产品决定
 
-本版设计基于以下四条决定，它们不是待议选项：
+本版设计基于以下决定，它们不是待议选项。
+
+**来自产品方：**
 
 1. **Agent 绑定工作区**。Agent 预配置属于某个 Workspace，不是全局实体。
 2. **记忆不跨工作区**。每条记忆都属于且只属于一个 Workspace。
 3. **跨工作区访问只能通过既有 `@` 授权**，且对象是另一个 Workspace 的**记忆文件**，不是记忆库。
 4. **预配置是声明式的**：实际能拿到什么由工具管理器、文件管理器决定，**禁止提权**；完全由预配置决定的只有提示词、模型、请求参数。
 
-第 4 条把"预配置"的职责边界划得很清楚，也使得本设计与三家参考实现的分歧点变得具体——见第三节。
+**来自用户问卷（2026-11-02）：**
+
+5. **记忆要对齐 codex 的体验**——自动学习、自动合并、下次会话直接可用。这条推翻了"先只做显式记忆"的保守安排，见 3.6。
+6. **`@` 的授权范围由路径表达**：`@xx工作区` 授权整区，`@xx工作区：记忆` 只授权记忆。授权不再是一个独立的能力开关，而是引用路径的副产品，见 3.5。
+
+第 4 条把"预配置"的职责边界划得很清楚；第 6 条则让"跨区"从"要不要开放"变成一个可精确表达的范围问题。两者都使得本设计与三家参考实现的分歧点变得具体——见第三节。
 
 ---
 
@@ -224,42 +231,129 @@ data class MemoryInjectionPolicy(
 
 记忆内容同样是"可能过时的数据"。**一条写错的记忆如果没有被标注为数据，会长期劫持行为，而用户很难发现**。所以记忆注入沿用同一包裹格式，只是标记换成 memory 语义。
 
-### 3.5 跨工作区：只通过 `@`，且是快照
+### 3.5 跨工作区：路径即授权范围
 
-这是决定 3 的落地，也是本设计需要改动现有代码的地方。
+问卷结论改变了这一节的方向：多数人希望 `@` 的授权范围**由路径本身表达**，而不是由一套额外的权限开关表达。
 
-**现状（需要改）：**
+- `@xx工作区` —— 授权该工作区的完整范围
+- `@xx工作区：记忆` —— 只授权该工作区的记忆
 
-| 位置 | 现状 | 问题 |
-|---|---|---|
-| `WorkspaceInteractionAuthorization.kt:40` | `if (target.workspaceId != workspace.id) → 拒绝` | 跨区引用一律拒绝 |
-| `AndroidInteractionDirectory.children` | 只返回当前 Workspace 条目 | `@` 列表里看不到别区 |
-| `AndroidInteractionDirectory.find` | 用 `context.workspaceId` 解码 id | 跨区 id 解析不到 |
-| `AndroidInteractionDirectory.readText` | 显式拒绝 `descriptor.workspaceId != context.workspaceId` | 跨区读不到内容 |
+这比"给一个 `cross-workspace` 能力"更好，理由有三：
 
-CordiAct 原本的选择是"一律拒绝"，这很简单也很安全。决定 3 要求的是"**受控放开**"，所以设计上需要：
+1. **授权范围与用户点选的引用对象是同一个东西**。用户不需要理解第二套权限概念。
+2. **范围天然可嵌套、可收窄**。`@工作区：记忆` 是 `@工作区` 的子集，不需要额外定义包含关系。
+3. **审计可读**。授权记录里写的是用户实际点选的路径，而不是一个抽象能力名。
 
-1. **`MentionType` 增加 `MEMORY`**，与 `FILE` 并列但不混同——记忆有独立的语义（是数据、可过时、有 kind）。
-2. **`children()` 在根层级额外列出"其他 Workspace 的记忆"分组**，而不是列出其他 Workspace 的全部文件。**跨区只能引用记忆，不能引用任意文件**——这是把放开面缩到最小的关键。
-3. **`find()` 支持跨区记忆 id**，格式上带 Workspace 前缀，避免与本地 id 歧义。
-4. **`readText` 允许跨区，但仅限 `MEMORY` 类型**，且读取结果作为**快照**注入（读一次、原文进上下文、后续不追踪变化）。
-5. **授权不再一律拒绝**，改为：跨区 `MEMORY` 引用需要显式授权（`requiredCapabilities` 带 `memory.read.cross-workspace`），其他类型跨区仍然拒绝。
+#### 语法
+
+```
+reference := "@" workspace ( ":" segment )*
+segment   := "记忆" | <path segment>
+```
+
+- 分隔符同时接受全角 `：` 与半角 `:`，解析时归一化。
+- 省略 segment 时授权整个工作区。
+- `记忆` 是保留段名，映射到该工作区的记忆导出目录 `memory/`。
+
+#### 描述符
+
+`MentionDescriptor` 增加授权前缀字段：
+
+```kotlin
+data class MentionDescriptor(
+    val id: String,
+    val type: MentionType,
+    val label: String,
+    val workspaceId: String,
+    val parentId: String? = null,
+    val relativePath: String? = null,
+    /** The subtree this descriptor authorizes. Null = the whole Workspace. */
+    val authorizedPrefix: String? = null,
+    val requiredCapabilities: Set<String> = emptySet(),
+)
+```
+
+- `@xx工作区` → `type = WORKSPACE`, `authorizedPrefix = null`（整区）
+- `@xx工作区：记忆` → `type = MEMORY`, `authorizedPrefix = "memory/"`
+
+#### 授权 ≠ 注入
+
+这是最容易混淆的一点，必须写死：
+
+- `@xx工作区` **不会**把整个工作区塞进上下文。它只授权本会话在该范围内按需读取。
+- `@xx工作区：记忆` 是例外：记忆导出视图（`memory/MEMORY.md`）**默认注入**，因为摘要本身就是给模型看的。
+- 其余文件一律按需读取，不预加载。
+
+否则一个 `@工作区` 就能把上下文撑爆，这与 3.4 的预算约束直接冲突。
+
+#### 授权规则
+
+`WorkspaceInteractionAuthorization` 现在是"跨区一律拒绝"（第 40 行）。改成：
+
+1. **同区引用**：行为不变。
+2. **跨区引用**：允许，但**只能引用作用域节点**（`WORKSPACE` / `MEMORY`），不能跨区直接引用单个文件。要读具体文件，先引用范围、再在范围内取。
+3. **授权范围** = `descriptor.authorizedPrefix`。后续任何读取必须落在该前缀内，否则拒绝。
+4. **授权是逐轮的，不是逐会话的**。与现有 referenced file context 的 transient 语义一致：本轮结束即失效。
+5. **跨区读取一律是快照**。
+
+第 2 条是刻意的收窄。如果允许 `@xx工作区:某个文件` 直接引用单文件，那么"整区授权"和"单文件授权"就混在同一个语法里，路径语义变得不可读，审计也无从判断用户到底授权了多大范围。分成两步——先给范围，再在范围内取——每一步都可审计。
+
+#### 路径安全
+
+- 归一化后再比较前缀，防 `memory/../secrets`
+- 前缀比较按**路径段边界**，不按字符串前缀：`memory` 不能匹配 `memory-backup/`
+- 拒绝符号链接逃逸，复用 `WorkspaceFileService` 已有校验
+- 跨区只读，不可写
+
+#### 需要改的四处
+
+| 位置 | 改动 |
+|---|---|
+| `WorkspaceInteractionAuthorization.kt:40` | 跨区拒绝 → 作用域校验 + 前缀校验 |
+| `AndroidInteractionDirectory.children` | 根层列出其他工作区，作为作用域节点 |
+| `AndroidInteractionDirectory.find` | 支持 `ws:<id>` 形式的作用域 id |
+| `AndroidInteractionDirectory.readText` | 跨区仅限落在授权前缀内的读取 |
 
 **快照而非实时**：harness 的 `file-reference` 是实时指针（README:101 明确 "No file-content reference object"），`session-reference` 是快照。跨区记忆属于后者——源 Workspace 可能被归档、记忆可能被修改，引用必须可复现。
 
-### 3.6 分期：M1 不做自动抽取
+### 3.6 分期：从"可审计"到 codex 式体验
 
-| 阶段 | 内容 | 理由 |
+问卷显示相当多人希望获得 codex 那样的记忆体验——自动从对话中学习、合并成摘要、下次会话直接可用。这推翻了上一版"M1 不做自动抽取"的保守安排。
+
+但 Android 的三个约束不会因为需求存在而消失：后台限制、电量与流量、隐私。所以不是照搬 codex，而是把它的两阶段流水线映射到能跑的形态。
+
+| 阶段 | 内容 |
+|---|---|
+| **M1 基础** | 显式写入 + 存储 + 导出 + `@` 跨区引用 |
+| **M2 codex 式** | 自动抽取（phase 1）+ 合并（phase 2）+ 摘要注入 |
+| **M3 可选** | 向量检索 |
+
+#### M2 与 codex 的映射与背离
+
+| codex | CordiAct M2 | 原因 |
 |---|---|---|
-| **M1**（本设计范围） | 显式写入 + 确定性检索 + 预算注入 + 文件导出 + `@` 跨区 | 全程可审计，无后台任务 |
-| **M2**（后续，需单独评审） | 离线归纳（把多个会话压缩成候选记忆） | 需要 WorkManager、电量预算、`polluted` 闸门 |
+| 每次启动最多 2 条 rollout | WorkManager 单次任务 ≤2 条 | 电量，且手机上更保守 |
+| 闲置 ≥6 小时才抽取 | 闲置 ≥6 小时 **且充电中** | 电量 |
+| 并发 + 租约 + 退避 | WorkManager 唯一队列 + 指数退避 | 不自己造调度器 |
+| phase 2 单锁合并 | SQLite 事务 + 单实例任务 | 已有基础设施 |
+| 摘要 ≤2500 token | ≤ 注入预算（默认 8,000 字符） | 多 provider，tokenizer 不确定 |
+| 30 天未使用淘汰 | 同 | — |
+| `disable_on_external_context` | 同：碰过外部上下文的会话标记 `polluted`，不参与学习 | 隐私 |
+| git 基线 + diff 审查 | 导出文件 + 变更列表 | 手机上没人读 diff |
 
-M2 若要做，与 codex 的两处刻意背离：
+#### 一处关键的自洽
 
-- **候选默认待审**，不直接生效。codex 靠 git diff 让用户看见变更；手机上没人读 diff。
-- **碰过外部上下文的会话不参与学习**（对应 codex 的 `disable_on_external_context`）。
+上一版设计担心"自动写入会把错误记忆固化"，因此要求候选待审。但 3.4 已经规定**记忆以数据身份注入、明确标注不是指令**——这条约束本身就让错误记忆无法劫持行为。两者结合，就可以放弃"先审后生效"的摩擦，直接对齐 codex 的体验：
 
-M1 的检索只做**确定性**的（kind 过滤 + 最近使用），不引入向量库。`useCount` / `lastUsedAt` 就是为"验证记忆是否真的被用上"埋的遥测——如果 M1 上线后这两个字段长期不动，说明记忆没价值，M2 也就不必做。
+- 默认自动生效
+- 保留"先审后生效"开关给谨慎用户
+- 靠 30 天淘汰 + 导出文件可读可删兜底
+
+这是本设计里我认为最值得保留的一个推理：**安全性来自注入形态，而不是来自写入闸门**。如果反过来靠闸门，用户体验就会退回"每次都要点确认"。
+
+#### M1 的检索仍只做确定性
+
+kind 过滤 + 最近使用，不引入向量库。`useCount` / `lastUsedAt` 是遥测：如果 M2 上线后这两个字段长期不动，说明记忆没被用上，M3 也就不必做。
 
 ### 3.7 明确不做
 
@@ -290,19 +384,23 @@ M1 的检索只做**确定性**的（kind 过滤 + 最近使用），不引入�
 1. **`core.agent-profile` 契约 + 纯 Kotlin 解析器**。测试：优先级整体替换、悬空 `toolRefs` fail-closed、`toolRefs` 交集语义、`WorkspaceFile` 跨区拒绝。
 2. **接 `ToolManager` / `ModelProviderRegistry`**：验证 `toolRefs ∩ resolveEnabled` 与 `generation` 作为默认值上一层。
 3. **`core.agent-memory` M1 存储 + 导出**。测试：跨 Workspace 隔离（查询带 `workspaceId` 强约束）、导出幂等、预算裁剪顺序。
-4. **跨区 `@` 读取**：新增 `MentionType.MEMORY`、改四处 `AndroidInteractionDirectory` / 授权、快照注入。测试：跨区记忆可读、跨区任意文件仍被拒、无 capability 时被拒。
-5. （可选）M2 设计评审。
+4. **跨区 `@` 授权**：路径语法解析、`authorizedPrefix`、改四处 `AndroidInteractionDirectory` / 授权、快照注入。测试：`@工作区：记忆` 只可读记忆、`@工作区` 可读整区、跨区单文件引用被拒、`../` 逃逸被拒、前缀段边界（`memory` 不匹配 `memory-backup/`）。
+5. **M2 自动抽取**：WorkManager 任务 + 充电/闲置约束 + `polluted` 闸门 + 摘要生成。测试：约束不满足时不运行、候选合并去重、30 天淘汰。
 
-1–2 一个 PR，3–4 一个 PR。
+1–2 一个 PR，3–4 一个 PR，5 单独一个 PR（它引入后台任务，需要单独评审电量影响）。
 
 ---
 
 ## 六、仍然开放的问题
 
 1. **`memory/MEMORY.md` 的导出时机**：每次写入后同步导出（简单、写放大）还是按需导出（省 IO、但 `@` 可能读到旧版本）。我倾向于写入后同步，因为跨区引用必须可复现。
-2. **跨区记忆引用的授权粒度**：是"一次授权一个 Workspace"还是"一次授权一条记忆"？前者体验好但面大，后者安全但繁琐。
-3. **profile 能否引用另一 Workspace 的 profile**：我认为不能（同样是提权面），但没写进"不做"名单。
-4. **`MemoryKind` 是否够用**：`PREFERENCE` 在"不跨区"前提下还有多少价值？可能需要重新划分。
+2. **`@工作区` 整区授权在单轮内的读取上限**：整区授权意味着可以读任意多文件，需要一个每轮的文件数与字节上限，否则等于给了一个上下文炸弹。这个上限放哪一层（授权层还是装配层）还没定。
+3. **摘要与条目的注入关系**：M2 之后同时存在"摘要"（一段连贯文本）和"条目"（结构化事实），是二选一还是都注入？都注入会重复占预算。
+4. **记忆抽取用哪个模型**：用当前会话的模型（准确但贵）还是固定的便宜模型（省但可能漏）。codex 用内部 sub-agent，CordiAct 没有对等物。
+5. **profile 能否引用另一 Workspace 的 profile**：我认为不能（同样是提权面），但没写进"不做"名单。
+6. **`MemoryKind` 是否够用**：`PREFERENCE` 在"不跨区"前提下还有多少价值？可能需要重新划分。
+
+
 ## 附录：三份参考实现的关键事实
 
 ### A. deepseek-harness
