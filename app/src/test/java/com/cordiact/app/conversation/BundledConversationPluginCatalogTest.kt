@@ -1,5 +1,6 @@
 package com.cordiact.app.conversation
 
+import com.cordiact.core.skill.skillPluginSpec
 import android.content.Context
 import com.cordiact.app.plugin.AndroidPluginLifecycleStore
 import com.cordiact.app.plugin.AndroidPluginResourceLedger
@@ -145,7 +146,7 @@ class BundledConversationPluginCatalogTest {
         assertFalse(BundledConversationPluginCatalog.verifier.isTrustedBundled(modelSpec.copy(requestedCapabilities = setOf("android.shell"))))
         val untrusted = BundledPluginVerifier { false }
         assertFalse(untrusted.isTrustedBundled(modelSpec))
-        assertTrue(BundledConversationPluginCatalog.verifier.isTrustedBundled(com.cordiact.core.skill.skillPluginSpec()))
+        assertTrue(BundledConversationPluginCatalog.verifier.isTrustedBundled(skillPluginSpec()))
         assertTrue(BundledConversationPluginCatalog.verifier.isTrustedBundled(workspaceManagerPluginSpec()))
         assertTrue(BundledConversationPluginCatalog.verifier.isTrustedBundled(sessionManagerPluginSpec()))
         assertTrue(BundledConversationPluginCatalog.verifier.isTrustedBundled(modelProviderRegistryPluginSpec()))

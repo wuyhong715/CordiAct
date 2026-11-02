@@ -21,6 +21,8 @@ import com.cordiact.core.conversation.SessionManagerService
 import com.cordiact.core.plugin.ManagedPlugin
 import com.cordiact.core.plugin.PluginLifecycleException
 import com.cordiact.core.plugin.PluginState
+import com.cordiact.core.skill.SkillIndexRenderer
+import com.cordiact.core.tool.GrantedScope
 import com.cordiact.core.tool.ToolManagerService
 import com.cordiact.core.file.WorkspaceFileService
 import com.cordiact.core.sandbox.SandboxManagerPlugin
