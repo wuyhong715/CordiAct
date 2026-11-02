@@ -11,7 +11,7 @@ fun skillPluginSpec() = PluginSpec(
     id = SKILL_PLUGIN_ID,
     version = SKILL_PLUGIN_VERSION,
     target = PluginTarget.ANDROID_NATIVE,
-    dependencies = setOf("core.workspace-manager"),
+    dependencies = setOf("core.workspace-manager", "core.file-manager"),
 )
 
 /**
@@ -55,6 +55,7 @@ class SkillException(val code: Code, message: String) : RuntimeException(message
         NAME_TOO_LONG,
         INVALID_NAME,
         BODY_UNREADABLE,
+        DISCOVERY_FAILED,
         TOO_LARGE,
     }
 }
@@ -276,6 +277,8 @@ internal class DefaultSkillService(
         val paths = try {
             source.listSkillFiles(workspaceId)
         } catch (e: Exception) {
+            rejected += RejectedSkill("skills/", SkillException.Code.DISCOVERY_FAILED,
+                "Skill discovery failed: ${e.message}")
             emptyList()
         }
 

@@ -1,6 +1,9 @@
 package com.cordiact.app.conversation
 
 import android.content.Context
+import com.cordiact.app.skill.AndroidSkillFileSource
+import com.cordiact.core.skill.SkillPlugin
+import com.cordiact.core.skill.skillPluginSpec
 import com.cordiact.app.model.AndroidDeepSeekApiKeyStore
 import com.cordiact.app.model.AndroidModelProviderConfigStore
 import com.cordiact.app.model.AndroidProviderApiKeyStore
@@ -67,6 +70,7 @@ object BundledConversationPluginCatalog {
         workspaceManagerPluginSpec(),
         toolManagerPluginSpec(),
         fileManagerPluginSpec(),
+        skillPluginSpec(),
         modelAdapterPluginSpec(),
         sessionManagerPluginSpec(),
         deepSeekBackendPluginSpec(),
@@ -105,6 +109,8 @@ class BundledConversationPlugins private constructor(
         private set
     val interactionService: InteractionIntegrationService get() = interactionPlugin.service
     val fileManager: WorkspaceFileService get() = fileManagerPlugin
+    lateinit var skillPlugin: SkillPlugin
+        private set
     lateinit var toolManagerPlugin: ToolManagerPlugin
         private set
     val toolManagerService: ToolManagerService get() = toolManagerPlugin
@@ -113,6 +119,7 @@ class BundledConversationPlugins private constructor(
 
     fun create(stateLookup: ToolPluginStateLookup): List<ManagedPlugin> {
         registerWorkspaceFileTools(registry, fileManager)
+        skillPlugin = SkillPlugin(AndroidSkillFileSource(fileManager))
         toolManagerPlugin = ToolManagerPlugin(
             registry = registry,
             preferences = conversationStore,
@@ -161,6 +168,7 @@ class BundledConversationPlugins private constructor(
         return listOf(
             workspacePlugin,
             fileManagerPlugin,
+            skillPlugin,
             toolManagerPlugin,
             modelAdapter,
             sessionManager,

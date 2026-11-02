@@ -69,11 +69,6 @@ class CordiActApplication : Application() {
     val sessions: SessionManagerService get() = sessionManagerPlugin
     val tools: ToolManagerService get() = conversationCatalog.toolManagerService
 
-    /** Skill catalog and index rendering. Lazily built: neither is needed until the first turn. */
-    private val skillPlugin: SkillPlugin by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
-        SkillPlugin(AndroidSkillFileSource(conversationCatalog.fileManager)).apply { onEnable() }
-    }
-
     private val skillIndexRenderer = SkillIndexRenderer()
 
     /**
@@ -84,7 +79,9 @@ class CordiActApplication : Application() {
      * no longer exists.
      */
     private fun skillIndexFor(workspaceId: String): String? = try {
-        val catalog = skillPlugin.catalog(workspaceId)
+        // Refresh between turns so Workspace file edits affect the next request.
+        conversationCatalog.skillPlugin.invalidate(workspaceId)
+        val catalog = conversationCatalog.skillPlugin.catalog(workspaceId)
         val index = skillIndexRenderer.render(catalog)
         index.text.takeIf { it.isNotBlank() }
     } catch (e: Exception) {
