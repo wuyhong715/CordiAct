@@ -154,6 +154,9 @@ private fun InteractionScreen(app: CordiActApplication) {
             handler.post {
                 when (event) {
                     is ModelEvent.Delta -> response += event.text
+                    // Tool rounds are internal; the user sees only the final answer, which
+                    // arrives as Deltas once the model stops calling tools.
+                    is ModelEvent.ToolCallsRequested -> Unit
                     is ModelEvent.Completed -> {
                         activeCall = null
                         history = runCatching { app.sessions.messages(envelope.context.sessionId) }.getOrDefault(history)
