@@ -266,13 +266,19 @@ CordiAct 还必须多剥一类：**我们自己的注入块**。`ConversationTur
 | 编辑沙箱 | 合并代理在受限目录内编辑 `MEMORY.md`，**禁网**，**禁用记忆工具**（防递归写入） |
 | 校验 | 产物结构校验 + citation 可解析 + 尺寸上限 |
 
-**校验替代 git diff**：Codex 用 git diff 确认一次 consolidation 是否真正成功。CordiAct 没有 git，改用三重校验：
+**校验分两层**：3.5 已引入工作区 git，所以 Codex 的 git-diff 校验可以直接用，不必自建替代品。
 
-1. `MEMORY.md` 的每条索引都能解析出 `file:line` 形式的 citation
-2. 每个 citation 指向的 `rollout_summaries/*.md` 实际存在
+第一层，写盘之前的结构校验：
+
+1. `MEMORY.md` 的每条 citation 都能解析出 `file` / `line` / `session`
+2. citation 指向的证据文件实际存在
 3. 文件尺寸在预算内
 
+第二层，写盘之后：git HEAD 必须推进。
+
 任一失败则本次合并作废，保留上一版制品。这是 fail-closed 在记忆上的体现。
+
+**幂等轮次要能通过**：内容没变时 git 不会产生 commit，这是对的。如果把"没有新 commit"一律当作失败，每次重复运行都会被误判成坏了。所以 HEAD 推进只在**内容确实变化**时才要求。
 
 **租约简化为过期时间**：Codex 用 1 小时租约 + 90 秒心跳，因为它可能有多 Worker。CordiAct 的记忆任务跑在 WorkManager 的唯一任务里，单进程，所以不需要心跳——只需要 `lease_expires_at` 处理崩溃后的接管。
 
