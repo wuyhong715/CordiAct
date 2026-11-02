@@ -1,5 +1,6 @@
 package com.cordiact.app.conversation
 
+import com.cordiact.core.skill.skillPluginSpec
 import android.content.Context
 import com.cordiact.app.plugin.AndroidPluginLifecycleStore
 import com.cordiact.app.plugin.AndroidPluginResourceLedger
@@ -96,12 +97,12 @@ class BundledConversationPluginCatalogTest {
             if (pluginId == "core.workspace-manager") PluginState.ENABLED else null
         }
         assertEquals(
-            listOf("core.workspace-manager", "core.file-manager", "core.tool-manager", "core.model-adapter", "core.session-manager", "model.deepseek", "model.providers", "core.interaction-integration"),
+            listOf("core.workspace-manager", "core.file-manager", "core.skill", "core.tool-manager", "core.model-adapter", "core.session-manager", "model.deepseek", "model.providers", "core.interaction-integration"),
             plugins.map { it.spec.id },
         )
 
         plugins.forEachIndexed { index, plugin ->
-            if (index == 2) assertEquals(PluginState.ENABLED, manager.get("core.workspace-manager")?.state)
+            if (index == 3) assertEquals(PluginState.ENABLED, manager.get("core.workspace-manager")?.state)
             assertEquals(PluginState.REGISTERED, manager.registerBundledSystem(plugin).state)
             assertEquals(PluginState.ENABLED, manager.enable(plugin.spec.id).state)
             assertEquals(PluginOrigin.BUNDLED_SYSTEM, manager.get(plugin.spec.id)?.origin)
@@ -145,6 +146,7 @@ class BundledConversationPluginCatalogTest {
         assertFalse(BundledConversationPluginCatalog.verifier.isTrustedBundled(modelSpec.copy(requestedCapabilities = setOf("android.shell"))))
         val untrusted = BundledPluginVerifier { false }
         assertFalse(untrusted.isTrustedBundled(modelSpec))
+        assertTrue(BundledConversationPluginCatalog.verifier.isTrustedBundled(skillPluginSpec()))
         assertTrue(BundledConversationPluginCatalog.verifier.isTrustedBundled(workspaceManagerPluginSpec()))
         assertTrue(BundledConversationPluginCatalog.verifier.isTrustedBundled(sessionManagerPluginSpec()))
         assertTrue(BundledConversationPluginCatalog.verifier.isTrustedBundled(modelProviderRegistryPluginSpec()))

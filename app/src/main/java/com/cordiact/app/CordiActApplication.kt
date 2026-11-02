@@ -21,6 +21,7 @@ import com.cordiact.core.conversation.SessionManagerService
 import com.cordiact.core.plugin.ManagedPlugin
 import com.cordiact.core.plugin.PluginLifecycleException
 import com.cordiact.core.plugin.PluginState
+import com.cordiact.core.skill.SkillIndexRenderer
 import com.cordiact.core.tool.ToolManagerService
 import com.cordiact.core.file.WorkspaceFileService
 import com.cordiact.core.sandbox.SandboxManagerPlugin
@@ -68,6 +69,26 @@ class CordiActApplication : Application() {
     val modelProviders: ModelProviderRegistryService get() = conversationCatalog.modelProviderRegistryPlugin
     val sessions: SessionManagerService get() = sessionManagerPlugin
     val tools: ToolManagerService get() = conversationCatalog.toolManagerService
+
+    private val skillIndexRenderer = SkillIndexRenderer()
+
+    /**
+     * The skill catalog for a Workspace, as a system-prompt block.
+     *
+     * Rebuilt per turn rather than cached for the session: a skill added or removed between
+     * turns must take effect immediately, and a stale index would offer the model a file that
+     * no longer exists.
+     */
+    private fun skillIndexFor(workspaceId: String): String? = try {
+        // Refresh between turns so Workspace file edits affect the next request.
+        conversationCatalog.skillPlugin.invalidate(workspaceId)
+        val catalog = conversationCatalog.skillPlugin.catalog(workspaceId)
+        val index = skillIndexRenderer.render(catalog)
+        index.text.takeIf { it.isNotBlank() }
+    } catch (e: Exception) {
+        // A broken catalog must not block the user's message.
+        null
+    }
     val workspaceFiles: WorkspaceFileService get() = conversationCatalog.fileManager
 
     override fun onCreate() {
@@ -112,6 +133,7 @@ class CordiActApplication : Application() {
                 onEvent = onEvent,
                 transientContext = referencedFiles,
                 parameters = parameters,
+                systemContext = skillIndexFor(envelope.context.workspaceId),
             )
         })
         sandboxManagerPlugin = BundledConversationPluginCatalog.createSandboxManager(applicationInfo.uid)
