@@ -45,10 +45,27 @@ data class MentionDescriptor(
     val workspaceId: String,
     val parentId: String? = null,
     val relativePath: String? = null,
+    /**
+     * The subtree this reference authorizes, as a Workspace-relative prefix.
+     *
+     * Null means the whole Workspace (`@workspace`); `"memory/"` means only memory
+     * (`@workspace：记忆`). The grant is the reference path itself rather than a separate
+     * capability flag, so what the user picked and what they authorized cannot drift apart.
+     */
+    val authorizedPrefix: String? = null,
     val requiredCapabilities: Set<String> = emptySet(),
 ) {
     init {
         require(id.isNotBlank() && label.isNotBlank() && workspaceId.isNotBlank())
+        require(authorizedPrefix == null || !authorizedPrefix.startsWith("/")) {
+            "Authorized prefix must be Workspace-relative: $authorizedPrefix"
+        }
+    }
+
+    /** True when [path] falls inside this reference's granted subtree. */
+    fun authorizes(path: String): Boolean {
+        val prefix = authorizedPrefix ?: return true
+        return path.startsWith(prefix) || path == prefix.trimEnd('/')
     }
 }
 
