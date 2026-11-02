@@ -2,6 +2,7 @@ package com.cordiact.app.file
 
 import com.cordiact.core.file.WorkspaceFileService
 import com.cordiact.core.file.WorkspaceFileException
+import com.cordiact.core.tool.GrantedScopeAccess
 import com.cordiact.core.tool.InMemoryToolDefinitionRegistry
 import com.cordiact.core.tool.ToolArguments
 import com.cordiact.core.tool.ToolDefinition
@@ -28,6 +29,9 @@ fun registerWorkspaceFileTools(registry: InMemoryToolDefinitionRegistry, files: 
                     listOf(
                         ToolParameter("directory", ToolValueType.STRING),
                         ToolParameter("cursor", ToolValueType.STRING),
+                        // Only useful when the turn referenced another Workspace; omitted means
+                        // the session's own Workspace.
+                        ToolParameter("workspace", ToolValueType.STRING),
                     ),
                     allowAdditional = false,
                 ),
@@ -36,7 +40,9 @@ fun registerWorkspaceFileTools(registry: InMemoryToolDefinitionRegistry, files: 
             executor = { context, arguments ->
                 val directory = arguments.string("directory", required = false).orEmpty()
                 val cursor = arguments.string("cursor", required = false)
-                val page = files.list(context.workspaceId, directory, cursor = cursor, limit = 100)
+                val target = arguments.string("workspace", required = false) ?: context.workspaceId
+                requireReadable(context, target, directory)
+                val page = files.list(target, directory, cursor = cursor, limit = 100)
                 toolResult(
                     "entries" to ToolValue.ArrayValue(page.entries.map { entry ->
                         ToolValue.ObjectValue(
@@ -64,6 +70,7 @@ fun registerWorkspaceFileTools(registry: InMemoryToolDefinitionRegistry, files: 
                         ToolParameter("path", ToolValueType.STRING, required = true),
                         ToolParameter("offset", ToolValueType.NUMBER),
                         ToolParameter("maxBytes", ToolValueType.NUMBER),
+                        ToolParameter("workspace", ToolValueType.STRING),
                     ),
                 ),
                 ownerPluginId = FILE_MANAGER_PLUGIN_ID,
@@ -73,7 +80,9 @@ fun registerWorkspaceFileTools(registry: InMemoryToolDefinitionRegistry, files: 
                 val offset = arguments.long("offset", default = 0L)
                 val maxBytes = arguments.int("maxBytes", default = MAX_TEXT_BYTES)
                 if (offset < 0 || maxBytes !in 1..MAX_TEXT_BYTES) throw invalidArgument()
-                val content = files.read(context.workspaceId, path, offset, maxBytes)
+                val target = arguments.string("workspace", required = false) ?: context.workspaceId
+                requireReadable(context, target, path)
+                val content = files.read(target, path, offset, maxBytes)
                 val text = try {
                     Charsets.UTF_8.newDecoder()
                         .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
@@ -111,11 +120,34 @@ fun registerWorkspaceFileTools(registry: InMemoryToolDefinitionRegistry, files: 
                 val path = arguments.string("path", required = true)!!
                 val text = arguments.string("text", required = true)!!
                 val expectedRevision = arguments.string("expectedRevision", required = false)
+                // Writing is never cross-Workspace. A read grant must not silently become a
+                // write grant: `@` authorizes inspection, and letting it mutate another
+                // Workspace would be a permission the user never granted.
                 val mutation = files.write(context.workspaceId, path, text.toByteArray(Charsets.UTF_8), expectedRevision)
                 toolResult("revision" to (mutation.revision?.let(ToolValue::StringValue) ?: ToolValue.NullValue))
             },
         ),
     )
+}
+
+/**
+ * Enforces the turn's read grant for [targetWorkspaceId].
+ *
+ * Called on every list and read, not once per turn: the grant is an authorization that travels
+ * with the tool call, and checking it here is what makes `@` a range rather than a preload.
+ */
+private fun requireReadable(
+    context: ToolInvocationContext,
+    targetWorkspaceId: String,
+    path: String,
+) {
+    when (val decision = GrantedScopeAccess.check(context, targetWorkspaceId, path)) {
+        is GrantedScopeAccess.Decision.Allowed -> Unit
+        is GrantedScopeAccess.Decision.Denied -> throw ToolManagerException(
+            ToolManagerException.Code.CAPABILITY_DENIED,
+            decision.reason,
+        )
+    }
 }
 
 private fun ToolArguments.string(name: String, required: Boolean): String? = when (val value = values[name]) {

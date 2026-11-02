@@ -55,7 +55,44 @@ data class ToolAvailability(
     val dispatchable: Boolean get() = enabledForWorkspace && ownerEnabled && capabilitiesGranted
 }
 
-data class ToolInvocationContext(val workspaceId: String, val requestId: String? = null)
+/**
+ * A Workspace the current turn may read from, and how much of it.
+ *
+ * `@` is an authorization, not an attachment: it grants a range and the model then decides
+ * what to read through tools. Nothing is pre-loaded, so the grant has to travel with the tool
+ * call rather than being applied once when the turn starts.
+ */
+data class GrantedScope(
+    val workspaceId: String,
+    /** Workspace-relative subtree, or null for the whole Workspace. */
+    val prefix: String? = null,
+) {
+    init {
+        require(workspaceId.isNotBlank()) { "Granted Workspace must not be blank" }
+        require(prefix == null || !prefix.startsWith("/")) { "Scope prefix must be relative: $prefix" }
+    }
+}
+
+data class ToolInvocationContext(
+    /** The Workspace the session belongs to. Always readable. */
+    val workspaceId: String,
+    val requestId: String? = null,
+    /**
+     * Additional Workspaces this turn may read.
+     *
+     * Empty for an ordinary turn. Populated from `@` references, and only with what the
+     * authorization step approved. Tools that do not read files ignore it.
+     */
+    val grantedScopes: List<GrantedScope> = emptyList(),
+) {
+    /** The grant covering [targetWorkspaceId], or null when it is not readable this turn. */
+    fun scopeFor(targetWorkspaceId: String): GrantedScope? =
+        grantedScopes.firstOrNull { it.workspaceId == targetWorkspaceId }
+
+    /** True when this turn may read from [targetWorkspaceId] at all. */
+    fun canRead(targetWorkspaceId: String): Boolean =
+        targetWorkspaceId == workspaceId || scopeFor(targetWorkspaceId) != null
+}
 
 data class ToolDefinition(
     val descriptor: ToolDescriptor,
@@ -201,6 +238,11 @@ class ToolManagerPlugin(
 
     override fun invoke(context: ToolInvocationContext, toolId: String, arguments: ToolArguments): ToolResult {
         validateWorkspace(context.workspaceId)
+        // Every granted scope must still be a live Workspace. A grant captured when the turn
+        // started must not survive the Workspace being archived mid-turn.
+        for (scope in context.grantedScopes) {
+            validateWorkspace(scope.workspaceId)
+        }
         checkManagerEnabled()
         val definition = registry.get(toolId) ?: throw failure(
             ToolManagerException.Code.TOOL_NOT_REGISTERED,
