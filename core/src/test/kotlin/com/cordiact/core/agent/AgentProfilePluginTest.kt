@@ -10,8 +10,8 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-private const val WORKSPACE = "ws-1"
-private const val OTHER_WORKSPACE = "ws-2"
+private const val WORKSPACE = PROFILE_WORKSPACE
+private const val OTHER_WORKSPACE = PROFILE_OTHER_WORKSPACE
 private const val PROFILE = "reviewer"
 
 class AgentProfilePluginTest {
@@ -128,7 +128,7 @@ class AgentProfilePluginTest {
 
     @Test
     fun profilesAreWorkspaceScoped() {
-        val store = InMemoryStore()
+        val store = InMemoryProfileStore()
         val plugin = plugin(profiles = emptyList(), store = store)
         plugin.save(profile())
 
@@ -236,7 +236,7 @@ class AgentProfilePluginTest {
 
     private fun plugin(
         profiles: List<AgentProfile>,
-        store: InMemoryStore = InMemoryStore().apply { profiles.forEach(::insert) },
+        store: InMemoryProfileStore = InMemoryProfileStore().apply { profiles.forEach(::insert) },
         files: Map<String, String> = emptyMap(),
         registered: Set<String> = emptySet(),
         enabled: Set<String> = emptySet(),
@@ -244,7 +244,7 @@ class AgentProfilePluginTest {
         granted: Set<String> = emptySet(),
         archived: Boolean = false,
     ): AgentProfilePlugin = AgentProfilePlugin(
-        workspaceManager = FakeWorkspaces(archived),
+        workspaceManager = FakeWorkspaceManager(archived),
         store = store,
         tools = object : ToolVisibility {
             override fun enabledToolIds(workspaceId: String) = enabled
@@ -256,49 +256,4 @@ class AgentProfilePluginTest {
         },
         grantedCapabilities = granted,
     ).also { it.onEnable() }
-}
-
-private class InMemoryStore : AgentProfileStore {
-    private val rows = mutableMapOf<Triple<String, String, Int>, AgentProfile>()
-
-    override fun list(workspaceId: String) =
-        rows.values.filter { it.workspaceId == workspaceId }
-
-    override fun get(workspaceId: String, id: AgentProfileId, version: Int) =
-        rows[Triple(workspaceId, id.value, version)]
-
-    override fun latest(workspaceId: String, id: AgentProfileId) =
-        rows.values.filter { it.workspaceId == workspaceId && it.id == id }.maxByOrNull { it.version }
-
-    override fun insert(profile: AgentProfile): AgentProfile {
-        rows[Triple(profile.workspaceId, profile.id.value, profile.version)] = profile
-        return profile
-    }
-
-    override fun exists(workspaceId: String, id: AgentProfileId, version: Int) =
-        rows.containsKey(Triple(workspaceId, id.value, version))
-}
-
-private class FakeWorkspaces(private val archived: Boolean) : WorkspaceManagerService {
-    private fun workspace(id: String) = Workspace(
-        id = id,
-        name = id,
-        createdAtMillis = 0,
-        updatedAtMillis = 0,
-        archivedAtMillis = if (archived) 1 else null,
-    )
-
-    override fun initializeDefaultIfEligible() = workspace(WORKSPACE)
-    override fun create(name: String) = workspace(WORKSPACE)
-    override fun get(workspaceId: String) = if (workspaceId == WORKSPACE || workspaceId == OTHER_WORKSPACE) workspace(workspaceId) else null
-    override fun list(includeArchived: Boolean) = listOf(workspace(WORKSPACE))
-    override fun rename(workspaceId: String, name: String) = workspace(workspaceId)
-    override fun archive(workspaceId: String) = workspace(workspaceId)
-    override fun restore(workspaceId: String) = workspace(workspaceId)
-    override fun select(workspaceId: String) = workspace(workspaceId)
-    override fun activeWorkspace() = workspace(WORKSPACE)
-    override fun resolveRoot(workspaceId: String): File = File(System.getProperty("java.io.tmpdir"), workspaceId)
-    override fun resolveSessionWorkspace(workspaceId: String) = workspace(workspaceId)
-    override fun findSessionWorkspace(workspaceId: String) =
-        if (workspaceId == WORKSPACE || workspaceId == OTHER_WORKSPACE) workspace(workspaceId) else null
 }

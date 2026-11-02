@@ -31,6 +31,9 @@ class AndroidWorkspaceFileBackend : WorkspaceFileBackend {
         val after = cursor?.let { decodeCursor(it, relativeDirectory) }
         val entries = directory.listFiles()?.asSequence()
             ?.filterNot { Files.isSymbolicLink(it.toPath()) }
+            // The Workspace root is a git repository, so .git and other hidden entries must
+            // appear in a listing, since .git contains objects for deleted content.
+            ?.filterNot { it.name.startsWith(".") }
             ?.sortedBy { it.name }
             ?.filter { after == null || it.name > after }
             ?.take(limit + 1)
@@ -197,6 +200,9 @@ class AndroidWorkspaceFileBackend : WorkspaceFileBackend {
             (!allowRoot && path.isEmpty()) || segments.size > MAX_RELATIVE_PATH_DEPTH ||
             (path.isNotEmpty() && segments.any { it.isEmpty() || it == "." || it == ".." })) {
             throw invalidPath()
+        }
+        if (path.isNotEmpty() && segments.any { it.startsWith(".") }) {
+            throw failure(WorkspaceFileException.Code.HIDDEN_PATH_NOT_ALLOWED, "Hidden paths are not accessible")
         }
     }
 
