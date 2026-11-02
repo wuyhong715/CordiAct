@@ -134,10 +134,10 @@ class MemoryExtractionWorker(
         val projectDir = applicationContext.filesDir
         val conditions = AndroidDeviceConditions(applicationContext, projectDir).read()
 
-        // The model selection lives in the settings store; wiring it is part of the extraction
-        // IO step. Until then the policy is evaluated with "not selected", which correctly
-        // prevents any background model call from happening by accident.
-        val decision = MemorySchedulingPolicy().evaluate(conditions, modelSelected = false)
+        // Model selection is read from the settings store on every run rather than cached, so
+        // clearing it in the UI stops extraction at the next cycle instead of at next restart.
+        val selected = ExtractionModelSelectionStore(applicationContext).selectedModel()
+        val decision = MemorySchedulingPolicy().evaluate(conditions, modelSelected = selected != null)
 
         return when (decision) {
             is SchedulingDecision.Run -> Result.success()
