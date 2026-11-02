@@ -44,6 +44,20 @@ import com.cordiact.core.tool.ToolExecutor
 import com.cordiact.core.tool.toolManagerPluginSpec
 import com.cordiact.app.file.AndroidWorkspaceFileBackend
 import com.cordiact.app.file.registerWorkspaceFileTools
+import com.cordiact.app.interaction.AndroidFillValueStore
+import com.cordiact.app.interaction.AndroidInteractionDirectory
+import com.cordiact.app.interaction.WorkspaceInteractionAuthorization
+import com.cordiact.integration.interaction.CommandDescriptor
+import com.cordiact.integration.interaction.CommandExecutionResult
+import com.cordiact.integration.interaction.InteractionCommandExecutor
+import com.cordiact.integration.interaction.InteractionCommandRegistry
+import com.cordiact.integration.interaction.InteractionIntegrationPlugin
+import com.cordiact.integration.interaction.InteractionIntegrationService
+import com.cordiact.integration.interaction.INTERACTION_INTEGRATION_PLUGIN_ID
+import com.cordiact.integration.interaction.MutableFillValueStore
+import com.cordiact.integration.interaction.InMemoryFillValueStore
+import com.cordiact.integration.interaction.MentionType
+import com.cordiact.integration.interaction.interactionIntegrationPluginSpec
 import java.io.File
 
 /** Host-owned allowlist for protected built-in plugins. */
@@ -57,6 +71,7 @@ object BundledConversationPluginCatalog {
         deepSeekBackendPluginSpec(),
         modelProviderRegistryPluginSpec(),
         sandboxManagerPluginSpec(),
+        interactionIntegrationPluginSpec(),
     )
 
     val verifier = BundledPluginVerifier { candidate -> candidate in trustedSpecs }
@@ -79,8 +94,15 @@ class BundledConversationPlugins private constructor(
     private val providerConfigStore: ModelProviderConfigStore,
     private val providerCredentialFor: (String) -> ApiKeyProvider,
     private val forgetProviderCredential: (String) -> Unit,
+    private val fillValues: MutableFillValueStore,
 ) {
     val workspaceManager: WorkspaceManagerService get() = workspacePlugin
+    val fillValueStore: MutableFillValueStore get() = fillValues
+    lateinit var interactionPlugin: InteractionIntegrationPlugin
+        private set
+    lateinit var interactionDirectory: AndroidInteractionDirectory
+        private set
+    val interactionService: InteractionIntegrationService get() = interactionPlugin.service
     val fileManager: WorkspaceFileService get() = fileManagerPlugin
     lateinit var toolManagerPlugin: ToolManagerPlugin
         private set
@@ -103,14 +125,47 @@ class BundledConversationPlugins private constructor(
             providerConfigStore,
             forgetProviderCredential,
         )
+        val commandRegistry = InteractionCommandRegistry()
+        val sessionManager = SessionManagerPlugin(conversationStore, workspaceManager)
+        interactionDirectory = AndroidInteractionDirectory(workspaceManager, fileManager, sessionManager)
+        val interactionAuthorization = WorkspaceInteractionAuthorization(
+            sessions = sessionManager,
+            workspaces = workspaceManager,
+            directory = interactionDirectory,
+            commands = commandRegistry,
+        )
+        val interactionService = InteractionIntegrationService(
+            commands = commandRegistry,
+            mentions = interactionDirectory,
+            fills = fillValues,
+            authorization = interactionAuthorization,
+        )
+        interactionPlugin = InteractionIntegrationPlugin(interactionService, commandRegistry)
+        commandRegistry.register(
+            CommandDescriptor(
+                id = "core.interaction.target",
+                name = "目标",
+                ownerPluginId = INTERACTION_INTEGRATION_PLUGIN_ID,
+                allowedMentionTypes = MentionType.entries.toSet(),
+                requiredCapabilities = setOf("interaction.execute"),
+                requiresMention = true,
+                executor = InteractionCommandExecutor { envelope, modelId, submitter, onEvent ->
+                    CommandExecutionResult(
+                        completed = false,
+                        modelCall = submitter.submit(envelope.copy(submittedText = envelope.commandInput), modelId, onEvent),
+                    )
+                },
+            ),
+        )
         return listOf(
             workspacePlugin,
             fileManagerPlugin,
             toolManagerPlugin,
             modelAdapter,
-            SessionManagerPlugin(conversationStore, workspaceManager),
+            sessionManager,
             DeepSeekBackendPlugin(modelAdapter, DeepSeekBackend(apiKeyProvider)),
             modelProviderRegistryPlugin,
+            interactionPlugin,
         )
     }
 
@@ -129,6 +184,7 @@ class BundledConversationPlugins private constructor(
                 AndroidModelProviderConfigStore(context),
                 { providerId -> if (providerId == "deepseek") apiKeyProvider else providerKeys.provider(providerId) },
                 providerKeys::clear,
+                AndroidFillValueStore(context),
             )
         }
 
@@ -139,6 +195,7 @@ class BundledConversationPlugins private constructor(
             providerConfigStore: ModelProviderConfigStore = InMemoryModelProviderConfigStore(),
             providerCredentialFor: ((String) -> ApiKeyProvider)? = null,
             forgetProviderCredential: (String) -> Unit = {},
+            fillValues: MutableFillValueStore = InMemoryFillValueStore(),
         ): BundledConversationPlugins {
             val workspace = WorkspaceManagerPlugin(store, privateRoot)
             val fileManager = FileManagerPlugin(workspace, AndroidWorkspaceFileBackend())
@@ -153,6 +210,7 @@ class BundledConversationPlugins private constructor(
                     if (providerId == "deepseek") apiKeyProvider else ApiKeyProvider { null }
                 },
                 forgetProviderCredential,
+                fillValues,
             )
         }
     }

@@ -96,7 +96,7 @@ class BundledConversationPluginCatalogTest {
             if (pluginId == "core.workspace-manager") PluginState.ENABLED else null
         }
         assertEquals(
-            listOf("core.workspace-manager", "core.file-manager", "core.tool-manager", "core.model-adapter", "core.session-manager", "model.deepseek", "model.providers"),
+            listOf("core.workspace-manager", "core.file-manager", "core.tool-manager", "core.model-adapter", "core.session-manager", "model.deepseek", "model.providers", "core.interaction-integration"),
             plugins.map { it.spec.id },
         )
 
