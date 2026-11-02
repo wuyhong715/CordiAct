@@ -30,8 +30,16 @@ import java.util.concurrent.atomic.AtomicReference
  * half-supported: a protocol that accepts `tools` but cannot relay results would produce a turn
  * that looks like a model failure.
  */
-internal fun supportsToolCalls(protocol: ModelProtocol): Boolean =
-    protocol == ModelProtocol.OPENAI_CHAT_COMPLETIONS
+internal fun supportsToolCalls(protocol: ModelProtocol): Boolean = when (protocol) {
+    // All four carry tools; only the wire shape differs, and each branch of the request and
+    // stream builders handles its own. The function stays so a future protocol has to declare
+    // support explicitly instead of silently half-working.
+    ModelProtocol.OPENAI_CHAT_COMPLETIONS,
+    ModelProtocol.ANTHROPIC_MESSAGES,
+    ModelProtocol.GEMINI_GENERATE_CONTENT,
+    ModelProtocol.OPENAI_RESPONSES,
+    -> true
+}
 
 /** Accumulates one streamed tool call; the name arrives once, arguments in fragments. */
 private class MutableToolCallFragment {
