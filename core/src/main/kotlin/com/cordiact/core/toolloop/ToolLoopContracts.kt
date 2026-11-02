@@ -180,6 +180,7 @@ class ToolLoopPlugin(
                         role = com.cordiact.core.conversation.MessageRole.TOOL,
                         content = "Tool call limit reached; no further tools will run this turn.",
                         toolCallId = call.id,
+                        toolName = call.name,
                     )
                     continue
                 }

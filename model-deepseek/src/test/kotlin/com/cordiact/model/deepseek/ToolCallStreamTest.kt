@@ -16,15 +16,26 @@ import kotlin.test.assertTrue
 class ToolCallStreamTest {
 
     @Test
-    fun onlyOpenAiChatSupportsToolCalls() {
-        assertTrue(supportsToolCalls(ModelProtocol.OPENAI_CHAT_COMPLETIONS))
-        for (protocol in listOf(
-            ModelProtocol.ANTHROPIC_MESSAGES,
-            ModelProtocol.GEMINI_GENERATE_CONTENT,
-            ModelProtocol.OPENAI_RESPONSES,
-        )) {
-            assertTrue(!supportsToolCalls(protocol), "$protocol must not claim tool support")
+    fun everyProtocolSupportsToolCalls() {
+        // All four carry tools; only the wire shape differs. The flag remains so a future
+        // protocol has to declare support explicitly instead of silently half-working.
+        for (protocol in ModelProtocol.entries) {
+            assertTrue(supportsToolCalls(protocol), "$protocol must support tools")
         }
+    }
+
+    @Test
+    fun toolMessageCarriesTheNameGeminiMatchesOn() {
+        // Gemini matches a result to its call by function name, not id, so the name must travel
+        // with the result or that protocol can never pair them.
+        val message = ModelMessage(
+            MessageRole.TOOL,
+            "result",
+            toolCallId = "gemini_files_0",
+            toolName = "workspace.files.list",
+        )
+
+        assertEquals("workspace.files.list", message.toolName)
     }
 
     @Test
