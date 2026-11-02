@@ -153,7 +153,7 @@ class BundledConversationPlugins private constructor(
                 executor = InteractionCommandExecutor { envelope, modelId, submitter, onEvent ->
                     CommandExecutionResult(
                         completed = false,
-                        modelCall = submitter.submit(envelope.copy(submittedText = envelope.commandInput), modelId, onEvent),
+                        modelCall = submitter.submit(envelope.copy(submittedText = envelope.commandInput), modelId, parameters = null, onEvent = onEvent),
                     )
                 },
             ),
