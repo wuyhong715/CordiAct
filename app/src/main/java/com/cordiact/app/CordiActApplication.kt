@@ -28,7 +28,7 @@ import com.cordiact.core.sandbox.SandboxManagerService
 import com.cordiact.core.workspace.WorkspaceManagerService
 import com.cordiact.integration.interaction.InteractionContext
 import com.cordiact.integration.interaction.InteractionModelSubmitter
-import com.cordiact.integration.interaction.MentionType
+import com.cordiact.integration.interaction.ReferenceContextAssembler
 import com.cordiact.integration.interaction.MutableFillValueStore
 
 /** Opens the plugin host, recovers durable state, then registers and enables core conversation plugins. */
@@ -54,6 +54,14 @@ class CordiActApplication : Application() {
     lateinit var sandboxManagerPlugin: SandboxManagerPlugin
         private set
     lateinit var interactionPlugin: com.cordiact.integration.interaction.InteractionIntegrationPlugin
+
+    /**
+     * Turns mentions into bounded, labelled context.
+     *
+     * Owned by the application rather than the directory: the directory answers what is
+     * visible, this decides how much of it enters one turn.
+     */
+    private val referenceAssembler = ReferenceContextAssembler()
         private set
     @Volatile
     var activeSessionId: String? = null
@@ -95,15 +103,14 @@ class CordiActApplication : Application() {
         turnService = ConversationTurnService(sessionManagerPlugin, modelAdapterPlugin)
         interactionPlugin = conversationCatalog.interactionPlugin
         interactionPlugin.service.attachModelSubmitter(InteractionModelSubmitter { envelope, modelId, parameters, onEvent ->
-            val referencedFiles = envelope.mentions
-                .flatMap { it.entities }
-                .filter { it.type == MentionType.FILE }
-                .distinctBy { it.id }
-                .map { descriptor ->
-                    val text = conversationCatalog.interactionDirectory.readText(envelope.context, descriptor)
-                        ?: error("Referenced file is no longer readable: ${descriptor.id}")
-                    "<referenced-file id=\"${descriptor.id}\" path=\"${descriptor.relativePath}\">\n$text\n</referenced-file>"
-                }
+            // Assembly (budget, truncation, labelling) and the Workspace boundary live in the
+            // assembler rather than here, so one unreadable reference degrades to a skip
+            // instead of aborting the whole turn.
+            val assembly = referenceAssembler.assembleAuthorized(
+                mentions = envelope.mentions,
+                context = envelope.context,
+            ) { descriptor -> conversationCatalog.interactionDirectory.readText(envelope.context, descriptor) }
+            val referencedFiles = assembly.render()?.let { listOf(it) } ?: emptyList()
             val prompt = if (envelope.command == null) envelope.submittedText else envelope.commandInput
             turnService.submit(
                 sessionId = envelope.context.sessionId,
