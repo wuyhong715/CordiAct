@@ -2,6 +2,7 @@ package com.cordiact.app.conversation
 
 import android.content.Context
 import com.cordiact.app.skill.AndroidSkillFileSource
+import com.cordiact.app.skill.registerSkillTools
 import com.cordiact.core.skill.SkillPlugin
 import com.cordiact.core.skill.skillPluginSpec
 import com.cordiact.app.model.AndroidDeepSeekApiKeyStore
@@ -120,6 +121,7 @@ class BundledConversationPlugins private constructor(
     fun create(stateLookup: ToolPluginStateLookup): List<ManagedPlugin> {
         registerWorkspaceFileTools(registry, fileManager)
         skillPlugin = SkillPlugin(AndroidSkillFileSource(fileManager))
+        registerSkillTools(registry, skillPlugin)
         toolManagerPlugin = ToolManagerPlugin(
             registry = registry,
             preferences = conversationStore,

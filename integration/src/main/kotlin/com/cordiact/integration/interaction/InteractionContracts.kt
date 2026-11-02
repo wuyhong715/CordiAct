@@ -347,6 +347,8 @@ class InteractionIntegrationService(
                         synchronized(callLifecycleLock) { activeCalls.remove(task.id) }
                         taskTracker.finish(task.id, InteractionTaskState.COMPLETED)
                     }
+                    // Tool rounds are internal to the turn; this layer only tracks completion.
+                    is ModelEvent.ToolCallsRequested -> Unit
                     is ModelEvent.Failed -> if (terminal.compareAndSet(false, true)) {
                         synchronized(callLifecycleLock) { activeCalls.remove(task.id) }
                         taskTracker.finish(task.id, InteractionTaskState.FAILED, event.message)
@@ -427,6 +429,7 @@ class InteractionIntegrationService(
                     synchronized(callLifecycleLock) { activeCalls.remove(callId) }
                 }
                 is ModelEvent.Delta -> Unit
+                is ModelEvent.ToolCallsRequested -> Unit
             }
             onEvent(event)
         }
