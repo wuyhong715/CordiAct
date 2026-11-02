@@ -1,5 +1,6 @@
 package com.cordiact.integration.interaction
 
+import com.cordiact.core.conversation.GenerationParameters
 import com.cordiact.core.conversation.ModelCall
 import com.cordiact.core.conversation.ModelEvent
 import com.cordiact.core.conversation.ModelId
@@ -209,7 +210,16 @@ data class InteractionEnvelope(
 
 /** Host-owned adapter to the existing ConversationTurnService; model choice stays provider-neutral. */
 fun interface InteractionModelSubmitter {
-    fun submit(envelope: InteractionEnvelope, modelId: ModelId, onEvent: (ModelEvent) -> Unit): ModelCall
+    /**
+     * [parameters] carries this turn's sampling overrides; null means "use the provider defaults".
+     * Kept as the single abstract method so SAM conversion stays unambiguous.
+     */
+    fun submit(
+        envelope: InteractionEnvelope,
+        modelId: ModelId,
+        parameters: GenerationParameters?,
+        onEvent: (ModelEvent) -> Unit,
+    ): ModelCall
 }
 
 data class PreparedInteraction(
@@ -279,6 +289,7 @@ class InteractionIntegrationService(
     fun dispatch(
         prepared: PreparedInteraction,
         modelId: ModelId,
+        parameters: GenerationParameters? = null,
         onEvent: (ModelEvent) -> Unit,
     ): CommandExecutionResult {
         check(enabled) { "Interaction Integration plugin is disabled" }
@@ -295,10 +306,14 @@ class InteractionIntegrationService(
             currentDecision.reason ?: "Authorization was revoked before execution"
         }
         val submitter = requireNotNull(modelSubmitter) { "Model submission is not configured" }
+        // Bind this turn's overrides so command executors inherit them without changing their contract.
+        val boundSubmitter = InteractionModelSubmitter { envelopeToSubmit, id, overrides, onEvent ->
+            submitter.submit(envelopeToSubmit, id, overrides ?: parameters, onEvent)
+        }
         val task = taskTracker.start(command, envelope.context)
         val terminal = java.util.concurrent.atomic.AtomicBoolean(false)
         val result = try {
-            command.executor.execute(envelope, modelId, submitter) { event ->
+            command.executor.execute(envelope, modelId, boundSubmitter) { event ->
                 when (event) {
                     is ModelEvent.Completed -> if (terminal.compareAndSet(false, true)) {
                         synchronized(callLifecycleLock) { activeCalls.remove(task.id) }
@@ -356,7 +371,12 @@ class InteractionIntegrationService(
     }
 
     /** Ordinary input may use the model but never dispatches a registered behavior command. */
-    fun submitOrdinary(prepared: PreparedInteraction, modelId: ModelId, onEvent: (ModelEvent) -> Unit): ModelCall {
+    fun submitOrdinary(
+        prepared: PreparedInteraction,
+        modelId: ModelId,
+        parameters: GenerationParameters? = null,
+        onEvent: (ModelEvent) -> Unit,
+    ): ModelCall {
         check(enabled) { "Interaction Integration plugin is disabled" }
         val envelope = requireNotNull(prepared.envelope) { "Interaction has syntax errors" }
         require(prepared.diagnostics.isEmpty()) { "Interaction has syntax errors" }
@@ -373,7 +393,7 @@ class InteractionIntegrationService(
         }
         val callId = "ordinary:${java.util.UUID.randomUUID()}"
         val terminal = java.util.concurrent.atomic.AtomicBoolean(false)
-        val delegate = submitter.submit(envelope, modelId) { event ->
+        val delegate = submitter.submit(envelope, modelId, parameters) { event ->
             when (event) {
                 is ModelEvent.Completed, is ModelEvent.Failed -> if (terminal.compareAndSet(false, true)) {
                     synchronized(callLifecycleLock) { activeCalls.remove(callId) }

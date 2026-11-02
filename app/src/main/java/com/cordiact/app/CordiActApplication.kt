@@ -94,7 +94,7 @@ class CordiActApplication : Application() {
         sessionManagerPlugin = plugins.filterIsInstance<SessionManagerPlugin>().single()
         turnService = ConversationTurnService(sessionManagerPlugin, modelAdapterPlugin)
         interactionPlugin = conversationCatalog.interactionPlugin
-        interactionPlugin.service.attachModelSubmitter(InteractionModelSubmitter { envelope, modelId, onEvent ->
+        interactionPlugin.service.attachModelSubmitter(InteractionModelSubmitter { envelope, modelId, parameters, onEvent ->
             val referencedFiles = envelope.mentions
                 .flatMap { it.entities }
                 .filter { it.type == MentionType.FILE }
@@ -111,6 +111,7 @@ class CordiActApplication : Application() {
                 text = prompt,
                 onEvent = onEvent,
                 transientContext = referencedFiles,
+                parameters = parameters,
             )
         })
         sandboxManagerPlugin = BundledConversationPluginCatalog.createSandboxManager(applicationInfo.uid)

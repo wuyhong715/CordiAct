@@ -1,6 +1,7 @@
 package com.cordiact.model.deepseek
 
 import com.cordiact.core.conversation.MessageRole
+import com.cordiact.core.conversation.GenerationParameters
 import com.cordiact.core.conversation.ModelBackend
 import com.cordiact.core.conversation.ModelCall
 import com.cordiact.core.conversation.ModelDescriptor
@@ -39,6 +40,8 @@ class ModelProviderConfig private constructor(
     val connectTimeoutMillis: Int,
     val readTimeoutMillis: Int,
     internal val allowInsecureLoopbackForTests: Boolean,
+    /** Sampling defaults for this provider; per-request values override them field by field. */
+    val defaults: GenerationParameters,
 ) {
     constructor(
         providerId: String,
@@ -48,23 +51,25 @@ class ModelProviderConfig private constructor(
         models: List<String>,
         connectTimeoutMillis: Int = 15_000,
         readTimeoutMillis: Int = 120_000,
-    ) : this(providerId, displayName, protocol, endpoint, models, connectTimeoutMillis, readTimeoutMillis, false)
+        defaults: GenerationParameters = GenerationParameters.NONE,
+    ) : this(providerId, displayName, protocol, endpoint, models, connectTimeoutMillis, readTimeoutMillis, false, defaults)
 
     internal fun duplicate(
         providerId: String = this.providerId,
         models: List<String> = this.models,
         allowInsecureLoopbackForTests: Boolean = false,
     ) = ModelProviderConfig(
-        providerId, displayName, protocol, endpoint, models, connectTimeoutMillis, readTimeoutMillis, allowInsecureLoopbackForTests,
+        providerId, displayName, protocol, endpoint, models, connectTimeoutMillis, readTimeoutMillis, allowInsecureLoopbackForTests, defaults,
     )
 
     override fun equals(other: Any?): Boolean = other is ModelProviderConfig &&
         providerId == other.providerId && displayName == other.displayName && protocol == other.protocol &&
         endpoint == other.endpoint && models == other.models && connectTimeoutMillis == other.connectTimeoutMillis &&
-        readTimeoutMillis == other.readTimeoutMillis && allowInsecureLoopbackForTests == other.allowInsecureLoopbackForTests
+        readTimeoutMillis == other.readTimeoutMillis && allowInsecureLoopbackForTests == other.allowInsecureLoopbackForTests &&
+        defaults == other.defaults
 
     override fun hashCode(): Int = listOf(
-        providerId, displayName, protocol, endpoint, models, connectTimeoutMillis, readTimeoutMillis, allowInsecureLoopbackForTests,
+        providerId, displayName, protocol, endpoint, models, connectTimeoutMillis, readTimeoutMillis, allowInsecureLoopbackForTests, defaults,
     ).hashCode()
 
     companion object {
@@ -76,8 +81,9 @@ class ModelProviderConfig private constructor(
             models: List<String>,
             connectTimeoutMillis: Int = 15_000,
             readTimeoutMillis: Int = 120_000,
+            defaults: GenerationParameters = GenerationParameters.NONE,
         ) = ModelProviderConfig(
-            providerId, displayName, protocol, endpoint, models, connectTimeoutMillis, readTimeoutMillis, true,
+            providerId, displayName, protocol, endpoint, models, connectTimeoutMillis, readTimeoutMillis, true, defaults,
         )
     }
     init {
@@ -414,12 +420,15 @@ class ConfigurableModelBackend(
         }
     }
 
-    private fun requestBody(request: ModelGenerationRequest): JsonObject = when (config.protocol) {
+    private fun requestBody(request: ModelGenerationRequest): JsonObject {
+        val parameters = config.defaults.mergedWith(request.parameters)
+        return when (config.protocol) {
         ModelProtocol.OPENAI_CHAT_COMPLETIONS -> JsonObject().apply {
             addProperty("model", request.model.modelId)
             addProperty("stream", true)
-            request.temperature?.let { addProperty("temperature", it) }
-            request.maxOutputTokens?.let { addProperty("max_tokens", it) }
+            parameters.temperature?.let { addProperty("temperature", it) }
+            parameters.maxOutputTokens?.let { addProperty("max_tokens", it) }
+            parameters.topP?.let { addProperty("top_p", it) }
             add("messages", JsonArray().apply {
                 request.messages.forEach { message -> add(JsonObject().apply {
                     addProperty("role", openAiRole(message.role))
@@ -429,11 +438,12 @@ class ConfigurableModelBackend(
         }
         ModelProtocol.ANTHROPIC_MESSAGES -> JsonObject().apply {
             addProperty("model", request.model.modelId)
-            addProperty("max_tokens", request.maxOutputTokens ?: DEFAULT_MAX_OUTPUT_TOKENS)
+            addProperty("max_tokens", parameters.maxOutputTokens ?: DEFAULT_MAX_OUTPUT_TOKENS)
             addProperty("stream", true)
             val system = request.messages.filter { it.role == MessageRole.SYSTEM }.joinToString("\n") { it.content }
             if (system.isNotEmpty()) addProperty("system", system)
-            request.temperature?.let { addProperty("temperature", it) }
+            parameters.temperature?.let { addProperty("temperature", it) }
+            parameters.topP?.let { addProperty("top_p", it) }
             add("messages", JsonArray().apply {
                 request.messages.filter { it.role != MessageRole.SYSTEM }.forEach { message -> add(JsonObject().apply {
                     addProperty("role", if (message.role == MessageRole.ASSISTANT) "assistant" else "user")
@@ -452,17 +462,20 @@ class ConfigurableModelBackend(
                     add("parts", JsonArray().apply { add(JsonObject().apply { addProperty("text", message.content) }) })
                 }) }
             })
-            request.temperature?.let { temperature -> add("generationConfig", JsonObject().apply { addProperty("temperature", temperature) }) }
-            request.maxOutputTokens?.let { max ->
-                val generation = getAsJsonObject("generationConfig") ?: JsonObject().also { add("generationConfig", it) }
-                generation.addProperty("maxOutputTokens", max)
+            if (parameters.temperature != null || parameters.maxOutputTokens != null || parameters.topP != null) {
+                add("generationConfig", JsonObject().apply {
+                    parameters.temperature?.let { addProperty("temperature", it) }
+                    parameters.maxOutputTokens?.let { addProperty("maxOutputTokens", it) }
+                    parameters.topP?.let { addProperty("topP", it) }
+                })
             }
         }
         ModelProtocol.OPENAI_RESPONSES -> JsonObject().apply {
             addProperty("model", request.model.modelId)
             addProperty("stream", true)
-            request.maxOutputTokens?.let { addProperty("max_output_tokens", it) }
-            request.temperature?.let { addProperty("temperature", it) }
+            parameters.maxOutputTokens?.let { addProperty("max_output_tokens", it) }
+            parameters.temperature?.let { addProperty("temperature", it) }
+            parameters.topP?.let { addProperty("top_p", it) }
             add("input", JsonArray().apply {
                 request.messages.forEach { message -> add(JsonObject().apply {
                     addProperty("role", when (message.role) {
@@ -474,6 +487,7 @@ class ConfigurableModelBackend(
                     addProperty("content", message.content)
                 }) }
             })
+            }
         }
     }
 

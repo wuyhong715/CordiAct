@@ -42,6 +42,18 @@ APK builds are not run locally; project policy assigns APK packaging to GitHub A
 - On PR head `bedc1d97694df917edef3e9eb0ff87486fdd73ac`, GitHub Actions CI run `41312606783` passed; Android build run `41312606740` passed `Build and test`, uploaded `cordiact-debug-apk` and `cordiact-device-validation-apks`, and passed isolated-service proof on API 29 and API 35. Each platform report shows 16 `IsolatedServiceSandboxRuntimeTest` + 4 `SandboxJsPocServiceTest` cases, with zero failures/errors/skips. The build job includes the repository Gradle test suite, including the corrected model backend tests.
 - Local Gradle still cannot resolve AGP 9.4.1, so local verification is unavailable; successful CI is the verification source. The PR remains open and unmerged.
 
+## Sampling parameters
+
+`GenerationParameters` is the provider-neutral shape (`temperature`, `maxOutputTokens`, `topP`) shared by persisted provider defaults and per-turn overrides.
+
+- Validation happens at construction, so an out-of-range value fails before any network call: temperature 0..2, topP 0..1, maxOutputTokens 1..1,000,000.
+- Two layers combine, per-request values winning field by field: `ModelProviderConfig.defaults` (persisted with provider metadata) and `ModelGenerationRequest.parameters` (per turn).
+- Per-turn overrides reach the backend through `ConversationTurnService.submit(..., parameters = ...)` and `InteractionIntegrationService.submitOrdinary/dispatch(..., parameters = ...)`.
+- `ModelProviderRegistryService.updateProvider(config)` adjusts an existing provider in place. It rebuilds the backend, persists the new defaults atomically, and preserves the stored credential because the provider id is unchanged. A failed attach restores both the previous config and the previous backend.
+- Protocol mapping: `temperature` and `top_p` in OpenAI Chat Completions / Anthropic / OpenAI Responses; Gemini uses `generationConfig.temperature` and `generationConfig.topP`. Anthropic always sends `max_tokens` (default 1024) because the API requires it.
+
+Tests cover provider defaults applying when the request is bare, field-by-field override, `topP` presence in all four protocol bodies, out-of-range rejection, and config-store round-trips. No UI exists for these settings yet.
+
 ## Security boundaries
 
 Provider metadata is stored separately from SQLite and contains no key field. API keys are resolved through Android Keystore-backed AES-GCM storage. Missing keys fail before network connection. App provider endpoints require HTTPS. The public config constructors do not expose loopback overrides; loopback HTTP can only be constructed through module-internal test factories, and the app registry rejects test-only endpoints on load/registration. Endpoint userinfo/fragments and credential-like query parameters are rejected. Provider errors do not include response bodies or credentials.

@@ -1,5 +1,6 @@
 package com.cordiact.model.deepseek
 
+import com.cordiact.core.conversation.GenerationParameters
 import com.cordiact.core.conversation.MessageRole
 import com.cordiact.core.conversation.ModelAdapterPlugin
 import com.cordiact.core.conversation.ModelEvent
@@ -184,6 +185,224 @@ class ConfigurableModelBackendTest {
     }
 
     @Test
+    fun providerDefaultsApplyWhenTheRequestCarriesNoParameters() {
+        val server = startServer("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+        val config = ModelProviderConfig.forLoopbackTest(
+            providerId = "preset",
+            displayName = "Preset",
+            protocol = ModelProtocol.OPENAI_CHAT_COMPLETIONS,
+            endpoint = "${server.baseUrl}/v1/chat/completions",
+            models = listOf("model"),
+            defaults = GenerationParameters(temperature = 0.2, maxOutputTokens = 256, topP = 0.9),
+        )
+        val backend = ConfigurableModelBackend(config, ApiKeyProvider { "key" })
+        val done = CountDownLatch(1)
+        try {
+            backend.generate(requestWithoutParameters("preset", "model")) { event ->
+                if (event is ModelEvent.Completed || event is ModelEvent.Failed) done.countDown()
+            }
+            assertTrue(done.await(5, TimeUnit.SECONDS))
+            val json = JsonParser.parseString(server.requestBody).asJsonObject
+            assertEquals(0.2, json.get("temperature").asDouble)
+            assertEquals(256, json.get("max_tokens").asInt)
+            assertEquals(0.9, json.get("top_p").asDouble)
+        } finally {
+            backend.close()
+            server.close()
+        }
+    }
+
+    @Test
+    fun requestParametersOverrideProviderDefaultsFieldByField() {
+        val server = startServer("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+        val config = ModelProviderConfig.forLoopbackTest(
+            providerId = "preset",
+            displayName = "Preset",
+            protocol = ModelProtocol.OPENAI_CHAT_COMPLETIONS,
+            endpoint = "${server.baseUrl}/v1/chat/completions",
+            models = listOf("model"),
+            defaults = GenerationParameters(temperature = 0.2, maxOutputTokens = 256, topP = 0.9),
+        )
+        val backend = ConfigurableModelBackend(config, ApiKeyProvider { "key" })
+        val done = CountDownLatch(1)
+        try {
+            // Only temperature is overridden; max_tokens and top_p must fall back to the provider.
+            backend.generate(
+                requestWithParameters("preset", "model", GenerationParameters(temperature = 1.1)),
+            ) { event -> if (event is ModelEvent.Completed || event is ModelEvent.Failed) done.countDown() }
+            assertTrue(done.await(5, TimeUnit.SECONDS))
+            val json = JsonParser.parseString(server.requestBody).asJsonObject
+            assertEquals(1.1, json.get("temperature").asDouble)
+            assertEquals(256, json.get("max_tokens").asInt)
+            assertEquals(0.9, json.get("top_p").asDouble)
+        } finally {
+            backend.close()
+            server.close()
+        }
+    }
+
+    @Test
+    fun topPIsMappedIntoEveryProtocolBody() {
+        val cases = listOf(
+            ModelProtocol.OPENAI_CHAT_COMPLETIONS to "top_p",
+            ModelProtocol.ANTHROPIC_MESSAGES to "top_p",
+            ModelProtocol.OPENAI_RESPONSES to "top_p",
+            ModelProtocol.GEMINI_GENERATE_CONTENT to "topP",
+        )
+        cases.forEach { (protocol, key) ->
+            val response = when (protocol) {
+                ModelProtocol.ANTHROPIC_MESSAGES -> "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+                ModelProtocol.GEMINI_GENERATE_CONTENT -> "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"ok\"}]},\"finishReason\":\"STOP\"}]}\n\n"
+                ModelProtocol.OPENAI_RESPONSES -> "event: response.completed\ndata: {\"type\":\"response.completed\"}\n\n"
+                else -> "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"
+            }
+            val server = startServer(response)
+            val endpoint = if (protocol == ModelProtocol.GEMINI_GENERATE_CONTENT) {
+                "${server.baseUrl}/v1beta/models/{model}:streamGenerateContent?alt=sse"
+            } else {
+                "${server.baseUrl}/endpoint"
+            }
+            val config = ModelProviderConfig.forLoopbackTest(
+                providerId = "prov",
+                displayName = "P",
+                protocol = protocol,
+                endpoint = endpoint,
+                models = listOf("m"),
+            )
+            val backend = ConfigurableModelBackend(config, ApiKeyProvider { "key" })
+            val done = CountDownLatch(1)
+            try {
+                backend.generate(requestWithParameters("prov", "m", GenerationParameters(topP = 0.42))) { event ->
+                    if (event is ModelEvent.Completed || event is ModelEvent.Failed) done.countDown()
+                }
+                assertTrue(done.await(5, TimeUnit.SECONDS), "$protocol did not terminate")
+                val json = JsonParser.parseString(server.requestBody).asJsonObject
+                val container = if (protocol == ModelProtocol.GEMINI_GENERATE_CONTENT) json.getAsJsonObject("generationConfig") else json
+                assertEquals(0.42, container.get(key).asDouble, "$protocol must carry $key")
+            } finally {
+                backend.close()
+                server.close()
+            }
+        }
+    }
+
+    @Test
+    fun generationParametersRejectOutOfRangeValues() {
+        assertThrows(IllegalArgumentException::class.java) { GenerationParameters(temperature = 2.1) }
+        assertThrows(IllegalArgumentException::class.java) { GenerationParameters(temperature = -0.1) }
+        assertThrows(IllegalArgumentException::class.java) { GenerationParameters(topP = 1.1) }
+        assertThrows(IllegalArgumentException::class.java) { GenerationParameters(maxOutputTokens = 0) }
+    }
+
+    @Test
+    fun updateProviderChangesDefaultsWithoutTouchingTheCredential() {
+        val adapter = ModelAdapterPlugin()
+        val store = InMemoryModelProviderConfigStore()
+        val forgottenCredentials = mutableListOf<String>()
+        val registry = ModelProviderRegistryPlugin(
+            adapter,
+            { ApiKeyProvider { "test-key" } },
+            store,
+            { forgottenCredentials.add(it) },
+        )
+        adapter.onEnable()
+        registry.onEnable()
+        val original = config(ModelProtocol.OPENAI_CHAT_COMPLETIONS, "custom", "https://api.example.test/v1/chat/completions")
+        try {
+            registry.addProvider(original)
+            val tuned = ModelProviderConfig(
+                providerId = "custom",
+                displayName = "Custom OPENAI_CHAT_COMPLETIONS",
+                protocol = ModelProtocol.OPENAI_CHAT_COMPLETIONS,
+                endpoint = "https://api.example.test/v1/chat/completions",
+                models = listOf("model"),
+                connectTimeoutMillis = 2_000,
+                readTimeoutMillis = 2_000,
+                defaults = GenerationParameters(temperature = 0.7, maxOutputTokens = 1024, topP = 0.85),
+            )
+            registry.updateProvider(tuned)
+
+            assertEquals(listOf(tuned), registry.providers())
+            assertEquals(listOf(tuned), store.load())
+            // The provider id did not change, so its credential must not be revoked.
+            assertTrue(forgottenCredentials.isEmpty())
+            assertTrue(adapter.models().any { it.id == ModelId("custom", "model") })
+        } finally {
+            registry.onDisable()
+            adapter.onDisable()
+        }
+    }
+
+    @Test
+    fun updateProviderRejectsAnUnknownProvider() {
+        val adapter = ModelAdapterPlugin()
+        val registry = ModelProviderRegistryPlugin(adapter, { ApiKeyProvider { "test-key" } }, InMemoryModelProviderConfigStore())
+        adapter.onEnable()
+        registry.onEnable()
+        try {
+            val failure = assertThrows(IllegalArgumentException::class.java) {
+                registry.updateProvider(config(ModelProtocol.OPENAI_CHAT_COMPLETIONS, "ghost", "https://api.example.test/v1/chat/completions"))
+            }
+            assertTrue(failure.message.orEmpty().contains("not configured"))
+        } finally {
+            registry.onDisable()
+            adapter.onDisable()
+        }
+    }
+
+    @Test
+    fun updateProviderRebuildsTheBackendWhenTheProtocolChanges() {
+        val adapter = ModelAdapterPlugin()
+        val store = InMemoryModelProviderConfigStore()
+        val registry = ModelProviderRegistryPlugin(adapter, { ApiKeyProvider { "test-key" } }, store)
+        adapter.onEnable()
+        registry.onEnable()
+        val original = config(ModelProtocol.OPENAI_CHAT_COMPLETIONS, "custom", "https://api.example.test/v1/chat/completions")
+        try {
+            registry.addProvider(original)
+            val switched = ModelProviderConfig(
+                providerId = "custom",
+                displayName = "Custom",
+                protocol = ModelProtocol.ANTHROPIC_MESSAGES,
+                endpoint = "https://api.example.test/v1/messages",
+                models = listOf("model"),
+                defaults = GenerationParameters(temperature = 0.1),
+            )
+            registry.updateProvider(switched)
+            assertEquals(listOf(switched), registry.providers())
+            assertTrue(adapter.models().any { it.id == ModelId("custom", "model") })
+        } finally {
+            registry.onDisable()
+            adapter.onDisable()
+        }
+    }
+
+    @Test
+    fun updateProviderRejectsATestOnlyLoopbackConfig() {
+        val adapter = ModelAdapterPlugin()
+        val registry = ModelProviderRegistryPlugin(adapter, { ApiKeyProvider { "test-key" } }, InMemoryModelProviderConfigStore())
+        adapter.onEnable()
+        registry.onEnable()
+        try {
+            registry.addProvider(config(ModelProtocol.OPENAI_CHAT_COMPLETIONS, "custom", "https://api.example.test/v1/chat/completions"))
+            val loopback = ModelProviderConfig.forLoopbackTest(
+                providerId = "custom",
+                displayName = "Custom",
+                protocol = ModelProtocol.OPENAI_CHAT_COMPLETIONS,
+                endpoint = "http://127.0.0.1:8080/v1/chat/completions",
+                models = listOf("model"),
+            )
+            val failure = assertThrows(IllegalArgumentException::class.java) {
+                registry.updateProvider(loopback)
+            }
+            assertTrue(failure.message.orEmpty().contains("loopback"))
+        } finally {
+            registry.onDisable()
+            adapter.onDisable()
+        }
+    }
+
+    @Test
     fun deepSeekDefaultModelRemainsFlash() {
         assertEquals("deepseek-flash", DeepSeekPreset.DEFAULT_MODEL)
         assertEquals(listOf("deepseek-flash"), DeepSeekPreset.config().models)
@@ -291,6 +510,24 @@ class ConfigurableModelBackendTest {
         }
     }
 
+    private fun requestWithoutParameters(providerId: String, modelId: String) = ModelGenerationRequest(
+        sessionId = "session",
+        model = ModelId(providerId, modelId),
+        messages = listOf(
+            com.cordiact.core.conversation.ModelMessage(MessageRole.USER, "hello user"),
+        ),
+    )
+
+    private fun requestWithParameters(providerId: String, modelId: String, parameters: GenerationParameters) =
+        ModelGenerationRequest(
+            sessionId = "session",
+            model = ModelId(providerId, modelId),
+            messages = listOf(
+                com.cordiact.core.conversation.ModelMessage(MessageRole.USER, "hello user"),
+            ),
+            parameters = parameters,
+        )
+
     private fun request(providerId: String, modelId: String) = ModelGenerationRequest(
         sessionId = "session",
         model = ModelId(providerId, modelId),
@@ -298,8 +535,7 @@ class ConfigurableModelBackendTest {
             com.cordiact.core.conversation.ModelMessage(MessageRole.SYSTEM, "system instruction"),
             com.cordiact.core.conversation.ModelMessage(MessageRole.USER, "hello user"),
         ),
-        temperature = 0.3,
-        maxOutputTokens = 512,
+        parameters = GenerationParameters(temperature = 0.3, maxOutputTokens = 512),
     )
 
     private fun startServer(response: String, contentType: String = "text/event-stream; charset=utf-8"): TestServer {
