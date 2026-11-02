@@ -18,7 +18,47 @@ data class ModelDescriptor(
 
 enum class MessageRole { SYSTEM, USER, ASSISTANT, TOOL }
 
-data class ModelMessage(val role: MessageRole, val content: String)
+/**
+ * One tool the model may call.
+ *
+ * Deliberately mirrors [ToolDescriptor] rather than reusing it: the model contract must not
+ * depend on the tool manager, or a provider adapter would gain the ability to dispatch. This is
+ * a request shape, not a capability.
+ */
+data class ModelToolSpec(
+    val name: String,
+    val description: String,
+    /** JSON Schema object as a string; providers want it as-is. */
+    val parametersJson: String,
+)
+
+/**
+ * A tool call the model asked for.
+ *
+ * [argumentsJson] is kept as raw JSON rather than a parsed map so each protocol can relay what
+ * the model actually sent; parsing happens once, at dispatch, where failures can be reported
+ * back to the model instead of aborting the turn.
+ */
+data class ModelToolCall(
+    val id: String,
+    val name: String,
+    val argumentsJson: String,
+)
+
+data class ModelMessage(
+    val role: MessageRole,
+    val content: String,
+    /** Set on an assistant message that requested tools. */
+    val toolCalls: List<ModelToolCall> = emptyList(),
+    /** Set on a TOOL message, linking the result to the call it answers. */
+    val toolCallId: String? = null,
+) {
+    init {
+        require(role != MessageRole.TOOL || toolCallId != null) {
+            "A tool result must carry the toolCallId it answers"
+        }
+    }
+}
 
 /** Provider-neutral sampling parameters. Null means "not specified at this layer". */
 data class GenerationParameters(
@@ -57,10 +97,21 @@ data class ModelGenerationRequest(
     val messages: List<ModelMessage>,
     /** Per-turn overrides; the provider's stored defaults fill any null field. */
     val parameters: GenerationParameters? = null,
+    /** Tools the model may call this turn. Empty means a plain text completion. */
+    val tools: List<ModelToolSpec> = emptyList(),
 )
 
 sealed interface ModelEvent {
     data class Delta(val text: String) : ModelEvent
+
+    /**
+     * The model finished asking for tools instead of answering.
+     *
+     * Emitted once per response that contains tool calls, before [Completed]. Carrying them in
+     * an event rather than on [Completed] keeps the streaming contract unchanged for callers
+     * that only care about text.
+     */
+    data class ToolCallsRequested(val calls: List<ModelToolCall>) : ModelEvent
     data class Completed(val inputTokens: Long? = null, val outputTokens: Long? = null) : ModelEvent
     data class Failed(val code: String, val message: String, val retryable: Boolean = false) : ModelEvent
 }

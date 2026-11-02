@@ -9,6 +9,12 @@ import com.cordiact.core.conversation.ModelGenerationRequest
 import com.cordiact.core.conversation.ModelId
 import com.cordiact.core.conversation.ModelMessage
 import com.cordiact.core.conversation.SessionManagerService
+import com.cordiact.core.conversation.ModelToolSpec
+import com.cordiact.core.tool.ToolInvocationContext
+import com.cordiact.core.toolloop.ToolDispatcher
+import com.cordiact.core.toolloop.ToolLoopOutcome
+import com.cordiact.core.toolloop.ToolLoopService
+import com.cordiact.core.toolloop.ToolLoopStop
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -18,6 +24,104 @@ class ConversationTurnService(
     private val models: ModelAdapterService,
 ) {
     private val activeSessions = ConcurrentHashMap.newKeySet<String>()
+
+    /**
+     * Submits a turn that may use tools.
+     *
+     * The loop owns message assembly for tool rounds; this service still owns persistence, so a
+     * turn that ends without a final answer stores nothing. Only the final text is saved: the
+     * intermediate tool traffic is scaffolding, and storing it would make the transcript
+     * unreadable and replayed as history on the next turn.
+     */
+    fun submitWithTools(
+        sessionId: String,
+        model: ModelId,
+        text: String,
+        tools: List<ModelToolSpec>,
+        toolLoop: ToolLoopService,
+        dispatcher: ToolDispatcher,
+        toolContext: ToolInvocationContext,
+        parameters: GenerationParameters? = null,
+        systemContext: String? = null,
+        onEvent: (ModelEvent) -> Unit,
+    ): ModelCall {
+        if (tools.isEmpty()) {
+            return submit(sessionId, model, text, emptyList(), parameters, systemContext, onEvent)
+        }
+        require(text.isNotBlank()) { "Message must not be blank" }
+        requireNotNull(sessions.getSession(sessionId)) { "Session does not exist" }
+        check(activeSessions.add(sessionId)) { "A model turn is already active for this Session" }
+
+        val terminal = AtomicBoolean(false)
+        sessions.appendMessage(sessionId, MessageRole.USER, text.trim())
+        val initial = buildList {
+            if (!systemContext.isNullOrBlank()) add(ModelMessage(MessageRole.SYSTEM, systemContext))
+            sessions.messages(sessionId)
+                .filter { it.role == MessageRole.SYSTEM || it.role == MessageRole.USER || it.role == MessageRole.ASSISTANT }
+                .forEach { add(ModelMessage(it.role, it.content)) }
+            add(ModelMessage(MessageRole.USER, text.trim()))
+        }
+
+        val outcome = try {
+            toolLoop.run(toolContext, initial, dispatcher) { messages ->
+                var roundText = StringBuilder()
+                var calls: List<com.cordiact.core.conversation.ModelToolCall> = emptyList()
+                val call = models.generate(
+                    ModelGenerationRequest(
+                        sessionId = sessionId,
+                        model = model,
+                        messages = messages,
+                        parameters = parameters,
+                        tools = tools,
+                    ),
+                ) { event ->
+                    when (event) {
+                        is ModelEvent.Delta -> roundText.append(event.text)
+                        is ModelEvent.ToolCallsRequested -> calls = event.calls
+                        is ModelEvent.Completed -> Unit
+                        is ModelEvent.Failed -> Unit
+                    }
+                    onEvent(event)
+                }
+                // The loop is synchronous per round; cancelling the outer call stops it at the
+                // next check rather than leaving a request in flight.
+                if (terminal.get()) call.cancel()
+                com.cordiact.core.toolloop.ToolLoopRound(roundText.toString(), calls, emptyList())
+            }
+        } catch (e: Exception) {
+            terminal.set(true)
+            activeSessions.remove(sessionId)
+            onEvent(ModelEvent.Failed("tool_loop_error", e.message ?: "Tool loop failed"))
+            return ModelCall { }
+        } finally {
+            activeSessions.remove(sessionId)
+        }
+
+        val finalText = when (outcome) {
+            is ToolLoopOutcome.Completed -> outcome.text
+            is ToolLoopOutcome.Stopped -> outcome.lastText
+        }
+        // The user message is stored before the loop ran, matching the plain path: a turn that
+        // fails must still leave the user's own words behind, and the assistant reply is stored
+        // only once it exists.
+        if (finalText.isNotBlank()) {
+            try {
+                sessions.appendMessage(sessionId, MessageRole.ASSISTANT, finalText)
+            } catch (_: Exception) {
+                onEvent(ModelEvent.Failed("persistence_error", "Could not save model reply"))
+                return ModelCall { }
+            }
+        }
+        if (outcome is ToolLoopOutcome.Stopped) {
+            onEvent(ModelEvent.Failed("tool_loop_stopped", "Turn ended early: ${outcome.reason}"))
+        }
+        onEvent(ModelEvent.Completed())
+        terminal.set(true)
+
+        return ModelCall {
+            if (terminal.compareAndSet(false, true)) activeSessions.remove(sessionId)
+        }
+    }
 
     fun submit(
         sessionId: String,
@@ -83,6 +187,10 @@ class ConversationTurnService(
                                 }
                             }
                         }
+                        // This service owns one plain round trip. A turn that asks for tools is
+                        // driven by the tool loop, which supplies its own send callback; here the
+                        // event is only relayed so the caller can decide.
+                        is ModelEvent.ToolCallsRequested -> Unit
                         is ModelEvent.Failed -> Unit
                     }
                     if (event is ModelEvent.Completed || event is ModelEvent.Failed) {

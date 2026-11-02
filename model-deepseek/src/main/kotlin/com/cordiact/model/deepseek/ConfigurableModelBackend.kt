@@ -6,6 +6,7 @@ import com.cordiact.core.conversation.ModelBackend
 import com.cordiact.core.conversation.ModelCall
 import com.cordiact.core.conversation.ModelDescriptor
 import com.cordiact.core.conversation.ModelEvent
+import com.cordiact.core.conversation.ModelToolCall
 import com.cordiact.core.conversation.ModelGenerationRequest
 import com.cordiact.core.conversation.ModelId
 import com.google.gson.JsonArray
@@ -21,6 +22,46 @@ import java.util.concurrent.Executors
 import java.util.concurrent.Future
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
+
+/**
+ * Whether a protocol can carry tool definitions and results.
+ *
+ * Only the OpenAI chat shape is implemented. The others are listed as unsupported rather than
+ * half-supported: a protocol that accepts `tools` but cannot relay results would produce a turn
+ * that looks like a model failure.
+ */
+internal fun supportsToolCalls(protocol: ModelProtocol): Boolean =
+    protocol == ModelProtocol.OPENAI_CHAT_COMPLETIONS
+
+/** Accumulates one streamed tool call; the name arrives once, arguments in fragments. */
+private class MutableToolCallFragment {
+    var id: String = ""
+    var name: String = ""
+    val arguments = StringBuilder()
+}
+
+/**
+ * Emits the gathered tool calls, dropping incomplete ones.
+ *
+ * A fragment without a name or without an id cannot be dispatched and cannot be answered, so
+ * including it would produce a request the model cannot match results to. Dropping is reported
+ * by the absent call rather than silently answered with an error, because a fabricated result
+ * would be worse than a missing one.
+ */
+private fun emitToolCalls(
+    pending: Map<Int, MutableToolCallFragment>,
+    emit: (ModelEvent) -> Unit,
+) {
+    if (pending.isEmpty()) return
+    val calls = pending.entries
+        .sortedBy { it.key }
+        .mapNotNull { (index, fragment) ->
+            val name = fragment.name.ifBlank { return@mapNotNull null }
+            val id = fragment.id.ifBlank { "call_$index" }
+            ModelToolCall(id = id, name = name, argumentsJson = fragment.arguments.toString().ifBlank { "{}" })
+        }
+    if (calls.isNotEmpty()) emit(ModelEvent.ToolCallsRequested(calls))
+}
 
 enum class ModelProtocol {
     OPENAI_CHAT_COMPLETIONS,
@@ -194,8 +235,16 @@ class ConfigurableModelBackend(
             emitEvent(ModelEvent.Failed("invalid_request", "${config.displayName} requires at least one non-system message"))
             return ModelCall {}
         }
-        if (request.messages.any { it.role == MessageRole.TOOL }) {
-            emitEvent(ModelEvent.Failed("unsupported_message", "Tool messages are not supported by the text backend"))
+        if (request.messages.any { it.role == MessageRole.TOOL } && !supportsToolCalls(config.protocol)) {
+            // Rejecting here rather than dropping the messages: silently stripping tool results
+            // would send a request the model cannot make sense of, and the failure would look
+            // like a bad answer instead of an unsupported protocol.
+            emitEvent(
+                ModelEvent.Failed(
+                    "unsupported_message",
+                    "${config.displayName} does not support tool messages for protocol ${config.protocol}",
+                ),
+            )
             return ModelCall {}
         }
 
@@ -260,6 +309,11 @@ class ConfigurableModelBackend(
                     var outputTokens: Long? = null
                     var eventName = ""
                     var data = StringBuilder()
+                    // OpenAI streams tool calls as fragments keyed by index: the name arrives on
+                    // the first fragment and the arguments accumulate across later ones. They are
+                    // gathered here and emitted once at the end, because a half-parsed argument
+                    // string is not a callable tool call.
+                    val pendingCalls = linkedMapOf<Int, MutableToolCallFragment>()
                     fun emitDelta(text: String) {
                         if (text.length > MAX_STREAM_TEXT_CHARS - streamedTextChars) throw StreamLimitException()
                         streamedTextChars += text.length
@@ -296,10 +350,21 @@ class ConfigurableModelBackend(
                             }
                             when (config.protocol) {
                                 ModelProtocol.OPENAI_CHAT_COMPLETIONS -> {
-                                    val delta = json.getAsJsonArray("choices")?.firstOrNull()?.asJsonObject
-                                        ?.getAsJsonObject("delta")?.get("content")
+                                    val deltaObject = json.getAsJsonArray("choices")?.firstOrNull()?.asJsonObject
+                                        ?.getAsJsonObject("delta")
+                                    val delta = deltaObject?.get("content")
                                     if (delta?.isJsonPrimitive == true && delta.asJsonPrimitive.isString) {
                                         delta.asString.takeIf(String::isNotEmpty)?.let(::emitDelta)
+                                    }
+                                    deltaObject?.getAsJsonArray("tool_calls")?.forEach { element ->
+                                        val fragment = element.asJsonObject
+                                        val index = fragment.get("index")?.takeIf { !it.isJsonNull }?.asInt ?: 0
+                                        val target = pendingCalls.getOrPut(index) { MutableToolCallFragment() }
+                                        fragment.string("id")?.takeIf(String::isNotBlank)?.let { target.id = it }
+                                        val function = fragment.getAsJsonObject("function")
+                                        function?.string("name")?.takeIf(String::isNotBlank)?.let { target.name = it }
+                                        function?.get("arguments")?.takeIf { it.isJsonPrimitive }?.asString
+                                            ?.let { target.arguments.append(it) }
                                     }
                                 }
                                 ModelProtocol.ANTHROPIC_MESSAGES -> when (type) {
@@ -358,6 +423,10 @@ class ConfigurableModelBackend(
                         when {
                             failed -> terminal = true
                             completed -> {
+                                // Emit before Completed: the loop must learn what to run before
+                                // the round is considered finished, otherwise it would treat a
+                                // tool request as a final answer.
+                                emitToolCalls(pendingCalls, ::emitEvent)
                                 emitEvent(ModelEvent.Completed(inputTokens, outputTokens))
                                 terminal = true
                             }
@@ -429,10 +498,43 @@ class ConfigurableModelBackend(
             parameters.temperature?.let { addProperty("temperature", it) }
             parameters.maxOutputTokens?.let { addProperty("max_tokens", it) }
             parameters.topP?.let { addProperty("top_p", it) }
+            if (request.tools.isNotEmpty()) {
+                add("tools", JsonArray().apply {
+                    request.tools.forEach { tool -> add(JsonObject().apply {
+                        addProperty("type", "function")
+                        add("function", JsonObject().apply {
+                            addProperty("name", tool.name)
+                            addProperty("description", tool.description)
+                            add("parameters", JsonParser.parseString(tool.parametersJson))
+                        })
+                    }) }
+                })
+            }
             add("messages", JsonArray().apply {
                 request.messages.forEach { message -> add(JsonObject().apply {
                     addProperty("role", openAiRole(message.role))
-                    addProperty("content", message.content)
+                    when (message.role) {
+                        MessageRole.TOOL -> {
+                            // A tool result carries no prose, only the id it answers.
+                            addProperty("content", message.content)
+                            addProperty("tool_call_id", message.toolCallId)
+                        }
+                        else -> {
+                            addProperty("content", message.content)
+                            if (message.toolCalls.isNotEmpty()) {
+                                add("tool_calls", JsonArray().apply {
+                                    message.toolCalls.forEach { call -> add(JsonObject().apply {
+                                        addProperty("id", call.id)
+                                        addProperty("type", "function")
+                                        add("function", JsonObject().apply {
+                                            addProperty("name", call.name)
+                                            addProperty("arguments", call.argumentsJson)
+                                        })
+                                    }) }
+                                })
+                            }
+                        }
+                    }
                 }) }
             })
         }

@@ -30,7 +30,11 @@ import com.cordiact.core.workspace.WorkspaceManagerService
 import com.cordiact.integration.interaction.InteractionContext
 import com.cordiact.integration.interaction.InteractionModelSubmitter
 import com.cordiact.integration.interaction.MentionType
+import com.cordiact.app.tool.AndroidToolDispatcher
+import com.cordiact.core.toolloop.ToolLoopPlugin
+import com.cordiact.core.conversation.ModelToolSpec
 import com.cordiact.core.tool.GrantedScope
+import com.cordiact.core.tool.ToolInvocationContext
 import com.cordiact.integration.interaction.MutableFillValueStore
 
 /** Opens the plugin host, recovers durable state, then registers and enables core conversation plugins. */
@@ -90,6 +94,29 @@ class CordiActApplication : Application() {
     val tools: ToolManagerService get() = conversationCatalog.toolManagerService
 
     private val skillIndexRenderer = SkillIndexRenderer()
+
+    /** Runs model/tool rounds. Owned by the application, not by the turn service. */
+    private val toolLoopPlugin = ToolLoopPlugin().apply { onEnable() }
+
+    private val toolDispatcher by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+        AndroidToolDispatcher(tools)
+    }
+
+    /**
+     * Tools the model may call this turn.
+     *
+     * Filtered by `dispatchable` rather than merely enabled: a tool whose owner is unavailable
+     * or whose capability is missing cannot run, so offering it would only produce a failing
+     * call the model has to recover from.
+     */
+    private fun availableToolSpecs(workspaceId: String): List<ModelToolSpec> =
+        try {
+            AndroidToolDispatcher.specs(
+                tools.list(workspaceId).filter { it.dispatchable }.map { it.descriptor },
+            )
+        } catch (e: Exception) {
+            emptyList()
+        }
 
     /**
      * The skill catalog for a Workspace, as a system-prompt block.
@@ -157,13 +184,21 @@ class CordiActApplication : Application() {
                 }
             recordTurnGrants(envelope.context.sessionId, grants)
             val prompt = if (envelope.command == null) envelope.submittedText else envelope.commandInput
-            turnService.submit(
+            val toolContext = ToolInvocationContext(
+                workspaceId = envelope.context.workspaceId,
+                grantedScopes = grants,
+            )
+            turnService.submitWithTools(
                 sessionId = envelope.context.sessionId,
                 model = modelId,
                 text = prompt,
-                onEvent = onEvent,
+                tools = availableToolSpecs(envelope.context.workspaceId),
+                toolLoop = toolLoopPlugin,
+                dispatcher = toolDispatcher,
+                toolContext = toolContext,
                 parameters = parameters,
                 systemContext = skillIndexFor(envelope.context.workspaceId),
+                onEvent = onEvent,
             )
         })
         sandboxManagerPlugin = BundledConversationPluginCatalog.createSandboxManager(applicationInfo.uid)
