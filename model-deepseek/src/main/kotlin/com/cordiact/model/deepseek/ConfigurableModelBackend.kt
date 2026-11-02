@@ -368,10 +368,31 @@ class ConfigurableModelBackend(
                                     }
                                 }
                                 ModelProtocol.ANTHROPIC_MESSAGES -> when (type) {
+                                    // A tool_use block announces id and name once; the arguments
+                                    // then arrive as input_json_delta fragments keyed by block
+                                    // index, the same shape as OpenAI but under different names.
+                                    "content_block_start" -> {
+                                        val block = json.getAsJsonObject("content_block")
+                                        if (block?.string("type") == "tool_use") {
+                                            val index = json.get("index")?.takeIf { !it.isJsonNull }?.asInt ?: 0
+                                            val target = pendingCalls.getOrPut(index) { MutableToolCallFragment() }
+                                            block.string("id")?.takeIf(String::isNotBlank)?.let { target.id = it }
+                                            block.string("name")?.takeIf(String::isNotBlank)?.let { target.name = it }
+                                        }
+                                    }
                                     "content_block_delta" -> {
                                         val delta = json.getAsJsonObject("delta")
-                                        if (delta?.string("type") == "text_delta") delta.string("text")
-                                            ?.takeIf(String::isNotEmpty)?.let(::emitDelta)
+                                        when (delta?.string("type")) {
+                                            "text_delta" -> delta.string("text")
+                                                ?.takeIf(String::isNotEmpty)?.let(::emitDelta)
+                                            "input_json_delta" -> {
+                                                val index = json.get("index")?.takeIf { !it.isJsonNull }?.asInt ?: 0
+                                                delta.string("partial_json")?.let {
+                                                    pendingCalls.getOrPut(index) { MutableToolCallFragment() }
+                                                        .arguments.append(it)
+                                                }
+                                            }
+                                        }
                                     }
                                     "message_stop" -> completed = true
                                     "error" -> {
@@ -383,8 +404,22 @@ class ConfigurableModelBackend(
                                     json.getAsJsonArray("candidates")?.forEach { candidate ->
                                         val candidateObject = candidate.asJsonObject
                                         candidateObject.getAsJsonObject("content")?.getAsJsonArray("parts")?.forEach { part ->
-                                            part.asJsonObject.string("text")?.takeIf(String::isNotEmpty)
+                                            val partObject = part.asJsonObject
+                                            partObject.string("text")?.takeIf(String::isNotEmpty)
                                                 ?.let(::emitDelta)
+                                            // Gemini sends a whole functionCall in one part, so there
+                                            // is nothing to accumulate. It also carries no id, so
+                                            // one is synthesised from the name and position; the
+                                            // response side matches on the name anyway.
+                                            partObject.getAsJsonObject("functionCall")?.let { call ->
+                                                val name = call.string("name") ?: return@let
+                                                val index = pendingCalls.size
+                                                pendingCalls[index] = MutableToolCallFragment().apply {
+                                                    id = "gemini_${name}_$index"
+                                                    this.name = name
+                                                    arguments.append(call.get("args")?.toString() ?: "{}")
+                                                }
+                                            }
                                         }
                                         if (candidateObject.get("finishReason")?.isJsonNull == false) completed = true
                                     }
@@ -396,6 +431,26 @@ class ConfigurableModelBackend(
                                 ModelProtocol.OPENAI_RESPONSES -> when (type) {
                                     "response.output_text.delta" -> json.string("delta")?.takeIf(String::isNotEmpty)
                                         ?.let(::emitDelta)
+                                    // A function call is announced as an output item, then its
+                                    // arguments stream in pieces.
+                                    "response.output_item.added" -> {
+                                        val item = json.getAsJsonObject("item")
+                                        if (item?.string("type") == "function_call") {
+                                            val index = json.get("output_index")?.takeIf { !it.isJsonNull }?.asInt ?: 0
+                                            val target = pendingCalls.getOrPut(index) { MutableToolCallFragment() }
+                                            item.string("call_id")?.takeIf(String::isNotBlank)?.let { target.id = it }
+                                            item.string("name")?.takeIf(String::isNotBlank)?.let { target.name = it }
+                                            item.string("arguments")?.takeIf(String::isNotBlank)
+                                                ?.let { target.arguments.append(it) }
+                                        }
+                                    }
+                                    "response.function_call_arguments.delta" -> {
+                                        val index = json.get("output_index")?.takeIf { !it.isJsonNull }?.asInt ?: 0
+                                        json.string("delta")?.let {
+                                            pendingCalls.getOrPut(index) { MutableToolCallFragment() }
+                                                .arguments.append(it)
+                                        }
+                                    }
                                     "response.completed" -> completed = true
                                     "response.failed", "response.incomplete", "error" -> {
                                         failed = true
@@ -546,10 +601,48 @@ class ConfigurableModelBackend(
             if (system.isNotEmpty()) addProperty("system", system)
             parameters.temperature?.let { addProperty("temperature", it) }
             parameters.topP?.let { addProperty("top_p", it) }
+            if (request.tools.isNotEmpty()) {
+                add("tools", JsonArray().apply {
+                    request.tools.forEach { tool -> add(JsonObject().apply {
+                        addProperty("name", tool.name)
+                        addProperty("description", tool.description)
+                        // Anthropic calls the schema input_schema, not parameters.
+                        add("input_schema", JsonParser.parseString(tool.parametersJson))
+                    }) }
+                })
+            }
             add("messages", JsonArray().apply {
                 request.messages.filter { it.role != MessageRole.SYSTEM }.forEach { message -> add(JsonObject().apply {
+                    // A tool result is a *user* turn in this protocol, and its content is an array
+                    // of blocks rather than a string.
                     addProperty("role", if (message.role == MessageRole.ASSISTANT) "assistant" else "user")
-                    addProperty("content", message.content)
+                    when (message.role) {
+                        MessageRole.TOOL -> add("content", JsonArray().apply {
+                            add(JsonObject().apply {
+                                addProperty("type", "tool_result")
+                                addProperty("tool_use_id", message.toolCallId)
+                                addProperty("content", message.content)
+                            })
+                        })
+                        else -> if (message.toolCalls.isEmpty()) {
+                            addProperty("content", message.content)
+                        } else {
+                            add("content", JsonArray().apply {
+                                if (message.content.isNotBlank()) {
+                                    add(JsonObject().apply {
+                                        addProperty("type", "text")
+                                        addProperty("text", message.content)
+                                    })
+                                }
+                                message.toolCalls.forEach { call -> add(JsonObject().apply {
+                                    addProperty("type", "tool_use")
+                                    addProperty("id", call.id)
+                                    addProperty("name", call.name)
+                                    add("input", JsonParser.parseString(call.argumentsJson.ifBlank { "{}" }))
+                                }) }
+                            })
+                        }
+                    }
                 }) }
             })
         }
@@ -558,10 +651,49 @@ class ConfigurableModelBackend(
             if (system.isNotEmpty()) add("systemInstruction", JsonObject().apply {
                 add("parts", JsonArray().apply { system.forEach { add(JsonObject().apply { addProperty("text", it.content) }) } })
             })
+            if (request.tools.isNotEmpty()) {
+                add("tools", JsonArray().apply {
+                    add(JsonObject().apply {
+                        add("functionDeclarations", JsonArray().apply {
+                            request.tools.forEach { tool -> add(JsonObject().apply {
+                                addProperty("name", tool.name)
+                                addProperty("description", tool.description)
+                                add("parameters", JsonParser.parseString(tool.parametersJson))
+                            }) }
+                        })
+                    })
+                })
+            }
             add("contents", JsonArray().apply {
                 request.messages.filter { it.role != MessageRole.SYSTEM }.forEach { message -> add(JsonObject().apply {
+                    // A function result is a user turn here as well, as a functionResponse part.
                     addProperty("role", if (message.role == MessageRole.ASSISTANT) "model" else "user")
-                    add("parts", JsonArray().apply { add(JsonObject().apply { addProperty("text", message.content) }) })
+                    when (message.role) {
+                        MessageRole.TOOL -> add("parts", JsonArray().apply {
+                            add(JsonObject().apply {
+                                add("functionResponse", JsonObject().apply {
+                                    // Gemini matches a result to its call by function *name*, not
+                                    // by id. The dispatcher therefore carries the name on the
+                                    // tool message; falling back to the id would never match.
+                                    addProperty("name", message.toolName ?: "unknown")
+                                    add("response", JsonObject().apply {
+                                        addProperty("content", message.content)
+                                    })
+                                })
+                            })
+                        })
+                        else -> add("parts", JsonArray().apply {
+                            if (message.content.isNotBlank() || message.toolCalls.isEmpty()) {
+                                add(JsonObject().apply { addProperty("text", message.content) })
+                            }
+                            message.toolCalls.forEach { call -> add(JsonObject().apply {
+                                add("functionCall", JsonObject().apply {
+                                    addProperty("name", call.name)
+                                    add("args", JsonParser.parseString(call.argumentsJson.ifBlank { "{}" }))
+                                })
+                            }) }
+                        })
+                    }
                 }) }
             })
             if (parameters.temperature != null || parameters.maxOutputTokens != null || parameters.topP != null) {
@@ -578,16 +710,45 @@ class ConfigurableModelBackend(
             parameters.maxOutputTokens?.let { addProperty("max_output_tokens", it) }
             parameters.temperature?.let { addProperty("temperature", it) }
             parameters.topP?.let { addProperty("top_p", it) }
+            if (request.tools.isNotEmpty()) {
+                add("tools", JsonArray().apply {
+                    request.tools.forEach { tool -> add(JsonObject().apply {
+                        // Flat here: type, name and parameters sit at the top level rather than
+                        // nested under "function" as in chat completions.
+                        addProperty("type", "function")
+                        addProperty("name", tool.name)
+                        addProperty("description", tool.description)
+                        add("parameters", JsonParser.parseString(tool.parametersJson))
+                    }) }
+                })
+            }
             add("input", JsonArray().apply {
-                request.messages.forEach { message -> add(JsonObject().apply {
-                    addProperty("role", when (message.role) {
-                        MessageRole.SYSTEM -> "system"
-                        MessageRole.USER -> "user"
-                        MessageRole.ASSISTANT -> "assistant"
-                        MessageRole.TOOL -> "tool"
+                request.messages.forEach { message -> when (message.role) {
+                    // A tool result is its own top-level item, not a message with a role.
+                    MessageRole.TOOL -> add(JsonObject().apply {
+                        addProperty("type", "function_call_output")
+                        addProperty("call_id", message.toolCallId)
+                        addProperty("output", message.content)
                     })
-                    addProperty("content", message.content)
-                }) }
+                    else -> {
+                        add(JsonObject().apply {
+                            addProperty("role", when (message.role) {
+                                MessageRole.SYSTEM -> "system"
+                                MessageRole.USER -> "user"
+                                MessageRole.ASSISTANT -> "assistant"
+                                MessageRole.TOOL -> "user"
+                            })
+                            addProperty("content", message.content)
+                        })
+                        // An assistant tool request is also a top-level item, keyed by call_id.
+                        message.toolCalls.forEach { call -> add(JsonObject().apply {
+                            addProperty("type", "function_call")
+                            addProperty("call_id", call.id)
+                            addProperty("name", call.name)
+                            addProperty("arguments", call.argumentsJson.ifBlank { "{}" })
+                        }) }
+                    }
+                } }
             })
             }
         }

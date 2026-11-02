@@ -52,6 +52,13 @@ data class ModelMessage(
     val toolCalls: List<ModelToolCall> = emptyList(),
     /** Set on a TOOL message, linking the result to the call it answers. */
     val toolCallId: String? = null,
+    /**
+     * The tool's name, set on a TOOL message.
+     *
+     * Carried because Gemini matches results to calls by name rather than id; a protocol that
+     * only knows ids can ignore it.
+     */
+    val toolName: String? = null,
 ) {
     init {
         require(role != MessageRole.TOOL || toolCallId != null) {

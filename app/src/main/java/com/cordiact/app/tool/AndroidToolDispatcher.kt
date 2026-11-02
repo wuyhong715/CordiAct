@@ -45,6 +45,7 @@ class AndroidToolDispatcher(
             role = MessageRole.TOOL,
             content = renderResult(result),
             toolCallId = call.id,
+            toolName = call.name,
         )
     }
 
@@ -52,6 +53,7 @@ class AndroidToolDispatcher(
         role = MessageRole.TOOL,
         content = """{"error":{"code":"$code","message":${JSONObject.quote(message)}}}""",
         toolCallId = call.id,
+        toolName = call.name,
     )
 
     private fun parseArguments(json: String): ToolArguments {
