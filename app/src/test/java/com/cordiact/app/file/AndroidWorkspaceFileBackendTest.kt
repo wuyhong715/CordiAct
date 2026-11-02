@@ -6,7 +6,9 @@ import kotlin.io.path.createTempDirectory
 import kotlin.io.path.writeBytes
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AndroidWorkspaceFileBackendTest {
@@ -66,6 +68,64 @@ class AndroidWorkspaceFileBackendTest {
             val second = backend.list(root, "", cursor = first.nextCursor, limit = 1)
             assertEquals("b.txt", second.entries.single().name)
             assertThrows(WorkspaceFileException::class.java) { backend.list(root, "other", first.nextCursor, 1) }
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+    @Test
+    fun hidesDotEntriesFromListings() {
+        val root = createTempDirectory("cordiact-workspace").toFile()
+        try {
+            backend.write(root, "notes.txt", "hi".toByteArray(), expectedRevision = null)
+            // Simulate the git metadata directory plus a stray editor/secret file.
+            root.resolve(".git").mkdirs()
+            root.resolve(".git").resolve("config").writeText("[core]")
+            root.resolve(".env").writeText("TOKEN=secret")
+
+            val page = backend.list(root, "", cursor = null, limit = 100)
+            val names = page.entries.map { it.name }
+
+            assertTrue("notes.txt should be visible", "notes.txt" in names)
+            assertFalse(".git must not be listed", names.any { it.startsWith(".") })
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun rejectsHiddenPathsForReadWriteAndList() {
+        val root = createTempDirectory("cordiact-workspace").toFile()
+        try {
+            root.resolve(".git").mkdirs()
+
+            for (path in listOf(".git/config", ".env", "notes/.hidden", ".git")) {
+                val read = assertThrows("read $path", WorkspaceFileException::class.java) {
+                    backend.read(root, path, offset = 0, maxBytes = 100)
+                }
+                assertEquals(WorkspaceFileException.Code.HIDDEN_PATH_NOT_ALLOWED, read.code)
+            }
+
+            val write = assertThrows("write .env", WorkspaceFileException::class.java) {
+                backend.write(root, ".env", "TOKEN=secret".toByteArray(), expectedRevision = null)
+            }
+            assertEquals(WorkspaceFileException.Code.HIDDEN_PATH_NOT_ALLOWED, write.code)
+
+            val list = assertThrows("list .git", WorkspaceFileException::class.java) {
+                backend.list(root, ".git", cursor = null, limit = 10)
+            }
+            assertEquals(WorkspaceFileException.Code.HIDDEN_PATH_NOT_ALLOWED, list.code)
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun stillAllowsOrdinaryPathsAlongsideHiddenRules() {
+        // The hidden-path rule must not become a blanket ban on dots in file names.
+        val root = createTempDirectory("cordiact-workspace").toFile()
+        try {
+            backend.write(root, "notes.v2.txt", "ok".toByteArray(), expectedRevision = null)
+            assertArrayEquals("ok".toByteArray(), backend.read(root, "notes.v2.txt", 0, 100).bytes)
         } finally {
             root.deleteRecursively()
         }

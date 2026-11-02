@@ -54,6 +54,16 @@ class WorkspaceFileException(val code: Code, message: String) : RuntimeException
         CURSOR_INVALID,
         STORAGE_FAILURE,
         INVALID_TEXT_ENCODING,
+
+        /**
+         * A path segment starts with a dot.
+         *
+         * Hidden paths are rejected wholesale rather than blocked selectively: the Workspace
+         * root is also a git repository, and `.git` holds object files for content the user
+         * has already deleted. Rejecting every dot-prefixed segment keeps that class of leak
+         * closed without maintaining a list of forbidden names.
+         */
+        HIDDEN_PATH_NOT_ALLOWED,
     }
 }
 
