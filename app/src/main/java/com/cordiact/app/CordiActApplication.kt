@@ -30,6 +30,7 @@ import com.cordiact.core.workspace.WorkspaceManagerService
 import com.cordiact.integration.interaction.InteractionContext
 import com.cordiact.integration.interaction.InteractionModelSubmitter
 import com.cordiact.integration.interaction.MentionType
+import com.cordiact.core.tool.GrantedScope
 import com.cordiact.integration.interaction.MutableFillValueStore
 
 /** Opens the plugin host, recovers durable state, then registers and enables core conversation plugins. */
@@ -56,6 +57,24 @@ class CordiActApplication : Application() {
         private set
     lateinit var interactionPlugin: com.cordiact.integration.interaction.InteractionIntegrationPlugin
         private set
+
+    /**
+     * Scopes granted by the most recent `@` reference, keyed by session.
+     *
+     * Keyed rather than global: two sessions can be mid-turn at once, and a session's grant
+     * must never become another session's grant. Held here rather than passed through a model
+     * call because the tool layer is the only consumer — nothing is read up front, so the grant
+     * has to outlive the submit and be visible when a tool actually runs.
+     */
+    private val turnGrants = java.util.concurrent.ConcurrentHashMap<String, List<GrantedScope>>()
+
+    /** The grant set to attach to a tool invocation for [sessionId]. */
+    fun currentTurnGrants(sessionId: String): List<GrantedScope> = turnGrants[sessionId] ?: emptyList()
+
+    private fun recordTurnGrants(sessionId: String, grants: List<GrantedScope>) {
+        if (grants.isEmpty()) turnGrants.remove(sessionId) else turnGrants[sessionId] = grants
+    }
+
     @Volatile
     var activeSessionId: String? = null
         private set
@@ -116,22 +135,33 @@ class CordiActApplication : Application() {
         turnService = ConversationTurnService(sessionManagerPlugin, modelAdapterPlugin)
         interactionPlugin = conversationCatalog.interactionPlugin
         interactionPlugin.service.attachModelSubmitter(InteractionModelSubmitter { envelope, modelId, parameters, onEvent ->
-            val referencedFiles = envelope.mentions
+            // `@` is an authorization, not an attachment. Nothing is read here: the reference
+            // opens a range, the model then decides what to fetch through tools, and the grant
+            // travels with those calls. Pre-reading would decide the model's research for it and
+            // would pay for content the turn never needed.
+            val grants = envelope.mentions
                 .flatMap { it.entities }
-                .filter { it.type == MentionType.FILE }
-                .distinctBy { it.id }
+                .filter { it.type == MentionType.WORKSPACE || it.type == MentionType.MEMORY }
+                .distinctBy { it.workspaceId to it.authorizedPrefix }
                 .map { descriptor ->
-                    val text = conversationCatalog.interactionDirectory.readText(envelope.context, descriptor)
-                        ?: error("Referenced file is no longer readable: ${descriptor.id}")
-                    "<referenced-file id=\"${descriptor.id}\" path=\"${descriptor.relativePath}\">\n$text\n</referenced-file>"
+                    GrantedScope(
+                        workspaceId = descriptor.workspaceId,
+                        // Only a memory scope narrows; a whole-Workspace reference grants the
+                        // entire tree, which is what its name says.
+                        prefix = if (descriptor.type == MentionType.MEMORY) {
+                            descriptor.authorizedPrefix ?: MEMORY_PREFIX
+                        } else {
+                            null
+                        },
+                    )
                 }
+            recordTurnGrants(envelope.context.sessionId, grants)
             val prompt = if (envelope.command == null) envelope.submittedText else envelope.commandInput
             turnService.submit(
                 sessionId = envelope.context.sessionId,
                 model = modelId,
                 text = prompt,
                 onEvent = onEvent,
-                transientContext = referencedFiles,
                 parameters = parameters,
                 systemContext = skillIndexFor(envelope.context.workspaceId),
             )
@@ -157,5 +187,10 @@ class CordiActApplication : Application() {
         }
     }
 
-    private companion object { const val TAG = "CordiActPluginHost" }
+    private companion object {
+        const val TAG = "CordiActPluginHost"
+
+        /** The only subtree a memory reference narrows to. */
+        const val MEMORY_PREFIX = "memory/"
+    }
 }

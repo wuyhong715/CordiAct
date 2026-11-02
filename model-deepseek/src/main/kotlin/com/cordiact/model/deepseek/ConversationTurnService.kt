@@ -23,14 +23,7 @@ class ConversationTurnService(
         sessionId: String,
         model: ModelId,
         text: String,
-        onEvent: (ModelEvent) -> Unit,
-    ): ModelCall = submit(sessionId, model, text, emptyList(), null, null, onEvent)
-
-    fun submit(
-        sessionId: String,
-        model: ModelId,
-        text: String,
-        transientContext: List<String>,
+        transientContext: List<String> = emptyList(),
         parameters: GenerationParameters? = null,
         /**
          * Host-owned context prepended as a system message, e.g. the skill index.
