@@ -7,6 +7,7 @@ import com.cordiact.integration.interaction.InteractionAuthorization
 import com.cordiact.integration.interaction.InteractionContext
 import com.cordiact.integration.interaction.InteractionCommandRegistry
 import com.cordiact.integration.interaction.MentionDescriptor
+import com.cordiact.integration.interaction.MentionType
 
 /** Fail-closed authorization for the current persisted session and its exact Workspace references. */
 class WorkspaceInteractionAuthorization(
@@ -37,8 +38,32 @@ class WorkspaceInteractionAuthorization(
             return AuthorizationDecision(false, reason = "Command owner is disabled")
         }
         for (target in targets) {
-            if (target.workspaceId != workspace.id) {
-                return AuthorizationDecision(false, reason = "Reference is outside the current Workspace")
+            val crossWorkspace = target.workspaceId != workspace.id
+            if (crossWorkspace) {
+                // Cross-Workspace references are allowed only to a *scope node*, never to an
+                // individual entity. Two-step access is what keeps each step auditable: the
+                // user grants a range first, then reads inside it, and both show in the
+                // transcript. A direct single-file grant would make the granted range
+                // indistinguishable from the thing read.
+                if (target.type != MentionType.WORKSPACE && target.type != MentionType.MEMORY) {
+                    return AuthorizationDecision(false, reason = "Only a Workspace scope can be referenced across Workspaces")
+                }
+                val other = try {
+                    workspaces.get(target.workspaceId)
+                } catch (_: Exception) {
+                    null
+                }
+                if (other == null) {
+                    return AuthorizationDecision(false, reason = "Referenced Workspace no longer exists")
+                }
+                if (other.archivedAtMillis != null) {
+                    return AuthorizationDecision(false, reason = "Archived Workspaces cannot be referenced")
+                }
+                // A memory scope must carry the prefix it grants; without one it would silently
+                // widen to the whole Workspace.
+                if (target.type == MentionType.MEMORY && target.authorizedPrefix == null) {
+                    return AuthorizationDecision(false, reason = "Memory scope is missing its granted prefix")
+                }
             }
             val current = try {
                 directory.find(context, target.id)
@@ -48,7 +73,8 @@ class WorkspaceInteractionAuthorization(
             if (current == null || current.type != target.type || current.relativePath != target.relativePath) {
                 return AuthorizationDecision(false, reason = "Referenced entity is no longer available")
             }
-            if (target.requiredCapabilities.any { it !in SUPPORTED_READ_CAPABILITIES }) {
+            val supported = if (crossWorkspace) CROSS_WORKSPACE_CAPABILITIES else SUPPORTED_READ_CAPABILITIES
+            if (target.requiredCapabilities.any { it !in supported }) {
                 return AuthorizationDecision(false, reason = "Required capability is not granted")
             }
         }
@@ -61,6 +87,14 @@ class WorkspaceInteractionAuthorization(
 
     private companion object {
         val SUPPORTED_READ_CAPABILITIES = setOf("workspace.read", "file.read", "file.list")
+
+        /**
+         * Capabilities a cross-Workspace scope may advertise.
+         *
+         * Separate from the intra-Workspace set so a future read capability cannot silently
+         * become sufficient for crossing a Workspace boundary.
+         */
+        val CROSS_WORKSPACE_CAPABILITIES = setOf("workspace.memory.read.cross")
         val SUPPORTED_COMMAND_CAPABILITIES = setOf("interaction.execute")
     }
 }

@@ -26,7 +26,18 @@ fun interactionIntegrationPluginSpec() = PluginSpec(
     ),
 )
 
-enum class MentionType { AGENT, WORKSPACE, PROJECT, FOLDER, FILE, SKILL, MCP, PLUGIN, OTHER }
+enum class MentionType {
+    AGENT, WORKSPACE, PROJECT, FOLDER, FILE, SKILL, MCP, PLUGIN, OTHER,
+
+    /**
+     * A Workspace's memory subtree.
+     *
+     * A separate type from [FILE] on purpose: memory is data that may be stale and is injected
+     * as such, whereas a file is addressed individually. Collapsing the two would let a
+     * cross-Workspace memory grant be satisfied by any file.
+     */
+    MEMORY,
+}
 enum class InteractionTokenKind { COMMAND, MENTION, PRONOUN, FILL }
 enum class TokenStatus { VALID, INVALID, INCOMPLETE, CONFIRMATION_REQUIRED }
 
