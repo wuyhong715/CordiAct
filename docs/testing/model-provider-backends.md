@@ -10,7 +10,7 @@ This change adds DeepSeek-compatible Chat Completions (existing backend retained
 
 - `model-deepseek/src/test/kotlin/com/cordiact/model/deepseek/ConfigurableModelBackendTest.kt`: loopback request/response checks for all four protocol formats, protocol auth headers, Gemini JSON mode, missing credentials, endpoint policy, default DeepSeek model, provider registry add/remove, and cancellation of an open stream.
 - `app/src/test/java/com/cordiact/app/conversation/BundledConversationPluginCatalogTest.kt`: protected provider-registry catalog registration and provider metadata persistence without credentials.
-- Existing `DeepSeekBackendTest` conversation-turn tests continue to cover user-message persistence, assistant reply write-back on completion, and cancellation delegation.
+- Existing `DeepSeekBackendTest` conversation-turn tests continue to cover user-message persistence, assistant reply write-back on completion, and cancellation delegation. The bundled DeepSeek provider is now a `ConfigurableModelBackend` preset (`DeepSeekPreset`); it shares one SSE transport with every other protocol, and the shared backend reports token usage in `ModelEvent.Completed`.
 
 ## Local verification
 

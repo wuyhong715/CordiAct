@@ -147,9 +147,46 @@ class ConfigurableModelBackendTest {
     }
 
     @Test
+    fun registryRestoresPersistedProvidersOnEnable() {
+        val store = InMemoryModelProviderConfigStore()
+        val persisted = config(ModelProtocol.ANTHROPIC_MESSAGES, "custom", "https://api.example.test/v1/messages")
+        store.save(persisted)
+
+        val adapter = ModelAdapterPlugin()
+        adapter.onEnable()
+        // A second registry over the same store models an app restart: onEnable must re-attach
+        // every stored provider without any extra call from the host.
+        val registry = ModelProviderRegistryPlugin(adapter, { ApiKeyProvider { "test-key" } }, store)
+        try {
+            registry.onEnable()
+            assertEquals(listOf(persisted), registry.providers())
+            assertTrue(adapter.models().any { it.id == ModelId("custom", "model") })
+        } finally {
+            registry.onDisable()
+            adapter.onDisable()
+        }
+    }
+
+    @Test
+    fun registryRejectsStoredProviderThatClaimsTheBundledDeepSeekId() {
+        val store = InMemoryModelProviderConfigStore()
+        store.save(config(ModelProtocol.OPENAI_CHAT_COMPLETIONS, DeepSeekPreset.PROVIDER_ID, DeepSeekPreset.DEFAULT_ENDPOINT))
+        val adapter = ModelAdapterPlugin()
+        adapter.onEnable()
+        try {
+            val failure = assertThrows(IllegalArgumentException::class.java) {
+                ModelProviderRegistryPlugin(adapter, { ApiKeyProvider { "test-key" } }, store)
+            }
+            assertTrue(failure.message.orEmpty().contains("reserved"))
+        } finally {
+            adapter.onDisable()
+        }
+    }
+
+    @Test
     fun deepSeekDefaultModelRemainsFlash() {
-        assertEquals("deepseek-flash", DeepSeekBackendConfig.DEFAULT_MODEL)
-        assertEquals(listOf("deepseek-flash"), DeepSeekBackendConfig().models)
+        assertEquals("deepseek-flash", DeepSeekPreset.DEFAULT_MODEL)
+        assertEquals(listOf("deepseek-flash"), DeepSeekPreset.config().models)
     }
 
     private fun runCase(case: Case) {

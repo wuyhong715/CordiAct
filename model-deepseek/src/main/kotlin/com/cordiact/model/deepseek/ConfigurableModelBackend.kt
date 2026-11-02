@@ -250,6 +250,8 @@ class ConfigurableModelBackend(
                     var completed = false
                     var failed = false
                     var streamedTextChars = 0
+                    var inputTokens: Long? = null
+                    var outputTokens: Long? = null
                     var eventName = ""
                     var data = StringBuilder()
                     fun emitDelta(text: String) {
@@ -275,6 +277,17 @@ class ConfigurableModelBackend(
                                 return
                             }
                             val type = json.string("type") ?: event
+                            when (config.protocol) {
+                                ModelProtocol.OPENAI_CHAT_COMPLETIONS -> {
+                                    // DeepSeek and other OpenAI-compatible providers report usage in the
+                                    // final chunk, with an empty `choices` array.
+                                    json.getAsJsonObject("usage")?.let { usage ->
+                                        usage.longOrNull("prompt_tokens")?.let { inputTokens = it }
+                                        usage.longOrNull("completion_tokens")?.let { outputTokens = it }
+                                    }
+                                }
+                                else -> Unit
+                            }
                             when (config.protocol) {
                                 ModelProtocol.OPENAI_CHAT_COMPLETIONS -> {
                                     val delta = json.getAsJsonArray("choices")?.firstOrNull()?.asJsonObject
@@ -339,7 +352,7 @@ class ConfigurableModelBackend(
                         when {
                             failed -> terminal = true
                             completed -> {
-                                emitEvent(ModelEvent.Completed())
+                                emitEvent(ModelEvent.Completed(inputTokens, outputTokens))
                                 terminal = true
                             }
                             else -> {
@@ -474,6 +487,10 @@ class ConfigurableModelBackend(
     private fun JsonObject.string(name: String): String? = get(name)
         ?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isString }
         ?.asString
+
+    private fun JsonObject.longOrNull(name: String): Long? = get(name)
+        ?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isNumber }
+        ?.asLong
 
     private fun extractGeminiText(json: JsonObject): String = buildString {
         json.getAsJsonArray("candidates")?.forEach { candidate ->

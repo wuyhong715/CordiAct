@@ -6,6 +6,7 @@ This module provides a protected Android-native provider plugin for the existing
 - Default model: `deepseek-flash`
 - Default endpoint: `https://api.deepseek.com/chat/completions`
 - Transport: streaming Chat Completions over SSE; cancellation disconnects the HTTP request.
+- Implementation: `DeepSeekPreset` builds a `ModelProviderConfig`, so the bundled provider runs on the same `ConfigurableModelBackend` as every other protocol. There is no DeepSeek-specific HTTP/SSE code path.
 - Credentials: supplied by the host through `ApiKeyProvider`; the Android app stores the key encrypted with an Android Keystore AES-GCM key. No key is bundled and no key-configuration UI exists yet.
 - Conversation turn: `ConversationTurnService` appends the user message, sends the persisted session history through `ModelAdapterService`, forwards deltas, and stores only a completed assistant reply.
 
