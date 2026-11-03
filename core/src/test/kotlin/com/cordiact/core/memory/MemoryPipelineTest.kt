@@ -213,4 +213,36 @@ class MemoryPipelineTest {
         assertEquals(setOf("a"), diff.added)
         assertTrue("vanished" !in diff.added)
     }
+
+    @Test
+    fun retryPolicyStopsOnAConfigurationGap() {
+        // Retrying a missing model selection would spin to the backoff cap while nothing changes.
+        val decision = SchedulingDecision.Defer(
+            SchedulingDecision.Defer.Reason.NO_MODEL_SELECTED,
+            "no model",
+        )
+
+        assertEquals(SchedulingRetry.Action.DONE, SchedulingRetry.decide(decision))
+    }
+
+    @Test
+    fun retryPolicyRetriesOnTransientConditions() {
+        for (reason in listOf(
+            SchedulingDecision.Defer.Reason.LOW_STORAGE,
+            SchedulingDecision.Defer.Reason.THERMAL_PRESSURE,
+            SchedulingDecision.Defer.Reason.METERED,
+            SchedulingDecision.Defer.Reason.DOZING,
+        )) {
+            assertEquals(
+                SchedulingRetry.Action.RETRY,
+                SchedulingRetry.decide(SchedulingDecision.Defer(reason, "transient")),
+                "a transient condition should retry: $reason",
+            )
+        }
+    }
+
+    @Test
+    fun retryPolicyIsDoneWhenThePassRan() {
+        assertEquals(SchedulingRetry.Action.DONE, SchedulingRetry.decide(SchedulingDecision.Run))
+    }
 }

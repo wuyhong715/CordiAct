@@ -122,6 +122,40 @@ data class MemorySchedulingPolicy(
 }
 
 /**
+ * Maps a scheduling outcome onto a retry decision.
+ *
+ * Separated from the worker so the judgement is testable without WorkManager. It is also the one
+ * place that can turn a permanent condition into an infinite retry loop: a deferral for a
+ * configuration gap never clears on its own, so retrying it burns the backoff budget while
+ * nothing can change.
+ */
+object SchedulingRetry {
+
+    enum class Action {
+        /** The pass ran, or has nothing to do. Do not run again automatically. */
+        DONE,
+
+        /** A transient condition; try again later. */
+        RETRY,
+
+        /** The pass failed in a way that might clear. */
+        RETRY_AFTER_FAILURE,
+    }
+
+    fun decide(decision: SchedulingDecision): Action = when (decision) {
+        is SchedulingDecision.Defer -> when (decision.reason) {
+            SchedulingDecision.Defer.Reason.NO_MODEL_SELECTED -> Action.DONE
+            SchedulingDecision.Defer.Reason.LOW_STORAGE,
+            SchedulingDecision.Defer.Reason.THERMAL_PRESSURE,
+            SchedulingDecision.Defer.Reason.METERED,
+            SchedulingDecision.Defer.Reason.DOZING,
+            -> Action.RETRY
+        }
+        is SchedulingDecision.Run -> Action.DONE
+    }
+}
+
+/**
  * A claim on one session's extraction slot.
  *
  * Simplified from codex's lease plus 90-second heartbeat: a single-process WorkManager task has

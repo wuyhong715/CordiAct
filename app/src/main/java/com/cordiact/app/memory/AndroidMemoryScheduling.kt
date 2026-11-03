@@ -125,34 +125,58 @@ class MemoryWorkScheduler(private val context: Context) {
  * the pipeline be observed before the extraction IO exists. It must not silently succeed on a
  * deferral: returning success while doing nothing is how a stalled pipeline looks healthy.
  */
+/**
+ * Runs one memory pass.
+ *
+ * The worker owns no policy: it reads device conditions, asks the pipeline to decide, and maps
+ * the outcome onto WorkManager's retry vocabulary. That mapping is the only judgement here, and
+ * it matters — the wrong choice either spins on a permanent problem or gives up on a transient
+ * one.
+ */
 class MemoryExtractionWorker(
     context: Context,
     params: WorkerParameters,
 ) : CoroutineWorker(context, params) {
 
     override suspend fun doWork(): Result {
-        val projectDir = applicationContext.filesDir
-        val conditions = AndroidDeviceConditions(applicationContext, projectDir).read()
+        val host = applicationContext as? CordiActApplication
+            ?: return Result.failure(workDataOf(KEY_REASON to "host application unavailable"))
 
-        // The model selection lives in the settings store; wiring it is part of the extraction
-        // IO step. Until then the policy is evaluated with "not selected", which correctly
-        // prevents any background model call from happening by accident.
-        val decision = MemorySchedulingPolicy().evaluate(conditions, modelSelected = false)
+        val conditions = host.deviceConditions()
+        val selection = ExtractionModelSelectionStore(applicationContext).selectedModel()
 
-        return when (decision) {
-            is SchedulingDecision.Run -> Result.success()
-            is SchedulingDecision.Defer -> when (decision.reason) {
-                // A configuration gap does not fix itself: retrying would spin until the backoff
-                // cap while nothing can change. Stop and wait for the next explicit enqueue.
-                SchedulingDecision.Defer.Reason.NO_MODEL_SELECTED -> Result.success()
+        // Checked before the pipeline so a configuration gap does not look like a backlog: the
+        // pipeline would also defer, but reporting it here keeps the reason in the work data.
+        if (selection == null) {
+            return Result.success(workDataOf(KEY_REASON to "no extraction model selected"))
+        }
 
-                // Transient conditions do clear on their own, so retrying is right.
-                SchedulingDecision.Defer.Reason.LOW_STORAGE,
-                SchedulingDecision.Defer.Reason.THERMAL_PRESSURE,
-                SchedulingDecision.Defer.Reason.METERED,
-                SchedulingDecision.Defer.Reason.DOZING,
+        val workspace = try {
+            host.workspaceManager.activeWorkspace()
+        } catch (e: Exception) {
+            return Result.failure(workDataOf(KEY_REASON to "no active Workspace"))
+        }
+
+        return try {
+            // The selection was already resolved above; the callback exists so the pipeline can
+            // re-ask per Workspace, and here there is exactly one.
+            val report = host.runMemoryPass(workspace.id, conditions) { selection }
+            // The mapping lives in core so it is testable without WorkManager; it is also the
+            // one judgement that can turn a permanent condition into an infinite retry loop.
+            when (com.cordiact.core.memory.SchedulingRetry.decide(report.decision)) {
+                com.cordiact.core.memory.SchedulingRetry.Action.DONE ->
+                    Result.success(workDataOf(KEY_EXTRACTED to report.extractedCount))
+                com.cordiact.core.memory.SchedulingRetry.Action.RETRY,
+                com.cordiact.core.memory.SchedulingRetry.Action.RETRY_AFTER_FAILURE,
                 -> Result.retry()
             }
+        } catch (e: Exception) {
+            Result.retry()
         }
+    }
+
+    companion object {
+        const val KEY_REASON = "reason"
+        const val KEY_EXTRACTED = "extracted"
     }
 }
