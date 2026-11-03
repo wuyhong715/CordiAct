@@ -12,8 +12,11 @@ import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
+import androidx.work.workDataOf
+import com.cordiact.app.CordiActApplication
 import com.cordiact.core.memory.DeviceConditions
 import com.cordiact.core.memory.MemorySchedulingPolicy
+import com.cordiact.core.memory.SchedulingRetry
 import com.cordiact.core.memory.SchedulingDecision
 import java.io.File
 import java.util.concurrent.TimeUnit
@@ -163,11 +166,11 @@ class MemoryExtractionWorker(
             val report = host.runMemoryPass(workspace.id, conditions) { selection }
             // The mapping lives in core so it is testable without WorkManager; it is also the
             // one judgement that can turn a permanent condition into an infinite retry loop.
-            when (com.cordiact.core.memory.SchedulingRetry.decide(report.decision)) {
-                com.cordiact.core.memory.SchedulingRetry.Action.DONE ->
+            when (SchedulingRetry.decide(report.decision)) {
+                SchedulingRetry.Action.DONE ->
                     Result.success(workDataOf(KEY_EXTRACTED to report.extractedCount))
-                com.cordiact.core.memory.SchedulingRetry.Action.RETRY,
-                com.cordiact.core.memory.SchedulingRetry.Action.RETRY_AFTER_FAILURE,
+                SchedulingRetry.Action.RETRY,
+                SchedulingRetry.Action.RETRY_AFTER_FAILURE,
                 -> Result.retry()
             }
         } catch (e: Exception) {
