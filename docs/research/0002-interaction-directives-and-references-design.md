@@ -1,4 +1,4 @@
-# 交互集成插件：指令语法与授权设计
+# 交互插件：指令语法与授权设计
 
 **状态：** 设计已落地首期实现，Android UI/主工程编译待 CI 验证
 **日期：** 2026-11-01
@@ -6,7 +6,7 @@
 
 ## 1. 设计结论
 
-交互集成插件是客户端能力的受管集成入口，不拥有所有业务能力。它组合普通模型输入、命令目录、实体目录、Workspace/Session 上下文与受控分发；具体命令、可引用实体和可调用能力仍由各自功能插件注册并实现。
+交互插件是客户端能力的受管集成入口，不拥有所有业务能力。它组合普通模型输入、命令目录、实体目录、Workspace/Session 上下文与受控分发；具体命令、可引用实体和可调用能力仍由各自功能插件注册并实现。
 
 输入有三种不同含义：
 
@@ -148,7 +148,7 @@ CordiAct 的交互分发还必须遵守现有 Workspace-first 约束：会话始
 
 这是职责建议，不是当前已存在的 API 定义：
 
-- `InteractionIntegrationPlugin`：组装客户端输入目录/解析/分发能力，依赖 Model Adapter 与相应命令、实体目录，不实现 provider、文件系统或工具自身。
+- `InteractionPlugin`：组装客户端输入目录/解析/分发能力，依赖 Model Adapter 与相应命令、实体目录，不实现 provider、文件系统或工具自身。
 - `CommandRegistry`：按插件 owner 注册/撤销 descriptors；检查唯一名、schema、capability；暴露只读候选和按完整名称解析。
 - `MentionCatalog` / `MentionResolver`：按 session/workspace 上下文列举并解析有类型实体；返回 stable ID、parent ID、允许子类型和状态，不返回未授权数据。
 - `ReferenceAuthorizationService`：根据 command descriptor、明确 mentions、现行能力与 policy 计算最小范围授权，并在每个执行点复核。
@@ -179,6 +179,6 @@ CordiAct 的交互分发还必须遵守现有 Workspace-first 约束：会话始
 
 ## 10. 参考资料
 
-- CordiAct：`docs/research/0001-interaction-integration-plugin.md`。
+- CordiAct：`docs/research/0001-interaction-plugin.md`。
 - CordiAct：`docs/adr/0003-workspace-first-design.md`、`docs/adr/0004-tool-and-file-manager.md`、`docs/plugin-lifecycle.md`。
 - DeepSeek Harness 快照 `ce7073d51254c26cd63b22a60835b8f948deb447`：`packages/interaction/commands/README.md`、`packages/client/ui-commands/README.md`、`packages/client/ui-conversation/src/client/contract/user-text.ts`、`packages/client/ui-conversation/src/client/user-text/session-reference-rule.ts`。Harness 只作为命令注册、客户端目录与结构化引用的 prior art；本提案中的三种指令语义和授权规则是 CordiAct 的新增设计，不应误称为 Harness 既有功能。

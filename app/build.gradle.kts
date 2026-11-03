@@ -29,8 +29,8 @@ android { namespace = "com.cordiact.app"; compileSdk = 35
 
 dependencies {
     implementation(project(":core"))
-    implementation(project(":integration"))
-    implementation(project(":model-deepseek"))
+    implementation(project(":interaction"))
+    implementation(project(":model-providers"))
     implementation("androidx.activity:activity-compose:1.10.0")
     implementation("androidx.compose.ui:ui:1.7.6")
     implementation("androidx.compose.material3:material3:1.3.1")

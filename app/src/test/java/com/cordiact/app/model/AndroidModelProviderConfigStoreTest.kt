@@ -2,8 +2,8 @@ package com.cordiact.app.model
 
 import android.content.Context
 import com.cordiact.core.conversation.GenerationParameters
-import com.cordiact.model.deepseek.ModelProviderConfig
-import com.cordiact.model.deepseek.ModelProtocol
+import com.cordiact.model.providers.ModelProviderConfig
+import com.cordiact.model.providers.ModelProtocol
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue

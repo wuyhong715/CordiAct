@@ -78,7 +78,9 @@ The DSH experimental WebWorker runtime is useful prior art for packaging a Harne
 - `app` Android adapters: SQLite lifecycle/consent store, runtime controller registry, scoped data/cache/artifact cleanup, startup recovery
 - `plugins-android`: protected and optional native Android capability plugins (planned)
 - `runtime-cordis`: embedded JS host and Cordis capability bridge (planned)
-- `integration`: native DSH Gateway transport/protocol adapter
+- `interaction`: Workspace/Session-scoped interaction parsing, references, command dispatch, and authorization contracts
+- `model-providers`: protocol-neutral provider implementations and provider registry for DeepSeek, Anthropic, Gemini, OpenAI, and compatible endpoints
+- `deepseek-harness`: isolated contract for submitting actions to a remote DeepSeek Harness; currently not consumed by the app
 - `docs`: architecture decisions and plugin compatibility matrix
 
 ## Open decisions

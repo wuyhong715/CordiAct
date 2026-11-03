@@ -4,7 +4,7 @@ import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
-import com.cordiact.model.deepseek.ApiKeyProvider
+import com.cordiact.model.providers.ApiKeyProvider
 import java.security.KeyStore
 import java.security.MessageDigest
 import javax.crypto.Cipher

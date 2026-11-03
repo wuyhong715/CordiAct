@@ -2,9 +2,9 @@ package com.cordiact.app.model
 
 import android.content.Context
 import com.cordiact.core.conversation.GenerationParameters
-import com.cordiact.model.deepseek.ModelProviderConfig
-import com.cordiact.model.deepseek.ModelProviderConfigStore
-import com.cordiact.model.deepseek.ModelProtocol
+import com.cordiact.model.providers.ModelProviderConfig
+import com.cordiact.model.providers.ModelProviderConfigStore
+import com.cordiact.model.providers.ModelProtocol
 import org.json.JSONArray
 import org.json.JSONObject
 

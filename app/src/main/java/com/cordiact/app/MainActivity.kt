@@ -46,13 +46,13 @@ import com.cordiact.core.conversation.MessageRole
 import com.cordiact.core.conversation.ModelCall
 import com.cordiact.core.conversation.ModelEvent
 import com.cordiact.core.conversation.ModelId
-import com.cordiact.integration.interaction.InteractionContext
-import com.cordiact.integration.interaction.InteractionDiagnostic
-import com.cordiact.integration.interaction.InteractionToken
-import com.cordiact.integration.interaction.MentionDescriptor
-import com.cordiact.integration.interaction.MentionType
-import com.cordiact.integration.interaction.PreparedInteraction
-import com.cordiact.integration.interaction.TokenStatus
+import com.cordiact.interaction.InteractionContext
+import com.cordiact.interaction.InteractionDiagnostic
+import com.cordiact.interaction.InteractionToken
+import com.cordiact.interaction.MentionDescriptor
+import com.cordiact.interaction.MentionType
+import com.cordiact.interaction.PreparedInteraction
+import com.cordiact.interaction.TokenStatus
 
 private val DEFAULT_MODEL = ModelId("deepseek", "deepseek-flash")
 

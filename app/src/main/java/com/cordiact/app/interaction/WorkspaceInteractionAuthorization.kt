@@ -2,12 +2,12 @@ package com.cordiact.app.interaction
 
 import com.cordiact.core.conversation.SessionManagerService
 import com.cordiact.core.workspace.WorkspaceManagerService
-import com.cordiact.integration.interaction.AuthorizationDecision
-import com.cordiact.integration.interaction.InteractionAuthorization
-import com.cordiact.integration.interaction.InteractionContext
-import com.cordiact.integration.interaction.InteractionCommandRegistry
-import com.cordiact.integration.interaction.MentionDescriptor
-import com.cordiact.integration.interaction.MentionType
+import com.cordiact.interaction.AuthorizationDecision
+import com.cordiact.interaction.InteractionAuthorization
+import com.cordiact.interaction.InteractionContext
+import com.cordiact.interaction.InteractionCommandRegistry
+import com.cordiact.interaction.MentionDescriptor
+import com.cordiact.interaction.MentionType
 
 /** Fail-closed authorization for the current persisted session and its exact Workspace references. */
 class WorkspaceInteractionAuthorization(
@@ -18,7 +18,7 @@ class WorkspaceInteractionAuthorization(
 ) : InteractionAuthorization {
     override fun authorize(
         context: InteractionContext,
-        command: com.cordiact.integration.interaction.CommandDescriptor?,
+        command: com.cordiact.interaction.CommandDescriptor?,
         targets: List<MentionDescriptor>,
     ): AuthorizationDecision {
         val session = sessions.getSession(context.sessionId)
