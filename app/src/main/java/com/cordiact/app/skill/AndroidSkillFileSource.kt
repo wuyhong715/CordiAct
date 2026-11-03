@@ -13,27 +13,44 @@ import com.cordiact.core.skill.SkillFileSource
  */
 class AndroidSkillFileSource(private val files: WorkspaceFileService) : SkillFileSource {
 
+    /**
+     * Lists skills from both roots.
+     *
+     * `skills/` holds what the user wrote; `memory/skills/` holds procedures distilled from
+     * memory. They are scanned together because the catalog needs one index, but their origins
+     * stay distinguishable so a generated skill can never shadow a user-authored one of the
+     * same name.
+     */
     override fun listSkillFiles(workspaceId: String): List<String> {
+        val paths = mutableListOf<String>()
+        for (root in SKILL_ROOTS) {
+            paths += listUnder(workspaceId, root)
+        }
+        return paths.sorted()
+    }
+
+    private fun listUnder(workspaceId: String, root: String): List<String> {
         val paths = mutableListOf<String>()
         var cursor: String? = null
         do {
             val page = try {
-                files.list(workspaceId, SKILLS_ROOT, cursor = cursor, limit = PAGE_SIZE)
+                files.list(workspaceId, root, cursor = cursor, limit = PAGE_SIZE)
             } catch (e: WorkspaceFileException) {
-                if (e.code == WorkspaceFileException.Code.FILE_NOT_FOUND) return emptyList()
+                // A missing root is normal: most Workspaces never generate a skill.
+                if (e.code == WorkspaceFileException.Code.FILE_NOT_FOUND) return paths
                 throw e
             }
             for (entry in page.entries) {
                 if (!entry.directory) continue
-                // Skill names are validated by SkillParser; filter other folders now so they
-                // cannot force reads outside the intended skills/<name>/SKILL.md layout.
+                // Names are validated by SkillParser; filtering here stops other folders from
+                // forcing reads outside the intended <root>/<name>/SKILL.md layout.
                 if (!SKILL_DIR.matches(entry.name)) continue
-                paths += "$SKILLS_ROOT/${entry.name}/$SKILL_FILE_NAME"
-                if (paths.size > MAX_SKILLS) error("Too many skills in $SKILLS_ROOT")
+                paths += "$root/${entry.name}/$SKILL_FILE_NAME"
+                if (paths.size > MAX_SKILLS) error("Too many skills under $root")
             }
             cursor = page.nextCursor
         } while (cursor != null)
-        return paths.sorted()
+        return paths
     }
 
     override fun read(workspaceId: String, path: String): String? {
@@ -55,7 +72,8 @@ class AndroidSkillFileSource(private val files: WorkspaceFileService) : SkillFil
     }
 
     private companion object {
-        const val SKILLS_ROOT = "skills"
+        /** User-authored skills, then generated ones. */
+        val SKILL_ROOTS = listOf("skills", "memory/skills")
         const val SKILL_FILE_NAME = "SKILL.md"
         val SKILL_DIR = Regex("^[a-z0-9][a-z0-9-]*$")
         const val PAGE_SIZE = 100
