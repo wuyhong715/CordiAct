@@ -163,7 +163,10 @@ class MemoryExtractionWorker(
         return try {
             // The selection was already resolved above; the callback exists so the pipeline can
             // re-ask per Workspace, and here there is exactly one.
-            val report = host.runMemoryPass(workspace.id, conditions) { selection }
+            // Explicitly ignore the Workspace argument: this worker runs for one Workspace and
+            // already resolved its selection, and naming the parameter keeps the lambda's
+            // return type unambiguous.
+            val report = host.runMemoryPass(workspace.id, conditions) { _ -> selection }
             // The mapping lives in core so it is testable without WorkManager; it is also the
             // one judgement that can turn a permanent condition into an infinite retry loop.
             when (SchedulingRetry.decide(report.decision)) {
