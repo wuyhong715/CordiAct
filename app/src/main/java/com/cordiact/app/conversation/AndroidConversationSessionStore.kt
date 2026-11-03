@@ -32,13 +32,37 @@ class AndroidConversationSessionStore(
         createSessionSchema(db, TABLE_SESSIONS)
         createMessageSchema(db, TABLE_MESSAGES, TABLE_SESSIONS)
         createToolPreferenceSchema(db)
+        createPluginSettingsSchema(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
         if (oldVersion < 2 && newVersion >= 2) migrateV1ToV2(db)
         if (oldVersion < 3 && newVersion >= 3) migrateV2ToV3(db)
+        if (oldVersion < 4 && newVersion >= 4) migrateV3ToV4(db)
         if (newVersion > DATABASE_VERSION) throw IllegalStateException("Unsupported conversation database version $newVersion")
     }
+
+    private fun migrateV3ToV4(db: SQLiteDatabase) {
+        db.beginTransaction()
+        try {
+            createPluginSettingsSchema(db)
+            if (!db.hasColumn(TABLE_MESSAGES, COL_MESSAGE_METADATA)) {
+                db.execSQL("ALTER TABLE $TABLE_MESSAGES ADD COLUMN $COL_MESSAGE_METADATA TEXT")
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    private fun SQLiteDatabase.hasColumn(table: String, column: String): Boolean =
+        rawQuery("PRAGMA table_info($table)", null).use { cursor ->
+            val nameIndex = cursor.getColumnIndexOrThrow("name")
+            while (cursor.moveToNext()) {
+                if (cursor.getString(nameIndex) == column) return true
+            }
+            false
+        }
 
     private fun migrateV2ToV3(db: SQLiteDatabase) {
         db.beginTransaction()
@@ -128,7 +152,19 @@ class AndroidConversationSessionStore(
             $COL_MESSAGE_SESSION_ID TEXT NOT NULL REFERENCES $sessionsTable($COL_SESSION_ID) ON DELETE CASCADE,
             $COL_ROLE TEXT NOT NULL,
             $COL_CONTENT TEXT NOT NULL,
-            $COL_CREATED_AT INTEGER NOT NULL
+            $COL_CREATED_AT INTEGER NOT NULL,
+            $COL_MESSAGE_METADATA TEXT
+        )""".trimIndent())
+    }
+
+    private fun createPluginSettingsSchema(db: SQLiteDatabase) {
+        db.execSQL("""CREATE TABLE IF NOT EXISTS $TABLE_PLUGIN_SETTINGS (
+            $COL_WORKSPACE_ID TEXT NOT NULL REFERENCES $TABLE_WORKSPACES($COL_WORKSPACE_ID) ON DELETE CASCADE,
+            $COL_PLUGIN_ID TEXT NOT NULL,
+            $COL_SETTING_KEY TEXT NOT NULL,
+            $COL_SETTING_VALUE TEXT NOT NULL,
+            $COL_UPDATED_AT INTEGER NOT NULL,
+            PRIMARY KEY($COL_WORKSPACE_ID,$COL_PLUGIN_ID,$COL_SETTING_KEY)
         )""".trimIndent())
     }
 
@@ -281,6 +317,47 @@ class AndroidConversationSessionStore(
         writableDatabase.insertWithOnConflict(TABLE_TOOL_PREFERENCES, null, values, SQLiteDatabase.CONFLICT_REPLACE)
     }
 
+    /** Plugin-scoped Workspace setting. Secrets must never be stored here. */
+    fun pluginSetting(workspaceId: String, pluginId: String, key: String): String? = readableDatabase.query(
+        TABLE_PLUGIN_SETTINGS,
+        arrayOf(COL_SETTING_VALUE),
+        "$COL_WORKSPACE_ID = ? AND $COL_PLUGIN_ID = ? AND $COL_SETTING_KEY = ?",
+        arrayOf(workspaceId, pluginId, key),
+        null,
+        null,
+        null,
+    ).use { cursor -> if (cursor.moveToFirst()) cursor.getString(0) else null }
+
+    fun putPluginSetting(workspaceId: String, pluginId: String, key: String, value: String?) {
+        val db = writableDatabase
+        val workspaceIsActive = db.query(
+            TABLE_WORKSPACES,
+            arrayOf(COL_WORKSPACE_ID),
+            "$COL_WORKSPACE_ID = ? AND $COL_WORKSPACE_ARCHIVED IS NULL",
+            arrayOf(workspaceId),
+            null,
+            null,
+            null,
+        ).use { it.moveToFirst() }
+        check(workspaceIsActive) { "Workspace does not exist or is archived" }
+        if (value == null) {
+            db.delete(
+                TABLE_PLUGIN_SETTINGS,
+                "$COL_WORKSPACE_ID = ? AND $COL_PLUGIN_ID = ? AND $COL_SETTING_KEY = ?",
+                arrayOf(workspaceId, pluginId, key),
+            )
+            return
+        }
+        val values = ContentValues().apply {
+            put(COL_WORKSPACE_ID, workspaceId)
+            put(COL_PLUGIN_ID, pluginId)
+            put(COL_SETTING_KEY, key)
+            put(COL_SETTING_VALUE, value)
+            put(COL_UPDATED_AT, System.currentTimeMillis())
+        }
+        db.insertWithOnConflict(TABLE_PLUGIN_SETTINGS, null, values, SQLiteDatabase.CONFLICT_REPLACE)
+    }
+
     override fun findSessionWorkspace(id: String): Workspace? = readableDatabase.query(
         TABLE_WORKSPACES, WORKSPACE_COLUMNS, "$COL_WORKSPACE_ID = ? AND $COL_WORKSPACE_ARCHIVED IS NULL", arrayOf(id), null, null, null,
     ).use { if (it.moveToFirst()) it.toWorkspace() else null }
@@ -371,9 +448,14 @@ class AndroidConversationSessionStore(
 
     private companion object {
         const val DATABASE_NAME = "cordiact-conversations.db"
-        const val DATABASE_VERSION = 3
+        const val DATABASE_VERSION = 4
         const val TABLE_WORKSPACES = "workspaces"
         const val TABLE_TOOL_PREFERENCES = "workspace_tool_preferences"
+        const val TABLE_PLUGIN_SETTINGS = "workspace_plugin_settings"
+        const val COL_PLUGIN_ID = "plugin_id"
+        const val COL_SETTING_KEY = "setting_key"
+        const val COL_SETTING_VALUE = "setting_value"
+        const val COL_MESSAGE_METADATA = "metadata_json"
         const val COL_TOOL_ID = "tool_id"
         const val COL_TOOL_ENABLED = "enabled"
         const val COL_TOOL_UPDATED = "updated_at"

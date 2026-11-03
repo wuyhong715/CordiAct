@@ -23,6 +23,7 @@ import com.cordiact.core.plugin.PluginLifecycleException
 import com.cordiact.core.plugin.PluginState
 import com.cordiact.core.skill.SkillIndexRenderer
 import com.cordiact.core.tool.ToolManagerService
+import com.cordiact.core.tool.ToolActivationContext
 import com.cordiact.core.file.WorkspaceFileService
 import com.cordiact.core.sandbox.SandboxManagerPlugin
 import com.cordiact.core.sandbox.SandboxManagerService
@@ -202,10 +203,13 @@ class CordiActApplication : Application() {
      * or whose capability is missing cannot run, so offering it would only produce a failing
      * call the model has to recover from.
      */
-    private fun availableToolSpecs(workspaceId: String): List<ModelToolSpec> =
+    private fun availableToolSpecs(workspaceId: String, model: ModelId): List<ModelToolSpec> =
         try {
             AndroidToolDispatcher.specs(
-                tools.list(workspaceId).filter { it.dispatchable }.map { it.descriptor },
+                tools.resolveEnabled(
+                    workspaceId,
+                    ToolActivationContext(workspaceId, model.providerId, model.modelId),
+                ),
             )
         } catch (e: Exception) {
             emptyList()
@@ -280,12 +284,15 @@ class CordiActApplication : Application() {
             val toolContext = ToolInvocationContext(
                 workspaceId = envelope.context.workspaceId,
                 grantedScopes = grants,
+                modelProviderId = modelId.providerId,
+                modelId = modelId.modelId,
+                requestText = prompt,
             )
             turnService.submitWithTools(
                 sessionId = envelope.context.sessionId,
                 model = modelId,
                 text = prompt,
-                tools = availableToolSpecs(envelope.context.workspaceId),
+                tools = availableToolSpecs(envelope.context.workspaceId, modelId),
                 toolLoop = toolLoopPlugin,
                 dispatcher = toolDispatcher,
                 toolContext = toolContext,

@@ -7,6 +7,7 @@ import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertTrue
 
 class ToolManagerPluginTest {
     @Test
@@ -96,6 +97,139 @@ class ToolManagerPluginTest {
         assertFailsWith<ToolManagerException> { plugin.invoke(context(WORKSPACE_A), TOOL_ID, validArgs()) }
         assertFailsWith<ToolManagerException> { plugin.setEnabled(WORKSPACE_A, "missing.tool", true) }
         assertEquals(0, invocations)
+    }
+
+    @Test
+    fun arrayParameterValidationRejectsWrongShapes() {
+        val workspaces = FakeWorkspaceManager()
+        val preferences = FakePreferences().apply { setEnabled(WORKSPACE_A, TOOL_ID, true) }
+        var invocations = 0
+        val registry = InMemoryToolDefinitionRegistry().apply {
+            register(
+                ToolDefinition(
+                    descriptor().copy(
+                        inputSchema = ToolInputSchema(
+                            listOf(
+                                ToolParameter(
+                                    name = "tags",
+                                    type = ToolValueType.ARRAY,
+                                    required = true,
+                                    itemType = ToolValueType.STRING,
+                                    maxItems = 2,
+                                ),
+                            ),
+                        ),
+                    ),
+                    ToolExecutor { _, _ -> invocations++; ToolResult() },
+                ),
+            )
+        }
+        val plugin = manager(registry, preferences, workspaces) { PluginState.ENABLED }
+        plugin.onEnable()
+
+        assertFailsWith<ToolManagerException> {
+            plugin.invoke(
+                context(WORKSPACE_A),
+                TOOL_ID,
+                ToolArguments(mapOf("tags" to ToolValue.ArrayValue(listOf(ToolValue.NumberValue(1.0))))),
+            )
+        }
+        assertFailsWith<ToolManagerException> {
+            plugin.invoke(
+                context(WORKSPACE_A),
+                TOOL_ID,
+                ToolArguments(
+                    mapOf(
+                        "tags" to ToolValue.ArrayValue(
+                            listOf(ToolValue.StringValue("a"), ToolValue.StringValue("b"), ToolValue.StringValue("c")),
+                        ),
+                    ),
+                ),
+            )
+        }
+        plugin.invoke(
+            context(WORKSPACE_A),
+            TOOL_ID,
+            ToolArguments(mapOf("tags" to ToolValue.ArrayValue(listOf(ToolValue.StringValue("a"))))),
+        )
+        assertEquals(1, invocations)
+    }
+
+    @Test
+    fun timeoutIsEnforcedForTheDeclaredTool() {
+        val workspaces = FakeWorkspaceManager()
+        val preferences = FakePreferences().apply { setEnabled(WORKSPACE_A, TOOL_ID, true) }
+        val registry = InMemoryToolDefinitionRegistry().apply {
+            register(
+                ToolDefinition(
+                    descriptor().copy(timeoutMs = 50),
+                    ToolExecutor { _, _ ->
+                        Thread.sleep(1_000)
+                        ToolResult()
+                    },
+                ),
+            )
+        }
+        val plugin = manager(registry, preferences, workspaces) { PluginState.ENABLED }
+        plugin.onEnable()
+
+        val failure = assertFailsWith<ToolManagerException> {
+            plugin.invoke(context(WORKSPACE_A), TOOL_ID, validArgs())
+        }
+        assertEquals(ToolManagerException.Code.TOOL_TIMEOUT, failure.code)
+    }
+
+    @Test
+    fun aSlowConcurrentToolDoesNotBlockAnotherTool() {
+        val workspaces = FakeWorkspaceManager()
+        val preferences = FakePreferences().apply { setEnabled(WORKSPACE_A, TOOL_ID, true) }
+        preferences.setEnabled(WORKSPACE_A, "files.quick", true)
+        val started = java.util.concurrent.CountDownLatch(1)
+        val registry = InMemoryToolDefinitionRegistry().apply {
+            register(
+                ToolDefinition(
+                    descriptor().copy(concurrencySafe = true, timeoutMs = 5_000),
+                    ToolExecutor { _, _ ->
+                        started.countDown()
+                        Thread.sleep(700)
+                        ToolResult()
+                    },
+                ),
+            )
+            register(
+                ToolDefinition(
+                    descriptor().copy(id = "files.quick", name = "Quick"),
+                    ToolExecutor { _, _ -> ToolResult() },
+                ),
+            )
+        }
+        val plugin = manager(registry, preferences, workspaces) { PluginState.ENABLED }
+        plugin.onEnable()
+
+        val slow = Thread {
+            plugin.invoke(context(WORKSPACE_A), TOOL_ID, validArgs())
+        }.apply { start() }
+        started.await(2, java.util.concurrent.TimeUnit.SECONDS)
+        val begin = System.nanoTime()
+        plugin.invoke(context(WORKSPACE_A), "files.quick", validArgs())
+        val elapsedMs = (System.nanoTime() - begin) / 1_000_000
+        assertTrue(elapsedMs < 400, "quick tool was blocked for ${elapsedMs}ms")
+        slow.join(2_000)
+    }
+
+    @Test
+    fun visibilityGateFiltersOnlyWhenAnActivationIsSupplied() {
+        val workspaces = FakeWorkspaceManager()
+        val preferences = FakePreferences().apply { setEnabled(WORKSPACE_A, TOOL_ID, true) }
+        val registry = InMemoryToolDefinitionRegistry().apply {
+            register(ToolDefinition(descriptor(), ToolExecutor { _, _ -> ToolResult() }))
+            registerVisibility(TOOL_ID) { false }
+        }
+        val plugin = manager(registry, preferences, workspaces) { PluginState.ENABLED }
+        plugin.onEnable()
+
+        assertEquals(1, plugin.resolveEnabled(WORKSPACE_A).size)
+        assertEquals(0, plugin.resolveEnabled(WORKSPACE_A, ToolActivationContext(WORKSPACE_A)).size)
     }
 
     private fun manager(

@@ -49,6 +49,20 @@ import com.cordiact.core.tool.ToolExecutor
 import com.cordiact.core.tool.toolManagerPluginSpec
 import com.cordiact.app.file.AndroidWorkspaceFileBackend
 import com.cordiact.app.file.registerWorkspaceFileTools
+import com.cordiact.app.search.AndroidSearchPolicyStore
+import com.cordiact.app.search.SearchPlugin
+import com.cordiact.app.search.registerSearchTools
+import com.cordiact.app.search.searchPluginSpec
+import com.cordiact.app.search.searchRoute
+import com.cordiact.core.search.FETCH_TOOL_ID
+import com.cordiact.core.search.SEARCH_TOOL_ID
+import com.cordiact.core.search.SearchProviderRegistry
+import com.cordiact.core.search.SearchService
+import com.cordiact.search.providers.DeepSeekFetchApiProvider
+import com.cordiact.search.providers.DeepSeekNativeSearchProvider
+import com.cordiact.search.providers.DeepSeekSearchApiProvider
+import com.cordiact.search.providers.DeepSeekWebConfig
+import com.cordiact.search.providers.DefaultSearchService
 import com.cordiact.app.interaction.AndroidFillValueStore
 import com.cordiact.app.interaction.AndroidInteractionDirectory
 import com.cordiact.app.interaction.WorkspaceInteractionAuthorization
@@ -78,6 +92,7 @@ object BundledConversationPluginCatalog {
         modelProviderRegistryPluginSpec(),
         sandboxManagerPluginSpec(),
         interactionPluginSpec(),
+        searchPluginSpec(),
     )
 
     val verifier = BundledPluginVerifier { candidate -> candidate in trustedSpecs }
@@ -115,6 +130,11 @@ class BundledConversationPlugins private constructor(
     lateinit var toolManagerPlugin: ToolManagerPlugin
         private set
     val toolManagerService: ToolManagerService get() = toolManagerPlugin
+    lateinit var searchPlugin: SearchPlugin
+        private set
+    val searchService: SearchService get() = searchPlugin.service
+    lateinit var searchPolicyStore: AndroidSearchPolicyStore
+        private set
     lateinit var modelProviderRegistryPlugin: ModelProviderRegistryPlugin
         private set
 
@@ -128,6 +148,39 @@ class BundledConversationPlugins private constructor(
             workspaces = workspaceManager,
             pluginStates = stateLookup,
         )
+
+        val searchPolicies = AndroidSearchPolicyStore(conversationStore)
+        val deepSeekWeb = DeepSeekWebConfig(apiKey = { apiKeyProvider.apiKey() })
+        val searchProviders = SearchProviderRegistry().apply {
+            registerSearch(DeepSeekSearchApiProvider(deepSeekWeb))
+            registerFetch(DeepSeekFetchApiProvider(deepSeekWeb))
+            registerSearch(
+                DeepSeekNativeSearchProvider(
+                    apiKey = { apiKeyProvider.apiKey() },
+                    // The route's model id wins; this fallback is only for a pinned route-less call.
+                    model = { null as String? },
+                ),
+            )
+        }
+        val searchService = DefaultSearchService(
+            registry = searchProviders,
+            policies = searchPolicies,
+            maxQueries = 4,
+            maxResults = 8,
+            summaryMaxChars = 800,
+            searchTimeoutMs = 30_000,
+            fetchTimeoutMs = 30_000,
+        )
+        searchPolicyStore = searchPolicies
+        searchPlugin = SearchPlugin(searchService)
+        registerSearchTools(registry, searchService)
+        registry.registerVisibility(SEARCH_TOOL_ID) { context ->
+            searchService.shouldExposeSearch(context.workspaceId, context.searchRoute())
+        }
+        registry.registerVisibility(FETCH_TOOL_ID) { context ->
+            searchService.shouldExposeFetch(context.workspaceId, context.searchRoute())
+        }
+
         val modelAdapter = ModelAdapterPlugin()
         modelProviderRegistryPlugin = ModelProviderRegistryPlugin(
             modelAdapter,
@@ -172,6 +225,7 @@ class BundledConversationPlugins private constructor(
             fileManagerPlugin,
             skillPlugin,
             toolManagerPlugin,
+            searchPlugin,
             modelAdapter,
             sessionManager,
             DeepSeekBackendPlugin(modelAdapter, ConfigurableModelBackend(DeepSeekPreset.config(), apiKeyProvider)),

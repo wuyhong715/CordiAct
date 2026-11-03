@@ -119,7 +119,7 @@ class AndroidToolDispatcher(
         private fun schemaJson(parameters: List<ToolParameter>, allowAdditional: Boolean): String {
             val properties = JSONObject()
             for (parameter in parameters) {
-                properties.put(parameter.name, JSONObject().put("type", parameterType(parameter.type)))
+                properties.put(parameter.name, parameterJson(parameter))
             }
             val required = JSONArray()
             parameters.filter { it.required }.forEach { required.put(it.name) }
@@ -131,10 +131,27 @@ class AndroidToolDispatcher(
             }.toString()
         }
 
+        private fun parameterJson(parameter: ToolParameter): JSONObject = JSONObject().apply {
+            put("type", parameterType(parameter.type))
+            parameter.description?.let { put("description", it) }
+            if (parameter.enumValues.isNotEmpty()) put("enum", JSONArray(parameter.enumValues))
+            if (parameter.type == ToolValueType.ARRAY) {
+                parameter.itemType?.let { put("items", JSONObject().put("type", parameterType(it))) }
+            }
+            parameter.minimum?.let { put("minimum", it.toDouble()) }
+            parameter.maximum?.let { put("maximum", it.toDouble()) }
+            parameter.minItems?.let { put("minItems", it.toInt()) }
+            parameter.maxItems?.let { put("maxItems", it.toInt()) }
+            parameter.maxLength?.let { put("maxLength", it.toInt()) }
+        }
+
         private fun parameterType(type: ToolValueType): String = when (type) {
             ToolValueType.STRING -> "string"
             ToolValueType.NUMBER -> "number"
+            ToolValueType.INTEGER -> "integer"
             ToolValueType.BOOLEAN -> "boolean"
+            ToolValueType.ARRAY -> "array"
+            ToolValueType.OBJECT -> "object"
         }
     }
 }
