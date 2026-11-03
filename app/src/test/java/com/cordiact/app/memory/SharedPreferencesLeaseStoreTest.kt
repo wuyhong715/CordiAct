@@ -71,8 +71,8 @@ class SharedPreferencesLeaseStoreTest {
         val after = store.active(WS, "s1")?.owner
 
         assertTrue(tookOver, "an expired lease must be replaceable, got before=$before")
-        assertEquals("fresh", before, "precondition: the fresh owner holds the lease")
-        assertEquals("fresh", after, "the live owner keeps its lease")
+        assertEquals("precondition: the fresh owner holds the lease", "fresh", before)
+        assertEquals("the live owner keeps its lease", "fresh", after)
     }
 
     @Test
