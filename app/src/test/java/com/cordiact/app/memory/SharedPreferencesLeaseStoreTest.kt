@@ -20,9 +20,14 @@ class SharedPreferencesLeaseStoreTest {
 
     private val context: Context = RuntimeEnvironment.getApplication()
 
-    private fun store() = SharedPreferencesLeaseStore(context).also {
-        // Robolectric keeps SharedPreferences between tests in one process; clear via release.
-        it.release(WS, "s1", "any")
+    private fun store(): SharedPreferencesLeaseStore {
+        // Robolectric shares one SharedPreferences across tests in a process, so each test must
+        // start from a known-empty state. Clearing through the backing file is the only reliable
+        // way: release() refuses when the recorded owner differs, which is the behaviour under
+        // test here.
+        context.getSharedPreferences("cordiact.memory.leases", Context.MODE_PRIVATE)
+            .edit().clear().commit()
+        return SharedPreferencesLeaseStore(context)
     }
 
     private fun lease(owner: String, claimed: Long, expires: Long) =
@@ -57,6 +62,7 @@ class SharedPreferencesLeaseStoreTest {
     @Test
     fun aStaleOwnerCannotReleaseTheLiveLease() {
         val store = store()
+        // The dead owner's lease expired, so the fresh owner legitimately takes over.
         store.claim(lease("dead", 1000, 2000))
         store.claim(lease("fresh", 3000, 4000))
 
