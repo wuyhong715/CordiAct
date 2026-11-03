@@ -14,6 +14,8 @@ import com.cordiact.core.search.SearchRequest
 import com.cordiact.core.search.SearchResult
 import com.cordiact.core.search.SearchService
 import com.cordiact.core.search.SearchSource
+import com.cordiact.core.search.SearchUsageStore
+import com.cordiact.core.search.NoSearchUsage
 import java.net.URI
 import java.util.concurrent.Callable
 import java.util.concurrent.ExecutionException
@@ -33,6 +35,7 @@ import java.util.concurrent.TimeoutException
 class DefaultSearchService(
     private val registry: SearchProviderRegistry,
     private val policies: SearchPolicyStore,
+    private val usage: SearchUsageStore = NoSearchUsage,
     private val maxQueries: Int = 4,
     private val maxResults: Int = 8,
     private val summaryMaxChars: Int = 800,
@@ -54,6 +57,7 @@ class DefaultSearchService(
         val normalized = normalizeQueries(queries)
         val cap = maxResults.coerceIn(1, this.maxResults)
         val provider = resolveSearch(workspaceId, route)
+        enforceBudget(workspaceId, provider)
         val tasks = normalized.map { query ->
             Callable {
                 provider.search(
@@ -92,7 +96,27 @@ class DefaultSearchService(
                 throw SearchException(SearchException.Code.CANCELLED, "Search was interrupted", cause = interrupted)
             }
         }
-        return merge(normalized, results, cap).copy(providerId = provider.id)
+        return merge(normalized, results, cap).copy(
+            providerId = provider.id,
+            estimatedCostUsd = provider.pricing.usdPerCall?.let { it * normalized.size },
+        )
+    }
+
+    /**
+     * Budget is checked before dispatch: an exhausted budget fails loudly rather
+     * than silently returning fewer or empty results.
+     */
+    private fun enforceBudget(workspaceId: String, provider: SearchProvider) {
+        if (!provider.billable) return
+        val limit = policies.policy(workspaceId).monthlyBudgetCalls ?: return
+        val used = usage.usedThisMonth(workspaceId)
+        if (used >= limit) {
+            throw SearchException(
+                SearchException.Code.BUDGET_EXHAUSTED,
+                "Monthly search budget of $limit calls is used up",
+            )
+        }
+        usage.record(workspaceId, 1)
     }
 
     override fun fetch(
@@ -103,10 +127,23 @@ class DefaultSearchService(
     ): FetchResult {
         validateHttpUrl(url)
         val provider = resolveFetch(workspaceId, route)
+        enforceFetchBudget(workspaceId, provider)
         val budget = timeoutMs.takeIf { it > 0 } ?: fetchTimeoutMs
         return withTimeout(budget) {
             provider.fetch(FetchRequest(url), CancellationSignal.NONE)
         }
+    }
+
+    private fun enforceFetchBudget(workspaceId: String, provider: FetchProvider) {
+        if (!provider.billable) return
+        val limit = policies.policy(workspaceId).monthlyBudgetCalls ?: return
+        if (usage.usedThisMonth(workspaceId) >= limit) {
+            throw SearchException(
+                SearchException.Code.BUDGET_EXHAUSTED,
+                "Monthly search budget of $limit calls is used up",
+            )
+        }
+        usage.record(workspaceId, 1)
     }
 
     override fun shouldExposeSearch(workspaceId: String, route: ModelRoute?): Boolean {

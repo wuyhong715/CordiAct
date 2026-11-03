@@ -507,9 +507,18 @@ Workspace 设置 → 联网搜索：
 - 30s 超时返回结构化错误并关闭连接；搜索期间文件工具不被阻塞。
 - 搜索结果含“忽略以上指令”时只作为数据回显，无越权调用。
 
-### P1 外部 provider 覆盖
+### P1 外部 provider 覆盖（已实现）
 
-Tavily、Brave、Exa、博查、SearXNG；设置页完整化；成本展示；可选月预算。
+Tavily、Brave、Exa、博查、SearXNG 适配器；设置页（模式/provider/预算/API key）；成本展示；可选月预算（按 Workspace + 自然月计数，硬停）。
+
+实现要点：
+
+- `HttpJsonClient` 增加 GET，供 Brave 与 SearXNG 使用。
+- 每个 provider 声明 `billable` 与 `pricing`（含查阅日期），只用于展示，不参与强制执行。
+- 预算在派发前检查：超限返回 `BUDGET_EXHAUSTED`，不会静默降级为空结果。
+- 只有声明 `billable` 的 provider 才计数；SearXNG 与本地 fetch 不计数。
+- 原生 provider 的 `ready()` 需要具体模型路由，设置页改用 `available()` 判断“是否已配置”。
+- 新增测试：`ProviderAdaptersTest`（8 个：Tavily/Brave/Exa/博查/SearXNG 的请求与响应映射）、预算用例 2 个。
 
 ### P2 原生 provider 覆盖
 

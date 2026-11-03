@@ -33,6 +33,22 @@ class HttpJsonClient(
         body: String,
         timeoutMs: Long,
         signal: CancellationSignal,
+    ): HttpJsonResponse = request("POST", url, headers, body, timeoutMs, signal)
+
+    fun getJson(
+        url: String,
+        headers: Map<String, String>,
+        timeoutMs: Long,
+        signal: CancellationSignal,
+    ): HttpJsonResponse = request("GET", url, headers, null, timeoutMs, signal)
+
+    private fun request(
+        method: String,
+        url: String,
+        headers: Map<String, String>,
+        body: String?,
+        timeoutMs: Long,
+        signal: CancellationSignal,
     ): HttpJsonResponse {
         val parsed = runCatching { URI(url) }.getOrNull()
             ?: throw SearchException(SearchException.Code.INVALID_URL, "Provider URL is invalid")
@@ -46,17 +62,19 @@ class HttpJsonClient(
 
         val total = timeoutMs.coerceAtLeast(1_000)
         val connection = (URL(url).openConnection() as HttpURLConnection).apply {
-            requestMethod = "POST"
+            requestMethod = method
             instanceFollowRedirects = false
             connectTimeout = minOf(5_000L, total).toInt()
             readTimeout = total.toInt()
-            doOutput = true
             setRequestProperty("user-agent", userAgent)
             for ((name, value) in headers) setRequestProperty(name, value)
+            if (body != null) doOutput = true
         }
         try {
-            connection.outputStream.use { stream ->
-                stream.write(body.toByteArray(Charsets.UTF_8))
+            if (body != null) {
+                connection.outputStream.use { stream ->
+                    stream.write(body.toByteArray(Charsets.UTF_8))
+                }
             }
             if (signal.isCancelled()) throw cancelled()
             val status = connection.responseCode

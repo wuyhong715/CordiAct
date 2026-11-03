@@ -35,16 +35,39 @@ enum class SearchMode { OFF, TOOL, NATIVE, AUTO }
  * [searchProviderId] and [fetchProviderId] are explicit pins. When null the
  * service auto-selects only if exactly one usable provider exists; ambiguity is
  * an error rather than an arbitrary pick.
+ *
+ * [monthlyBudgetCalls] caps billable provider calls per calendar month. Null
+ * means no cap. The cap is checked before dispatch and never degrades silently:
+ * an exhausted budget is a structured error.
  */
 data class WorkspaceSearchPolicy(
     val mode: SearchMode = SearchMode.AUTO,
     val searchProviderId: String? = null,
     val fetchProviderId: String? = null,
+    val monthlyBudgetCalls: Int? = null,
 )
 
 interface SearchPolicyStore {
     fun policy(workspaceId: String): WorkspaceSearchPolicy
 }
+
+/** Billable-call counter, bucketed per Workspace and calendar month. */
+interface SearchUsageStore {
+    fun usedThisMonth(workspaceId: String): Int
+    fun record(workspaceId: String, calls: Int)
+}
+
+object NoSearchUsage : SearchUsageStore {
+    override fun usedThisMonth(workspaceId: String): Int = 0
+    override fun record(workspaceId: String, calls: Int) = Unit
+}
+
+/** Declared cost of one billable call, for display only. Never used for enforcement. */
+data class SearchPricing(
+    val usdPerCall: Double? = null,
+    /** Human-readable note, including the date the figure was read. */
+    val note: String? = null,
+)
 
 data class SearchRequest(
     /** Exactly one query; the service fans out and merges multi-query calls. */
@@ -69,6 +92,8 @@ data class SearchResult(
     val sources: List<SearchSource> = emptyList(),
     val truncated: Boolean = false,
     val providerId: String? = null,
+    /** Estimated spend for this call, when the provider declares a price. */
+    val estimatedCostUsd: Double? = null,
 )
 
 data class FetchRequest(val url: String)
@@ -91,6 +116,14 @@ interface SearchProvider {
     val routeProviderId: String?
         get() = null
 
+    /** Declared cost per billable call, for display. */
+    val pricing: SearchPricing
+        get() = SearchPricing()
+
+    /** True when a search call is billed. Fetch pricing is declared separately. */
+    val billable: Boolean
+        get() = false
+
     /** Cheap local check; must not make network calls. */
     fun available(): Boolean
 
@@ -105,6 +138,10 @@ interface SearchProvider {
 
 interface FetchProvider {
     val id: String
+    val pricing: SearchPricing
+        get() = SearchPricing()
+    val billable: Boolean
+        get() = false
     fun available(): Boolean
     fun ready(route: ModelRoute?): Boolean
     fun fetch(request: FetchRequest, signal: CancellationSignal = CancellationSignal.NONE): FetchResult
@@ -128,6 +165,7 @@ class SearchException(
         INVALID_URL,
         PROVIDER_ERROR,
         INVALID_RESPONSE,
+        BUDGET_EXHAUSTED,
     }
 }
 

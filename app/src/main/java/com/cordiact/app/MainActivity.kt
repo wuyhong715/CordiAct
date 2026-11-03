@@ -41,6 +41,7 @@ import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.input.TransformedText
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
+import com.cordiact.app.search.SearchSettingsDialog
 import com.cordiact.core.conversation.ConversationMessage
 import com.cordiact.core.conversation.MessageRole
 import com.cordiact.core.conversation.ModelCall
@@ -79,6 +80,7 @@ private fun InteractionScreen(app: CordiActApplication) {
     var activeCall by remember { mutableStateOf<ModelCall?>(null) }
     var fillVersion by remember { mutableStateOf(0) }
     var showFillDialog by remember { mutableStateOf(false) }
+    var showSearchSettings by remember { mutableStateOf(false) }
     var fillKey by remember { mutableStateOf("") }
     var fillValue by remember { mutableStateOf("") }
     var history by remember(sessionId) {
@@ -207,6 +209,21 @@ private fun InteractionScreen(app: CordiActApplication) {
         )
     }
 
+    if (showSearchSettings) {
+        val workspaceId = app.activeSessionWorkspaceId()
+        if (workspaceId == null) {
+            showSearchSettings = false
+            error = "当前没有可用的 Workspace"
+        } else {
+            SearchSettingsDialog(
+                plugins = app.conversationCatalog,
+                workspaceId = workspaceId,
+                onDismiss = { showSearchSettings = false },
+                onChanged = { },
+            )
+        }
+    }
+
     Column(
         modifier = Modifier.fillMaxSize().padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -277,6 +294,7 @@ private fun InteractionScreen(app: CordiActApplication) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = { submit() }, enabled = activeCall == null && prepared?.valid == true) { Text("发送") }
             OutlinedButton(onClick = { showFillDialog = true }) { Text("设置 #") }
+            OutlinedButton(onClick = { showSearchSettings = true }) { Text("搜索") }
             if (activeCall != null) OutlinedButton(onClick = { activeCall?.cancel(); activeCall = null }) { Text("取消") }
         }
     }

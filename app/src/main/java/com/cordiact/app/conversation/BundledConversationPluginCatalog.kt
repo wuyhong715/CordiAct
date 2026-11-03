@@ -49,7 +49,10 @@ import com.cordiact.core.tool.ToolExecutor
 import com.cordiact.core.tool.toolManagerPluginSpec
 import com.cordiact.app.file.AndroidWorkspaceFileBackend
 import com.cordiact.app.file.registerWorkspaceFileTools
+import com.cordiact.app.search.AndroidSearchApiKeyStore
 import com.cordiact.app.search.AndroidSearchPolicyStore
+import com.cordiact.app.search.AndroidSearchProviderSettings
+import com.cordiact.app.search.AndroidSearchUsageStore
 import com.cordiact.app.search.SearchPlugin
 import com.cordiact.app.search.registerSearchTools
 import com.cordiact.app.search.searchPluginSpec
@@ -63,6 +66,16 @@ import com.cordiact.search.providers.DeepSeekNativeSearchProvider
 import com.cordiact.search.providers.DeepSeekSearchApiProvider
 import com.cordiact.search.providers.DeepSeekWebConfig
 import com.cordiact.search.providers.DefaultSearchService
+import com.cordiact.search.providers.BochaConfig
+import com.cordiact.search.providers.BochaSearchProvider
+import com.cordiact.search.providers.BraveConfig
+import com.cordiact.search.providers.BraveSearchProvider
+import com.cordiact.search.providers.ExaConfig
+import com.cordiact.search.providers.ExaSearchProvider
+import com.cordiact.search.providers.SearxngConfig
+import com.cordiact.search.providers.SearxngSearchProvider
+import com.cordiact.search.providers.TavilyConfig
+import com.cordiact.search.providers.TavilySearchProvider
 import com.cordiact.app.interaction.AndroidFillValueStore
 import com.cordiact.app.interaction.AndroidInteractionDirectory
 import com.cordiact.app.interaction.WorkspaceInteractionAuthorization
@@ -116,6 +129,8 @@ class BundledConversationPlugins private constructor(
     private val providerCredentialFor: (String) -> ApiKeyProvider,
     private val forgetProviderCredential: (String) -> Unit,
     private val fillValues: MutableFillValueStore,
+    private val configuredSearchProviderSettings: AndroidSearchProviderSettings? = null,
+    private val configuredSearchApiKeys: AndroidSearchApiKeyStore? = null,
 ) {
     val workspaceManager: WorkspaceManagerService get() = workspacePlugin
     val fillValueStore: MutableFillValueStore get() = fillValues
@@ -135,6 +150,12 @@ class BundledConversationPlugins private constructor(
     val searchService: SearchService get() = searchPlugin.service
     lateinit var searchPolicyStore: AndroidSearchPolicyStore
         private set
+    lateinit var searchUsageStore: AndroidSearchUsageStore
+        private set
+    var searchRegistry: SearchProviderRegistry? = null
+        private set
+    val searchApiKeyStore: AndroidSearchApiKeyStore? get() = configuredSearchApiKeys
+    val searchProviderSettings: AndroidSearchProviderSettings? get() = configuredSearchProviderSettings
     lateinit var modelProviderRegistryPlugin: ModelProviderRegistryPlugin
         private set
 
@@ -150,21 +171,66 @@ class BundledConversationPlugins private constructor(
         )
 
         val searchPolicies = AndroidSearchPolicyStore(conversationStore)
-        val deepSeekWeb = DeepSeekWebConfig(apiKey = { apiKeyProvider.apiKey() })
+        val searchUsage = AndroidSearchUsageStore(conversationStore)
+        val providerSettings = configuredSearchProviderSettings
+        val searchKeys = configuredSearchApiKeys
+        fun key(providerId: String): () -> String? = {
+            when (providerId) {
+                // The bundled DeepSeek route reuses the model key so one credential covers both.
+                "deepseek" -> apiKeyProvider.apiKey()
+                else -> searchKeys?.get(providerId)
+            }
+        }
+        val deepSeekWeb = DeepSeekWebConfig(
+            baseUrl = providerSettings?.baseUrl("deepseek") ?: "https://api.deepseek.com/v1/tools",
+            apiKey = key("deepseek"),
+        )
+        val tavilyConfig = TavilyConfig(
+            baseUrl = providerSettings?.baseUrl("tavily") ?: "https://api.tavily.com",
+            apiKey = key("tavily"),
+            searchDepth = providerSettings?.searchDepth() ?: "basic",
+            includeAnswer = providerSettings?.includeAnswer() ?: true,
+        )
+        val braveConfig = BraveConfig(
+            baseUrl = providerSettings?.baseUrl("brave") ?: "https://api.search.brave.com/res/v1/web/search",
+            apiKey = key("brave"),
+            country = providerSettings?.braveCountry(),
+        )
+        val exaConfig = ExaConfig(
+            baseUrl = providerSettings?.baseUrl("exa") ?: "https://api.exa.ai",
+            apiKey = key("exa"),
+            type = providerSettings?.exaType() ?: "auto",
+            includeContents = providerSettings?.exaContents() ?: true,
+        )
+        val bochaConfig = BochaConfig(
+            baseUrl = providerSettings?.baseUrl("bocha") ?: "https://api.bochaai.com/v1/web-search",
+            apiKey = key("bocha"),
+            freshness = providerSettings?.bochaFreshness() ?: "noLimit",
+        )
+        val searxngConfig = SearxngConfig(
+            baseUrl = providerSettings?.baseUrl("searxng") ?: "",
+            engines = providerSettings?.searxngEngines(),
+        )
         val searchProviders = SearchProviderRegistry().apply {
             registerSearch(DeepSeekSearchApiProvider(deepSeekWeb))
             registerFetch(DeepSeekFetchApiProvider(deepSeekWeb))
             registerSearch(
                 DeepSeekNativeSearchProvider(
-                    apiKey = { apiKeyProvider.apiKey() },
+                    apiKey = key("deepseek"),
                     // The route's model id wins; this fallback is only for a pinned route-less call.
                     model = { null as String? },
                 ),
             )
+            registerSearch(TavilySearchProvider(tavilyConfig))
+            registerSearch(BraveSearchProvider(braveConfig))
+            registerSearch(ExaSearchProvider(exaConfig))
+            registerSearch(BochaSearchProvider(bochaConfig))
+            registerSearch(SearxngSearchProvider(searxngConfig))
         }
         val searchService = DefaultSearchService(
             registry = searchProviders,
             policies = searchPolicies,
+            usage = searchUsage,
             maxQueries = 4,
             maxResults = 8,
             summaryMaxChars = 800,
@@ -172,6 +238,8 @@ class BundledConversationPlugins private constructor(
             fetchTimeoutMs = 30_000,
         )
         searchPolicyStore = searchPolicies
+        searchUsageStore = searchUsage
+        searchRegistry = searchProviders
         searchPlugin = SearchPlugin(searchService)
         registerSearchTools(registry, searchService)
         registry.registerVisibility(SEARCH_TOOL_ID) { context ->
@@ -250,6 +318,8 @@ class BundledConversationPlugins private constructor(
                 { providerId -> if (providerId == "deepseek") apiKeyProvider else providerKeys.provider(providerId) },
                 providerKeys::clear,
                 AndroidFillValueStore(context),
+                AndroidSearchProviderSettings(context),
+                AndroidSearchApiKeyStore(context),
             )
         }
 
@@ -261,6 +331,8 @@ class BundledConversationPlugins private constructor(
             providerCredentialFor: ((String) -> ApiKeyProvider)? = null,
             forgetProviderCredential: (String) -> Unit = {},
             fillValues: MutableFillValueStore = InMemoryFillValueStore(),
+            searchProviderSettings: AndroidSearchProviderSettings? = null,
+            searchApiKeys: AndroidSearchApiKeyStore? = null,
         ): BundledConversationPlugins {
             val workspace = WorkspaceManagerPlugin(store, privateRoot)
             val fileManager = FileManagerPlugin(workspace, AndroidWorkspaceFileBackend())
@@ -276,6 +348,8 @@ class BundledConversationPlugins private constructor(
                 },
                 forgetProviderCredential,
                 fillValues,
+                searchProviderSettings,
+                searchApiKeys,
             )
         }
     }

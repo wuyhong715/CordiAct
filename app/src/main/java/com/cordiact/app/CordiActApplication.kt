@@ -308,6 +308,10 @@ class CordiActApplication : Application() {
             ?: sessions.createSession(workspace.id, "New conversation").id
     }
 
+    /** Workspace of the session currently open in the UI; null before a session exists. */
+    fun activeSessionWorkspaceId(): String? =
+        activeSessionId?.let { id -> sessions.getSession(id)?.workspaceId }
+
     private fun registerAndEnableSystemPlugin(plugin: ManagedPlugin) {
         try {
             val current = pluginLifecycle.manager.registerBundledSystem(plugin)

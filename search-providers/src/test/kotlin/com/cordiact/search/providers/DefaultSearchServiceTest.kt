@@ -158,6 +158,55 @@ class DefaultSearchServiceTest {
         assertFalse(service(FakeProvider("a"), policy = WorkspaceSearchPolicy(mode = SearchMode.OFF)).shouldExposeSearch("ws", route))
     }
 
+    @Test
+    fun `an exhausted monthly budget fails loudly before dispatch`() {
+        val usage = object : com.cordiact.core.search.SearchUsageStore {
+            var used = 2
+            override fun usedThisMonth(workspaceId: String) = used
+            override fun record(workspaceId: String, calls: Int) { used += calls }
+        }
+        val service = DefaultSearchService(
+            registry = SearchProviderRegistry().apply { registerSearch(FakeProvider("a", billable = true)) },
+            policies = object : SearchPolicyStore {
+                override fun policy(workspaceId: String) = WorkspaceSearchPolicy(monthlyBudgetCalls = 2)
+            },
+            usage = usage,
+            maxQueries = 4,
+            maxResults = 3,
+            summaryMaxChars = 10,
+            searchTimeoutMs = 2_000,
+            fetchTimeoutMs = 2_000,
+        )
+        val failure = assertFailsWith<SearchException> {
+            service.search("ws", route, listOf("q"), null, 3, 2_000)
+        }
+        assertEquals(SearchException.Code.BUDGET_EXHAUSTED, failure.code)
+        assertEquals(2, usage.used)
+    }
+
+    @Test
+    fun `a billable search records one call and reports its cost`() {
+        val recorded = mutableListOf<Int>()
+        val service = DefaultSearchService(
+            registry = SearchProviderRegistry().apply { registerSearch(FakeProvider("a", billable = true)) },
+            policies = object : SearchPolicyStore {
+                override fun policy(workspaceId: String) = WorkspaceSearchPolicy(monthlyBudgetCalls = 10)
+            },
+            usage = object : com.cordiact.core.search.SearchUsageStore {
+                override fun usedThisMonth(workspaceId: String) = recorded.sum()
+                override fun record(workspaceId: String, calls: Int) { recorded += calls }
+            },
+            maxQueries = 4,
+            maxResults = 3,
+            summaryMaxChars = 10,
+            searchTimeoutMs = 2_000,
+            fetchTimeoutMs = 2_000,
+        )
+        val result = service.search("ws", route, listOf("q"), null, 3, 2_000)
+        assertEquals(listOf(1), recorded)
+        assertEquals(0.01, result.estimatedCostUsd)
+    }
+
     private class FakeProvider(
         override val id: String,
         override val native: Boolean = false,
@@ -165,7 +214,9 @@ class DefaultSearchServiceTest {
         private val ready: Boolean = true,
         private val delayMs: Long = 0,
         private val perQuery: Map<String, List<SearchSource>> = emptyMap(),
+        override val billable: Boolean = false,
     ) : SearchProvider {
+        override val pricing = com.cordiact.core.search.SearchPricing(usdPerCall = if (billable) 0.01 else null)
         override fun available(): Boolean = ready
         override fun ready(route: ModelRoute?): Boolean = ready
         override fun search(request: SearchRequest, signal: CancellationSignal): SearchResult {
