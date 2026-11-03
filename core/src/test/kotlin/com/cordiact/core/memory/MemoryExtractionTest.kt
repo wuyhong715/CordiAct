@@ -290,4 +290,68 @@ class SecretRedactorTest {
         assertTrue("abcdefghijklmnopqrstuvwxyz" !in sanitized.rolloutSummary)
         assertEquals("clean-slug", sanitized.rolloutSlug)
     }
+
+    @Test
+    fun parsesTaskFamilyAndSteps() {
+        val json = """{"raw_memory":"a","rollout_summary":"b","task_family":"fix-gradle-build","steps":["read the log","bump the version"]}"""
+
+        val result = ExtractionResultParser.parse(json)
+
+        assertEquals("fix-gradle-build", result.taskFamily)
+        assertEquals(listOf("read the log", "bump the version"), result.steps)
+    }
+
+    @Test
+    fun normalizesATaskFamilyThatIsNotASlug() {
+        // A model that returns prose instead of a slug must not create a second family for the
+        // same task, or no pattern would ever repeat.
+        val result = ExtractionResultParser.parse(
+            """{"raw_memory":"a","rollout_summary":"b","task_family":"Fix Gradle Build!"}""",
+        )
+
+        assertEquals("fix-gradle-build", result.taskFamily)
+    }
+
+    @Test
+    fun taskFamilyIsOptional() {
+        val result = ExtractionResultParser.parse("""{"raw_memory":"a","rollout_summary":"b"}""")
+
+        assertNull(result.taskFamily)
+        assertTrue(result.steps.isEmpty())
+    }
+
+    @Test
+    fun stepsWithoutAFamilyAreDropped() {
+        // Orphaned steps cannot be grouped, so keeping them would be data with no consumer.
+        val result = ExtractionResultParser.parse(
+            """{"raw_memory":"a","rollout_summary":"b","steps":["one"]}""",
+        )
+
+        assertNull(result.taskFamily)
+        assertTrue(result.steps.isEmpty())
+    }
+
+    @Test
+    fun blankStepsAreDropped() {
+        val result = ExtractionResultParser.parse(
+            """{"raw_memory":"a","rollout_summary":"b","task_family":"x","steps":["ok","","  "]}""",
+        )
+
+        assertEquals(listOf("ok"), result.steps)
+    }
+
+    @Test
+    fun rejectsNonStringArrayElements() {
+        val error = assertFailsWith<ExtractionException> {
+            ExtractionResultParser.parse("""{"raw_memory":"a","rollout_summary":"b","steps":[1,2]}""")
+        }
+        assertEquals(ExtractionException.Code.INVALID_SCHEMA, error.code)
+    }
+
+    @Test
+    fun resultRejectsStepsWithoutAFamily() {
+        assertFailsWith<IllegalArgumentException> {
+            ExtractionResult(rawMemory = "a", rolloutSummary = "b", steps = listOf("x"))
+        }
+    }
 }

@@ -15,6 +15,10 @@ data class MemoryPipelineReport(
     val decision: SchedulingDecision,
     val sessions: List<SessionMemoryOutcome>,
     val consolidation: ConsolidationOutcome?,
+    /** Patterns grouped across the sessions extracted this pass. */
+    val patterns: List<DetectedPattern> = emptyList(),
+    /** Skills written from those patterns. */
+    val procedural: ProceduralMemoryResult? = null,
 ) {
     val extractedCount: Int get() = sessions.count { it is SessionMemoryOutcome.Extracted }
 }
@@ -38,6 +42,9 @@ class MemoryPipeline(
     private val leaseCoordinator: ExtractionLeaseCoordinator,
     private val policy: MemorySchedulingPolicy = MemorySchedulingPolicy(),
     private val backoff: RetryBackoff = RetryBackoff(),
+    private val detector: PatternDetector = PatternDetector(),
+    private val procedural: ProceduralMemoryWriter? = null,
+    private val userSkillNames: (String) -> Set<String> = { emptySet() },
     private val clockMillis: () -> Long = System::currentTimeMillis,
 ) {
 
@@ -66,6 +73,7 @@ class MemoryPipeline(
 
         val outcomes = mutableListOf<SessionMemoryOutcome>()
         val candidates = mutableListOf<MemoryCandidate>()
+        val patternCandidates = mutableListOf<PatternCandidate>()
         val now = clockMillis()
 
         for (sessionId in sessionIds) {
@@ -94,6 +102,22 @@ class MemoryPipeline(
                         body = outcome.result.rawMemory,
                         generatedAtMillis = now,
                     )
+                    // Only sessions that named a task family contribute to procedural memory.
+                    // Most sessions are not a procedure, and inventing a family for them would
+                    // fill the skill index with one-offs.
+                    outcome.result.taskFamily?.let { family ->
+                        patternCandidates += PatternCandidate(
+                            sessionId = sessionId,
+                            name = family,
+                            description = outcome.result.rolloutSummary,
+                            steps = outcome.result.steps,
+                            citation = MemoryCitation(
+                                file = MemoryPaths.evidencePath(sessionId),
+                                line = 1,
+                                session = sessionId,
+                            ),
+                        )
+                    }
                 }
                 ExtractionOutcome.NoContent -> outcomes += SessionMemoryOutcome.NoContent
                 is ExtractionOutcome.Deferred ->
@@ -106,7 +130,17 @@ class MemoryPipeline(
         // Consolidation runs even with no new candidates: the diff set may have removals, and
         // skipping it would leave a forgotten session's evidence on disk forever.
         val consolidated = consolidation.consolidate(workspaceId, candidates, diff, git, workspaceRoot)
-        return MemoryPipelineReport(decision, outcomes, consolidated)
+
+        // Procedural memory runs after consolidation because a generated skill cites evidence
+        // files, and consolidation is what guarantees those files exist.
+        val patterns = detector.detect(patternCandidates)
+        val proceduralResult = procedural?.let { writer ->
+            // User skills are passed in so a generated skill cannot shadow one. The writer
+            // refuses rather than renaming: a renamed procedure is a different procedure.
+            writer.promote(workspaceId, patterns, userSkillNames(workspaceId))
+        }
+
+        return MemoryPipelineReport(decision, outcomes, consolidated, patterns, proceduralResult)
     }
 
     /**

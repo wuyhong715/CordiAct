@@ -35,8 +35,15 @@ object ExtractionPrompt {
         - Prefer durable facts, decisions and preferences over transient details.
         - Never include credentials, tokens or keys.
 
+        If the conversation performed a task that could recur, also record it so the same
+        procedure can be reused later:
+        - task_family: a lowercase-hyphenated name for the task, e.g. "fix-gradle-build"
+        - steps: the durable steps, in order, that actually worked
+
+        Omit both when the conversation was not a repeatable task. Most are not.
+
         Reply with a single JSON object and nothing else:
-        {"raw_memory":"<detailed notes>","rollout_summary":"<one line routing summary>","rollout_slug":"<optional stable id>"}
+        {"raw_memory":"<detailed notes>","rollout_summary":"<one line routing summary>","rollout_slug":"<optional stable id>","task_family":"<optional slug>","steps":["<optional step>"]}
     """.trimIndent()
 
     fun render(turns: List<SessionTurn>): String = buildString {
