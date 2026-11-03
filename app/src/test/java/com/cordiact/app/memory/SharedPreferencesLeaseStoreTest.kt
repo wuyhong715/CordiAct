@@ -66,9 +66,12 @@ class SharedPreferencesLeaseStoreTest {
         store.claim(lease("dead", 1000, 2000))
         store.claim(lease("fresh", 3000, 4000))
 
+        val before = store.active(WS, "s1")?.owner
         store.release(WS, "s1", "dead")
+        val after = store.active(WS, "s1")?.owner
 
-        assertEquals("fresh", store.active(WS, "s1")?.owner, "the live owner keeps its lease")
+        assertEquals("fresh", before, "precondition: the fresh owner holds the lease")
+        assertEquals("fresh", after, "the live owner keeps its lease")
     }
 
     @Test
