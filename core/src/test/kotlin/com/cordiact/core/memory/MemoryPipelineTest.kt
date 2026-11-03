@@ -245,4 +245,99 @@ class MemoryPipelineTest {
     fun retryPolicyIsDoneWhenThePassRan() {
         assertEquals(SchedulingRetry.Action.DONE, SchedulingRetry.decide(SchedulingDecision.Run))
     }
+
+    @Test
+    fun repeatedTaskFamilyBecomesASkill() {
+        // The whole chain: extraction names a family, the detector groups two sessions, and the
+        // writer emits one skill. This is the case procedural memory exists for.
+        val store = FakeStore()
+        val reply = """{"raw_memory":"a","rollout_summary":"fix a build","task_family":"fix-build","steps":["read log","fix"]}"""
+        val pipeline = pipelineWithProcedural(store, reply)
+
+        val report = pipeline.run(
+            WS,
+            listOf("s1", "s2"),
+            ok,
+            "owner",
+            true,
+            ConsolidationDiff(added = setOf("s1", "s2")),
+        )
+
+        assertEquals(1, report.patterns.size)
+        assertEquals(2, report.patterns.single().repeats)
+        assertEquals(1, report.procedural?.written?.size)
+        assertTrue(store.exists(WS, "memory/skills/fix-build/SKILL.md"))
+    }
+
+    @Test
+    fun aSingleOccurrenceDoesNotBecomeASkill() {
+        // Seen once is a fact, not a procedure.
+        val store = FakeStore()
+        val reply = """{"raw_memory":"a","rollout_summary":"fix a build","task_family":"fix-build","steps":["read log"]}"""
+        val pipeline = pipelineWithProcedural(store, reply)
+
+        val report = pipeline.run(
+            WS,
+            listOf("s1"),
+            ok,
+            "owner",
+            true,
+            ConsolidationDiff(added = setOf("s1")),
+        )
+
+        assertEquals(1, report.patterns.size)
+        assertTrue(report.procedural!!.isEmpty)
+        assertTrue(!store.exists(WS, "memory/skills/fix-build/SKILL.md"))
+    }
+
+    @Test
+    fun aSessionWithoutATaskFamilyContributesNoPattern() {
+        // Most sessions are not a procedure, and inventing a family for them would fill the
+        // skill index with one-offs.
+        val store = FakeStore()
+        val reply = """{"raw_memory":"a","rollout_summary":"chat"}"""
+        val pipeline = pipelineWithProcedural(store, reply)
+
+        val report = pipeline.run(WS, listOf("s1", "s2"), ok, "owner", true, ConsolidationDiff())
+
+        assertTrue(report.patterns.isEmpty())
+        assertTrue(report.procedural!!.isEmpty)
+    }
+
+    @Test
+    fun aGeneratedSkillNeverShadowsAUserSkill() {
+        val store = FakeStore()
+        val reply = """{"raw_memory":"a","rollout_summary":"d","task_family":"review","steps":["s"]}"""
+        val pipeline = pipelineWithProcedural(store, reply, userSkills = setOf("review"))
+
+        val report = pipeline.run(WS, listOf("s1", "s2"), ok, "owner", true, ConsolidationDiff())
+
+        assertTrue(report.procedural!!.isEmpty)
+        assertTrue(!store.exists(WS, "memory/skills/review/SKILL.md"))
+    }
+
+    private fun pipelineWithProcedural(
+        store: FakeStore,
+        reply: String,
+        userSkills: Set<String> = emptySet(),
+    ): MemoryPipeline {
+        val extraction = MemoryExtractionRunner(
+            loadMessages = { sid -> listOf(SessionTurn(MessageRole.USER, "task $sid", sid)) },
+            generate = { _, emit ->
+                emit(ModelEvent.Delta(reply))
+                emit(ModelEvent.Completed())
+                ModelCall { }
+            },
+            selection = { model },
+            timeoutMillis = 5_000,
+        )
+        return MemoryPipeline(
+            extraction = extraction,
+            consolidation = MemoryConsolidationRunner(store, clockMillis = { NOW }),
+            leaseCoordinator = ExtractionLeaseCoordinator(FakeLeases(), clockMillis = { NOW }),
+            procedural = ProceduralMemoryWriter(store),
+            userSkillNames = { userSkills },
+            clockMillis = { NOW },
+        )
+    }
 }

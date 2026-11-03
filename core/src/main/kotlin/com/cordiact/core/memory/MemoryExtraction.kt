@@ -71,10 +71,28 @@ data class ExtractionResult(
     val rawMemory: String,
     val rolloutSummary: String,
     val rolloutSlug: String? = null,
+    /**
+     * Normalized task family, e.g. "fix-gradle-build".
+     *
+     * Optional because most sessions are not a procedure. When present it is what lets
+     * procedural memory group occurrences across sessions; without it every session is its own
+     * one-off and nothing ever repeats.
+     */
+    val taskFamily: String? = null,
+    /**
+     * Durable steps for [taskFamily].
+     *
+     * Only meaningful together with a family: steps without a family cannot be grouped, and a
+     * family without steps has nothing to reuse.
+     */
+    val steps: List<String> = emptyList(),
 ) {
     init {
         require(rawMemory.isNotBlank()) { "raw_memory must not be blank" }
         require(rolloutSummary.isNotBlank()) { "rollout_summary must not be blank" }
+        require(taskFamily != null || steps.isEmpty()) {
+            "steps are only valid together with a task_family"
+        }
     }
 }
 
@@ -105,6 +123,20 @@ class ExtractionException(val code: Code, message: String) : RuntimeException(me
  * shape and rejects everything else, so a schema drift shows up as a hard failure instead of
  * silently producing empty memories.
  */
+/**
+ * Normalizes a task family to a slug.
+ *
+ * The model is asked for a slug, but a model that returns "Fix Gradle Build" instead would
+ * otherwise create a second family for the same task and no pattern would ever repeat. This is
+ * cheap and deterministic, so it belongs here rather than in a retry.
+ */
+internal fun normalizeFamily(raw: String): String? {
+    val slug = raw.trim().lowercase()
+        .replace(Regex("[^a-z0-9]+"), "-")
+        .trim('-')
+    return slug.ifBlank { null }?.take(64)
+}
+
 object ExtractionResultParser {
 
     fun parse(raw: String): ExtractionResult {
@@ -116,27 +148,62 @@ object ExtractionResultParser {
             )
         }
         val fields = parseObject(text)
-        val rawMemory = fields["raw_memory"]
-            ?: throw ExtractionException(ExtractionException.Code.MISSING_FIELD, "raw_memory is missing")
-        val summary = fields["rollout_summary"]
-            ?: throw ExtractionException(ExtractionException.Code.MISSING_FIELD, "rollout_summary is missing")
+        // Missing and present-but-wrong-type are different defects: the first means the model
+        // ignored the schema, the second means it used the schema and put a number where a
+        // string belongs. Reporting them as one hides which happened.
+        val rawMemory = requireString(fields, "raw_memory")
+        val summary = requireString(fields, "rollout_summary")
         if (rawMemory.isBlank()) {
             throw ExtractionException(ExtractionException.Code.MISSING_FIELD, "raw_memory is empty")
         }
         if (summary.isBlank()) {
             throw ExtractionException(ExtractionException.Code.MISSING_FIELD, "rollout_summary is empty")
         }
+        val slug = fields["rollout_slug"]?.asString()?.ifBlank { null }
+        // The family is normalized here rather than trusted from the model: it becomes a
+        // directory name and a grouping key, and "Fix Gradle Build" / "fix-gradle-build" must
+        // not become two different task families.
+        val family = fields["task_family"]?.asString()?.let { normalizeFamily(it) }
+        val steps = fields["steps"]?.asArray().orEmpty()
+            .mapNotNull { it.asString()?.trim()?.ifBlank { null } }
+
         return ExtractionResult(
             rawMemory = rawMemory,
             rolloutSummary = summary,
-            rolloutSlug = fields["rollout_slug"]?.ifBlank { null },
+            rolloutSlug = slug,
+            taskFamily = family,
+            // Steps without a family cannot be grouped, so they are dropped rather than kept
+            // orphaned.
+            steps = if (family == null) emptyList() else steps,
         )
     }
 
-    /** Minimal flat-object reader for the documented shape. Nested objects are rejected. */
-    private fun parseObject(text: String): Map<String, String> {
+    /**
+     * A parsed field value.
+     *
+     * Two shapes only: a string, or an array of strings. The schema needs `steps` and nothing
+     * else, and keeping the type this narrow is what stops the parser from quietly growing into
+     * a general JSON reader.
+     */
+    private sealed interface JsonValue {
+        fun asString(): String?
+        fun asArray(): List<JsonValue>?
+
+        data class Text(val value: String) : JsonValue {
+            override fun asString() = value
+            override fun asArray(): List<JsonValue>? = null
+        }
+
+        data class List_(val values: List<JsonValue>) : JsonValue {
+            override fun asString(): String? = null
+            override fun asArray() = values
+        }
+    }
+
+    /** Flat-object reader for the documented shape. Nested objects are rejected. */
+    private fun parseObject(text: String): Map<String, JsonValue> {
         val body = text.substring(1, text.length - 1)
-        val fields = mutableMapOf<String, String>()
+        val fields = mutableMapOf<String, JsonValue>()
         var index = 0
         while (index < body.length) {
             while (index < body.length && (body[index].isWhitespace() || body[index] == ',')) index++
@@ -158,19 +225,62 @@ object ExtractionResultParser {
             }
             index++
             while (index < body.length && body[index].isWhitespace()) index++
-            if (index >= body.length || body[index] != '"') {
-                // Nested objects and numbers are not part of the shape; rejecting keeps the
-                // parser from having to grow into a real one.
-                throw ExtractionException(
-                    ExtractionException.Code.INVALID_SCHEMA,
-                    "Field '$key' must be a string",
-                )
+
+            when {
+                index < body.length && body[index] == '"' -> {
+                    val (value, afterValue) = readString(body, index)
+                    fields[key] = JsonValue.Text(value)
+                    index = afterValue
+                }
+                index < body.length && body[index] == '[' -> {
+                    val (values, afterArray) = readStringArray(body, index)
+                    fields[key] = JsonValue.List_(values)
+                    index = afterArray
+                }
+                else -> {
+                    // Numbers, booleans, null and nested objects are not part of the schema.
+                    throw ExtractionException(
+                        ExtractionException.Code.INVALID_SCHEMA,
+                        "Field '$key' must be a string or an array of strings",
+                    )
+                }
             }
-            val (value, afterValue) = readString(body, index)
-            fields[key] = value
-            index = afterValue
         }
         return fields
+    }
+
+    private fun requireString(fields: Map<String, JsonValue>, key: String): String {
+        val value = fields[key]
+            ?: throw ExtractionException(ExtractionException.Code.MISSING_FIELD, "$key is missing")
+        return value.asString()
+            ?: throw ExtractionException(
+                ExtractionException.Code.INVALID_SCHEMA,
+                "$key must be a string",
+            )
+    }
+
+    private fun readStringArray(text: String, start: Int): Pair<List<JsonValue>, Int> {
+        val values = mutableListOf<JsonValue>()
+        var index = start + 1
+        while (index < text.length) {
+            while (index < text.length && (text[index].isWhitespace() || text[index] == ',')) index++
+            if (index >= text.length) {
+                throw ExtractionException(ExtractionException.Code.INVALID_SCHEMA, "Unterminated array")
+            }
+            if (text[index] == ']') return values to (index + 1)
+            if (text[index] != '"') {
+                // An array element that is not a string would need a value type the schema does
+                // not have; rejecting keeps the array homogeneous.
+                throw ExtractionException(
+                    ExtractionException.Code.INVALID_SCHEMA,
+                    "Array elements must be strings",
+                )
+            }
+            val (value, afterValue) = readString(text, index)
+            values += JsonValue.Text(value)
+            index = afterValue
+        }
+        throw ExtractionException(ExtractionException.Code.INVALID_SCHEMA, "Unterminated array")
     }
 
     private fun readString(text: String, start: Int): Pair<String, Int> {
@@ -335,5 +445,9 @@ object ExtractionSanitizer {
         rawMemory = SecretRedactor.redactOrReject(result.rawMemory, "raw_memory"),
         rolloutSummary = SecretRedactor.redactOrReject(result.rolloutSummary, "rollout_summary"),
         rolloutSlug = result.rolloutSlug?.let { SecretRedactor.redact(it).ifBlank { null } },
+        // Steps are model output too and can quote a command containing a credential, so they
+        // go through the same redaction rather than being carried across untouched.
+        taskFamily = result.taskFamily?.let { SecretRedactor.redact(it).ifBlank { null } },
+        steps = result.steps.mapNotNull { SecretRedactor.redact(it).trim().ifBlank { null } },
     )
 }
