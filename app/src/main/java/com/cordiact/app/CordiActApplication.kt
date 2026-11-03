@@ -33,6 +33,20 @@ import com.cordiact.integration.interaction.MentionType
 import com.cordiact.app.tool.AndroidToolDispatcher
 import com.cordiact.core.toolloop.ToolLoopPlugin
 import com.cordiact.core.conversation.ModelToolSpec
+import com.cordiact.app.memory.AndroidDeviceConditions
+import com.cordiact.app.memory.SharedPreferencesLeaseStore
+import com.cordiact.app.memory.WorkspaceMemoryArtifactStore
+import com.cordiact.core.memory.ConsolidationDiff
+import com.cordiact.core.memory.DeviceConditions
+import com.cordiact.core.memory.ExtractionLeaseCoordinator
+import com.cordiact.core.memory.MemoryConsolidationRunner
+import com.cordiact.core.memory.MemoryExtractionRunner
+import com.cordiact.core.memory.MemoryPipeline
+import com.cordiact.core.memory.MemoryPaths
+import com.cordiact.core.memory.MemoryPipelineReport
+import com.cordiact.core.memory.SessionTurn
+import com.cordiact.core.workspace.JGitWorkspaceGitService
+import com.cordiact.core.workspace.WorkspaceGitService
 import com.cordiact.core.tool.GrantedScope
 import com.cordiact.core.tool.ToolInvocationContext
 import com.cordiact.integration.interaction.MutableFillValueStore
@@ -72,6 +86,75 @@ class CordiActApplication : Application() {
      */
     private val turnGrants = java.util.concurrent.ConcurrentHashMap<String, List<GrantedScope>>()
 
+    /** Runs one memory pass over the active Workspace's sessions.
+     *
+     * The pipeline is assembled here rather than in the worker because it needs services the
+     * application owns; the worker only asks for a pass and maps the outcome onto retry policy.
+     */
+    fun runMemoryPass(
+        workspaceId: String,
+        conditions: DeviceConditions,
+        modelSelected: (String) -> ModelId?,
+    ): MemoryPipelineReport {
+        val store = WorkspaceMemoryArtifactStore(conversationCatalog.fileManager)
+        val extraction = MemoryExtractionRunner(
+            loadMessages = { sessionId ->
+                sessions.messages(sessionId).map {
+                    SessionTurn(it.role, it.content, sessionId)
+                }
+            },
+            generate = { request, emit -> modelAdapterPlugin.generate(request, emit) },
+            selection = { modelSelected(it) },
+        )
+        val root = try {
+            workspaceManager.resolveRoot(workspaceId)
+        } catch (e: Exception) {
+            null
+        }
+        val pipeline = MemoryPipeline(
+            extraction = extraction,
+            consolidation = MemoryConsolidationRunner(store),
+            leaseCoordinator = ExtractionLeaseCoordinator(
+                SharedPreferencesLeaseStore(this),
+            ),
+        )
+        // Only recent sessions are candidates: memory is built from conversation tails, and
+        // walking an entire history would re-extract sessions already covered.
+        val sessionIds = sessions.listSessions(workspaceId).take(MEMORY_SESSION_WINDOW).map { it.id }
+        val present = sessionIds.toSet()
+
+        // Sessions that already have evidence are "known". Sessions without it are candidates,
+        // and a known session that is no longer present is a removal. Passing every session as
+        // extracted would re-extract the whole window on every pass.
+        val known = try {
+            store.evidenceFiles(workspaceId)
+                .map { it.removePrefix(MemoryPaths.EVIDENCE_PREFIX).removeSuffix(".md") }
+                .toSet()
+        } catch (e: Exception) {
+            emptySet()
+        }
+        val candidates = sessionIds.filter { it !in known }
+
+        return pipeline.run(
+            workspaceId = workspaceId,
+            sessionIds = candidates,
+            conditions = conditions,
+            owner = "worker-${System.currentTimeMillis()}",
+            modelSelected = modelSelected(workspaceId) != null,
+            diff = ConsolidationDiff(
+                added = candidates.toSet(),
+                retained = present.intersect(known),
+                removed = known - present,
+            ),
+            git = workspaceGit,
+            workspaceRoot = root,
+        )
+    }
+
+    /** Device conditions the memory policy consults. */
+    fun deviceConditions(): DeviceConditions =
+        AndroidDeviceConditions(this, filesDir).read()
+
     /** The grant set to attach to a tool invocation for [sessionId]. */
     fun currentTurnGrants(sessionId: String): List<GrantedScope> = turnGrants[sessionId] ?: emptyList()
 
@@ -97,6 +180,16 @@ class CordiActApplication : Application() {
 
     /** Runs model/tool rounds. Owned by the application, not by the turn service. */
     private val toolLoopPlugin = ToolLoopPlugin().apply { onEnable() }
+
+    /**
+     * Version control for memory artifacts.
+     *
+     * Created eagerly because consolidation needs it on the first pass; the repository itself is
+     * created lazily inside the service, so this costs nothing until memory actually runs.
+     */
+    private val workspaceGit: WorkspaceGitService by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+        JGitWorkspaceGitService()
+    }
 
     private val toolDispatcher by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
         AndroidToolDispatcher(tools)
@@ -224,6 +317,9 @@ class CordiActApplication : Application() {
 
     private companion object {
         const val TAG = "CordiActPluginHost"
+
+        /** How many recent sessions one pass considers. */
+        const val MEMORY_SESSION_WINDOW = 20
 
         /** The only subtree a memory reference narrows to. */
         const val MEMORY_PREFIX = "memory/"
