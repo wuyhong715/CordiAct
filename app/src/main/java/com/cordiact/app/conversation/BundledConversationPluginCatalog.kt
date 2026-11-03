@@ -11,15 +11,15 @@ import com.cordiact.app.model.AndroidProviderApiKeyStore
 import com.cordiact.core.conversation.ModelAdapterPlugin
 import com.cordiact.core.conversation.SessionManagerPlugin
 import com.cordiact.core.conversation.modelAdapterPluginSpec
-import com.cordiact.model.deepseek.ApiKeyProvider
-import com.cordiact.model.deepseek.ConfigurableModelBackend
-import com.cordiact.model.deepseek.DeepSeekBackendPlugin
-import com.cordiact.model.deepseek.DeepSeekPreset
-import com.cordiact.model.deepseek.deepSeekBackendPluginSpec
-import com.cordiact.model.deepseek.ModelProviderConfigStore
-import com.cordiact.model.deepseek.InMemoryModelProviderConfigStore
-import com.cordiact.model.deepseek.ModelProviderRegistryPlugin
-import com.cordiact.model.deepseek.modelProviderRegistryPluginSpec
+import com.cordiact.model.providers.ApiKeyProvider
+import com.cordiact.model.providers.ConfigurableModelBackend
+import com.cordiact.model.providers.DeepSeekBackendPlugin
+import com.cordiact.model.providers.DeepSeekPreset
+import com.cordiact.model.providers.deepSeekBackendPluginSpec
+import com.cordiact.model.providers.ModelProviderConfigStore
+import com.cordiact.model.providers.InMemoryModelProviderConfigStore
+import com.cordiact.model.providers.ModelProviderRegistryPlugin
+import com.cordiact.model.providers.modelProviderRegistryPluginSpec
 import com.cordiact.core.conversation.sessionManagerPluginSpec
 import com.cordiact.core.plugin.BundledPluginVerifier
 import com.cordiact.core.plugin.ManagedPlugin
@@ -52,17 +52,17 @@ import com.cordiact.app.file.registerWorkspaceFileTools
 import com.cordiact.app.interaction.AndroidFillValueStore
 import com.cordiact.app.interaction.AndroidInteractionDirectory
 import com.cordiact.app.interaction.WorkspaceInteractionAuthorization
-import com.cordiact.integration.interaction.CommandDescriptor
-import com.cordiact.integration.interaction.CommandExecutionResult
-import com.cordiact.integration.interaction.InteractionCommandExecutor
-import com.cordiact.integration.interaction.InteractionCommandRegistry
-import com.cordiact.integration.interaction.InteractionIntegrationPlugin
-import com.cordiact.integration.interaction.InteractionIntegrationService
-import com.cordiact.integration.interaction.INTERACTION_INTEGRATION_PLUGIN_ID
-import com.cordiact.integration.interaction.MutableFillValueStore
-import com.cordiact.integration.interaction.InMemoryFillValueStore
-import com.cordiact.integration.interaction.MentionType
-import com.cordiact.integration.interaction.interactionIntegrationPluginSpec
+import com.cordiact.interaction.CommandDescriptor
+import com.cordiact.interaction.CommandExecutionResult
+import com.cordiact.interaction.InteractionCommandExecutor
+import com.cordiact.interaction.InteractionCommandRegistry
+import com.cordiact.interaction.InteractionPlugin
+import com.cordiact.interaction.InteractionService
+import com.cordiact.interaction.INTERACTION_PLUGIN_ID
+import com.cordiact.interaction.MutableFillValueStore
+import com.cordiact.interaction.InMemoryFillValueStore
+import com.cordiact.interaction.MentionType
+import com.cordiact.interaction.interactionPluginSpec
 import java.io.File
 
 /** Host-owned allowlist for protected built-in plugins. */
@@ -77,7 +77,7 @@ object BundledConversationPluginCatalog {
         deepSeekBackendPluginSpec(),
         modelProviderRegistryPluginSpec(),
         sandboxManagerPluginSpec(),
-        interactionIntegrationPluginSpec(),
+        interactionPluginSpec(),
     )
 
     val verifier = BundledPluginVerifier { candidate -> candidate in trustedSpecs }
@@ -104,11 +104,11 @@ class BundledConversationPlugins private constructor(
 ) {
     val workspaceManager: WorkspaceManagerService get() = workspacePlugin
     val fillValueStore: MutableFillValueStore get() = fillValues
-    lateinit var interactionPlugin: InteractionIntegrationPlugin
+    lateinit var interactionPlugin: InteractionPlugin
         private set
     lateinit var interactionDirectory: AndroidInteractionDirectory
         private set
-    val interactionService: InteractionIntegrationService get() = interactionPlugin.service
+    val interactionService: InteractionService get() = interactionPlugin.service
     val fileManager: WorkspaceFileService get() = fileManagerPlugin
     lateinit var skillPlugin: SkillPlugin
         private set
@@ -144,18 +144,18 @@ class BundledConversationPlugins private constructor(
             directory = interactionDirectory,
             commands = commandRegistry,
         )
-        val interactionService = InteractionIntegrationService(
+        val interactionService = InteractionService(
             commands = commandRegistry,
             mentions = interactionDirectory,
             fills = fillValues,
             authorization = interactionAuthorization,
         )
-        interactionPlugin = InteractionIntegrationPlugin(interactionService, commandRegistry)
+        interactionPlugin = InteractionPlugin(interactionService, commandRegistry)
         commandRegistry.register(
             CommandDescriptor(
                 id = "core.interaction.target",
                 name = "目标",
-                ownerPluginId = INTERACTION_INTEGRATION_PLUGIN_ID,
+                ownerPluginId = INTERACTION_PLUGIN_ID,
                 allowedMentionTypes = MentionType.entries.toSet(),
                 requiredCapabilities = setOf("interaction.execute"),
                 requiresMention = true,

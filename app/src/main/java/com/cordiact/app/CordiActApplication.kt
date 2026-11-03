@@ -13,9 +13,9 @@ import com.cordiact.core.conversation.ModelAdapterPlugin
 import com.cordiact.core.conversation.ModelCall
 import com.cordiact.core.conversation.ModelEvent
 import com.cordiact.core.conversation.ModelId
-import com.cordiact.model.deepseek.ConversationTurnService
+import com.cordiact.model.providers.ConversationTurnService
 import com.cordiact.core.conversation.ModelAdapterService
-import com.cordiact.model.deepseek.ModelProviderRegistryService
+import com.cordiact.model.providers.ModelProviderRegistryService
 import com.cordiact.core.conversation.SessionManagerPlugin
 import com.cordiact.core.conversation.SessionManagerService
 import com.cordiact.core.plugin.ManagedPlugin
@@ -27,9 +27,9 @@ import com.cordiact.core.file.WorkspaceFileService
 import com.cordiact.core.sandbox.SandboxManagerPlugin
 import com.cordiact.core.sandbox.SandboxManagerService
 import com.cordiact.core.workspace.WorkspaceManagerService
-import com.cordiact.integration.interaction.InteractionContext
-import com.cordiact.integration.interaction.InteractionModelSubmitter
-import com.cordiact.integration.interaction.MentionType
+import com.cordiact.interaction.InteractionContext
+import com.cordiact.interaction.InteractionModelSubmitter
+import com.cordiact.interaction.MentionType
 import com.cordiact.app.tool.AndroidToolDispatcher
 import com.cordiact.core.toolloop.ToolLoopPlugin
 import com.cordiact.core.conversation.ModelToolSpec
@@ -49,7 +49,7 @@ import com.cordiact.core.workspace.JGitWorkspaceGitService
 import com.cordiact.core.workspace.WorkspaceGitService
 import com.cordiact.core.tool.GrantedScope
 import com.cordiact.core.tool.ToolInvocationContext
-import com.cordiact.integration.interaction.MutableFillValueStore
+import com.cordiact.interaction.MutableFillValueStore
 
 /** Opens the plugin host, recovers durable state, then registers and enables core conversation plugins. */
 class CordiActApplication : Application() {
@@ -73,7 +73,7 @@ class CordiActApplication : Application() {
         private set
     lateinit var sandboxManagerPlugin: SandboxManagerPlugin
         private set
-    lateinit var interactionPlugin: com.cordiact.integration.interaction.InteractionIntegrationPlugin
+    lateinit var interactionPlugin: com.cordiact.interaction.InteractionPlugin
         private set
 
     /**
@@ -167,7 +167,7 @@ class CordiActApplication : Application() {
         private set
 
     val sandboxManager: SandboxManagerService get() = sandboxManagerPlugin
-    val interactionService: com.cordiact.integration.interaction.InteractionIntegrationService
+    val interactionService: com.cordiact.interaction.InteractionService
         get() = conversationCatalog.interactionService
     val fillValues: MutableFillValueStore
         get() = conversationCatalog.fillValueStore

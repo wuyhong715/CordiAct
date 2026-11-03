@@ -19,7 +19,7 @@ Sources reviewed 2026-11-01:
 - DSH model selection: <https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/client/ui-model-selection/README.md>
 - CordiAct Android conversation persistence: `app/src/main/java/com/cordiact/app/conversation/AndroidConversationSessionStore.kt`
 - CordiAct conversation contracts: `core/src/main/kotlin/com/cordiact/core/conversation/ConversationContracts.kt`
-- CordiAct Harness integration seam: `integration/src/main/kotlin/com/cordiact/integration/harness/DeepSeekHarnessAdapter.kt`
+- CordiAct Harness adapter contract: `deepseek-harness/src/main/kotlin/com/cordiact/harness/deepseek/DeepSeekHarnessAdapter.kt`
 - Existing Android/DSH boundary decision: `docs/adr/0001-android-dsh-runtime-boundaries.md`
 
 ## Decision

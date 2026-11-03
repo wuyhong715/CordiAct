@@ -24,8 +24,9 @@ CordiAct is an original native Android application and workspace-centric action 
 
 - `app`: native Android application shell and unified conversation UI
 - `core`: workspace, action policy, event, and runtime contracts
-- `integration`: DeepSeek Harness adapters
-- `model-deepseek`: DeepSeek-first model backend plus configurable Anthropic Messages, Gemini, OpenAI Responses and custom protocol providers
+- `interaction`: Workspace-scoped interaction parsing, references, and dispatch contracts
+- `model-providers`: protocol-neutral model backend and provider registry (DeepSeek, Anthropic, Gemini, OpenAI Responses, and custom-compatible endpoints)
+- `deepseek-harness`: isolated action-submission adapter contract for DeepSeek Harness; not yet consumed by the app
 - `plugin-api`: versioned extension API
 - `docs`: architecture decisions and contribution notes
 
