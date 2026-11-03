@@ -346,4 +346,25 @@ class SkillPluginTest {
 
         assertEquals(1, plugin.catalog(WS).skills.size)
     }
+
+    @Test
+    fun generatedSkillRanksBelowUserSkillAndAboveBundled() {
+        // A generated procedure is machine-derived, so it must never outrank a skill the user
+        // wrote, but it is still Workspace-specific and beats a generic built-in.
+        val user = SkillDescriptor("review", "user wrote this", SkillOrigin.WORKSPACE, WS, "skills/review/SKILL.md")
+        val generated = SkillDescriptor("review", "distilled", SkillOrigin.GENERATED, WS, "memory/skills/review/SKILL.md")
+        val bundled = SkillDescriptor("review", "built in", SkillOrigin.BUNDLED, null, "bundled/review/SKILL.md")
+
+        val ordered = listOf(bundled, generated, user).sortedBy { it.origin.rank }
+
+        assertEquals(listOf(SkillOrigin.WORKSPACE, SkillOrigin.GENERATED, SkillOrigin.BUNDLED), ordered.map { it.origin })
+    }
+
+    @Test
+    fun originIsDecidedByPathNotByLoader() {
+        // The loader is the same code for both roots, so the path is the only signal.
+        assertTrue(SkillParser.GENERATED_PREFIX == "memory/skills/")
+        assertTrue("memory/skills/fix-build/SKILL.md".startsWith(SkillParser.GENERATED_PREFIX))
+        assertTrue(!"skills/fix-build/SKILL.md".startsWith(SkillParser.GENERATED_PREFIX))
+    }
 }

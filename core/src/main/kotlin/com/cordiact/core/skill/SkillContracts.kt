@@ -22,7 +22,23 @@ fun skillPluginSpec() = PluginSpec(
  * the bundled version would make their file look ignored.
  */
 enum class SkillOrigin(val rank: Int) {
+    /**
+     * A skill the user wrote in `skills/`.
+     *
+     * Always the highest rank: if the user wrote it, that is what the name means. A generated
+     * procedure with the same name is refused rather than allowed to shadow it.
+     */
     WORKSPACE(100),
+
+    /**
+     * A procedure distilled from memory under `memory/skills/`.
+     *
+     * Below user skills and above bundled ones: it is specific to this Workspace, so it beats a
+     * generic built-in, but it is machine-derived, so it must never outrank something the user
+     * wrote by hand.
+     */
+    GENERATED(200),
+
     BUNDLED(600),
 }
 
@@ -83,6 +99,9 @@ object SkillParser {
     const val MAX_NAME_LENGTH = 64
     const val MAX_FILE_CHARS = 256 * 1024
     const val FRONTMATTER_DELIMITER = "---"
+
+    /** Skills distilled by procedural memory live here, distinct from user-authored ones. */
+    const val GENERATED_PREFIX = "memory/skills/"
 
     private val NAME_PATTERN = Regex("^[a-z0-9][a-z0-9-]*$")
 
@@ -297,7 +316,13 @@ internal class DefaultSkillService(
                 discovered += SkillParser.validate(
                     parsed = SkillParser.parse(content),
                     directoryName = directoryName,
-                    origin = SkillOrigin.WORKSPACE,
+                    // Origin follows the path, not the loader: a skill under memory/skills was
+                    // distilled from memory and must rank below anything the user wrote.
+                    origin = if (path.startsWith(SkillParser.GENERATED_PREFIX)) {
+                        SkillOrigin.GENERATED
+                    } else {
+                        SkillOrigin.WORKSPACE
+                    },
                     workspaceId = workspaceId,
                     path = path,
                 )
