@@ -19,10 +19,18 @@ import javax.crypto.spec.GCMParameterSpec
  */
 class AndroidSearchApiKeyStore(context: Context) {
     private val preferences = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
-    private val keyStore = KeyStore.getInstance(ANDROID_KEY_STORE).apply { load(null) }
     private val lock = Any()
 
-    fun get(providerId: String): String? = synchronized(lock) {
+    /**
+     * Opened lazily: constructing the store must not touch AndroidKeyStore, or a
+     * JVM-only unit test that merely wires the catalog would fail on a platform
+     * that has no such provider.
+     */
+    private val keyStore: KeyStore by lazy { KeyStore.getInstance(ANDROID_KEY_STORE).apply { load(null) } }
+
+    fun get(providerId: String): String? = runCatching { read(providerId) }.getOrNull()
+
+    private fun read(providerId: String): String? = synchronized(lock) {
         val encoded = preferences.getString(key(providerId), null) ?: return null
         runCatching {
             val bytes = Base64.decode(encoded, Base64.NO_WRAP)
@@ -36,6 +44,7 @@ class AndroidSearchApiKeyStore(context: Context) {
         }.getOrNull()
     }
 
+    /** Throws when the platform keystore is unavailable: a silent failure would report success. */
     fun put(providerId: String, apiKey: String) = synchronized(lock) {
         val cipher = Cipher.getInstance(TRANSFORMATION).apply {
             init(Cipher.ENCRYPT_MODE, secretKey())

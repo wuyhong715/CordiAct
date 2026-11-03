@@ -182,11 +182,14 @@ fun SearchSettingsDialog(
                             if (value.isEmpty() || keyStore == null) {
                                 message = "请先输入 key"
                             } else {
-                                keyStore.put(providerId, value)
-                                keyDraft = keyDraft - providerId
-                                message = "$providerId 已保存"
-                                stateVersion++
-                                onChanged()
+                                runCatching { keyStore.put(providerId, value) }
+                                    .onSuccess {
+                                        keyDraft = keyDraft - providerId
+                                        message = "$providerId 已保存"
+                                        stateVersion++
+                                        onChanged()
+                                    }
+                                    .onFailure { message = "保存失败：" + (it.message ?: "系统密钥库不可用") }
                             }
                         }) { Text("保存") }
                         if (stored) {
