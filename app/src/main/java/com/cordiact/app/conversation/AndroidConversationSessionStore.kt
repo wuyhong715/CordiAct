@@ -725,12 +725,6 @@ class AndroidConversationSessionStore(
         const val COL_RUN_STATE = "state"
         const val COL_RUN_STARTED_AT = "started_at"
         const val COL_RUN_DIAGNOSTIC = "diagnostic"
-        const val COL_RUN_SESSION_ID = "session_id"
-        const val COL_RUN_PARENT_SESSION_ID = "parent_session_id"
-        const val COL_RUN_LABEL = "label"
-        const val COL_RUN_STATE = "state"
-        const val COL_RUN_STARTED_AT = "started_at"
-        const val COL_RUN_DIAGNOSTIC = "diagnostic"
         val MESSAGE_COLUMNS = arrayOf(COL_MESSAGE_ID,COL_MESSAGE_SESSION_ID,COL_ROLE,COL_CONTENT,COL_CREATED_AT,COL_MESSAGE_METADATA)
         val RUN_COLUMNS = arrayOf(
             COL_RUN_SESSION_ID,COL_RUN_PARENT_SESSION_ID,COL_RUN_LABEL,
