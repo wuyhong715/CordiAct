@@ -72,12 +72,22 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 private fun InteractionScreen(app: CordiActApplication) {
+    // One worker for the blocking turn. Not a pool: the turn service already refuses two
+    // concurrent turns on one Session, and a queue keeps a second submit from racing the first.
+    val turnExecutor = remember {
+        java.util.concurrent.Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "cordiact-turn").apply { isDaemon = true }
+        }
+    }
     val workspace = remember { runCatching { app.workspaceManager.activeWorkspace() }.getOrNull() }
     val sessionId = app.activeSessionId
     var input by remember { mutableStateOf(TextFieldValue()) }
     var response by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
     var activeCall by remember { mutableStateOf<ModelCall?>(null) }
+    // True from submit until the turn returns. Separate from [activeCall] because the call is
+    // only available once the blocking turn is already over.
+    var submitting by remember { mutableStateOf(false) }
     var fillVersion by remember { mutableStateOf(0) }
     var showFillDialog by remember { mutableStateOf(false) }
     var showSearchSettings by remember { mutableStateOf(false) }
@@ -144,7 +154,7 @@ private fun InteractionScreen(app: CordiActApplication) {
             error = "请输入消息内容"
             return
         }
-        if (!current.valid || activeCall != null) {
+        if (!current.valid || activeCall != null || submitting) {
             error = current.diagnostics.firstOrNull()?.message ?: "请先修正输入"
             return
         }
@@ -152,6 +162,7 @@ private fun InteractionScreen(app: CordiActApplication) {
         error = null
         response = ""
         val handler = Handler(Looper.getMainLooper())
+        val finished = java.util.concurrent.atomic.AtomicBoolean(false)
         val callback: (ModelEvent) -> Unit = { event ->
             handler.post {
                 when (event) {
@@ -160,27 +171,48 @@ private fun InteractionScreen(app: CordiActApplication) {
                     // arrives as Deltas once the model stops calling tools.
                     is ModelEvent.ToolCallsRequested -> Unit
                     is ModelEvent.Completed -> {
+                        finished.set(true)
+                        submitting = false
                         activeCall = null
                         history = runCatching { app.sessions.messages(envelope.context.sessionId) }.getOrDefault(history)
                     }
                     is ModelEvent.Failed -> {
+                        finished.set(true)
+                        submitting = false
                         activeCall = null
                         error = event.message
                     }
                 }
             }
         }
-        activeCall = try {
-            if (envelope.command == null) {
-                app.interactionService.submitOrdinary(current, DEFAULT_MODEL, onEvent = callback)
-            } else {
-                app.interactionService.dispatch(current, DEFAULT_MODEL, onEvent = callback).modelCall
-            }
-        } catch (failure: Exception) {
-            error = failure.message ?: "发送失败"
-            null
-        }
         input = TextFieldValue("")
+        // A tool-using turn blocks from the first round to the last, and a delegated task waits
+        // inside one of its tool calls. Running that on the UI thread would freeze the app for
+        // the whole turn, so the submit — not just the callback — goes to a worker.
+        activeCall = null
+        submitting = true
+        turnExecutor.execute {
+            val call = try {
+                if (envelope.command == null) {
+                    app.interactionService.submitOrdinary(current, DEFAULT_MODEL, onEvent = callback)
+                } else {
+                    app.interactionService.dispatch(current, DEFAULT_MODEL, onEvent = callback).modelCall
+                }
+            } catch (failure: Exception) {
+                handler.post {
+                    finished.set(true)
+                    submitting = false
+                    error = failure.message ?: "发送失败"
+                }
+                null
+            }
+            handler.post {
+                submitting = false
+                // Only offer cancellation while something is still in flight; a turn that already
+                // returned its terminal event would hand the user a button that does nothing.
+                if (call != null && !finished.get() && activeCall == null) activeCall = call
+            }
+        }
     }
 
     if (showFillDialog) {
@@ -292,7 +324,7 @@ private fun InteractionScreen(app: CordiActApplication) {
         }
         error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = { submit() }, enabled = activeCall == null && prepared?.valid == true) { Text("发送") }
+            Button(onClick = { submit() }, enabled = activeCall == null && !submitting && prepared?.valid == true) { Text("发送") }
             OutlinedButton(onClick = { showFillDialog = true }) { Text("设置 #") }
             OutlinedButton(onClick = { showSearchSettings = true }) { Text("搜索") }
             if (activeCall != null) OutlinedButton(onClick = { activeCall?.cancel(); activeCall = null }) { Text("取消") }

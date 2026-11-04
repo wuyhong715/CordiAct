@@ -144,6 +144,14 @@ data class ToolInvocationContext(
     val workspaceId: String,
     val requestId: String? = null,
     /**
+     * The Session that issued this call, when the host knows it.
+     *
+     * Added for delegation: a subagent tool must address its own calling Session to read its
+     * depth and to attach a child to it. Null means "no Session context", in which case tools
+     * that require one refuse rather than guess.
+     */
+    val sessionId: String? = null,
+    /**
      * Additional Workspaces this turn may read.
      *
      * Empty for an ordinary turn. Populated from `@` references, and only with what the
