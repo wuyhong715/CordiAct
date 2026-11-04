@@ -467,3 +467,30 @@ class SessionManagerPlugin(
 
     private fun requireEnabled() = check(enabled) { "Session Manager plugin is not enabled" }
 }
+
+/**
+ * A block of text injected into a turn before its history.
+ *
+ * Kept in the conversation layer rather than in the subagent plugin: from the turn's point of
+ * view this is just "something the host wants the model to know at the start", and a background
+ * child is only the first thing that produces one.
+ */
+data class TurnNotice(
+    val id: String,
+    val heading: String,
+    val body: String? = null,
+)
+
+/** Where a turn gets its notices, and where it reports that they were delivered. */
+interface TurnNoticeSource {
+    /** Notices for [sessionId], oldest first. */
+    fun pending(sessionId: String): List<TurnNotice>
+
+    /**
+     * Called once the turn's first model request has been issued.
+     *
+     * Deliberately not called when the turn fails to start: a notice that was never put in front
+     * of the model must stay pending, or the parent silently loses the child's outcome.
+     */
+    fun acknowledge(sessionId: String, ids: List<String>)
+}
