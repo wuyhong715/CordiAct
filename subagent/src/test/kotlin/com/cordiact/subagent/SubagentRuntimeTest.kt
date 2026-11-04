@@ -228,19 +228,25 @@ class SubagentRuntimeTest {
     }
 
     @Test
-    fun `delegation without a calling Session is refused`() {
+    fun `delegation without a calling Session is refused as a result`() {
         val h = Harness()
         h.rootSession()
 
-        val failure = kotlin.runCatching {
-            h.runtime.runChild(ChildSpec(WS, "root", "task", "do it"), h.context(null), Long.MAX_VALUE)
-        }
-
-        assertTrue(failure.isFailure, "a missing Session must be a programming error, not a silent success")
-        assertTrue(
-            failure.exceptionOrNull()?.message?.contains("calling Session") == true,
-            "expected the invariant named, got: ${failure.exceptionOrNull()?.message}",
+        // Refusal is data, not an exception: the tool layer must always be able to hand the model
+        // a structured answer, and a delegating turn that blew up would leave the parent with a
+        // stack trace instead of a reason.
+        val result = h.runtime.runChild(
+            ChildSpec(WS, "root", "task", "do it"),
+            h.context(null),
+            Long.MAX_VALUE,
         )
+
+        assertEquals(ToolLoopStop.FAILED, result.stop)
+        assertTrue(
+            result.text.contains("calling Session"),
+            "expected the invariant named, got: ${result.text}",
+        )
+        assertTrue(result.sessionId.isBlank(), "a refusal must not have created a Session")
     }
 
     @Test
