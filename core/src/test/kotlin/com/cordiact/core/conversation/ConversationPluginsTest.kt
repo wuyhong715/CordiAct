@@ -103,13 +103,25 @@ class ConversationPluginsTest {
         private val sessions = linkedMapOf<String, ConversationSession>()
         private val messages = mutableMapOf<String, MutableList<ConversationMessage>>()
         private var nextMessage = 0
-        override fun create(id: String, workspaceId: String, title: String, nowMillis: Long): ConversationSession {
-            val value = ConversationSession(id, workspaceId, title, nowMillis, nowMillis)
+        override fun create(
+            id: String,
+            workspaceId: String,
+            title: String,
+            nowMillis: Long,
+            parentSessionId: String?,
+            kind: SessionKind,
+            agentLabel: String?,
+            depth: Int,
+        ): ConversationSession {
+            val value = ConversationSession(id, workspaceId, title, nowMillis, nowMillis, parentSessionId, kind, agentLabel, depth)
             sessions[id] = value
             return value
         }
         override fun get(sessionId: String) = sessions[sessionId]
-        override fun list(workspaceId: String) = sessions.values.filter { it.workspaceId == workspaceId }
+        override fun list(workspaceId: String) =
+            sessions.values.filter { it.workspaceId == workspaceId && it.kind == SessionKind.USER }
+        override fun listChildren(parentSessionId: String) =
+            sessions.values.filter { it.parentSessionId == parentSessionId }
         override fun append(
             sessionId: String,
             role: MessageRole,
