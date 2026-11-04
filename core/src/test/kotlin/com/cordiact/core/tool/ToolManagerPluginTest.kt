@@ -7,6 +7,9 @@ import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class ToolManagerPluginTest {
@@ -238,6 +241,51 @@ class ToolManagerPluginTest {
         workspaces: WorkspaceManagerService,
         states: ToolPluginStateLookup,
     ) = ToolManagerPlugin(registry, preferences, workspaces, states)
+
+    @Test
+    fun unregisterRetiresOneToolAndItsVisibilityGateOnly() {
+        val registry = InMemoryToolDefinitionRegistry()
+        registry.register(ToolDefinition(descriptor(), ToolExecutor { _, args -> ToolResult(mapOf("path" to args.values.getValue("path"))) }))
+        val foreign = ToolDescriptor(
+            id = "mcp.demo.echo",
+            name = "echo",
+            description = "Echo through a foreign server",
+            inputSchema = ToolInputSchema(),
+            ownerPluginId = "core.mcp",
+            rawInputSchemaJson = """{"type":"object","properties":{"text":{"type":"string"}},"required":["text"]}""",
+        )
+        registry.register(ToolDefinition(foreign, ToolExecutor { _, _ -> ToolResult() }))
+        registry.registerVisibility(TOOL_ID) { true }
+
+        assertEquals(2, registry.all().size)
+        assertTrue(registry.unregister("mcp.demo.echo"))
+        assertNull(registry.get("mcp.demo.echo"))
+        assertNotNull(registry.get(TOOL_ID))
+        assertNotNull(registry.visibility(TOOL_ID))
+
+        assertTrue(registry.unregister(TOOL_ID))
+        assertNull(registry.visibility(TOOL_ID))
+        // Repeating it is a no-op rather than an error: a bridge may retire a generation twice.
+        assertFalse(registry.unregister(TOOL_ID))
+        assertEquals(0, registry.all().size)
+    }
+
+    @Test
+    fun rawSchemaMustLookLikeAJsonObject() {
+        val registry = InMemoryToolDefinitionRegistry()
+        val arrayRoot = ToolDescriptor(
+            id = "mcp.demo.bad",
+            name = "bad",
+            description = "Array-root schema",
+            inputSchema = ToolInputSchema(),
+            ownerPluginId = "core.mcp",
+            rawInputSchemaJson = """[{"type":"object"}]""",
+        )
+        assertFailsWith<IllegalArgumentException> { registry.register(ToolDefinition(arrayRoot, ToolExecutor { _, _ -> ToolResult() })) }
+
+        val oversized = arrayRoot.copy(rawInputSchemaJson = "{" + " ".repeat(40_000) + "}")
+        assertFailsWith<IllegalArgumentException> { registry.register(ToolDefinition(oversized, ToolExecutor { _, _ -> ToolResult() })) }
+    }
 
     private fun descriptor() = ToolDescriptor(
         id = TOOL_ID,

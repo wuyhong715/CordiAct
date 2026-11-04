@@ -101,6 +101,15 @@ data class ToolDescriptor(
     val timeoutMs: Long? = null,
     /** True when calls may run alongside other tools without sharing state. */
     val concurrencySafe: Boolean = false,
+    /**
+     * A complete JSON Schema object used verbatim instead of [inputSchema].
+     *
+     * Foreign tools (MCP) carry nested schemas that [ToolInputSchema] cannot express;
+     * flattening them would silently drop `oneOf`, `$ref` and nested properties, so
+     * their authors pass the schema through untouched. When non-null the model-facing
+     * declaration uses this string and [inputSchema] is ignored for rendering.
+     */
+    val rawInputSchemaJson: String? = null,
 )
 
 data class ToolAvailability(
@@ -184,6 +193,18 @@ fun interface ToolCapabilityGate {
 interface ToolDefinitionRegistry {
     fun register(definition: ToolDefinition)
     fun get(toolId: String): ToolDefinition?
+
+    /**
+     * Remove one definition and its visibility gate.
+     *
+     * Foreign tool bridges (MCP) replace a whole generation at a time; without this the
+     * previous generation could never be retired and a disconnected server would keep
+     * offering tools that no longer answer.
+     *
+     * @return true when the tool was registered and is now gone.
+     */
+    fun unregister(toolId: String): Boolean
+
     fun all(): List<ToolDefinition>
 
     /** Attach the per-request visibility gate for an already registered tool. */
@@ -208,6 +229,12 @@ class InMemoryToolDefinitionRegistry : ToolDefinitionRegistry {
 
     @Synchronized
     override fun get(toolId: String): ToolDefinition? = definitions[toolId]?.let(::snapshotDefinition)
+
+    @Synchronized
+    override fun unregister(toolId: String): Boolean {
+        visibilityGates.remove(toolId)
+        return definitions.remove(toolId) != null
+    }
 
     @Synchronized
     override fun all(): List<ToolDefinition> = definitions.values.map(::snapshotDefinition)
@@ -243,6 +270,14 @@ class InMemoryToolDefinitionRegistry : ToolDefinitionRegistry {
             "Tool parameter names must be unique"
         }
         descriptor.inputSchema.parameters.forEach(::validateParameter)
+        descriptor.rawInputSchemaJson?.let { raw ->
+            require(raw.length <= MAX_RAW_SCHEMA_LENGTH) { "Tool input schema is too long" }
+            // Cheap structural check only: core has no JSON parser and must not grow one.
+            // A caller that hands over malformed JSON is the foreign adapter's bug, not the model's.
+            require(raw.trimStart().startsWith("{") && raw.trimEnd().endsWith("}")) {
+                "Tool input schema must be a JSON object"
+            }
+        }
         require(descriptor.requiredCapabilities.none(String::isBlank)) { "Invalid tool capability id" }
     }
 
@@ -295,6 +330,7 @@ class InMemoryToolDefinitionRegistry : ToolDefinitionRegistry {
         const val MAX_DESCRIPTION_LENGTH = 2_000
         const val MAX_PARAMETER_NAME_LENGTH = 128
         const val MAX_PARAMETER_DESCRIPTION_LENGTH = 1_000
+        const val MAX_RAW_SCHEMA_LENGTH = 32_000
         const val MAX_TIMEOUT_MS = 300_000L
     }
 }

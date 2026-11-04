@@ -63,6 +63,24 @@ class AndroidPluginLifecycleIntegrationTest {
     }
 
     @Test
+    fun pluginConfigSurvivesDatabaseReopen() {
+        // Without this column an MCP server would come back with an empty config after a restart,
+        // and rebuildUserPlugins would fail to reconstruct it.
+        val spec = PluginSpec(
+            id = "core.mcp.demo",
+            version = "0.1.0",
+            target = PluginTarget.ANDROID_NATIVE,
+            config = """{"serverName":"demo","url":"https://example.test/mcp"}""",
+        )
+        store.put(PluginRecord(spec, PluginOrigin.USER_INSTALLED, PluginState.ENABLED))
+        store.close()
+        store = AndroidPluginLifecycleStore(context, TEST_DATABASE)
+
+        assertEquals(spec, store.get(spec.id)?.spec)
+        assertEquals("""{"serverName":"demo","url":"https://example.test/mcp"}""", store.get(spec.id)?.spec?.config)
+    }
+
+    @Test
     fun lifecycleStateAndConsentsSurviveDatabaseReopenWithoutReplaceCascade() {
         val record = record(state = PluginState.REGISTERED)
         store.put(record)

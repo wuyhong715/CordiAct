@@ -119,7 +119,10 @@ class AndroidToolDispatcher(
             ModelToolSpec(
                 name = descriptor.id,
                 description = descriptor.description,
-                parametersJson = schemaJson(
+                // A foreign tool's schema is passed through untouched: flattening it into
+                // ToolInputSchema would drop nested properties, enums and `$ref`, and the model
+                // would then call with shapes the server rejects.
+                parametersJson = descriptor.rawInputSchemaJson ?: schemaJson(
                     descriptor.inputSchema.parameters,
                     descriptor.inputSchema.allowAdditional,
                 ),
