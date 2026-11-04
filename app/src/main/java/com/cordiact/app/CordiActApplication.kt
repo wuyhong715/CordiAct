@@ -15,14 +15,21 @@ import com.cordiact.core.conversation.ModelEvent
 import com.cordiact.core.conversation.ModelId
 import com.cordiact.model.providers.ConversationTurnService
 import com.cordiact.core.conversation.ModelAdapterService
+import com.cordiact.mcp.client.HttpMcpClientFactory
+import com.cordiact.mcp.client.McpPlugin
 import com.cordiact.model.providers.ModelProviderRegistryService
 import com.cordiact.core.conversation.SessionManagerPlugin
 import com.cordiact.core.conversation.SessionManagerService
+import com.cordiact.core.mcp.MCP_PLUGIN_ID
+import com.cordiact.app.plugin.AndroidPluginManagerService
+import com.cordiact.core.plugin.PluginManagerService
+import com.cordiact.core.plugin.PluginSpec
 import com.cordiact.core.plugin.ManagedPlugin
 import com.cordiact.core.plugin.PluginLifecycleException
 import com.cordiact.core.plugin.PluginState
 import com.cordiact.core.skill.SkillIndexRenderer
 import com.cordiact.core.tool.ToolManagerService
+import com.cordiact.core.tool.ToolActivationContext
 import com.cordiact.core.file.WorkspaceFileService
 import com.cordiact.core.sandbox.SandboxManagerPlugin
 import com.cordiact.core.sandbox.SandboxManagerService
@@ -33,6 +40,15 @@ import com.cordiact.interaction.MentionType
 import com.cordiact.app.tool.AndroidToolDispatcher
 import com.cordiact.core.toolloop.ToolLoopPlugin
 import com.cordiact.core.conversation.ModelToolSpec
+import com.cordiact.core.subagent.ChildToolPlanner
+import com.cordiact.core.subagent.ChildTurnOutcome
+import com.cordiact.core.subagent.ChildTurnRunner
+import com.cordiact.core.toolloop.ToolLoopOutcome
+import com.cordiact.core.toolloop.ToolLoopStop
+import com.cordiact.subagent.SubagentRuntime
+import com.cordiact.subagent.OrchestrationPlugin
+import com.cordiact.subagent.registerSubagentTools
+import com.cordiact.subagent.registerOrchestrationTools
 import com.cordiact.app.memory.AndroidDeviceConditions
 import com.cordiact.app.memory.SharedPreferencesLeaseStore
 import com.cordiact.app.memory.WorkspaceMemoryArtifactStore
@@ -59,6 +75,14 @@ class CordiActApplication : Application() {
         private set
     lateinit var conversationCatalog: BundledConversationPlugins
         private set
+
+    /**
+     * Live user-installed plugins, keyed by plugin id.
+     *
+     * Needed because "which tools does this plugin publish" is a question about the live object,
+     * not about the durable record, and the inventory answers it for the user and the model.
+     */
+    private val userPlugins = java.util.concurrent.ConcurrentHashMap<String, McpPlugin>()
     lateinit var workspaceManager: WorkspaceManagerService
         private set
     lateinit var modelAdapterPlugin: ModelAdapterPlugin
@@ -202,14 +226,68 @@ class CordiActApplication : Application() {
      * or whose capability is missing cannot run, so offering it would only produce a failing
      * call the model has to recover from.
      */
-    private fun availableToolSpecs(workspaceId: String): List<ModelToolSpec> =
+    private fun availableToolSpecs(workspaceId: String, model: ModelId): List<ModelToolSpec> =
         try {
             AndroidToolDispatcher.specs(
-                tools.list(workspaceId).filter { it.dispatchable }.map { it.descriptor },
+                tools.resolveEnabled(
+                    workspaceId,
+                    ToolActivationContext(workspaceId, model.providerId, model.modelId),
+                ),
             )
         } catch (e: Exception) {
             emptyList()
         }
+
+    /**
+     * Runs one delegated child turn through the same loop the user's turn uses.
+     *
+     * Deliberately not a second, simpler turn path: a child that skipped the tool loop would be
+     * a model with no tools, and a child that skipped persistence would leave no transcript for
+     * the user to open. The only difference is that the outcome is returned rather than streamed.
+     */
+    private val childTurnRunner = ChildTurnRunner { request ->
+        val outcome = turnService.runTurnToCompletion(
+            sessionId = request.sessionId,
+            model = request.model,
+            text = request.prompt,
+            tools = request.tools,
+            toolLoop = toolLoopPlugin,
+            dispatcher = toolDispatcher,
+            toolContext = request.context,
+            systemContext = request.systemContext,
+        )
+        when (outcome) {
+            is ToolLoopOutcome.Completed -> ChildTurnOutcome(outcome.text, ToolLoopStop.COMPLETED)
+            is ToolLoopOutcome.Stopped -> ChildTurnOutcome(outcome.lastText, outcome.reason)
+        }
+    }
+
+    /**
+     * The delegation runtime.
+     *
+     * Built here rather than inside [BundledConversationPlugins] because it needs the turn
+     * service and the tool list, which only the host has. The tool planner reuses
+     * [availableToolSpecs] instead of assembling a list of its own, so a child can never be
+     * offered a tool its parent could not call.
+     */
+    private val subagentRuntime: SubagentRuntime by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+        SubagentRuntime(
+            sessions = sessionManagerPlugin,
+            runner = childTurnRunner,
+            toolPlanner = ChildToolPlanner { workspaceId, model -> availableToolSpecs(workspaceId, model) },
+            systemContextFor = { workspaceId -> skillIndexFor(workspaceId) },
+        )
+    }
+
+    /**
+     * Plan execution over the delegation runtime.
+     *
+     * Shares [subagentRuntime] rather than starting children itself, so an orchestrated child is
+     * admitted by exactly the same checks as a one-off delegation.
+     */
+    private val orchestrationPlugin: OrchestrationPlugin by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+        OrchestrationPlugin(subagentRuntime)
+    }
 
     /**
      * The skill catalog for a Workspace, as a system-prompt block.
@@ -253,6 +331,10 @@ class CordiActApplication : Application() {
         modelAdapterPlugin = plugins.filterIsInstance<ModelAdapterPlugin>().single()
         sessionManagerPlugin = plugins.filterIsInstance<SessionManagerPlugin>().single()
         turnService = ConversationTurnService(sessionManagerPlugin, modelAdapterPlugin)
+        // Registered here because the tool list is built from the shared registry, and the
+        // delegation tools must be in it before the first turn assembles its specs.
+        registerSubagentTools(conversationCatalog.toolRegistry, subagentRuntime)
+        registerOrchestrationTools(conversationCatalog.toolRegistry, orchestrationPlugin)
         interactionPlugin = conversationCatalog.interactionPlugin
         interactionPlugin.service.attachModelSubmitter(InteractionModelSubmitter { envelope, modelId, parameters, onEvent ->
             // `@` is an authorization, not an attachment. Nothing is read here: the reference
@@ -279,13 +361,20 @@ class CordiActApplication : Application() {
             val prompt = if (envelope.command == null) envelope.submittedText else envelope.commandInput
             val toolContext = ToolInvocationContext(
                 workspaceId = envelope.context.workspaceId,
+                // Delegation addresses its caller by Session. Carried rather than inferred: a
+                // tool that guesses which Session called it would attach children to the wrong
+                // parent, and the depth check would read the wrong row.
+                sessionId = envelope.context.sessionId,
                 grantedScopes = grants,
+                modelProviderId = modelId.providerId,
+                modelId = modelId.modelId,
+                requestText = prompt,
             )
             turnService.submitWithTools(
                 sessionId = envelope.context.sessionId,
                 model = modelId,
                 text = prompt,
-                tools = availableToolSpecs(envelope.context.workspaceId),
+                tools = availableToolSpecs(envelope.context.workspaceId, modelId),
                 toolLoop = toolLoopPlugin,
                 dispatcher = toolDispatcher,
                 toolContext = toolContext,
@@ -295,10 +384,87 @@ class CordiActApplication : Application() {
             )
         })
         sandboxManagerPlugin = BundledConversationPluginCatalog.createSandboxManager(applicationInfo.uid)
-        (plugins + sandboxManagerPlugin).forEach(::registerAndEnableSystemPlugin)
+        (plugins + sandboxManagerPlugin + subagentRuntime + orchestrationPlugin).forEach(::registerAndEnableSystemPlugin)
+        conversationCatalog.pluginManagerService = pluginManagerService()
+        restoreUserPlugins()
         val workspace = workspaceManager.initializeDefaultIfEligible()
         activeSessionId = sessions.listSessions(workspace.id).firstOrNull()?.id
             ?: sessions.createSession(workspace.id, "New conversation").id
+    }
+
+    /** Workspace of the session currently open in the UI; null before a session exists. */
+    fun activeSessionWorkspaceId(): String? =
+        activeSessionId?.let { id -> sessions.getSession(id)?.workspaceId }
+
+    /**
+     * Bring back whatever the user installed in an earlier process.
+     *
+     * Order matters: bundled plugins register first so a user plugin's declared dependencies
+     * already exist, and a user plugin must never be able to claim a bundled id (the verifier
+     * only trusts the APK catalog, and this path never registers as bundled).
+     *
+     * A plugin this build cannot host stays `FAILED` with a reason instead of disappearing, so
+     * the settings screen can show it rather than silently losing the user's configuration.
+     */
+    /**
+     * Build the management service lazily: it needs the lifecycle manager (created earlier) and
+     * the live plugin map (filled by [restoreUserPlugins] and by installs).
+     */
+    private fun pluginManagerService(): PluginManagerService = AndroidPluginManagerService(
+        manager = pluginLifecycle.manager,
+        publishedTools = { pluginId -> userPlugins[pluginId]?.publishedTools()?.values?.toList().orEmpty() },
+        onSpecInstalled = ::installUserPlugin,
+    )
+
+    /**
+     * Install one user plugin: construct it, register it, enable it, and remember the live object.
+     *
+     * @return false when this build cannot construct the plugin, so the manager can report
+     *   "unsupported" instead of leaving a half-installed record.
+     */
+    private fun installUserPlugin(spec: PluginSpec): Boolean {
+        if (!spec.id.startsWith(MCP_PLUGIN_ID)) return false
+        val plugin = try {
+            McpPlugin(spec, conversationCatalog.toolRegistry, HttpMcpClientFactory)
+        } catch (failure: Exception) {
+            Log.e(TAG, "Cannot construct plugin ${spec.id}", failure)
+            return false
+        }
+        return try {
+            pluginLifecycle.manager.register(plugin)
+            userPlugins[spec.id] = plugin
+            pluginLifecycle.manager.enable(spec.id)
+            true
+        } catch (failure: Exception) {
+            Log.e(TAG, "Installing plugin ${spec.id} failed", failure)
+            userPlugins.remove(spec.id)
+            runCatching { plugin.onDisable() }
+            runCatching { pluginLifecycle.manager.uninstall(spec.id) }
+            false
+        }
+    }
+
+    private fun restoreUserPlugins() {
+        val report = try {
+            pluginLifecycle.manager.rebuildUserPlugins { spec ->
+                if (spec.id.startsWith(MCP_PLUGIN_ID)) {
+                    McpPlugin(spec, conversationCatalog.toolRegistry, HttpMcpClientFactory).also {
+                        userPlugins[spec.id] = it
+                    }
+                } else {
+                    null
+                }
+            }
+        } catch (failure: Exception) {
+            Log.e(TAG, "Restoring user plugins failed", failure)
+            return
+        }
+        if (report.unsupported.isNotEmpty()) {
+            Log.e(TAG, "User plugins this build cannot host: ${report.unsupported}")
+        }
+        if (report.pendingCleanup.isNotEmpty()) {
+            Log.e(TAG, "User plugins still need cleanup: ${report.pendingCleanup}")
+        }
     }
 
     private fun registerAndEnableSystemPlugin(plugin: ManagedPlugin) {

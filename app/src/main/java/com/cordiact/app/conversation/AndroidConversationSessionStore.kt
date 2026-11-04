@@ -9,6 +9,7 @@ import com.cordiact.core.conversation.ConversationMessage
 import com.cordiact.core.conversation.ConversationSession
 import com.cordiact.core.conversation.ConversationSessionStore
 import com.cordiact.core.conversation.MessageRole
+import com.cordiact.core.conversation.SessionKind
 import com.cordiact.core.workspace.DEFAULT_WORKSPACE_ID
 import com.cordiact.core.workspace.DEFAULT_WORKSPACE_NAME
 import com.cordiact.core.workspace.Workspace
@@ -29,16 +30,76 @@ class AndroidConversationSessionStore(
 
     override fun onCreate(db: SQLiteDatabase) {
         createWorkspaceSchema(db)
-        createSessionSchema(db, TABLE_SESSIONS)
+        createSessionSchema(db, TABLE_SESSIONS, withDelegation = true)
         createMessageSchema(db, TABLE_MESSAGES, TABLE_SESSIONS)
         createToolPreferenceSchema(db)
+        createPluginSettingsSchema(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
         if (oldVersion < 2 && newVersion >= 2) migrateV1ToV2(db)
         if (oldVersion < 3 && newVersion >= 3) migrateV2ToV3(db)
+        if (oldVersion < 4 && newVersion >= 4) migrateV3ToV4(db)
+        if (oldVersion < 5 && newVersion >= 5) migrateV4ToV5(db)
         if (newVersion > DATABASE_VERSION) throw IllegalStateException("Unsupported conversation database version $newVersion")
     }
+
+    /**
+     * Adds the Session tree.
+     *
+     * Columns only, no table rebuild: unlike the v1→v2 migration (which had to change a foreign
+     * key), every new column has a default that describes an existing row correctly — every
+     * Session that exists before this migration is a root conversation.
+     */
+    private fun migrateV4ToV5(db: SQLiteDatabase) {
+        db.beginTransaction()
+        try {
+            if (!db.hasColumn(TABLE_SESSIONS, COL_PARENT_SESSION_ID)) {
+                db.execSQL(
+                    "ALTER TABLE $TABLE_SESSIONS ADD COLUMN $COL_PARENT_SESSION_ID TEXT " +
+                        "REFERENCES $TABLE_SESSIONS($COL_SESSION_ID) ON DELETE CASCADE",
+                )
+            }
+            if (!db.hasColumn(TABLE_SESSIONS, COL_SESSION_KIND)) {
+                db.execSQL("ALTER TABLE $TABLE_SESSIONS ADD COLUMN $COL_SESSION_KIND TEXT NOT NULL DEFAULT 'USER'")
+            }
+            if (!db.hasColumn(TABLE_SESSIONS, COL_AGENT_LABEL)) {
+                db.execSQL("ALTER TABLE $TABLE_SESSIONS ADD COLUMN $COL_AGENT_LABEL TEXT")
+            }
+            if (!db.hasColumn(TABLE_SESSIONS, COL_DEPTH)) {
+                db.execSQL("ALTER TABLE $TABLE_SESSIONS ADD COLUMN $COL_DEPTH INTEGER NOT NULL DEFAULT 0")
+            }
+            db.execSQL(
+                "CREATE INDEX IF NOT EXISTS conversation_sessions_parent " +
+                    "ON $TABLE_SESSIONS($COL_PARENT_SESSION_ID,$COL_CREATED_AT)",
+            )
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    private fun migrateV3ToV4(db: SQLiteDatabase) {
+        db.beginTransaction()
+        try {
+            createPluginSettingsSchema(db)
+            if (!db.hasColumn(TABLE_MESSAGES, COL_MESSAGE_METADATA)) {
+                db.execSQL("ALTER TABLE $TABLE_MESSAGES ADD COLUMN $COL_MESSAGE_METADATA TEXT")
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    private fun SQLiteDatabase.hasColumn(table: String, column: String): Boolean =
+        rawQuery("PRAGMA table_info($table)", null).use { cursor ->
+            val nameIndex = cursor.getColumnIndexOrThrow("name")
+            while (cursor.moveToNext()) {
+                if (cursor.getString(nameIndex) == column) return true
+            }
+            false
+        }
 
     private fun migrateV2ToV3(db: SQLiteDatabase) {
         db.beginTransaction()
@@ -112,14 +173,29 @@ class AndroidConversationSessionStore(
         )""".trimIndent())
     }
 
-    private fun createSessionSchema(db: SQLiteDatabase, table: String) {
-        db.execSQL("""CREATE TABLE $table (
+    private fun createSessionSchema(db: SQLiteDatabase, table: String, withDelegation: Boolean = false) {
+        val delegationColumns = if (withDelegation) """
+            ,
+            $COL_PARENT_SESSION_ID TEXT REFERENCES $TABLE_SESSIONS($COL_SESSION_ID) ON DELETE CASCADE,
+            $COL_SESSION_KIND TEXT NOT NULL DEFAULT 'USER',
+            $COL_AGENT_LABEL TEXT,
+            $COL_DEPTH INTEGER NOT NULL DEFAULT 0
+        """.trimIndent() else ""
+        db.execSQL(
+            """CREATE TABLE $table (
             $COL_SESSION_ID TEXT PRIMARY KEY NOT NULL,
             $COL_WORKSPACE_ID TEXT NOT NULL REFERENCES $TABLE_WORKSPACES($COL_WORKSPACE_ID) ON DELETE RESTRICT,
             $COL_TITLE TEXT NOT NULL,
             $COL_CREATED_AT INTEGER NOT NULL,
-            $COL_UPDATED_AT INTEGER NOT NULL
-        )""".trimIndent())
+            $COL_UPDATED_AT INTEGER NOT NULL$delegationColumns
+        )""".trimIndent(),
+        )
+        if (withDelegation) {
+            db.execSQL(
+                "CREATE INDEX IF NOT EXISTS conversation_sessions_parent " +
+                    "ON $table($COL_PARENT_SESSION_ID,$COL_CREATED_AT)",
+            )
+        }
     }
 
     private fun createMessageSchema(db: SQLiteDatabase, table: String, sessionsTable: String) {
@@ -128,7 +204,19 @@ class AndroidConversationSessionStore(
             $COL_MESSAGE_SESSION_ID TEXT NOT NULL REFERENCES $sessionsTable($COL_SESSION_ID) ON DELETE CASCADE,
             $COL_ROLE TEXT NOT NULL,
             $COL_CONTENT TEXT NOT NULL,
-            $COL_CREATED_AT INTEGER NOT NULL
+            $COL_CREATED_AT INTEGER NOT NULL,
+            $COL_MESSAGE_METADATA TEXT
+        )""".trimIndent())
+    }
+
+    private fun createPluginSettingsSchema(db: SQLiteDatabase) {
+        db.execSQL("""CREATE TABLE IF NOT EXISTS $TABLE_PLUGIN_SETTINGS (
+            $COL_WORKSPACE_ID TEXT NOT NULL REFERENCES $TABLE_WORKSPACES($COL_WORKSPACE_ID) ON DELETE CASCADE,
+            $COL_PLUGIN_ID TEXT NOT NULL,
+            $COL_SETTING_KEY TEXT NOT NULL,
+            $COL_SETTING_VALUE TEXT NOT NULL,
+            $COL_UPDATED_AT INTEGER NOT NULL,
+            PRIMARY KEY($COL_WORKSPACE_ID,$COL_PLUGIN_ID,$COL_SETTING_KEY)
         )""".trimIndent())
     }
 
@@ -281,11 +369,61 @@ class AndroidConversationSessionStore(
         writableDatabase.insertWithOnConflict(TABLE_TOOL_PREFERENCES, null, values, SQLiteDatabase.CONFLICT_REPLACE)
     }
 
+    /** Plugin-scoped Workspace setting. Secrets must never be stored here. */
+    fun pluginSetting(workspaceId: String, pluginId: String, key: String): String? = readableDatabase.query(
+        TABLE_PLUGIN_SETTINGS,
+        arrayOf(COL_SETTING_VALUE),
+        "$COL_WORKSPACE_ID = ? AND $COL_PLUGIN_ID = ? AND $COL_SETTING_KEY = ?",
+        arrayOf(workspaceId, pluginId, key),
+        null,
+        null,
+        null,
+    ).use { cursor -> if (cursor.moveToFirst()) cursor.getString(0) else null }
+
+    fun putPluginSetting(workspaceId: String, pluginId: String, key: String, value: String?) {
+        val db = writableDatabase
+        val workspaceIsActive = db.query(
+            TABLE_WORKSPACES,
+            arrayOf(COL_WORKSPACE_ID),
+            "$COL_WORKSPACE_ID = ? AND $COL_WORKSPACE_ARCHIVED IS NULL",
+            arrayOf(workspaceId),
+            null,
+            null,
+            null,
+        ).use { it.moveToFirst() }
+        check(workspaceIsActive) { "Workspace does not exist or is archived" }
+        if (value == null) {
+            db.delete(
+                TABLE_PLUGIN_SETTINGS,
+                "$COL_WORKSPACE_ID = ? AND $COL_PLUGIN_ID = ? AND $COL_SETTING_KEY = ?",
+                arrayOf(workspaceId, pluginId, key),
+            )
+            return
+        }
+        val values = ContentValues().apply {
+            put(COL_WORKSPACE_ID, workspaceId)
+            put(COL_PLUGIN_ID, pluginId)
+            put(COL_SETTING_KEY, key)
+            put(COL_SETTING_VALUE, value)
+            put(COL_UPDATED_AT, System.currentTimeMillis())
+        }
+        db.insertWithOnConflict(TABLE_PLUGIN_SETTINGS, null, values, SQLiteDatabase.CONFLICT_REPLACE)
+    }
+
     override fun findSessionWorkspace(id: String): Workspace? = readableDatabase.query(
         TABLE_WORKSPACES, WORKSPACE_COLUMNS, "$COL_WORKSPACE_ID = ? AND $COL_WORKSPACE_ARCHIVED IS NULL", arrayOf(id), null, null, null,
     ).use { if (it.moveToFirst()) it.toWorkspace() else null }
 
-    override fun create(id: String, workspaceId: String, title: String, nowMillis: Long): ConversationSession {
+    override fun create(
+        id: String,
+        workspaceId: String,
+        title: String,
+        nowMillis: Long,
+        parentSessionId: String?,
+        kind: SessionKind,
+        agentLabel: String?,
+        depth: Int,
+    ): ConversationSession {
         require(id.isNotBlank() && workspaceId.isNotBlank() && title.isNotBlank())
         val db = writableDatabase
         db.beginTransaction()
@@ -306,13 +444,21 @@ class AndroidConversationSessionStore(
                 put(COL_TITLE, title)
                 put(COL_CREATED_AT, nowMillis)
                 put(COL_UPDATED_AT, nowMillis)
+                // Null parent for a root conversation; SQLite keeps it NULL rather than "" so
+                // the child lookup never matches a root by accident.
+                put(COL_PARENT_SESSION_ID, parentSessionId)
+                put(COL_SESSION_KIND, kind.name)
+                put(COL_AGENT_LABEL, agentLabel)
+                put(COL_DEPTH, depth)
             }
             db.insertOrThrow(TABLE_SESSIONS, null, values)
             db.setTransactionSuccessful()
         } finally {
             db.endTransaction()
         }
-        return ConversationSession(id, workspaceId, title, nowMillis, nowMillis)
+        return ConversationSession(
+            id, workspaceId, title, nowMillis, nowMillis, parentSessionId, kind, agentLabel, depth,
+        )
     }
 
     override fun get(sessionId: String): ConversationSession? = readableDatabase.query(
@@ -320,11 +466,34 @@ class AndroidConversationSessionStore(
     ).use { c -> if (c.moveToFirst()) c.toSession() else null }
 
     override fun list(workspaceId: String): List<ConversationSession> = readableDatabase.query(
-        TABLE_SESSIONS, SESSION_COLUMNS, "$COL_WORKSPACE_ID = ?", arrayOf(workspaceId), null, null,
+        TABLE_SESSIONS,
+        SESSION_COLUMNS,
+        // Root conversations only: a Workspace's session list is what the user thinks of as
+        // their conversations, and a fan-out would otherwise bury them under delegated tasks.
+        "$COL_WORKSPACE_ID = ? AND $COL_SESSION_KIND = ?",
+        arrayOf(workspaceId, SessionKind.USER.name),
+        null,
+        null,
         "$COL_UPDATED_AT DESC,$COL_SESSION_ID ASC",
     ).use { c -> buildList { while (c.moveToNext()) add(c.toSession()) } }
 
-    override fun append(sessionId: String, role: MessageRole, content: String, nowMillis: Long): ConversationMessage {
+    override fun listChildren(parentSessionId: String): List<ConversationSession> = readableDatabase.query(
+        TABLE_SESSIONS,
+        SESSION_COLUMNS,
+        "$COL_PARENT_SESSION_ID = ?",
+        arrayOf(parentSessionId),
+        null,
+        null,
+        "$COL_CREATED_AT ASC,$COL_SESSION_ID ASC",
+    ).use { c -> buildList { while (c.moveToNext()) add(c.toSession()) } }
+
+    override fun append(
+        sessionId: String,
+        role: MessageRole,
+        content: String,
+        nowMillis: Long,
+        metadataJson: String?,
+    ): ConversationMessage {
         require(content.isNotBlank())
         val id = UUID.randomUUID().toString()
         val db = writableDatabase
@@ -335,11 +504,12 @@ class AndroidConversationSessionStore(
             val values = ContentValues().apply {
                 put(COL_MESSAGE_ID, id); put(COL_MESSAGE_SESSION_ID, sessionId); put(COL_ROLE, role.name)
                 put(COL_CONTENT, content); put(COL_CREATED_AT, nowMillis)
+                if (metadataJson != null) put(COL_MESSAGE_METADATA, metadataJson)
             }
             db.insertOrThrow(TABLE_MESSAGES, null, values)
             db.setTransactionSuccessful()
         } finally { db.endTransaction() }
-        return ConversationMessage(id, sessionId, role, content, nowMillis)
+        return ConversationMessage(id, sessionId, role, content, nowMillis, metadataJson)
     }
 
     override fun messages(sessionId: String): List<ConversationMessage> = readableDatabase.query(
@@ -359,21 +529,42 @@ class AndroidConversationSessionStore(
         id = getString(getColumnIndexOrThrow(COL_SESSION_ID)), workspaceId = getString(getColumnIndexOrThrow(COL_WORKSPACE_ID)),
         title = getString(getColumnIndexOrThrow(COL_TITLE)), createdAtMillis = getLong(getColumnIndexOrThrow(COL_CREATED_AT)),
         updatedAtMillis = getLong(getColumnIndexOrThrow(COL_UPDATED_AT)),
+        parentSessionId = getColumnIndex(COL_PARENT_SESSION_ID).takeIf { it >= 0 && !isNull(it) }
+            ?.let { getString(it) },
+        // An unknown or missing value reads as USER: the migration default is USER, and a
+        // Session whose kind cannot be parsed must stay visible rather than silently vanish
+        // from the list it has always appeared in.
+        kind = getColumnIndex(COL_SESSION_KIND).takeIf { it >= 0 && !isNull(it) }
+            ?.let { runCatching { SessionKind.valueOf(getString(it)) }.getOrNull() }
+            ?: SessionKind.USER,
+        agentLabel = getColumnIndex(COL_AGENT_LABEL).takeIf { it >= 0 && !isNull(it) }?.let { getString(it) },
+        depth = getColumnIndex(COL_DEPTH).takeIf { it >= 0 }?.let { getInt(it) } ?: 0,
     )
 
-    private fun Cursor.toMessage() = ConversationMessage(
-        id = getString(getColumnIndexOrThrow(COL_MESSAGE_ID)), sessionId = getString(getColumnIndexOrThrow(COL_MESSAGE_SESSION_ID)),
-        role = MessageRole.valueOf(getString(getColumnIndexOrThrow(COL_ROLE))), content = getString(getColumnIndexOrThrow(COL_CONTENT)),
-        createdAtMillis = getLong(getColumnIndexOrThrow(COL_CREATED_AT)),
-    )
+    private fun Cursor.toMessage(): ConversationMessage {
+        val metadataIndex = getColumnIndex(COL_MESSAGE_METADATA)
+        return ConversationMessage(
+            id = getString(getColumnIndexOrThrow(COL_MESSAGE_ID)),
+            sessionId = getString(getColumnIndexOrThrow(COL_MESSAGE_SESSION_ID)),
+            role = MessageRole.valueOf(getString(getColumnIndexOrThrow(COL_ROLE))),
+            content = getString(getColumnIndexOrThrow(COL_CONTENT)),
+            createdAtMillis = getLong(getColumnIndexOrThrow(COL_CREATED_AT)),
+            metadataJson = if (metadataIndex >= 0 && !isNull(metadataIndex)) getString(metadataIndex) else null,
+        )
+    }
 
     private fun relativeRoot(id: String): String = "workspaces/${UUID.nameUUIDFromBytes(id.toByteArray())}"
 
     private companion object {
         const val DATABASE_NAME = "cordiact-conversations.db"
-        const val DATABASE_VERSION = 3
+        const val DATABASE_VERSION = 5
         const val TABLE_WORKSPACES = "workspaces"
         const val TABLE_TOOL_PREFERENCES = "workspace_tool_preferences"
+        const val TABLE_PLUGIN_SETTINGS = "workspace_plugin_settings"
+        const val COL_PLUGIN_ID = "plugin_id"
+        const val COL_SETTING_KEY = "setting_key"
+        const val COL_SETTING_VALUE = "setting_value"
+        const val COL_MESSAGE_METADATA = "metadata_json"
         const val COL_TOOL_ID = "tool_id"
         const val COL_TOOL_ENABLED = "enabled"
         const val COL_TOOL_UPDATED = "updated_at"
@@ -396,8 +587,15 @@ class AndroidConversationSessionStore(
         const val COL_MESSAGE_SESSION_ID = "session_id"
         const val COL_ROLE = "role"
         const val COL_CONTENT = "content"
+        const val COL_PARENT_SESSION_ID = "parent_session_id"
+        const val COL_SESSION_KIND = "session_kind"
+        const val COL_AGENT_LABEL = "agent_label"
+        const val COL_DEPTH = "delegation_depth"
         val WORKSPACE_COLUMNS = arrayOf(COL_WORKSPACE_ID,COL_WORKSPACE_NAME,COL_WORKSPACE_CREATED,COL_WORKSPACE_UPDATED,COL_WORKSPACE_ARCHIVED)
-        val SESSION_COLUMNS = arrayOf(COL_SESSION_ID,COL_WORKSPACE_ID,COL_TITLE,COL_CREATED_AT,COL_UPDATED_AT)
-        val MESSAGE_COLUMNS = arrayOf(COL_MESSAGE_ID,COL_MESSAGE_SESSION_ID,COL_ROLE,COL_CONTENT,COL_CREATED_AT)
+        val SESSION_COLUMNS = arrayOf(
+            COL_SESSION_ID,COL_WORKSPACE_ID,COL_TITLE,COL_CREATED_AT,COL_UPDATED_AT,
+            COL_PARENT_SESSION_ID,COL_SESSION_KIND,COL_AGENT_LABEL,COL_DEPTH,
+        )
+        val MESSAGE_COLUMNS = arrayOf(COL_MESSAGE_ID,COL_MESSAGE_SESSION_ID,COL_ROLE,COL_CONTENT,COL_CREATED_AT,COL_MESSAGE_METADATA)
     }
 }

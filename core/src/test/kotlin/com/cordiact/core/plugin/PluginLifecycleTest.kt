@@ -108,21 +108,29 @@ class PluginLifecycleTest {
     }
 
     @Test
-    fun startupRecoveryDisablesPreviouslyEnabledPluginsBeforeRegistryUse() {
-        manager.register(plugin)
-        manager.enable(plugin.spec.id)
+    fun startupRecoveryDisablesPreviouslyEnabledBundledPluginsBeforeRegistryUse() {
+        // Bundled origin matters here: bundled plugins are repaired at startup, user plugins are
+        // reconstructed by the rebuild path instead. The shared verifier trusts `core.*` ids.
+        val bundled = FakePlugin(events, pluginId = "core.sample")
+        manager.registerBundledSystem(bundled)
+        manager.enable(bundled.spec.id)
         events.clear()
         val restarted = PluginLifecycleManager(records, runtime, grants, data)
         assertEquals(emptyList(), restarted.recoverAfterProcessRestart())
-        assertEquals(PluginState.DISABLED, restarted.get(plugin.spec.id)?.state)
+        assertEquals(PluginState.DISABLED, restarted.get(bundled.spec.id)?.state)
         assertEquals(listOf("quiesce", "drain", "suspend", "detach"), events)
     }
 
     @Test
-    fun interruptedUserRegistrationIsUninstalledOnStartup() {
-        records.put(PluginRecord(plugin.spec, PluginOrigin.USER_INSTALLED, PluginState.REGISTERING))
+    fun anInterruptedUserRegistrationIsCleanedUpByTheRebuildPath() {
+        val spec = plugin.spec
+        records.put(PluginRecord(spec, PluginOrigin.USER_INSTALLED, PluginState.REGISTERING))
+        // Bundled recovery skips user plugins entirely; the rebuild path owns their cleanup.
         assertEquals(emptyList(), manager.recoverAfterProcessRestart())
-        assertNull(manager.get(plugin.spec.id))
+        assertEquals(PluginState.REGISTERING, manager.get(spec.id)?.state)
+
+        manager.rebuildUserPlugins { FakeSpecPlugin(it) }
+        assertNull(manager.get(spec.id))
         assertTrue(events.containsAll(listOf("revoke", "erase", "remove-artifacts")))
     }
 
@@ -131,6 +139,113 @@ class PluginLifecycleTest {
         val denied = PluginLifecycleManager(records, runtime, grants, data)
         assertFailsWith<PluginLifecycleException> { denied.registerBundledSystem(FakePlugin(events, pluginId = "core.unknown")) }
         assertNull(denied.get("core.unknown"))
+    }
+
+    @Test
+    fun specConfigIsPartOfIdentitySoEditingItIsNotSilentlyAccepted() {
+        val base = PluginSpec("mcp.demo", "1.0.0", PluginTarget.HARNESS_REMOTE, config = """{"url":"https://a"}""")
+        val edited = base.copy(config = """{"url":"https://b"}""")
+        assertTrue(base != edited)
+        manager.register(FakeSpecPlugin(base))
+        // A record already holding the old config must reject a registration that changed it.
+        assertFailsWith<PluginLifecycleException> { manager.register(FakeSpecPlugin(edited)) }
+    }
+
+    @Test
+    fun installUserPluginUsesTheFactoryAndRejectsMismatchedSpecs() {
+        val spec = PluginSpec("mcp.demo", "1.0.0", PluginTarget.HARNESS_REMOTE, config = """{"serverName":"demo"}""")
+        val record = manager.installUserPlugin(spec) { candidate ->
+            if (candidate == spec) FakeSpecPlugin(candidate) else null
+        }
+        assertEquals(PluginState.REGISTERED, record.state)
+        assertEquals(PluginOrigin.USER_INSTALLED, record.origin)
+    }
+
+    @Test
+    fun installUserPluginFailsWhenThisBuildCannotHostTheSpec() {
+        val spec = PluginSpec("mcp.future", "9.9.9", PluginTarget.HARNESS_REMOTE)
+        assertFailsWith<PluginLifecycleException> { manager.installUserPlugin(spec) { null } }
+        assertNull(manager.get(spec.id))
+    }
+
+    @Test
+    fun startupRecoveryLeavesUserPluginsForTheRebuildPath() {
+        val spec = PluginSpec("mcp.restart", "1.0.0", PluginTarget.HARNESS_REMOTE)
+        manager.installUserPlugin(spec) { FakeSpecPlugin(it) }
+        manager.enable(spec.id)
+        assertEquals(PluginState.ENABLED, records.get(spec.id)?.state)
+
+        val restarted = PluginLifecycleManager(records, runtime, grants, data)
+        // Bundled recovery used to demote a user plugin to DISABLED here, so every restart forced
+        // the user to re-enable it. It must now be left alone for rebuildUserPlugins.
+        assertEquals(emptyList(), restarted.recoverAfterProcessRestart())
+        assertEquals(PluginState.ENABLED, records.get(spec.id)?.state)
+
+        val report = restarted.rebuildUserPlugins { FakeSpecPlugin(it) }
+        assertEquals(listOf(spec.id), report.restored)
+        assertEquals(PluginState.ENABLED, restarted.get(spec.id)?.state)
+    }
+
+    @Test
+    fun rebuildStillCleansUpAnInterruptedUserInstall() {
+        val spec = PluginSpec("mcp.interrupted", "1.0.0", PluginTarget.HARNESS_REMOTE)
+        // A record left in REGISTERING is what a process death mid-install looks like.
+        records.put(PluginRecord(spec, PluginOrigin.USER_INSTALLED, PluginState.REGISTERING))
+        val restarted = PluginLifecycleManager(records, runtime, grants, data)
+
+        val report = restarted.rebuildUserPlugins { FakeSpecPlugin(it) }
+
+        // A clean cleanup removes the record, so it is neither restored nor left pending.
+        assertNull(restarted.get(spec.id))
+        assertEquals(emptyList(), report.pendingCleanup)
+        assertEquals(emptyList(), report.restored)
+        assertTrue(events.contains("erase"))
+    }
+
+    @Test
+    fun rebuildRestoresEnabledUserPluginsAndLeavesDisabledOnesOff() {
+        val enabled = PluginSpec("mcp.on", "1.0.0", PluginTarget.HARNESS_REMOTE)
+        val disabled = PluginSpec("mcp.off", "1.0.0", PluginTarget.HARNESS_REMOTE)
+        manager.installUserPlugin(enabled) { FakeSpecPlugin(it) }
+        manager.installUserPlugin(disabled) { FakeSpecPlugin(it) }
+        manager.enable(enabled.id)
+        manager.disable(disabled.id)
+        events.clear()
+
+        val restarted = PluginLifecycleManager(records, runtime, grants, data)
+        val report = restarted.rebuildUserPlugins { FakeSpecPlugin(it) }
+
+        assertEquals(listOf(enabled.id), report.restored)
+        assertEquals(listOf(disabled.id), report.rebuiltDisabled)
+        assertEquals(PluginState.ENABLED, restarted.get(enabled.id)?.state)
+        assertEquals(PluginState.DISABLED, restarted.get(disabled.id)?.state)
+    }
+
+    @Test
+    fun rebuildKeepsAnUnsupportedUserPluginVisibleAsFailed() {
+        val spec = PluginSpec("mcp.gone", "1.0.0", PluginTarget.HARNESS_REMOTE)
+        manager.installUserPlugin(spec) { FakeSpecPlugin(it) }
+        manager.enable(spec.id)
+
+        val restarted = PluginLifecycleManager(records, runtime, grants, data)
+        val report = restarted.rebuildUserPlugins { null }
+
+        assertEquals(listOf(spec.id), report.unsupported)
+        val record = restarted.get(spec.id)
+        assertEquals(PluginState.FAILED, record?.state)
+        assertTrue(record?.lastError?.isNotBlank() == true)
+        // The durable record survives, so the user can inspect or remove it rather than losing it.
+        assertEquals(spec, records.get(spec.id)?.spec)
+    }
+
+    @Test
+    fun rebuildNeverResurrectsBundledPluginsFromTheDatabase() {
+        records.put(PluginRecord(FakePlugin(events, pluginId = "core.shell").spec, PluginOrigin.BUNDLED_SYSTEM, PluginState.ENABLED))
+        val restarted = PluginLifecycleManager(records, runtime, grants, data)
+        val report = restarted.rebuildUserPlugins { FakeSpecPlugin(it) }
+        assertEquals(emptyList(), report.restored)
+        assertEquals(emptyList(), report.unsupported)
+        assertEquals(PluginState.ENABLED, restarted.get("core.shell")?.state)
     }
 
     @Test
@@ -154,6 +269,10 @@ class PluginLifecycleTest {
         override fun onEnable() { events += "enable"; if (throwsOnEnable) error("enable test failure") }
         override fun onDisable() { events += "disable" }
         override fun onUninstall() { events += "uninstall" }
+    }
+
+    private class FakeSpecPlugin(private val spec0: PluginSpec) : ManagedPlugin {
+        override val spec: PluginSpec = spec0
     }
 
     private class FakeRecords : PluginRecordStore {

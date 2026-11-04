@@ -86,15 +86,27 @@ data class ToolLoopRound(
 
 sealed interface ToolLoopOutcome {
     /** Final answer reached after [rounds] round trips. */
-    data class Completed(val text: String, val rounds: Int) : ToolLoopOutcome
+    data class Completed(val text: String, val rounds: Int, val evidence: List<ToolEvidence> = emptyList()) : ToolLoopOutcome
 
     /** Stopped without a final answer. [reason] says why, [lastText] is whatever was produced. */
     data class Stopped(
         val reason: ToolLoopStop,
         val rounds: Int,
         val lastText: String,
+        val evidence: List<ToolEvidence> = emptyList(),
     ) : ToolLoopOutcome
 }
+
+/**
+ * Host-only evidence a tool produced during the turn.
+ *
+ * It travels beside the model-facing messages rather than inside them, so persisting it can
+ * never change what a provider is asked to serialise.
+ */
+data class ToolEvidence(
+    val toolId: String,
+    val metadataJson: String,
+)
 
 interface ToolLoopService {
     /**
@@ -150,6 +162,7 @@ class ToolLoopPlugin(
         var rounds = 0
         var calls = 0
         var lastText = ""
+        val evidence = mutableListOf<ToolEvidence>()
 
         while (rounds < limits.maxRounds) {
             rounds++
@@ -158,12 +171,12 @@ class ToolLoopPlugin(
             } catch (e: Exception) {
                 // A transport or provider failure ends the turn; retrying inside the loop would
                 // duplicate whatever the model already streamed.
-                return ToolLoopOutcome.Stopped(ToolLoopStop.FAILED, rounds, lastText)
+                return ToolLoopOutcome.Stopped(ToolLoopStop.FAILED, rounds, lastText, evidence.toList())
             }
             lastText = round.text.ifBlank { lastText }
 
             if (round.calls.isEmpty()) {
-                return ToolLoopOutcome.Completed(lastText, rounds)
+                return ToolLoopOutcome.Completed(lastText, rounds, evidence.toList())
             }
 
             // Record what the model asked for before the results, or the next request has tool
@@ -185,14 +198,16 @@ class ToolLoopPlugin(
                     continue
                 }
                 calls++
-                messages += dispatcher.dispatch(context, call)
+                val result = dispatcher.dispatch(context, call)
+                result.metadataJson?.let { evidence += ToolEvidence(call.name, it) }
+                messages += result
             }
 
             if (calls >= limits.maxToolCalls) {
-                return ToolLoopOutcome.Stopped(ToolLoopStop.CALL_LIMIT, rounds, lastText)
+                return ToolLoopOutcome.Stopped(ToolLoopStop.CALL_LIMIT, rounds, lastText, evidence.toList())
             }
         }
 
-        return ToolLoopOutcome.Stopped(ToolLoopStop.ROUND_LIMIT, rounds, lastText)
+        return ToolLoopOutcome.Stopped(ToolLoopStop.ROUND_LIMIT, rounds, lastText, evidence.toList())
     }
 }

@@ -46,6 +46,8 @@ class AndroidToolDispatcher(
             content = renderResult(result),
             toolCallId = call.id,
             toolName = call.name,
+            // Host-only: never serialised to a provider, only persisted for replay.
+            metadataJson = renderMetadata(call.name, result.metadata),
         )
     }
 
@@ -80,6 +82,14 @@ class AndroidToolDispatcher(
         else -> ToolValue.StringValue(value.toString())
     }
 
+    private fun renderMetadata(toolId: String, metadata: Map<String, ToolValue>): String? {
+        if (metadata.isEmpty()) return null
+        return JSONObject().apply {
+            put("tool", toolId)
+            metadata.forEach { (key, value) -> put(key, toJson(value)) }
+        }.toString()
+    }
+
     private fun renderResult(result: ToolResult): String {
         if (result.values.isEmpty()) return "{}"
         return JSONObject().apply {
@@ -109,7 +119,10 @@ class AndroidToolDispatcher(
             ModelToolSpec(
                 name = descriptor.id,
                 description = descriptor.description,
-                parametersJson = schemaJson(
+                // A foreign tool's schema is passed through untouched: flattening it into
+                // ToolInputSchema would drop nested properties, enums and `$ref`, and the model
+                // would then call with shapes the server rejects.
+                parametersJson = descriptor.rawInputSchemaJson ?: schemaJson(
                     descriptor.inputSchema.parameters,
                     descriptor.inputSchema.allowAdditional,
                 ),
@@ -119,7 +132,7 @@ class AndroidToolDispatcher(
         private fun schemaJson(parameters: List<ToolParameter>, allowAdditional: Boolean): String {
             val properties = JSONObject()
             for (parameter in parameters) {
-                properties.put(parameter.name, JSONObject().put("type", parameterType(parameter.type)))
+                properties.put(parameter.name, parameterJson(parameter))
             }
             val required = JSONArray()
             parameters.filter { it.required }.forEach { required.put(it.name) }
@@ -131,10 +144,27 @@ class AndroidToolDispatcher(
             }.toString()
         }
 
+        private fun parameterJson(parameter: ToolParameter): JSONObject = JSONObject().apply {
+            put("type", parameterType(parameter.type))
+            parameter.description?.let { put("description", it) }
+            if (parameter.enumValues.isNotEmpty()) put("enum", JSONArray(parameter.enumValues))
+            if (parameter.type == ToolValueType.ARRAY) {
+                parameter.itemType?.let { put("items", JSONObject().put("type", parameterType(it))) }
+            }
+            parameter.minimum?.let { put("minimum", it.toDouble()) }
+            parameter.maximum?.let { put("maximum", it.toDouble()) }
+            parameter.minItems?.let { put("minItems", it.toInt()) }
+            parameter.maxItems?.let { put("maxItems", it.toInt()) }
+            parameter.maxLength?.let { put("maxLength", it.toInt()) }
+        }
+
         private fun parameterType(type: ToolValueType): String = when (type) {
             ToolValueType.STRING -> "string"
             ToolValueType.NUMBER -> "number"
+            ToolValueType.INTEGER -> "integer"
             ToolValueType.BOOLEAN -> "boolean"
+            ToolValueType.ARRAY -> "array"
+            ToolValueType.OBJECT -> "object"
         }
     }
 }

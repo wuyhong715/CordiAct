@@ -33,6 +33,42 @@ class ToolLoopPluginTest {
     }
 
     @Test
+    fun collectsToolMetadataAsEvidence() {
+        val dispatcher = ToolDispatcher { _, call ->
+            ModelMessage(
+                role = MessageRole.TOOL,
+                content = "result",
+                toolCallId = call.id,
+                toolName = call.name,
+                metadataJson = """{"tool":"${call.name}","sources":[]}""",
+            )
+        }
+        var roundIndex = 0
+        val outcome = loop().run(CONTEXT, listOf(ModelMessage(MessageRole.USER, "hi")), dispatcher) {
+            roundIndex++
+            if (roundIndex == 1) round("", call("1", "search.web")) else round("done")
+        }
+
+        assertTrue(outcome is ToolLoopOutcome.Completed)
+        val evidence = (outcome as ToolLoopOutcome.Completed).evidence
+        assertEquals(1, evidence.size)
+        assertEquals("search.web", evidence.single().toolId)
+        assertTrue(evidence.single().metadataJson.contains("search.web"))
+    }
+
+    @Test
+    fun toolResultsWithoutMetadataProduceNoEvidence() {
+        var roundIndex = 0
+        val outcome = loop().run(CONTEXT, listOf(ModelMessage(MessageRole.USER, "hi")), dispatcher()) {
+            roundIndex++
+            if (roundIndex == 1) round("", call("1")) else round("done")
+        }
+
+        assertTrue(outcome is ToolLoopOutcome.Completed)
+        assertTrue((outcome as ToolLoopOutcome.Completed).evidence.isEmpty())
+    }
+
+    @Test
     fun answersImmediatelyWhenNoToolsAreRequested() {
         val outcome = loop().run(CONTEXT, listOf(ModelMessage(MessageRole.USER, "hi")), dispatcher()) {
             round("hello")

@@ -37,6 +37,7 @@ class AndroidPluginLifecycleStore(
                 $COL_TARGET TEXT NOT NULL,
                 $COL_CAPABILITIES TEXT NOT NULL,
                 $COL_DEPENDENCIES TEXT NOT NULL DEFAULT '[]',
+                $COL_CONFIG TEXT NOT NULL DEFAULT '',
                 $COL_ORIGIN TEXT NOT NULL,
                 $COL_STATE TEXT NOT NULL,
                 $COL_ERROR TEXT
@@ -72,6 +73,11 @@ class AndroidPluginLifecycleStore(
                 "UPDATE $TABLE_RECORDS SET $COL_DEPENDENCIES = ? WHERE $COL_ID = ?",
                 arrayOf("""["core.workspace-manager"]""", "core.session-manager"),
             )
+        }
+        if (oldVersion < 3 && newVersion >= 3) {
+            // User-installed plugins are rebuilt from their record, so the config must survive a
+            // restart; without this column an MCP server would come back with an empty config.
+            db.execSQL("ALTER TABLE $TABLE_RECORDS ADD COLUMN $COL_CONFIG TEXT NOT NULL DEFAULT ''")
         }
         if (newVersion > DATABASE_VERSION) throw IllegalStateException("Unsupported plugin lifecycle database version $newVersion")
     }
@@ -116,6 +122,10 @@ class AndroidPluginLifecycleStore(
                 put(COL_TARGET, record.spec.target.name)
                 put(COL_CAPABILITIES, JSONArray(record.spec.requestedCapabilities.sorted()).toString())
                 put(COL_DEPENDENCIES, JSONArray(record.spec.dependencies.sorted()).toString())
+                require(record.spec.config.length <= MAX_CONFIG_LENGTH) {
+                    "Plugin '${record.spec.id}' config exceeds $MAX_CONFIG_LENGTH characters"
+                }
+                put(COL_CONFIG, record.spec.config)
                 put(COL_ORIGIN, record.origin.name)
                 put(COL_STATE, record.state.name)
                 if (record.lastError == null) putNull(COL_ERROR) else put(COL_ERROR, record.lastError)
@@ -292,6 +302,7 @@ class AndroidPluginLifecycleStore(
                 target = PluginTarget.valueOf(getString(getColumnIndexOrThrow(COL_TARGET))),
                 requestedCapabilities = capabilities,
                 dependencies = dependencies,
+                config = getString(getColumnIndexOrThrow(COL_CONFIG)),
             ),
             origin = PluginOrigin.valueOf(getString(getColumnIndexOrThrow(COL_ORIGIN))),
             state = PluginState.valueOf(getString(getColumnIndexOrThrow(COL_STATE))),
@@ -301,7 +312,8 @@ class AndroidPluginLifecycleStore(
 
     private companion object {
         const val DEFAULT_DATABASE_NAME = "cordiact-plugin-lifecycle.db"
-        const val DATABASE_VERSION = 2
+        const val DATABASE_VERSION = 3
+        const val MAX_CONFIG_LENGTH = 64 * 1024
         const val TABLE_RECORDS = "plugin_records"
         const val TABLE_GRANTS = "plugin_capability_grants"
         const val TABLE_RESOURCES = "plugin_owned_resources"
@@ -310,6 +322,7 @@ class AndroidPluginLifecycleStore(
         const val COL_TARGET = "target"
         const val COL_CAPABILITIES = "requested_capabilities"
         const val COL_DEPENDENCIES = "dependencies"
+        const val COL_CONFIG = "config"
         const val COL_ORIGIN = "origin"
         const val COL_STATE = "state"
         const val COL_ERROR = "last_error"
@@ -325,6 +338,8 @@ class AndroidPluginLifecycleStore(
         val PLUGIN_ID_PATTERN = Regex("[a-z0-9][a-z0-9._-]{1,127}")
         val RESOURCE_KIND_PATTERN = Regex("[a-z][a-z0-9._-]{0,63}")
         val RESOURCE_COLUMNS = arrayOf(COL_RESOURCE_PLUGIN_ID, COL_RESOURCE_KIND, COL_RESOURCE_KEY, COL_RESOURCE_PAYLOAD)
-        val RECORD_COLUMNS = arrayOf(COL_ID, COL_VERSION, COL_TARGET, COL_CAPABILITIES, COL_DEPENDENCIES, COL_ORIGIN, COL_STATE, COL_ERROR)
+        val RECORD_COLUMNS = arrayOf(
+            COL_ID, COL_VERSION, COL_TARGET, COL_CAPABILITIES, COL_DEPENDENCIES, COL_CONFIG, COL_ORIGIN, COL_STATE, COL_ERROR,
+        )
     }
 }

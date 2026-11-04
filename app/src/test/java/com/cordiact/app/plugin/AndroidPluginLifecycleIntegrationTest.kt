@@ -63,6 +63,24 @@ class AndroidPluginLifecycleIntegrationTest {
     }
 
     @Test
+    fun pluginConfigSurvivesDatabaseReopen() {
+        // Without this column an MCP server would come back with an empty config after a restart,
+        // and rebuildUserPlugins would fail to reconstruct it.
+        val spec = PluginSpec(
+            id = "core.mcp.demo",
+            version = "0.1.0",
+            target = PluginTarget.ANDROID_NATIVE,
+            config = """{"serverName":"demo","url":"https://example.test/mcp"}""",
+        )
+        store.put(PluginRecord(spec, PluginOrigin.USER_INSTALLED, PluginState.ENABLED))
+        store.close()
+        store = AndroidPluginLifecycleStore(context, TEST_DATABASE)
+
+        assertEquals(spec, store.get(spec.id)?.spec)
+        assertEquals("""{"serverName":"demo","url":"https://example.test/mcp"}""", store.get(spec.id)?.spec?.config)
+    }
+
+    @Test
     fun lifecycleStateAndConsentsSurviveDatabaseReopenWithoutReplaceCascade() {
         val record = record(state = PluginState.REGISTERED)
         store.put(record)
@@ -153,18 +171,30 @@ class AndroidPluginLifecycleIntegrationTest {
     @Test
     fun startupRecoveryBlocksPreviouslyEnabledPluginAndSuspendsConsent() {
         val plugin = TestPlugin()
-        store.put(record(state = PluginState.ENABLED))
+        // Recovery is a BUNDLED_SYSTEM path. User-installed plugins are deliberately skipped by
+        // recoverAfterProcessRestart and reconstructed by rebuildUserPlugins instead, precisely so
+        // that a restart does not demote a working plugin to DISABLED — asserting the bundled
+        // behaviour against a user-installed record tests a path that no longer exists.
+        store.put(record(state = PluginState.ENABLED, origin = PluginOrigin.BUNDLED_SYSTEM))
         store.grantConsent(plugin.spec.id, "workspace.read")
         store.activateConsentedAccess(plugin.spec.id)
         assertEquals(setOf("workspace.read"), store.activeConsents(plugin.spec.id))
 
         val restartedRuntime = AndroidPluginRuntimeResources(storage, AndroidPluginResourceLedger(store, emptyMap()), store)
-        val manager = PluginLifecycleManager(store, restartedRuntime, store, storage, BundledPluginVerifier { false })
+        val manager = PluginLifecycleManager(
+            store,
+            restartedRuntime,
+            store,
+            storage,
+            // Trusts this plugin: recovery is only for bundled plugins, and re-registering it
+            // afterwards must go through the bundled path, not the user-install one.
+            BundledPluginVerifier { it.id == plugin.spec.id },
+        )
         assertTrue(manager.recoverAfterProcessRestart().isEmpty())
 
         assertEquals(PluginState.DISABLED, store.get(plugin.spec.id)?.state)
         assertTrue(store.activeConsents(plugin.spec.id).isEmpty())
-        manager.register(plugin)
+        manager.registerBundledSystem(plugin)
         manager.enable(plugin.spec.id)
         assertEquals(setOf("workspace.read"), store.activeConsents(plugin.spec.id))
     }

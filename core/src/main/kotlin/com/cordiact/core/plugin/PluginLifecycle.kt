@@ -9,6 +9,14 @@ data class PluginSpec(
     val target: PluginTarget,
     val requestedCapabilities: Set<String> = emptySet(),
     val dependencies: Set<String> = emptySet(),
+    /**
+     * Opaque plugin-owned configuration, conventionally JSON.
+     *
+     * Empty for bundled plugins that carry no settings. Because [PluginSpec] compares by
+     * value, changing the config changes the spec: the manager treats it as a different
+     * plugin rather than mutating a live one.
+     */
+    val config: String = "",
 )
 
 enum class PluginOrigin { BUNDLED_SYSTEM, USER_INSTALLED }
@@ -21,6 +29,24 @@ data class PluginRecord(
     val lastError: String? = null,
 )
 
+/**
+ * Outcome of [PluginLifecycleManager.rebuildUserPlugins].
+ *
+ * Split by outcome rather than a single ID list because the three cases need different
+ * things from the host: a restored plugin needs nothing, a disabled one just shows up in the
+ * UI, and an unsupported one needs a visible reason.
+ */
+data class PluginRebuildReport(
+    /** Rebuilt and re-enabled; these are live again. */
+    val restored: List<String> = emptyList(),
+    /** Rebuilt but left disabled, as they were before the restart. */
+    val rebuiltDisabled: List<String> = emptyList(),
+    /** Failed to rebuild; the record stays `FAILED` with `lastError` naming the cause. */
+    val unsupported: List<String> = emptyList(),
+    /** Interrupted installs or uninstalls that still need cleanup. */
+    val pendingCleanup: List<String> = emptyList(),
+)
+
 /** Hooks must be idempotent: a process can die between a durable state update and a hook. */
 interface ManagedPlugin {
     val spec: PluginSpec
@@ -28,6 +54,18 @@ interface ManagedPlugin {
     fun onEnable() = Unit
     fun onDisable() = Unit
     fun onUninstall() = Unit
+}
+
+/**
+ * Rebuilds a user-installed plugin from its durable [PluginSpec].
+ *
+ * The manager keeps only records across a restart, so a plugin that is not bundled cannot
+ * come back without a factory that understands its target and config. Returning null means
+ * this build cannot host the plugin (unknown target, future version, unparsable config);
+ * the manager then leaves a `FAILED` record with a reason instead of dropping user data.
+ */
+fun interface PluginFactory {
+    fun create(spec: PluginSpec): ManagedPlugin?
 }
 
 /** Persistence adapter. Production Android implementation must be transactional and durable. */
@@ -84,6 +122,21 @@ class PluginLifecycleManager(
     private val bindings = mutableMapOf<String, ManagedPlugin>()
 
     fun register(plugin: ManagedPlugin): PluginRecord = registerInternal(plugin, PluginOrigin.USER_INSTALLED)
+
+    /**
+     * Install a user plugin described by [spec] alone.
+     *
+     * The factory owns the mapping from durable spec to live object, so the same code path
+     * serves a fresh install and a rebuild after restart.
+     */
+    fun installUserPlugin(spec: PluginSpec, factory: PluginFactory): PluginRecord {
+        val plugin = factory.create(spec)
+            ?: throw PluginLifecycleException("Plugin '${spec.id}' cannot be hosted by this build")
+        if (plugin.spec != spec) {
+            throw PluginLifecycleException("Factory for '${spec.id}' returned a plugin with different metadata")
+        }
+        return registerInternal(plugin, PluginOrigin.USER_INSTALLED)
+    }
 
     fun registerBundledSystem(plugin: ManagedPlugin): PluginRecord {
         if (!bundledVerifier.isTrustedBundled(plugin.spec)) {
@@ -241,13 +294,24 @@ class PluginLifecycleManager(
     }
 
     /**
-     * Fail-closed startup recovery. Must run before exposing the plugin registry to dispatch.
-     * Returns IDs that still require repair; those records remain blocked from action routing.
+     * Fail-closed startup recovery for *bundled* plugins. Must run before exposing the plugin
+     * registry to dispatch. Returns IDs that still require repair; those records remain blocked
+     * from action routing.
+     *
+     * User-installed plugins are deliberately skipped: the host restores them through
+     * [rebuildUserPlugins], which can reconstruct them and keep the ones that were enabled.
+     * Quiescing them here would demote a working plugin to DISABLED before the rebuild ever saw
+     * it, which is exactly the "re-enable required after every restart" behaviour this avoids.
      */
     fun recoverAfterProcessRestart(): List<String> = synchronized(lock) {
         val needsRepair = mutableListOf<String>()
         records.all().forEach { record ->
             val id = record.spec.id
+            if (record.origin == PluginOrigin.USER_INSTALLED && record.state != PluginState.UNINSTALLING) {
+                // Interrupted installs and uninstalls are still cleaned up by the rebuild path;
+                // everything else there is reconstructed, not repaired.
+                return@forEach
+            }
             try {
                 when {
                     record.state == PluginState.UNINSTALLING ||
@@ -298,6 +362,90 @@ class PluginLifecycleManager(
     fun get(id: String): PluginRecord? = synchronized(lock) { records.get(id) }
 
     fun all(): List<PluginRecord> = synchronized(lock) { records.all() }
+
+    /**
+     * Rebuild every user-installed plugin from its durable record.
+     *
+     * Replaces [recoverAfterProcessRestart] for [PluginOrigin.USER_INSTALLED] records: those
+     * have no bundled catalog to restore them, and a plugin that was running when the process
+     * died should come back running. Records that the factory cannot host stay `FAILED` with a
+     * reason, so the user can see what broke instead of the plugin vanishing.
+     *
+     * Bundled plugins must still go through [recoverAfterProcessRestart]; their provenance
+     * comes from the APK, not from a database row.
+     */
+    fun rebuildUserPlugins(factory: PluginFactory): PluginRebuildReport = synchronized(lock) {
+        val restored = mutableListOf<String>()
+        val rebuiltDisabled = mutableListOf<String>()
+        val unsupported = mutableListOf<String>()
+        val stillPending = mutableListOf<String>()
+
+        // A plain loop, not forEach: the per-record branches need `continue` and `break`-style
+        // early exits, which a lambda cannot express without leaking a non-local return.
+        for (record in records.all().filter { it.origin == PluginOrigin.USER_INSTALLED }) {
+            val id = record.spec.id
+            when (record.state) {
+                PluginState.UNINSTALLING,
+                PluginState.REGISTERING -> {
+                    // Interrupted install: same cleanup the bundled path performs.
+                    try { uninstall(id) } catch (_: Exception) { stillPending += id }
+                }
+
+                PluginState.FAILED -> {
+                    runtime.quiesce(id)
+                    runtime.stopAndDrain(id)
+                    capabilities.suspendRuntimeAccess(id)
+                    runtime.detach(id)
+                    stillPending += id
+                }
+
+                else -> {
+                    val wasEnabled = record.state == PluginState.ENABLING ||
+                        record.state == PluginState.ENABLED ||
+                        record.state == PluginState.DISABLING
+                    val plugin = try {
+                        factory.create(record.spec)
+                    } catch (failure: Exception) {
+                        records.put(record.copy(state = PluginState.FAILED, lastError = failure.describe()))
+                        unsupported += id
+                        continue
+                    }
+                    if (plugin == null) {
+                        records.put(record.copy(state = PluginState.FAILED, lastError = "This build cannot host the plugin"))
+                        unsupported += id
+                        continue
+                    }
+                    if (plugin.spec != record.spec) {
+                        records.put(record.copy(state = PluginState.FAILED, lastError = "Factory returned different plugin metadata"))
+                        unsupported += id
+                        continue
+                    }
+                    bindings[id] = plugin
+                    try {
+                        plugin.onRegister()
+                        if (wasEnabled) {
+                            // Enable derives its own transient states, so start from a clean
+                            // REGISTERED; a crash mid-enable stays detectable.
+                            records.put(record.copy(state = PluginState.REGISTERED, lastError = null))
+                            enable(id)
+                            restored += id
+                        } else {
+                            // A plugin the user had disabled stays disabled: rebuilding it must not
+                            // quietly turn it back on, and must not collapse DISABLED into REGISTERED.
+                            records.put(record.copy(state = PluginState.DISABLED, lastError = null))
+                            rebuiltDisabled += id
+                        }
+                    } catch (failure: Exception) {
+                        records.put(record.copy(state = PluginState.FAILED, lastError = failure.describe()))
+                        unsupported += id
+                    }
+                }
+            }
+        }
+        PluginRebuildReport(restored, rebuiltDisabled, unsupported, stillPending)
+    }
+
+    private fun Throwable.describe(): String = message ?: this::class.simpleName ?: "Unknown failure"
 
     private fun requireRecord(id: String): PluginRecord =
         records.get(id) ?: throw PluginLifecycleException("Plugin '$id' is not registered")

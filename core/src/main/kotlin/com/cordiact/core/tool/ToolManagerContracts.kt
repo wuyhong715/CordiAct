@@ -5,6 +5,12 @@ import com.cordiact.core.plugin.PluginSpec
 import com.cordiact.core.plugin.PluginState
 import com.cordiact.core.plugin.PluginTarget
 import com.cordiact.core.workspace.WorkspaceManagerService
+import java.util.concurrent.ExecutionException
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+import java.util.concurrent.FutureTask
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 
 const val TOOL_MANAGER_PLUGIN_ID = "core.tool-manager"
 const val TOOL_MANAGER_VERSION = "0.1.0"
@@ -17,7 +23,7 @@ fun toolManagerPluginSpec() = PluginSpec(
     dependencies = setOf("core.workspace-manager"),
 )
 
-enum class ToolValueType { STRING, NUMBER, BOOLEAN }
+enum class ToolValueType { STRING, NUMBER, INTEGER, BOOLEAN, ARRAY, OBJECT }
 
 /** JSON-like primitive input values. Object parsing and schema validation belong to the runtime adapter. */
 sealed interface ToolValue {
@@ -30,9 +36,56 @@ sealed interface ToolValue {
 }
 
 data class ToolArguments(val values: Map<String, ToolValue> = emptyMap())
-data class ToolResult(val values: Map<String, ToolValue> = emptyMap())
 
-data class ToolParameter(val name: String, val type: ToolValueType, val required: Boolean = false)
+/**
+ * One tool result.
+ *
+ * [values] is what the model sees. [metadata] is host-only structured data (for
+ * example web sources) that must not be rendered into the prompt; the session
+ * store persists it for UI replay.
+ */
+data class ToolResult(
+    val values: Map<String, ToolValue> = emptyMap(),
+    val metadata: Map<String, ToolValue> = emptyMap(),
+)
+
+/**
+ * One declared input parameter.
+ *
+ * The optional fields are part of the model-facing JSON Schema; they are not
+ * cosmetic. Without enum values and array item types a model has to guess
+ * accepted values, which makes tools like web search call incorrectly.
+ */
+data class ToolParameter(
+    val name: String,
+    val type: ToolValueType,
+    val required: Boolean = false,
+    val description: String? = null,
+    val enumValues: List<String> = emptyList(),
+    val itemType: ToolValueType? = null,
+    val minimum: Double? = null,
+    val maximum: Double? = null,
+    val minItems: Int? = null,
+    val maxItems: Int? = null,
+    val maxLength: Int? = null,
+)
+
+/**
+ * Per-request context used to decide whether a tool is offered at all.
+ *
+ * It deliberately carries neutral identifiers only, so `core.tool` does not
+ * depend on a search or model module.
+ */
+data class ToolActivationContext(
+    val workspaceId: String,
+    val modelProviderId: String? = null,
+    val modelId: String? = null,
+)
+
+/** Host-side gate evaluated when a turn's tool list is assembled. */
+fun interface ToolVisibilityGate {
+    fun visible(context: ToolActivationContext): Boolean
+}
 
 data class ToolInputSchema(val parameters: List<ToolParameter> = emptyList(), val allowAdditional: Boolean = false)
 
@@ -44,6 +97,19 @@ data class ToolDescriptor(
     val ownerPluginId: String,
     val defaultEnabled: Boolean = false,
     val requiredCapabilities: Set<String> = emptySet(),
+    /** Host-enforced execution budget; null means no host timeout. */
+    val timeoutMs: Long? = null,
+    /** True when calls may run alongside other tools without sharing state. */
+    val concurrencySafe: Boolean = false,
+    /**
+     * A complete JSON Schema object used verbatim instead of [inputSchema].
+     *
+     * Foreign tools (MCP) carry nested schemas that [ToolInputSchema] cannot express;
+     * flattening them would silently drop `oneOf`, `$ref` and nested properties, so
+     * their authors pass the schema through untouched. When non-null the model-facing
+     * declaration uses this string and [inputSchema] is ignored for rendering.
+     */
+    val rawInputSchemaJson: String? = null,
 )
 
 data class ToolAvailability(
@@ -78,12 +144,25 @@ data class ToolInvocationContext(
     val workspaceId: String,
     val requestId: String? = null,
     /**
+     * The Session that issued this call, when the host knows it.
+     *
+     * Added for delegation: a subagent tool must address its own calling Session to read its
+     * depth and to attach a child to it. Null means "no Session context", in which case tools
+     * that require one refuse rather than guess.
+     */
+    val sessionId: String? = null,
+    /**
      * Additional Workspaces this turn may read.
      *
      * Empty for an ordinary turn. Populated from `@` references, and only with what the
      * authorization step approved. Tools that do not read files ignore it.
      */
     val grantedScopes: List<GrantedScope> = emptyList(),
+    /** The model route this turn runs on, when known. */
+    val modelProviderId: String? = null,
+    val modelId: String? = null,
+    /** The user text that triggered this turn, when known. */
+    val requestText: String? = null,
 ) {
     /** The grant covering [targetWorkspaceId], or null when it is not readable this turn. */
     fun scopeFor(targetWorkspaceId: String): GrantedScope? =
@@ -122,11 +201,30 @@ fun interface ToolCapabilityGate {
 interface ToolDefinitionRegistry {
     fun register(definition: ToolDefinition)
     fun get(toolId: String): ToolDefinition?
+
+    /**
+     * Remove one definition and its visibility gate.
+     *
+     * Foreign tool bridges (MCP) replace a whole generation at a time; without this the
+     * previous generation could never be retired and a disconnected server would keep
+     * offering tools that no longer answer.
+     *
+     * @return true when the tool was registered and is now gone.
+     */
+    fun unregister(toolId: String): Boolean
+
     fun all(): List<ToolDefinition>
+
+    /** Attach the per-request visibility gate for an already registered tool. */
+    fun registerVisibility(toolId: String, gate: ToolVisibilityGate)
+
+    /** The gate for [toolId], or null when the tool is always visible. */
+    fun visibility(toolId: String): ToolVisibilityGate?
 }
 
 class InMemoryToolDefinitionRegistry : ToolDefinitionRegistry {
     private val definitions = linkedMapOf<String, ToolDefinition>()
+    private val visibilityGates = mutableMapOf<String, ToolVisibilityGate>()
 
     @Synchronized
     override fun register(definition: ToolDefinition) {
@@ -141,7 +239,22 @@ class InMemoryToolDefinitionRegistry : ToolDefinitionRegistry {
     override fun get(toolId: String): ToolDefinition? = definitions[toolId]?.let(::snapshotDefinition)
 
     @Synchronized
+    override fun unregister(toolId: String): Boolean {
+        visibilityGates.remove(toolId)
+        return definitions.remove(toolId) != null
+    }
+
+    @Synchronized
     override fun all(): List<ToolDefinition> = definitions.values.map(::snapshotDefinition)
+
+    @Synchronized
+    override fun registerVisibility(toolId: String, gate: ToolVisibilityGate) {
+        require(definitions.containsKey(toolId)) { "Tool '$toolId' is not registered" }
+        visibilityGates[toolId] = gate
+    }
+
+    @Synchronized
+    override fun visibility(toolId: String): ToolVisibilityGate? = visibilityGates[toolId]
 
     private fun snapshotDefinition(definition: ToolDefinition) = ToolDefinition(
         snapshotDescriptor(definition.descriptor),
@@ -158,13 +271,63 @@ class InMemoryToolDefinitionRegistry : ToolDefinitionRegistry {
         require(descriptor.name.isNotBlank() && descriptor.name.length <= MAX_NAME_LENGTH) { "Invalid tool name" }
         require(descriptor.description.length <= MAX_DESCRIPTION_LENGTH) { "Tool description is too long" }
         require(descriptor.ownerPluginId.matches(PLUGIN_ID)) { "Invalid tool owner plugin id" }
+        require(descriptor.timeoutMs == null || descriptor.timeoutMs in 1..MAX_TIMEOUT_MS) {
+            "Tool timeout must be within 1..$MAX_TIMEOUT_MS ms"
+        }
         require(descriptor.inputSchema.parameters.map(ToolParameter::name).toSet().size == descriptor.inputSchema.parameters.size) {
             "Tool parameter names must be unique"
         }
-        require(descriptor.inputSchema.parameters.all { parameter ->
-            parameter.name.matches(PARAMETER_NAME) && parameter.name.length <= MAX_PARAMETER_NAME_LENGTH
-        }) { "Invalid tool parameter name" }
+        descriptor.inputSchema.parameters.forEach(::validateParameter)
+        descriptor.rawInputSchemaJson?.let { raw ->
+            require(raw.length <= MAX_RAW_SCHEMA_LENGTH) { "Tool input schema is too long" }
+            // Cheap structural check only: core has no JSON parser and must not grow one.
+            // A caller that hands over malformed JSON is the foreign adapter's bug, not the model's.
+            require(raw.trimStart().startsWith("{") && raw.trimEnd().endsWith("}")) {
+                "Tool input schema must be a JSON object"
+            }
+        }
         require(descriptor.requiredCapabilities.none(String::isBlank)) { "Invalid tool capability id" }
+    }
+
+    private fun validateParameter(parameter: ToolParameter) {
+        require(parameter.name.matches(PARAMETER_NAME) && parameter.name.length <= MAX_PARAMETER_NAME_LENGTH) {
+            "Invalid tool parameter name"
+        }
+        require(parameter.description == null || parameter.description.length <= MAX_PARAMETER_DESCRIPTION_LENGTH) {
+            "Tool parameter description is too long"
+        }
+        require(parameter.enumValues.all(String::isNotBlank) && parameter.enumValues.distinct().size == parameter.enumValues.size) {
+            "Tool parameter enum values must be non-blank and unique"
+        }
+        if (parameter.type == ToolValueType.ARRAY) {
+            require(parameter.itemType != null && parameter.itemType != ToolValueType.ARRAY && parameter.itemType != ToolValueType.OBJECT) {
+                "Array parameter '${parameter.name}' needs a scalar item type"
+            }
+            require(parameter.enumValues.isEmpty()) { "Array parameter '${parameter.name}' cannot declare enum values" }
+        } else {
+            require(parameter.itemType == null) { "Only array parameters may declare an item type" }
+        }
+        if (parameter.enumValues.isNotEmpty()) {
+            require(parameter.type == ToolValueType.STRING) { "Only string parameters may declare enum values" }
+        }
+        if (parameter.minimum != null || parameter.maximum != null) {
+            require(parameter.type == ToolValueType.NUMBER || parameter.type == ToolValueType.INTEGER) {
+                "Only numeric parameters may declare bounds"
+            }
+            require(parameter.minimum == null || parameter.maximum == null || parameter.minimum <= parameter.maximum) {
+                "Tool parameter bounds are inverted"
+            }
+        }
+        if (parameter.minItems != null || parameter.maxItems != null) {
+            require(parameter.type == ToolValueType.ARRAY) { "Only array parameters may declare item counts" }
+            require(parameter.minItems == null || parameter.minItems >= 0) { "minItems must be non-negative" }
+            require(parameter.maxItems == null || parameter.minItems == null || parameter.minItems <= parameter.maxItems) {
+                "Tool parameter item counts are inverted"
+            }
+        }
+        if (parameter.maxLength != null) {
+            require(parameter.type == ToolValueType.STRING && parameter.maxLength > 0) { "maxLength applies to strings" }
+        }
     }
 
     private companion object {
@@ -174,13 +337,23 @@ class InMemoryToolDefinitionRegistry : ToolDefinitionRegistry {
         const val MAX_NAME_LENGTH = 120
         const val MAX_DESCRIPTION_LENGTH = 2_000
         const val MAX_PARAMETER_NAME_LENGTH = 128
+        const val MAX_PARAMETER_DESCRIPTION_LENGTH = 1_000
+        const val MAX_RAW_SCHEMA_LENGTH = 32_000
+        const val MAX_TIMEOUT_MS = 300_000L
     }
 }
 
 interface ToolManagerService {
     fun list(workspaceId: String): List<ToolAvailability>
     fun setEnabled(workspaceId: String, toolId: String, enabled: Boolean)
-    fun resolveEnabled(workspaceId: String): List<ToolDescriptor>
+
+    /**
+     * Tools this workspace may offer on a turn.
+     *
+     * When [activation] is supplied, tools whose visibility gate rejects the
+     * request are omitted. Omitting the argument keeps the workspace-wide view.
+     */
+    fun resolveEnabled(workspaceId: String, activation: ToolActivationContext? = null): List<ToolDescriptor>
     fun invoke(context: ToolInvocationContext, toolId: String, arguments: ToolArguments): ToolResult
 }
 
@@ -194,6 +367,7 @@ class ToolManagerException(val code: Code, message: String) : RuntimeException(m
         OWNER_PLUGIN_UNAVAILABLE,
         CAPABILITY_DENIED,
         INVALID_ARGUMENT,
+        TOOL_TIMEOUT,
     }
 }
 
@@ -207,10 +381,32 @@ class ToolManagerPlugin(
 ) : ManagedPlugin, ToolManagerService {
     override val spec: PluginSpec = toolManagerPluginSpec()
     @Volatile private var enabled = false
+    @Volatile private var generation = 0L
     private val dispatchLock = Any()
 
-    override fun onEnable() = synchronized(dispatchLock) { enabled = true }
-    override fun onDisable() = synchronized(dispatchLock) { enabled = false }
+    /**
+     * Preserves the old global serialization for tools that did not opt into
+     * concurrent execution. Network tools declare `concurrencySafe` and bypass
+     * it, so a slow search never blocks a file tool.
+     */
+    private val serializedExecution = Any()
+    private val timeoutExecutor: ExecutorService = Executors.newCachedThreadPool { runnable ->
+        Thread(runnable, "cordiact-tool-timeout").apply { isDaemon = true }
+    }
+
+    override fun onEnable() {
+        synchronized(dispatchLock) {
+            enabled = true
+            generation++
+        }
+    }
+
+    override fun onDisable() {
+        synchronized(dispatchLock) {
+            enabled = false
+            generation++
+        }
+    }
 
     override fun list(workspaceId: String): List<ToolAvailability> {
         validateWorkspace(workspaceId)
@@ -230,11 +426,18 @@ class ToolManagerPlugin(
             toolId,
             enabled.takeUnless { it == definition.descriptor.defaultEnabled },
         )
+        synchronized(dispatchLock) { generation++ }
     }
 
-    override fun resolveEnabled(workspaceId: String): List<ToolDescriptor> = list(workspaceId)
+    override fun resolveEnabled(
+        workspaceId: String,
+        activation: ToolActivationContext?,
+    ): List<ToolDescriptor> = list(workspaceId)
         .filter(ToolAvailability::dispatchable)
         .map(ToolAvailability::descriptor)
+        .filter { descriptor ->
+            activation == null || registry.visibility(descriptor.id)?.visible(activation) != false
+        }
 
     override fun invoke(context: ToolInvocationContext, toolId: String, arguments: ToolArguments): ToolResult {
         validateWorkspace(context.workspaceId)
@@ -256,12 +459,61 @@ class ToolManagerPlugin(
             throw failure(ToolManagerException.Code.CAPABILITY_DENIED, "Required capability is not granted")
         }
         validateArguments(descriptor.inputSchema, arguments)
-        return synchronized(dispatchLock) {
+
+        // Snapshot the authorization state, then execute OUTSIDE dispatchLock. Network tools
+        // must never hold a lock shared by every Workspace; the generation check below discards
+        // a result whose authorization changed while it was in flight.
+        val generationAtStart = synchronized(dispatchLock) {
             checkManagerLocallyEnabled()
             if (!isEnabled(context.workspaceId, descriptor)) {
                 throw failure(ToolManagerException.Code.TOOL_DISABLED, "Tool is disabled for this workspace")
             }
-            definition.executor.invoke(context, arguments)
+            generation
+        }
+
+        val result = if (descriptor.concurrencySafe) {
+            executeWithTimeout(descriptor.timeoutMs) { definition.executor.invoke(context, arguments) }
+        } else {
+            synchronized(serializedExecution) {
+                executeWithTimeout(descriptor.timeoutMs) { definition.executor.invoke(context, arguments) }
+            }
+        }
+
+        // Revalidate after execution: a disabled manager, revoked preference, unloaded owner
+        // plugin or archived Workspace makes the result stale, so it is discarded fail-closed.
+        synchronized(dispatchLock) {
+            checkManagerLocallyEnabled()
+            if (generation != generationAtStart) {
+                throw failure(ToolManagerException.Code.TOOL_DISABLED, "Tool authorization changed during execution")
+            }
+            if (!isEnabled(context.workspaceId, descriptor)) {
+                throw failure(ToolManagerException.Code.TOOL_DISABLED, "Tool is disabled for this workspace")
+            }
+        }
+        if (pluginStates.state(descriptor.ownerPluginId) != PluginState.ENABLED) {
+            throw failure(ToolManagerException.Code.OWNER_PLUGIN_UNAVAILABLE, "Tool owner plugin is unavailable")
+        }
+        validateWorkspace(context.workspaceId)
+        return result
+    }
+
+    private fun executeWithTimeout(timeoutMs: Long?, block: () -> ToolResult): ToolResult {
+        if (timeoutMs == null) return block()
+        val task = FutureTask(block)
+        timeoutExecutor.execute(task)
+        return try {
+            task.get(timeoutMs, TimeUnit.MILLISECONDS)
+        } catch (timeout: TimeoutException) {
+            task.cancel(true)
+            throw failure(ToolManagerException.Code.TOOL_TIMEOUT, "Tool execution timed out")
+        } catch (failure: ExecutionException) {
+            when (val cause = failure.cause) {
+                is RuntimeException -> throw cause
+                else -> throw ToolManagerException(
+                    ToolManagerException.Code.INVALID_ARGUMENT,
+                    cause?.message ?: "Tool execution failed",
+                )
+            }
         }
     }
 
@@ -275,17 +527,59 @@ class ToolManagerPlugin(
             if (value == null && parameter.required) {
                 throw failure(ToolManagerException.Code.INVALID_ARGUMENT, "Required tool argument is missing")
             }
-            if (value != null && !matchesType(parameter.type, value)) {
+            if (value == null) return@forEach
+            if (!matchesType(parameter, value)) {
                 throw failure(ToolManagerException.Code.INVALID_ARGUMENT, "Tool argument has the wrong type")
             }
+            validateConstraints(parameter, value)
         }
     }
 
-    private fun matchesType(type: ToolValueType, value: ToolValue): Boolean = when (type) {
+    private fun validateConstraints(parameter: ToolParameter, value: ToolValue) {
+        when (value) {
+            is ToolValue.StringValue -> {
+                if (parameter.enumValues.isNotEmpty() && value.value !in parameter.enumValues) {
+                    throw failure(ToolManagerException.Code.INVALID_ARGUMENT, "Tool argument is not an allowed value")
+                }
+                if (parameter.maxLength != null && value.value.length > parameter.maxLength) {
+                    throw failure(ToolManagerException.Code.INVALID_ARGUMENT, "Tool argument is too long")
+                }
+            }
+            is ToolValue.NumberValue -> {
+                if (parameter.minimum != null && value.value < parameter.minimum) {
+                    throw failure(ToolManagerException.Code.INVALID_ARGUMENT, "Tool argument is below the minimum")
+                }
+                if (parameter.maximum != null && value.value > parameter.maximum) {
+                    throw failure(ToolManagerException.Code.INVALID_ARGUMENT, "Tool argument is above the maximum")
+                }
+            }
+            is ToolValue.ArrayValue -> {
+                if (parameter.minItems != null && value.values.size < parameter.minItems) {
+                    throw failure(ToolManagerException.Code.INVALID_ARGUMENT, "Tool argument has too few items")
+                }
+                if (parameter.maxItems != null && value.values.size > parameter.maxItems) {
+                    throw failure(ToolManagerException.Code.INVALID_ARGUMENT, "Tool argument has too many items")
+                }
+            }
+            else -> Unit
+        }
+    }
+
+    private fun matchesType(parameter: ToolParameter, value: ToolValue): Boolean = when (parameter.type) {
         ToolValueType.STRING -> value is ToolValue.StringValue
         ToolValueType.NUMBER -> value is ToolValue.NumberValue && value.value.isFinite()
+        ToolValueType.INTEGER -> value is ToolValue.NumberValue &&
+            value.value.isFinite() && value.value == Math.floor(value.value)
         ToolValueType.BOOLEAN -> value is ToolValue.BooleanValue
+        ToolValueType.ARRAY -> value is ToolValue.ArrayValue &&
+            parameter.itemType != null && value.values.all { matchesType(parameter.itemType, it) }
+        ToolValueType.OBJECT -> value is ToolValue.ObjectValue
     }
+
+    private fun matchesType(type: ToolValueType, value: ToolValue): Boolean = matchesType(
+        ToolParameter(name = "item", type = type),
+        value,
+    )
 
     private fun availability(workspaceId: String, descriptor: ToolDescriptor): ToolAvailability = ToolAvailability(
         descriptor = descriptor,

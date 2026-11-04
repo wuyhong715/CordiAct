@@ -10,6 +10,7 @@ import com.cordiact.core.conversation.ModelDescriptor
 import com.cordiact.core.conversation.ModelEvent
 import com.cordiact.core.conversation.ModelGenerationRequest
 import com.cordiact.core.conversation.ModelId
+import com.cordiact.core.conversation.SessionKind
 import com.cordiact.core.conversation.SessionManagerService
 import com.google.gson.JsonParser
 import com.sun.net.httpserver.HttpServer
@@ -252,9 +253,37 @@ class DeepSeekBackendTest {
         }
         override fun getSession(sessionId: String): ConversationSession? = sessions[sessionId]
         override fun listSessions(workspaceId: String): List<ConversationSession> =
-            sessions.values.filter { it.workspaceId == workspaceId }
-        override fun appendMessage(sessionId: String, role: MessageRole, content: String): ConversationMessage {
-            val item = ConversationMessage("message-${messages[sessionId]!!.size + 1}", sessionId, role, content, 1L)
+            sessions.values.filter { it.workspaceId == workspaceId && it.kind == SessionKind.USER }
+        override fun createChildSession(
+            workspaceId: String,
+            parentSessionId: String,
+            label: String,
+            kind: SessionKind,
+            depth: Int,
+        ): ConversationSession {
+            val session = ConversationSession(
+                "session-${sessions.size + 1}", workspaceId, label, 1L, 1L, parentSessionId, kind, label, depth,
+            )
+            sessions[session.id] = session
+            messages[session.id] = mutableListOf()
+            return session
+        }
+        override fun listChildSessions(parentSessionId: String): List<ConversationSession> =
+            sessions.values.filter { it.parentSessionId == parentSessionId }
+        override fun appendMessage(
+            sessionId: String,
+            role: MessageRole,
+            content: String,
+            metadataJson: String?,
+        ): ConversationMessage {
+            val item = ConversationMessage(
+                "message-${messages[sessionId]!!.size + 1}",
+                sessionId,
+                role,
+                content,
+                1L,
+                metadataJson,
+            )
             messages[sessionId]!!.add(item)
             return item
         }

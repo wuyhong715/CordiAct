@@ -23,16 +23,21 @@ import com.cordiact.model.providers.modelProviderRegistryPluginSpec
 import com.cordiact.core.conversation.sessionManagerPluginSpec
 import com.cordiact.core.plugin.BundledPluginVerifier
 import com.cordiact.core.plugin.ManagedPlugin
+import com.cordiact.core.plugin.PluginManagerService
 import com.cordiact.core.sandbox.SandboxManagerPlugin
 import com.cordiact.core.sandbox.sandboxManagerPluginSpec
 import com.cordiact.core.workspace.WorkspaceManagerPlugin
 import com.cordiact.core.workspace.WorkspaceManagerService
 import com.cordiact.core.workspace.workspaceManagerPluginSpec
+import com.cordiact.core.subagent.subagentPluginSpec
+import com.cordiact.core.subagent.orchestrationPluginSpec
 import com.cordiact.core.file.FileManagerPlugin
 import com.cordiact.core.file.WorkspaceFileService
 import com.cordiact.core.file.fileManagerPluginSpec
 import com.cordiact.core.plugin.PluginState
+import com.cordiact.app.plugin.registerPluginManagerTools
 import com.cordiact.core.tool.InMemoryToolDefinitionRegistry
+import com.cordiact.core.tool.ToolDefinitionRegistry
 import com.cordiact.core.tool.ToolArguments
 import com.cordiact.core.tool.ToolDefinition
 import com.cordiact.core.tool.ToolDescriptor
@@ -49,6 +54,39 @@ import com.cordiact.core.tool.ToolExecutor
 import com.cordiact.core.tool.toolManagerPluginSpec
 import com.cordiact.app.file.AndroidWorkspaceFileBackend
 import com.cordiact.app.file.registerWorkspaceFileTools
+import com.cordiact.app.search.AndroidSearchApiKeyStore
+import com.cordiact.app.search.AndroidSearchPolicyStore
+import com.cordiact.app.search.AndroidSearchProviderSettings
+import com.cordiact.app.search.AndroidSearchUsageStore
+import com.cordiact.app.search.SearchPlugin
+import com.cordiact.app.search.registerSearchTools
+import com.cordiact.app.search.searchPluginSpec
+import com.cordiact.app.search.searchRoute
+import com.cordiact.core.search.FETCH_TOOL_ID
+import com.cordiact.core.search.SEARCH_TOOL_ID
+import com.cordiact.core.search.SearchProviderRegistry
+import com.cordiact.core.search.SearchService
+import com.cordiact.search.providers.DeepSeekFetchApiProvider
+import com.cordiact.search.providers.DeepSeekNativeSearchProvider
+import com.cordiact.search.providers.DeepSeekSearchApiProvider
+import com.cordiact.search.providers.DeepSeekWebConfig
+import com.cordiact.search.providers.DefaultSearchService
+import com.cordiact.search.providers.AnthropicNativeSearchProvider
+import com.cordiact.search.providers.GeminiNativeSearchProvider
+import com.cordiact.search.providers.OpenAiNativeSearchProvider
+import com.cordiact.search.providers.BochaConfig
+import com.cordiact.search.providers.BochaSearchProvider
+import com.cordiact.search.providers.BraveConfig
+import com.cordiact.search.providers.BraveSearchProvider
+import com.cordiact.search.providers.ExaConfig
+import com.cordiact.search.providers.ExaSearchProvider
+import com.cordiact.search.providers.SearxngConfig
+import com.cordiact.search.providers.SearxngSearchProvider
+import com.cordiact.search.providers.TavilyConfig
+import com.cordiact.search.providers.TavilySearchProvider
+import com.cordiact.search.providers.LocalFetchConfig
+import com.cordiact.search.providers.LocalFetchProvider
+import com.cordiact.search.providers.NativeSearchOptions
 import com.cordiact.app.interaction.AndroidFillValueStore
 import com.cordiact.app.interaction.AndroidInteractionDirectory
 import com.cordiact.app.interaction.WorkspaceInteractionAuthorization
@@ -67,6 +105,20 @@ import java.io.File
 
 /** Host-owned allowlist for protected built-in plugins. */
 object BundledConversationPluginCatalog {
+    /**
+     * Capabilities this build grants to its own tool adapters.
+     *
+     * A tool that declares a capability is refused by the tool manager unless the gate admits it,
+     * so the list is the only thing standing between a shipped adapter and an invisible tool.
+     *
+     * Internal rather than private because the gate is installed by
+     * [BundledConversationPlugins], which is a separate class.
+     */
+    internal val BUNDLED_GRANTED_CAPABILITIES = setOf(
+        com.cordiact.core.subagent.SUBAGENT_DELEGATE_CAPABILITY,
+        com.cordiact.core.subagent.ORCHESTRATION_CAPABILITY,
+    )
+
     private val trustedSpecs = setOf(
         workspaceManagerPluginSpec(),
         toolManagerPluginSpec(),
@@ -78,6 +130,9 @@ object BundledConversationPluginCatalog {
         modelProviderRegistryPluginSpec(),
         sandboxManagerPluginSpec(),
         interactionPluginSpec(),
+        searchPluginSpec(),
+        subagentPluginSpec(),
+        orchestrationPluginSpec(),
     )
 
     val verifier = BundledPluginVerifier { candidate -> candidate in trustedSpecs }
@@ -101,6 +156,8 @@ class BundledConversationPlugins private constructor(
     private val providerCredentialFor: (String) -> ApiKeyProvider,
     private val forgetProviderCredential: (String) -> Unit,
     private val fillValues: MutableFillValueStore,
+    private val configuredSearchProviderSettings: AndroidSearchProviderSettings? = null,
+    private val configuredSearchApiKeys: AndroidSearchApiKeyStore? = null,
 ) {
     val workspaceManager: WorkspaceManagerService get() = workspacePlugin
     val fillValueStore: MutableFillValueStore get() = fillValues
@@ -115,8 +172,38 @@ class BundledConversationPlugins private constructor(
     lateinit var toolManagerPlugin: ToolManagerPlugin
         private set
     val toolManagerService: ToolManagerService get() = toolManagerPlugin
+    lateinit var searchPlugin: SearchPlugin
+        private set
+    val searchService: SearchService get() = searchPlugin.service
+    lateinit var searchPolicyStore: AndroidSearchPolicyStore
+        private set
+    lateinit var searchUsageStore: AndroidSearchUsageStore
+        private set
+    var searchRegistry: SearchProviderRegistry? = null
+        private set
+
+    /**
+     * Set by the app host once the lifecycle manager exists.
+     *
+     * Null in unit tests and in any composition without a lifecycle manager, in which case the
+     * plugin_manager tool is simply not offered.
+     */
+    var pluginManagerService: PluginManagerService? = null
+
+    /** Persists an MCP auth header without putting it in the plugin config. */
+    var mcpCredentialWriter: ((serverName: String, headerName: String, headerValue: String) -> Unit)? = null
+    val searchApiKeyStore: AndroidSearchApiKeyStore? get() = configuredSearchApiKeys
+    val searchProviderSettings: AndroidSearchProviderSettings? get() = configuredSearchProviderSettings
     lateinit var modelProviderRegistryPlugin: ModelProviderRegistryPlugin
         private set
+
+    /**
+     * The registry user-installed plugins publish into.
+     *
+     * Same instance the bundled tools use, so a model sees one flat tool list regardless of
+     * where a tool came from.
+     */
+    val toolRegistry: ToolDefinitionRegistry get() = registry
 
     fun create(stateLookup: ToolPluginStateLookup): List<ManagedPlugin> {
         registerWorkspaceFileTools(registry, fileManager)
@@ -127,7 +214,116 @@ class BundledConversationPlugins private constructor(
             preferences = conversationStore,
             workspaces = workspaceManager,
             pluginStates = stateLookup,
+            // The default gate admits only tools that require nothing, so a declared capability
+            // would make the tool permanently undispatable. Delegation is a host-shipped
+            // capability: this build carries the runtime that enforces depth, Workspace equality
+            // and the grant copy, so it is granted here rather than through a user consent flow.
+            capabilities = com.cordiact.core.tool.ToolCapabilityGate { _, required ->
+                required.all { it in BundledConversationPluginCatalog.BUNDLED_GRANTED_CAPABILITIES }
+            },
         )
+
+        val searchPolicies = AndroidSearchPolicyStore(conversationStore)
+        val searchUsage = AndroidSearchUsageStore(conversationStore)
+        val providerSettings = configuredSearchProviderSettings
+        val searchKeys = configuredSearchApiKeys
+        fun key(providerId: String): () -> String? = {
+            when (providerId) {
+                // The bundled DeepSeek route reuses the model key so one credential covers both.
+                "deepseek" -> apiKeyProvider.apiKey()
+                else -> searchKeys?.get(providerId)
+            }
+        }
+        val deepSeekWeb = DeepSeekWebConfig(
+            baseUrl = providerSettings?.baseUrl("deepseek") ?: "https://api.deepseek.com/v1/tools",
+            apiKey = key("deepseek"),
+        )
+        val tavilyConfig = TavilyConfig(
+            baseUrl = providerSettings?.baseUrl("tavily") ?: "https://api.tavily.com",
+            apiKey = key("tavily"),
+            searchDepth = providerSettings?.searchDepth() ?: "basic",
+            includeAnswer = providerSettings?.includeAnswer() ?: true,
+        )
+        val braveConfig = BraveConfig(
+            baseUrl = providerSettings?.baseUrl("brave") ?: "https://api.search.brave.com/res/v1/web/search",
+            apiKey = key("brave"),
+            country = providerSettings?.braveCountry(),
+        )
+        val exaConfig = ExaConfig(
+            baseUrl = providerSettings?.baseUrl("exa") ?: "https://api.exa.ai",
+            apiKey = key("exa"),
+            type = providerSettings?.exaType() ?: "auto",
+            includeContents = providerSettings?.exaContents() ?: true,
+        )
+        val bochaConfig = BochaConfig(
+            baseUrl = providerSettings?.baseUrl("bocha") ?: "https://api.bochaai.com/v1/web-search",
+            apiKey = key("bocha"),
+            freshness = providerSettings?.bochaFreshness() ?: "noLimit",
+        )
+        val searxngConfig = SearxngConfig(
+            baseUrl = providerSettings?.baseUrl("searxng") ?: "",
+            engines = providerSettings?.searxngEngines(),
+        )
+        // Read once per call so a settings change applies without re-registering providers.
+        val nativeOptions: () -> NativeSearchOptions = { providerSettings?.nativeOptions() ?: NativeSearchOptions.DEFAULT }
+        val searchProviders = SearchProviderRegistry().apply {
+            registerSearch(DeepSeekSearchApiProvider(deepSeekWeb))
+            registerFetch(DeepSeekFetchApiProvider(deepSeekWeb))
+            registerSearch(
+                DeepSeekNativeSearchProvider(
+                    apiKey = key("deepseek"),
+                    // The route's model id wins; this fallback is only for a pinned route-less call.
+                    model = { null as String? },
+                    options = nativeOptions,
+                ),
+            )
+            // Native providers for the other routes: same auxiliary-call shape, different protocol.
+            registerSearch(AnthropicNativeSearchProvider(apiKey = key("anthropic-native"), options = nativeOptions))
+            registerSearch(OpenAiNativeSearchProvider(apiKey = key("openai-native"), options = nativeOptions))
+            registerSearch(GeminiNativeSearchProvider(apiKey = key("gemini-native"), options = nativeOptions))
+            registerSearch(TavilySearchProvider(tavilyConfig))
+            registerSearch(BraveSearchProvider(braveConfig))
+            registerSearch(ExaSearchProvider(exaConfig))
+            registerSearch(BochaSearchProvider(bochaConfig))
+            registerSearch(SearxngSearchProvider(searxngConfig))
+            // Off unless enabled: a device-side fetch is an opt-in network capability, and
+            // leaving it off keeps fetch-provider auto-selection unambiguous.
+            registerFetch(
+                LocalFetchProvider(
+                    LocalFetchConfig(enabled = { providerSettings?.localFetchEnabled() == true }),
+                ),
+            )
+        }
+        val searchService = DefaultSearchService(
+            registry = searchProviders,
+            policies = searchPolicies,
+            usage = searchUsage,
+            maxQueries = 4,
+            maxResults = 8,
+            summaryMaxChars = 800,
+            searchTimeoutMs = 30_000,
+            fetchTimeoutMs = 30_000,
+        )
+        searchPolicyStore = searchPolicies
+        searchUsageStore = searchUsage
+        searchRegistry = searchProviders
+        searchPlugin = SearchPlugin(searchService)
+        registerSearchTools(registry, searchService)
+        registry.registerVisibility(SEARCH_TOOL_ID) { context ->
+            searchService.shouldExposeSearch(context.workspaceId, context.searchRoute())
+        }
+        registry.registerVisibility(FETCH_TOOL_ID) { context ->
+            searchService.shouldExposeFetch(context.workspaceId, context.searchRoute())
+        }
+
+        // The plugin manager tool is registered with the other tools but wired in the app host,
+        // because only the host owns the lifecycle manager and the plugin factories.
+        pluginManagerService?.let { service ->
+            registerPluginManagerTools(registry, service, registerCredential = { name, header, value ->
+                mcpCredentialWriter?.invoke(name, header, value)
+            })
+        }
+
         val modelAdapter = ModelAdapterPlugin()
         modelProviderRegistryPlugin = ModelProviderRegistryPlugin(
             modelAdapter,
@@ -172,6 +368,7 @@ class BundledConversationPlugins private constructor(
             fileManagerPlugin,
             skillPlugin,
             toolManagerPlugin,
+            searchPlugin,
             modelAdapter,
             sessionManager,
             DeepSeekBackendPlugin(modelAdapter, ConfigurableModelBackend(DeepSeekPreset.config(), apiKeyProvider)),
@@ -196,6 +393,8 @@ class BundledConversationPlugins private constructor(
                 { providerId -> if (providerId == "deepseek") apiKeyProvider else providerKeys.provider(providerId) },
                 providerKeys::clear,
                 AndroidFillValueStore(context),
+                AndroidSearchProviderSettings(context),
+                AndroidSearchApiKeyStore(context),
             )
         }
 
@@ -207,6 +406,8 @@ class BundledConversationPlugins private constructor(
             providerCredentialFor: ((String) -> ApiKeyProvider)? = null,
             forgetProviderCredential: (String) -> Unit = {},
             fillValues: MutableFillValueStore = InMemoryFillValueStore(),
+            searchProviderSettings: AndroidSearchProviderSettings? = null,
+            searchApiKeys: AndroidSearchApiKeyStore? = null,
         ): BundledConversationPlugins {
             val workspace = WorkspaceManagerPlugin(store, privateRoot)
             val fileManager = FileManagerPlugin(workspace, AndroidWorkspaceFileBackend())
@@ -222,6 +423,8 @@ class BundledConversationPlugins private constructor(
                 },
                 forgetProviderCredential,
                 fillValues,
+                searchProviderSettings,
+                searchApiKeys,
             )
         }
     }

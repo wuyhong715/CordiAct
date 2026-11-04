@@ -64,29 +64,7 @@ class ConversationTurnService(
 
         val outcome = try {
             toolLoop.run(toolContext, initial, dispatcher) { messages ->
-                var roundText = StringBuilder()
-                var calls: List<com.cordiact.core.conversation.ModelToolCall> = emptyList()
-                val call = models.generate(
-                    ModelGenerationRequest(
-                        sessionId = sessionId,
-                        model = model,
-                        messages = messages,
-                        parameters = parameters,
-                        tools = tools,
-                    ),
-                ) { event ->
-                    when (event) {
-                        is ModelEvent.Delta -> roundText.append(event.text)
-                        is ModelEvent.ToolCallsRequested -> calls = event.calls
-                        is ModelEvent.Completed -> Unit
-                        is ModelEvent.Failed -> Unit
-                    }
-                    onEvent(event)
-                }
-                // The loop is synchronous per round; cancelling the outer call stops it at the
-                // next check rather than leaving a request in flight.
-                if (terminal.get()) call.cancel()
-                com.cordiact.core.toolloop.ToolLoopRound(roundText.toString(), calls, emptyList())
+                sendRound(sessionId, model, messages, tools, parameters, terminal, onEvent)
             }
         } catch (e: Exception) {
             terminal.set(true)
@@ -101,12 +79,18 @@ class ConversationTurnService(
             is ToolLoopOutcome.Completed -> outcome.text
             is ToolLoopOutcome.Stopped -> outcome.lastText
         }
+        // Host-only evidence from this turn's tool calls, persisted beside the reply so the UI
+        // can show what the answer was based on after a restart. Never sent to a model.
+        val evidenceJson = when (outcome) {
+            is ToolLoopOutcome.Completed -> outcome.evidence
+            is ToolLoopOutcome.Stopped -> outcome.evidence
+        }.takeIf { it.isNotEmpty() }?.let(::encodeEvidence)
         // The user message is stored before the loop ran, matching the plain path: a turn that
         // fails must still leave the user's own words behind, and the assistant reply is stored
         // only once it exists.
         if (finalText.isNotBlank()) {
             try {
-                sessions.appendMessage(sessionId, MessageRole.ASSISTANT, finalText)
+                sessions.appendMessage(sessionId, MessageRole.ASSISTANT, finalText, evidenceJson)
             } catch (_: Exception) {
                 onEvent(ModelEvent.Failed("persistence_error", "Could not save model reply"))
                 return ModelCall { }
@@ -121,6 +105,113 @@ class ConversationTurnService(
         return ModelCall {
             if (terminal.compareAndSet(false, true)) activeSessions.remove(sessionId)
         }
+    }
+
+    /**
+     * Runs one complete turn and returns its outcome instead of streaming it.
+     *
+     * Used by delegation: a child turn's caller needs the final text and why it stopped, and has
+     * no UI to stream to. Everything else — persistence, the tool loop, the same round wait — is
+     * shared with [submitWithTools] so a child cannot drift into a second, weaker turn path.
+     */
+    fun runTurnToCompletion(
+        sessionId: String,
+        model: ModelId,
+        text: String,
+        tools: List<ModelToolSpec>,
+        toolLoop: ToolLoopService,
+        dispatcher: ToolDispatcher,
+        toolContext: ToolInvocationContext,
+        parameters: GenerationParameters? = null,
+        systemContext: String? = null,
+        onEvent: (ModelEvent) -> Unit = {},
+    ): ToolLoopOutcome {
+        require(text.isNotBlank()) { "Message must not be blank" }
+        requireNotNull(sessions.getSession(sessionId)) { "Session does not exist" }
+        check(activeSessions.add(sessionId)) { "A model turn is already active for this Session" }
+
+        val terminal = AtomicBoolean(false)
+        try {
+            sessions.appendMessage(sessionId, MessageRole.USER, text.trim())
+            val initial = buildList {
+                if (!systemContext.isNullOrBlank()) add(ModelMessage(MessageRole.SYSTEM, systemContext))
+                sessions.messages(sessionId)
+                    .filter { it.role == MessageRole.SYSTEM || it.role == MessageRole.USER || it.role == MessageRole.ASSISTANT }
+                    .forEach { add(ModelMessage(it.role, it.content)) }
+                add(ModelMessage(MessageRole.USER, text.trim()))
+            }
+
+            val outcome = toolLoop.run(toolContext, initial, dispatcher) { messages ->
+                sendRound(sessionId, model, messages, tools, parameters, terminal, onEvent)
+            }
+            val finalText = when (outcome) {
+                is ToolLoopOutcome.Completed -> outcome.text
+                is ToolLoopOutcome.Stopped -> outcome.lastText
+            }
+            val evidenceJson = when (outcome) {
+                is ToolLoopOutcome.Completed -> outcome.evidence
+                is ToolLoopOutcome.Stopped -> outcome.evidence
+            }.takeIf { it.isNotEmpty() }?.let(::encodeEvidence)
+            if (finalText.isNotBlank()) {
+                sessions.appendMessage(sessionId, MessageRole.ASSISTANT, finalText, evidenceJson)
+            }
+            return outcome
+        } finally {
+            terminal.set(true)
+            activeSessions.remove(sessionId)
+        }
+    }
+
+    /**
+     * Runs one tool round and waits for it to reach a terminal event.
+     *
+     * [ModelAdapterService.generate] returns a cancel handle as soon as the request is submitted;
+     * the events arrive later on the transport's thread. The tool loop, by contrast, is a plain
+     * blocking loop that reads the round's text and tool calls the moment [send] returns. Handing
+     * back an empty round would make every tool-using turn look like a model that answered with
+     * nothing, so this waits for the terminal event — bounded, because a transport that never
+     * terminates must not hold the turn forever.
+     */
+    private fun sendRound(
+        sessionId: String,
+        model: ModelId,
+        messages: List<ModelMessage>,
+        tools: List<ModelToolSpec>,
+        parameters: GenerationParameters?,
+        terminal: AtomicBoolean,
+        onEvent: (ModelEvent) -> Unit,
+    ): com.cordiact.core.toolloop.ToolLoopRound {
+        val roundText = StringBuilder()
+        var calls: List<com.cordiact.core.conversation.ModelToolCall> = emptyList()
+        val settled = java.util.concurrent.CountDownLatch(1)
+
+        val call = models.generate(
+            ModelGenerationRequest(
+                sessionId = sessionId,
+                model = model,
+                messages = messages,
+                parameters = parameters,
+                tools = tools,
+            ),
+        ) { event ->
+            when (event) {
+                is ModelEvent.Delta -> roundText.append(event.text)
+                is ModelEvent.ToolCallsRequested -> calls = event.calls
+                is ModelEvent.Completed -> Unit
+                is ModelEvent.Failed -> Unit
+            }
+            try {
+                onEvent(event)
+            } finally {
+                if (event is ModelEvent.Completed || event is ModelEvent.Failed) settled.countDown()
+            }
+        }
+
+        // A cancelled turn stops here rather than leaving the request in flight.
+        if (!settled.await(ROUND_TIMEOUT_MILLIS, java.util.concurrent.TimeUnit.MILLISECONDS) || terminal.get()) {
+            call.cancel()
+        }
+        return com.cordiact.core.toolloop.ToolLoopRound(roundText.toString(), calls, emptyList())
     }
 
     fun submit(
@@ -217,3 +308,32 @@ class ConversationTurnService(
         }
     }
 }
+
+/** Evidence list -> one JSON array, bounded so a chatty tool cannot bloat a message row. */
+internal fun encodeEvidence(evidence: List<com.cordiact.core.toolloop.ToolEvidence>): String? {
+    if (evidence.isEmpty()) return null
+    val array = com.google.gson.JsonArray()
+    var total = 0
+    for (item in evidence) {
+        if (total + item.metadataJson.length > MAX_EVIDENCE_CHARS) break
+        total += item.metadataJson.length
+        val data = runCatching { com.google.gson.JsonParser.parseString(item.metadataJson) }.getOrNull()
+            ?: continue
+        array.add(com.google.gson.JsonObject().apply {
+            addProperty("tool", item.toolId)
+            add("data", data)
+        })
+    }
+    return if (array.size() == 0) null else array.toString()
+}
+
+internal const val MAX_EVIDENCE_CHARS = 32_000
+
+/**
+ * Upper bound on one model round trip.
+ *
+ * A transport that never terminates would otherwise hold the turn (and, on the Android host, the
+ * delegation that waits on it) forever. This is a backstop, not a policy: the provider's own read
+ * timeout is meant to fire first.
+ */
+internal const val ROUND_TIMEOUT_MILLIS = 300_000L

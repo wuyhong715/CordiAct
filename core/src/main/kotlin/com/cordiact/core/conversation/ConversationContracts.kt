@@ -59,6 +59,14 @@ data class ModelMessage(
      * only knows ids can ignore it.
      */
     val toolName: String? = null,
+    /**
+     * Host-only evidence produced by a tool call, as JSON.
+     *
+     * Never sent to a model: providers serialise role/content/toolCalls only. The session
+     * layer persists it so the UI can show what a turn actually looked at (for example web
+     * sources) after a restart.
+     */
+    val metadataJson: String? = null,
 ) {
     init {
         require(role != MessageRole.TOOL || toolCallId != null) {
@@ -137,12 +145,34 @@ interface ModelAdapterService {
     fun generate(request: ModelGenerationRequest, onEvent: (ModelEvent) -> Unit): ModelCall
 }
 
+/**
+ * What a Session is for.
+ *
+ * A delegated agent is an ordinary Session with its own transcript, its own turn and its own
+ * tools; only [USER] sessions belong in the Workspace's conversation list. Keeping them in the
+ * same table rather than a parallel one means the model-facing id, the history query and the
+ * deletion cascade are all the ones that already exist.
+ */
+enum class SessionKind { USER, SUBAGENT, ORCHESTRATION }
+
 data class ConversationSession(
     val id: String,
     val workspaceId: String,
     val title: String,
     val createdAtMillis: Long,
     val updatedAtMillis: Long,
+    /** The Session that delegated this one, or null for a root conversation. */
+    val parentSessionId: String? = null,
+    val kind: SessionKind = SessionKind.USER,
+    /** 3-5 word display label for a delegated Session; null for a root conversation. */
+    val agentLabel: String? = null,
+    /**
+     * Delegation depth, 0 for a root conversation.
+     *
+     * Persisted rather than derived by walking parents: the depth limit is checked on every
+     * delegation, and a walk would put the whole ancestor chain on that path.
+     */
+    val depth: Int = 0,
 )
 
 data class ConversationMessage(
@@ -151,22 +181,77 @@ data class ConversationMessage(
     val role: MessageRole,
     val content: String,
     val createdAtMillis: Long,
+    /** Host-only evidence for this message, as JSON; null for ordinary text turns. */
+    val metadataJson: String? = null,
 )
 
 /** Storage port; the app implementation is durable SQLite and scoped by session/workspace. */
 interface ConversationSessionStore {
-    fun create(id: String, workspaceId: String, title: String, nowMillis: Long): ConversationSession
+    /**
+     * Creates one Session.
+     *
+     * The delegation fields default to a root conversation, so every existing caller keeps its
+     * meaning; only a subagent runtime passes them.
+     */
+    fun create(
+        id: String,
+        workspaceId: String,
+        title: String,
+        nowMillis: Long,
+        parentSessionId: String? = null,
+        kind: SessionKind = SessionKind.USER,
+        agentLabel: String? = null,
+        depth: Int = 0,
+    ): ConversationSession
+
     fun get(sessionId: String): ConversationSession?
+
+    /** Root conversations only: a Workspace's list must not fill up with delegated Sessions. */
     fun list(workspaceId: String): List<ConversationSession>
-    fun append(sessionId: String, role: MessageRole, content: String, nowMillis: Long): ConversationMessage
+
+    /** Direct children of [parentSessionId], newest last. Empty when there are none. */
+    fun listChildren(parentSessionId: String): List<ConversationSession>
+
+    fun append(
+        sessionId: String,
+        role: MessageRole,
+        content: String,
+        nowMillis: Long,
+        metadataJson: String? = null,
+    ): ConversationMessage
     fun messages(sessionId: String): List<ConversationMessage>
 }
 
 interface SessionManagerService {
     fun createSession(workspaceId: String, title: String = "New conversation"): ConversationSession
+
+    /**
+     * Creates a Session that belongs to a delegated agent.
+     *
+     * Kept separate from [createSession] so that "a Workspace conversation" and "a child of this
+     * conversation" are not distinguished by a nullable argument at every call site: the origin
+     * is a required parameter of the path that creates a child.
+     */
+    fun createChildSession(
+        workspaceId: String,
+        parentSessionId: String,
+        label: String,
+        kind: SessionKind,
+        depth: Int,
+    ): ConversationSession
+
     fun getSession(sessionId: String): ConversationSession?
     fun listSessions(workspaceId: String): List<ConversationSession>
-    fun appendMessage(sessionId: String, role: MessageRole, content: String): ConversationMessage
+
+    /** Direct children of [parentSessionId], newest last. */
+    fun listChildSessions(parentSessionId: String): List<ConversationSession>
+
+    fun appendMessage(
+        sessionId: String,
+        role: MessageRole,
+        content: String,
+        metadataJson: String? = null,
+    ): ConversationMessage
     fun messages(sessionId: String): List<ConversationMessage>
 }
 
@@ -321,6 +406,42 @@ class SessionManagerPlugin(
         requireEnabled(); return store.get(sessionId)
     }
 
+    override fun createChildSession(
+        workspaceId: String,
+        parentSessionId: String,
+        label: String,
+        kind: SessionKind,
+        depth: Int,
+    ): ConversationSession {
+        requireEnabled()
+        require(workspaceId.isNotBlank()) { "Workspace id must not be blank" }
+        require(kind != SessionKind.USER) { "A child Session must not be a user conversation" }
+        require(depth > 0) { "A child Session must be deeper than a root conversation" }
+        val parent = requireNotNull(store.get(parentSessionId)) { "Parent Session does not exist" }
+        // The child belongs to the parent's Workspace by construction. Letting the caller pass a
+        // different one would be a cross-Workspace delegation with none of the @ authorization.
+        require(parent.workspaceId == workspaceId) { "Parent Session belongs to a different Workspace" }
+        val normalizedLabel = label.trim().ifBlank { "delegated task" }.take(120)
+        val id = idFactory()
+        require(id.isNotBlank()) { "Session id factory returned a blank id" }
+        return store.create(
+            id = id,
+            workspaceId = workspaceId,
+            title = normalizedLabel,
+            nowMillis = clockMillis(),
+            parentSessionId = parentSessionId,
+            kind = kind,
+            agentLabel = normalizedLabel,
+            depth = depth,
+        )
+    }
+
+    override fun listChildSessions(parentSessionId: String): List<ConversationSession> {
+        requireEnabled()
+        require(parentSessionId.isNotBlank()) { "Parent Session id must not be blank" }
+        return store.listChildren(parentSessionId)
+    }
+
     override fun listSessions(workspaceId: String): List<ConversationSession> {
         requireEnabled()
         require(workspaceId.isNotBlank()) { "Workspace id must not be blank" }
@@ -328,11 +449,16 @@ class SessionManagerPlugin(
         return store.list(workspaceId)
     }
 
-    override fun appendMessage(sessionId: String, role: MessageRole, content: String): ConversationMessage {
+    override fun appendMessage(
+        sessionId: String,
+        role: MessageRole,
+        content: String,
+        metadataJson: String?,
+    ): ConversationMessage {
         requireEnabled()
         require(sessionId.isNotBlank())
         require(content.isNotBlank())
-        return store.append(sessionId, role, content, clockMillis())
+        return store.append(sessionId, role, content, clockMillis(), metadataJson)
     }
 
     override fun messages(sessionId: String): List<ConversationMessage> {
