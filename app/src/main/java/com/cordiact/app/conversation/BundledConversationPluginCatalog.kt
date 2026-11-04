@@ -110,8 +110,11 @@ object BundledConversationPluginCatalog {
      *
      * A tool that declares a capability is refused by the tool manager unless the gate admits it,
      * so the list is the only thing standing between a shipped adapter and an invisible tool.
+     *
+     * Internal rather than private because the gate is installed by
+     * [BundledConversationPlugins], which is a separate class.
      */
-    private val BUNDLED_GRANTED_CAPABILITIES = setOf(
+    internal val BUNDLED_GRANTED_CAPABILITIES = setOf(
         com.cordiact.core.subagent.SUBAGENT_DELEGATE_CAPABILITY,
         com.cordiact.core.subagent.ORCHESTRATION_CAPABILITY,
     )
@@ -216,7 +219,7 @@ class BundledConversationPlugins private constructor(
             // capability: this build carries the runtime that enforces depth, Workspace equality
             // and the grant copy, so it is granted here rather than through a user consent flow.
             capabilities = com.cordiact.core.tool.ToolCapabilityGate { _, required ->
-                required.all { it in BUNDLED_GRANTED_CAPABILITIES }
+                required.all { it in BundledConversationPluginCatalog.BUNDLED_GRANTED_CAPABILITIES }
             },
         )
 
