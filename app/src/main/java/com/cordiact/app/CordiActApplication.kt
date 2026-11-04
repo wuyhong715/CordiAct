@@ -15,9 +15,15 @@ import com.cordiact.core.conversation.ModelEvent
 import com.cordiact.core.conversation.ModelId
 import com.cordiact.model.providers.ConversationTurnService
 import com.cordiact.core.conversation.ModelAdapterService
+import com.cordiact.mcp.client.HttpMcpClientFactory
+import com.cordiact.mcp.client.McpPlugin
 import com.cordiact.model.providers.ModelProviderRegistryService
 import com.cordiact.core.conversation.SessionManagerPlugin
 import com.cordiact.core.conversation.SessionManagerService
+import com.cordiact.core.mcp.MCP_PLUGIN_ID
+import com.cordiact.app.plugin.AndroidPluginManagerService
+import com.cordiact.core.plugin.PluginManagerService
+import com.cordiact.core.plugin.PluginSpec
 import com.cordiact.core.plugin.ManagedPlugin
 import com.cordiact.core.plugin.PluginLifecycleException
 import com.cordiact.core.plugin.PluginState
@@ -60,6 +66,14 @@ class CordiActApplication : Application() {
         private set
     lateinit var conversationCatalog: BundledConversationPlugins
         private set
+
+    /**
+     * Live user-installed plugins, keyed by plugin id.
+     *
+     * Needed because "which tools does this plugin publish" is a question about the live object,
+     * not about the durable record, and the inventory answers it for the user and the model.
+     */
+    private val userPlugins = java.util.concurrent.ConcurrentHashMap<String, McpPlugin>()
     lateinit var workspaceManager: WorkspaceManagerService
         private set
     lateinit var modelAdapterPlugin: ModelAdapterPlugin
@@ -303,6 +317,8 @@ class CordiActApplication : Application() {
         })
         sandboxManagerPlugin = BundledConversationPluginCatalog.createSandboxManager(applicationInfo.uid)
         (plugins + sandboxManagerPlugin).forEach(::registerAndEnableSystemPlugin)
+        conversationCatalog.pluginManagerService = pluginManagerService()
+        restoreUserPlugins()
         val workspace = workspaceManager.initializeDefaultIfEligible()
         activeSessionId = sessions.listSessions(workspace.id).firstOrNull()?.id
             ?: sessions.createSession(workspace.id, "New conversation").id
@@ -311,6 +327,77 @@ class CordiActApplication : Application() {
     /** Workspace of the session currently open in the UI; null before a session exists. */
     fun activeSessionWorkspaceId(): String? =
         activeSessionId?.let { id -> sessions.getSession(id)?.workspaceId }
+
+    /**
+     * Bring back whatever the user installed in an earlier process.
+     *
+     * Order matters: bundled plugins register first so a user plugin's declared dependencies
+     * already exist, and a user plugin must never be able to claim a bundled id (the verifier
+     * only trusts the APK catalog, and this path never registers as bundled).
+     *
+     * A plugin this build cannot host stays `FAILED` with a reason instead of disappearing, so
+     * the settings screen can show it rather than silently losing the user's configuration.
+     */
+    /**
+     * Build the management service lazily: it needs the lifecycle manager (created earlier) and
+     * the live plugin map (filled by [restoreUserPlugins] and by installs).
+     */
+    private fun pluginManagerService(): PluginManagerService = AndroidPluginManagerService(
+        manager = pluginLifecycle.manager,
+        publishedTools = { pluginId -> userPlugins[pluginId]?.publishedTools()?.values?.toList().orEmpty() },
+        onSpecInstalled = ::installUserPlugin,
+    )
+
+    /**
+     * Install one user plugin: construct it, register it, enable it, and remember the live object.
+     *
+     * @return false when this build cannot construct the plugin, so the manager can report
+     *   "unsupported" instead of leaving a half-installed record.
+     */
+    private fun installUserPlugin(spec: PluginSpec): Boolean {
+        if (!spec.id.startsWith(MCP_PLUGIN_ID)) return false
+        val plugin = try {
+            McpPlugin(spec, conversationCatalog.toolRegistry, HttpMcpClientFactory)
+        } catch (failure: Exception) {
+            Log.e(TAG, "Cannot construct plugin ${spec.id}", failure)
+            return false
+        }
+        return try {
+            pluginLifecycle.manager.register(plugin)
+            userPlugins[spec.id] = plugin
+            pluginLifecycle.manager.enable(spec.id)
+            true
+        } catch (failure: Exception) {
+            Log.e(TAG, "Installing plugin ${spec.id} failed", failure)
+            userPlugins.remove(spec.id)
+            runCatching { plugin.onDisable() }
+            runCatching { pluginLifecycle.manager.uninstall(spec.id) }
+            false
+        }
+    }
+
+    private fun restoreUserPlugins() {
+        val report = try {
+            pluginLifecycle.manager.rebuildUserPlugins { spec ->
+                if (spec.id.startsWith(MCP_PLUGIN_ID)) {
+                    McpPlugin(spec, conversationCatalog.toolRegistry, HttpMcpClientFactory).also {
+                        userPlugins[spec.id] = it
+                    }
+                } else {
+                    null
+                }
+            }
+        } catch (failure: Exception) {
+            Log.e(TAG, "Restoring user plugins failed", failure)
+            return
+        }
+        if (report.unsupported.isNotEmpty()) {
+            Log.e(TAG, "User plugins this build cannot host: ${report.unsupported}")
+        }
+        if (report.pendingCleanup.isNotEmpty()) {
+            Log.e(TAG, "User plugins still need cleanup: ${report.pendingCleanup}")
+        }
+    }
 
     private fun registerAndEnableSystemPlugin(plugin: ManagedPlugin) {
         try {

@@ -23,6 +23,7 @@ import com.cordiact.model.providers.modelProviderRegistryPluginSpec
 import com.cordiact.core.conversation.sessionManagerPluginSpec
 import com.cordiact.core.plugin.BundledPluginVerifier
 import com.cordiact.core.plugin.ManagedPlugin
+import com.cordiact.core.plugin.PluginManagerService
 import com.cordiact.core.sandbox.SandboxManagerPlugin
 import com.cordiact.core.sandbox.sandboxManagerPluginSpec
 import com.cordiact.core.workspace.WorkspaceManagerPlugin
@@ -32,7 +33,9 @@ import com.cordiact.core.file.FileManagerPlugin
 import com.cordiact.core.file.WorkspaceFileService
 import com.cordiact.core.file.fileManagerPluginSpec
 import com.cordiact.core.plugin.PluginState
+import com.cordiact.app.plugin.registerPluginManagerTools
 import com.cordiact.core.tool.InMemoryToolDefinitionRegistry
+import com.cordiact.core.tool.ToolDefinitionRegistry
 import com.cordiact.core.tool.ToolArguments
 import com.cordiact.core.tool.ToolDefinition
 import com.cordiact.core.tool.ToolDescriptor
@@ -160,17 +163,36 @@ class BundledConversationPlugins private constructor(
         private set
     var searchRegistry: SearchProviderRegistry? = null
         private set
+
+    /**
+     * Set by the app host once the lifecycle manager exists.
+     *
+     * Null in unit tests and in any composition without a lifecycle manager, in which case the
+     * plugin_manager tool is simply not offered.
+     */
+    var pluginManagerService: PluginManagerService? = null
+
+    /** Persists an MCP auth header without putting it in the plugin config. */
+    var mcpCredentialWriter: ((serverName: String, headerName: String, headerValue: String) -> Unit)? = null
     val searchApiKeyStore: AndroidSearchApiKeyStore? get() = configuredSearchApiKeys
     val searchProviderSettings: AndroidSearchProviderSettings? get() = configuredSearchProviderSettings
     lateinit var modelProviderRegistryPlugin: ModelProviderRegistryPlugin
         private set
+
+    /**
+     * The registry user-installed plugins publish into.
+     *
+     * Same instance the bundled tools use, so a model sees one flat tool list regardless of
+     * where a tool came from.
+     */
+    val toolRegistry: ToolDefinitionRegistry get() = registry
 
     fun create(stateLookup: ToolPluginStateLookup): List<ManagedPlugin> {
         registerWorkspaceFileTools(registry, fileManager)
         skillPlugin = SkillPlugin(AndroidSkillFileSource(fileManager))
         registerSkillTools(registry, skillPlugin)
         toolManagerPlugin = ToolManagerPlugin(
-            registry = registry,
+            toolRegistry = registry,
             preferences = conversationStore,
             workspaces = workspaceManager,
             pluginStates = stateLookup,
@@ -267,6 +289,14 @@ class BundledConversationPlugins private constructor(
         }
         registry.registerVisibility(FETCH_TOOL_ID) { context ->
             searchService.shouldExposeFetch(context.workspaceId, context.searchRoute())
+        }
+
+        // The plugin manager tool is registered with the other tools but wired in the app host,
+        // because only the host owns the lifecycle manager and the plugin factories.
+        pluginManagerService?.let { service ->
+            registerPluginManagerTools(registry, service, registerCredential = { name, header, value ->
+                mcpCredentialWriter?.invoke(name, header, value)
+            })
         }
 
         val modelAdapter = ModelAdapterPlugin()
