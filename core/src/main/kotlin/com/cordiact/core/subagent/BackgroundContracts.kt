@@ -115,7 +115,7 @@ data class BackgroundLimits(
 interface AgentRunStore {
     fun put(run: AgentRunRecord)
     fun updateState(sessionId: String, state: ChildRunState, diagnostic: String? = null)
-    fun get(sessionId: String): AgentRunRecord?
+    fun runOf(sessionId: String): AgentRunRecord?
     fun runsOf(parentSessionId: String): List<AgentRunRecord>
 
     /**

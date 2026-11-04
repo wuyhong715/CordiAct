@@ -606,7 +606,7 @@ class AndroidConversationSessionStore(
         )
     }
 
-    override fun get(sessionId: String): AgentRunRecord? = readableDatabase.query(
+    override fun runOf(sessionId: String): AgentRunRecord? = readableDatabase.query(
         TABLE_AGENT_RUNS, RUN_COLUMNS, "$COL_RUN_SESSION_ID = ?", arrayOf(sessionId),
         null, null, null,
     ).use { c -> if (c.moveToNext()) c.toAgentRun() else null }

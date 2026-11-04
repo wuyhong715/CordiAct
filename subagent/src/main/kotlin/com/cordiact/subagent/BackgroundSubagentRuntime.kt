@@ -371,7 +371,7 @@ class BackgroundSubagentRuntime(
     )
 
     private fun requireOwnership(parentSessionId: String, childId: String): AgentRunRecord {
-        val record = runs.get(childId)
+        val record = runs.runOf(childId)
             ?: throw IllegalArgumentException("Unknown child '$childId'")
         // A child id from another conversation must not be closable: the id is not a capability.
         require(record.parentSessionId == parentSessionId) {

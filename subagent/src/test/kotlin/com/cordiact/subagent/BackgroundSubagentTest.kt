@@ -64,7 +64,7 @@ private class MemoryRunStore : AgentRunStore {
         rows[sessionId] = existing.copy(state = state, diagnostic = diagnostic)
     }
 
-    override fun get(sessionId: String) = rows[sessionId]
+    override fun runOf(sessionId: String) = rows[sessionId]
     override fun runsOf(parentSessionId: String) = synchronized(rows) {
         rows.values.filter { it.parentSessionId == parentSessionId }.toList()
     }
@@ -251,7 +251,7 @@ class BackgroundSubagentTest {
         val closed = h.background.close(h.context(), run.sessionId)
 
         assertEquals(ChildRunState.CLOSED, closed.state)
-        assertEquals(ChildRunState.CLOSED, h.runStore.get(run.sessionId)?.state)
+        assertEquals(ChildRunState.CLOSED, h.runStore.runOf(run.sessionId)?.state)
     }
 
     @Test
@@ -328,7 +328,7 @@ class BackgroundSubagentTest {
         val abandoned = h.background.recoverAbandonedRuns()
 
         assertEquals(listOf("killed-child"), abandoned.map { it.sessionId })
-        assertEquals(ChildRunState.ABORTED, h.runStore.get("killed-child")?.state)
+        assertEquals(ChildRunState.ABORTED, h.runStore.runOf("killed-child")?.state)
         // And the parent learns about it, instead of waiting forever.
         val notice = h.background.pendingNotices(h.root.id).single()
         assertEquals(ChildRunState.ABORTED, notice.state)
