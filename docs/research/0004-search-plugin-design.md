@@ -520,9 +520,30 @@ Tavily、Brave、Exa、博查、SearXNG 适配器；设置页（模式/provider/
 - 原生 provider 的 `ready()` 需要具体模型路由，设置页改用 `available()` 判断“是否已配置”。
 - 新增测试：`ProviderAdaptersTest`（8 个：Tavily/Brave/Exa/博查/SearXNG 的请求与响应映射）、预算用例 2 个。
 
-### P2 原生 provider 覆盖
+### P2 原生 provider 覆盖（部分实现）
 
-Anthropic、OpenAI、Gemini 的辅助调用适配；本地 fetch provider（SSRF 防护完成后）。
+已实现：
+
+- `AnthropicNativeSearchProvider`：Messages + `web_search_20250305`，复用 DeepSeek 的块解析。
+- `OpenAiNativeSearchProvider`：Responses `web_search`，解析 `output[].content[].annotations[]` 中 `url_citation`。
+- `GeminiNativeSearchProvider`：`google_search` grounding，`groundingChunks[].web` 提供来源、`groundingSupports[].segment.text` 提供摘录。
+- 三者都按模型路由 id 绑定（`anthropic` / `openai` / `google`），`AUTO` 只会为对应厂商的请求选中它们。
+
+未实现：
+
+- 本地 fetch provider（SSRF 防护未做，P0 只走 DeepSeek 服务端抓取）。
+- OpenAI `search_context_size`、Gemini `url_context` 等厂商特有参数尚未暴露到设置。
+
+### 工具证据持久化（已实现）
+
+`ToolResult.metadata` 的链路此前在 dispatcher 处被丢弃。现在：
+
+1. `AndroidToolDispatcher` 把 metadata 渲染成 JSON 放进 `ModelMessage.metadataJson`（宿主专用）。
+2. `ToolLoopRunner` 收集为 `ToolEvidence`，附在 `ToolLoopOutcome` 上。
+3. `ConversationTurnService` 合并成 JSON 数组写入 assistant 消息的 `metadata_json`。
+4. 提供方序列化只看 role/content/toolCalls，因此提示词不变。
+
+上限 32,000 字符；畸形条目跳过而不是让整轮失败。
 
 ### P3 国产 chat-compat 原生
 
