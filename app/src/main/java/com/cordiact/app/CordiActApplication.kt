@@ -46,8 +46,10 @@ import com.cordiact.core.subagent.ChildTurnRunner
 import com.cordiact.core.toolloop.ToolLoopOutcome
 import com.cordiact.core.toolloop.ToolLoopStop
 import com.cordiact.subagent.SubagentRuntime
+import com.cordiact.subagent.BackgroundSubagentRuntime
 import com.cordiact.subagent.OrchestrationPlugin
 import com.cordiact.subagent.registerSubagentTools
+import com.cordiact.subagent.registerBackgroundSubagentTools
 import com.cordiact.subagent.registerOrchestrationTools
 import com.cordiact.app.memory.AndroidDeviceConditions
 import com.cordiact.app.memory.SharedPreferencesLeaseStore
@@ -290,6 +292,21 @@ class CordiActApplication : Application() {
     }
 
     /**
+     * Background delegation.
+     *
+     * Shares [subagentRuntime] for admission, so a child that runs unattended is admitted by the
+     * same rules as one that blocks its parent. Its run records live in the same SQLite file as
+     * the Sessions, which is what makes "the app was killed mid-run" a recoverable state rather
+     * than an invisible one.
+     */
+    private val backgroundSubagents: BackgroundSubagentRuntime by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+        BackgroundSubagentRuntime(
+            runtime = subagentRuntime,
+            runs = conversationStore,
+        )
+    }
+
+    /**
      * The skill catalog for a Workspace, as a system-prompt block.
      *
      * Rebuilt per turn rather than cached for the session: a skill added or removed between
@@ -330,11 +347,12 @@ class CordiActApplication : Application() {
         val plugins = conversationCatalog.create { pluginId -> pluginLifecycle.manager.get(pluginId)?.state }
         modelAdapterPlugin = plugins.filterIsInstance<ModelAdapterPlugin>().single()
         sessionManagerPlugin = plugins.filterIsInstance<SessionManagerPlugin>().single()
-        turnService = ConversationTurnService(sessionManagerPlugin, modelAdapterPlugin)
+        turnService = ConversationTurnService(sessionManagerPlugin, modelAdapterPlugin, backgroundSubagents)
         // Registered here because the tool list is built from the shared registry, and the
         // delegation tools must be in it before the first turn assembles its specs.
         registerSubagentTools(conversationCatalog.toolRegistry, subagentRuntime)
         registerOrchestrationTools(conversationCatalog.toolRegistry, orchestrationPlugin)
+        registerBackgroundSubagentTools(conversationCatalog.toolRegistry, backgroundSubagents)
         interactionPlugin = conversationCatalog.interactionPlugin
         interactionPlugin.service.attachModelSubmitter(InteractionModelSubmitter { envelope, modelId, parameters, onEvent ->
             // `@` is an authorization, not an attachment. Nothing is read here: the reference
@@ -384,7 +402,13 @@ class CordiActApplication : Application() {
             )
         })
         sandboxManagerPlugin = BundledConversationPluginCatalog.createSandboxManager(applicationInfo.uid)
-        (plugins + sandboxManagerPlugin + subagentRuntime + orchestrationPlugin).forEach(::registerAndEnableSystemPlugin)
+        (plugins + sandboxManagerPlugin + subagentRuntime + orchestrationPlugin + backgroundSubagents)
+            .forEach(::registerAndEnableSystemPlugin)
+        // Nothing can legitimately be RUNNING at startup, so anything that says it is belongs to
+        // the process that died. Recovering here queues a notice so the parent learns a child was
+        // interrupted instead of waiting for it forever.
+        runCatching { backgroundSubagents.recoverAbandonedRuns() }
+            .onFailure { Log.e(TAG, "Recovering abandoned delegations failed", it) }
         conversationCatalog.pluginManagerService = pluginManagerService()
         restoreUserPlugins()
         val workspace = workspaceManager.initializeDefaultIfEligible()
