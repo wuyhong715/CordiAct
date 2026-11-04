@@ -29,6 +29,8 @@ import com.cordiact.core.sandbox.sandboxManagerPluginSpec
 import com.cordiact.core.workspace.WorkspaceManagerPlugin
 import com.cordiact.core.workspace.WorkspaceManagerService
 import com.cordiact.core.workspace.workspaceManagerPluginSpec
+import com.cordiact.core.subagent.subagentPluginSpec
+import com.cordiact.core.subagent.orchestrationPluginSpec
 import com.cordiact.core.file.FileManagerPlugin
 import com.cordiact.core.file.WorkspaceFileService
 import com.cordiact.core.file.fileManagerPluginSpec
@@ -103,6 +105,17 @@ import java.io.File
 
 /** Host-owned allowlist for protected built-in plugins. */
 object BundledConversationPluginCatalog {
+    /**
+     * Capabilities this build grants to its own tool adapters.
+     *
+     * A tool that declares a capability is refused by the tool manager unless the gate admits it,
+     * so the list is the only thing standing between a shipped adapter and an invisible tool.
+     */
+    private val BUNDLED_GRANTED_CAPABILITIES = setOf(
+        com.cordiact.core.subagent.SUBAGENT_DELEGATE_CAPABILITY,
+        com.cordiact.core.subagent.ORCHESTRATION_CAPABILITY,
+    )
+
     private val trustedSpecs = setOf(
         workspaceManagerPluginSpec(),
         toolManagerPluginSpec(),
@@ -115,6 +128,8 @@ object BundledConversationPluginCatalog {
         sandboxManagerPluginSpec(),
         interactionPluginSpec(),
         searchPluginSpec(),
+        subagentPluginSpec(),
+        orchestrationPluginSpec(),
     )
 
     val verifier = BundledPluginVerifier { candidate -> candidate in trustedSpecs }
@@ -196,6 +211,13 @@ class BundledConversationPlugins private constructor(
             preferences = conversationStore,
             workspaces = workspaceManager,
             pluginStates = stateLookup,
+            // The default gate admits only tools that require nothing, so a declared capability
+            // would make the tool permanently undispatable. Delegation is a host-shipped
+            // capability: this build carries the runtime that enforces depth, Workspace equality
+            // and the grant copy, so it is granted here rather than through a user consent flow.
+            capabilities = com.cordiact.core.tool.ToolCapabilityGate { _, required ->
+                required.all { it in BUNDLED_GRANTED_CAPABILITIES }
+            },
         )
 
         val searchPolicies = AndroidSearchPolicyStore(conversationStore)

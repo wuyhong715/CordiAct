@@ -40,6 +40,15 @@ import com.cordiact.interaction.MentionType
 import com.cordiact.app.tool.AndroidToolDispatcher
 import com.cordiact.core.toolloop.ToolLoopPlugin
 import com.cordiact.core.conversation.ModelToolSpec
+import com.cordiact.core.subagent.ChildToolPlanner
+import com.cordiact.core.subagent.ChildTurnOutcome
+import com.cordiact.core.subagent.ChildTurnRunner
+import com.cordiact.core.toolloop.ToolLoopOutcome
+import com.cordiact.core.toolloop.ToolLoopStop
+import com.cordiact.subagent.SubagentRuntime
+import com.cordiact.subagent.OrchestrationPlugin
+import com.cordiact.subagent.registerSubagentTools
+import com.cordiact.subagent.registerOrchestrationTools
 import com.cordiact.app.memory.AndroidDeviceConditions
 import com.cordiact.app.memory.SharedPreferencesLeaseStore
 import com.cordiact.app.memory.WorkspaceMemoryArtifactStore
@@ -230,6 +239,57 @@ class CordiActApplication : Application() {
         }
 
     /**
+     * Runs one delegated child turn through the same loop the user's turn uses.
+     *
+     * Deliberately not a second, simpler turn path: a child that skipped the tool loop would be
+     * a model with no tools, and a child that skipped persistence would leave no transcript for
+     * the user to open. The only difference is that the outcome is returned rather than streamed.
+     */
+    private val childTurnRunner = ChildTurnRunner { request ->
+        val outcome = turnService.runTurnToCompletion(
+            sessionId = request.sessionId,
+            model = request.model,
+            text = request.prompt,
+            tools = request.tools,
+            toolLoop = toolLoopPlugin,
+            dispatcher = toolDispatcher,
+            toolContext = request.context,
+            systemContext = request.systemContext,
+        )
+        when (outcome) {
+            is ToolLoopOutcome.Completed -> ChildTurnOutcome(outcome.text, ToolLoopStop.COMPLETED)
+            is ToolLoopOutcome.Stopped -> ChildTurnOutcome(outcome.lastText, outcome.reason)
+        }
+    }
+
+    /**
+     * The delegation runtime.
+     *
+     * Built here rather than inside [BundledConversationPlugins] because it needs the turn
+     * service and the tool list, which only the host has. The tool planner reuses
+     * [availableToolSpecs] instead of assembling a list of its own, so a child can never be
+     * offered a tool its parent could not call.
+     */
+    private val subagentRuntime: SubagentRuntime by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+        SubagentRuntime(
+            sessions = sessionManagerPlugin,
+            runner = childTurnRunner,
+            toolPlanner = ChildToolPlanner { workspaceId, model -> availableToolSpecs(workspaceId, model) },
+            systemContextFor = { workspaceId -> skillIndexFor(workspaceId) },
+        )
+    }
+
+    /**
+     * Plan execution over the delegation runtime.
+     *
+     * Shares [subagentRuntime] rather than starting children itself, so an orchestrated child is
+     * admitted by exactly the same checks as a one-off delegation.
+     */
+    private val orchestrationPlugin: OrchestrationPlugin by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+        OrchestrationPlugin(subagentRuntime)
+    }
+
+    /**
      * The skill catalog for a Workspace, as a system-prompt block.
      *
      * Rebuilt per turn rather than cached for the session: a skill added or removed between
@@ -271,6 +331,10 @@ class CordiActApplication : Application() {
         modelAdapterPlugin = plugins.filterIsInstance<ModelAdapterPlugin>().single()
         sessionManagerPlugin = plugins.filterIsInstance<SessionManagerPlugin>().single()
         turnService = ConversationTurnService(sessionManagerPlugin, modelAdapterPlugin)
+        // Registered here because the tool list is built from the shared registry, and the
+        // delegation tools must be in it before the first turn assembles its specs.
+        registerSubagentTools(conversationCatalog.toolRegistry, subagentRuntime)
+        registerOrchestrationTools(conversationCatalog.toolRegistry, orchestrationPlugin)
         interactionPlugin = conversationCatalog.interactionPlugin
         interactionPlugin.service.attachModelSubmitter(InteractionModelSubmitter { envelope, modelId, parameters, onEvent ->
             // `@` is an authorization, not an attachment. Nothing is read here: the reference
@@ -297,6 +361,10 @@ class CordiActApplication : Application() {
             val prompt = if (envelope.command == null) envelope.submittedText else envelope.commandInput
             val toolContext = ToolInvocationContext(
                 workspaceId = envelope.context.workspaceId,
+                // Delegation addresses its caller by Session. Carried rather than inferred: a
+                // tool that guesses which Session called it would attach children to the wrong
+                // parent, and the depth check would read the wrong row.
+                sessionId = envelope.context.sessionId,
                 grantedScopes = grants,
                 modelProviderId = modelId.providerId,
                 modelId = modelId.modelId,
@@ -316,7 +384,7 @@ class CordiActApplication : Application() {
             )
         })
         sandboxManagerPlugin = BundledConversationPluginCatalog.createSandboxManager(applicationInfo.uid)
-        (plugins + sandboxManagerPlugin).forEach(::registerAndEnableSystemPlugin)
+        (plugins + sandboxManagerPlugin + subagentRuntime + orchestrationPlugin).forEach(::registerAndEnableSystemPlugin)
         conversationCatalog.pluginManagerService = pluginManagerService()
         restoreUserPlugins()
         val workspace = workspaceManager.initializeDefaultIfEligible()
