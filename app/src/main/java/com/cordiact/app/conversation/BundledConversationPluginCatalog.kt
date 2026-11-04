@@ -79,6 +79,9 @@ import com.cordiact.search.providers.SearxngConfig
 import com.cordiact.search.providers.SearxngSearchProvider
 import com.cordiact.search.providers.TavilyConfig
 import com.cordiact.search.providers.TavilySearchProvider
+import com.cordiact.search.providers.LocalFetchConfig
+import com.cordiact.search.providers.LocalFetchProvider
+import com.cordiact.search.providers.NativeSearchOptions
 import com.cordiact.app.interaction.AndroidFillValueStore
 import com.cordiact.app.interaction.AndroidInteractionDirectory
 import com.cordiact.app.interaction.WorkspaceInteractionAuthorization
@@ -214,6 +217,8 @@ class BundledConversationPlugins private constructor(
             baseUrl = providerSettings?.baseUrl("searxng") ?: "",
             engines = providerSettings?.searxngEngines(),
         )
+        // Read once per call so a settings change applies without re-registering providers.
+        val nativeOptions: () -> NativeSearchOptions = { providerSettings?.nativeOptions() ?: NativeSearchOptions.DEFAULT }
         val searchProviders = SearchProviderRegistry().apply {
             registerSearch(DeepSeekSearchApiProvider(deepSeekWeb))
             registerFetch(DeepSeekFetchApiProvider(deepSeekWeb))
@@ -222,17 +227,25 @@ class BundledConversationPlugins private constructor(
                     apiKey = key("deepseek"),
                     // The route's model id wins; this fallback is only for a pinned route-less call.
                     model = { null as String? },
+                    options = nativeOptions,
                 ),
             )
             // Native providers for the other routes: same auxiliary-call shape, different protocol.
-            registerSearch(AnthropicNativeSearchProvider(apiKey = key("anthropic-native")))
-            registerSearch(OpenAiNativeSearchProvider(apiKey = key("openai-native")))
-            registerSearch(GeminiNativeSearchProvider(apiKey = key("gemini-native")))
+            registerSearch(AnthropicNativeSearchProvider(apiKey = key("anthropic-native"), options = nativeOptions))
+            registerSearch(OpenAiNativeSearchProvider(apiKey = key("openai-native"), options = nativeOptions))
+            registerSearch(GeminiNativeSearchProvider(apiKey = key("gemini-native"), options = nativeOptions))
             registerSearch(TavilySearchProvider(tavilyConfig))
             registerSearch(BraveSearchProvider(braveConfig))
             registerSearch(ExaSearchProvider(exaConfig))
             registerSearch(BochaSearchProvider(bochaConfig))
             registerSearch(SearxngSearchProvider(searxngConfig))
+            // Off unless enabled: a device-side fetch is an opt-in network capability, and
+            // leaving it off keeps fetch-provider auto-selection unambiguous.
+            registerFetch(
+                LocalFetchProvider(
+                    LocalFetchConfig(enabled = { providerSettings?.localFetchEnabled() == true }),
+                ),
+            )
         }
         val searchService = DefaultSearchService(
             registry = searchProviders,

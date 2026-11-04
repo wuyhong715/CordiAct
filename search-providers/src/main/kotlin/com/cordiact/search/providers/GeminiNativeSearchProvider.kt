@@ -21,6 +21,7 @@ import java.net.URI
 class GeminiNativeSearchProvider(
     private val apiKey: () -> String?,
     private val baseUrlTemplate: () -> String = { DEFAULT_BASE_URL },
+    private val options: () -> NativeSearchOptions = { NativeSearchOptions.DEFAULT },
     private val client: HttpJsonClient = HttpJsonClient(),
 ) : SearchProvider {
     override val id: String = PROVIDER_ID
@@ -49,21 +50,7 @@ class GeminiNativeSearchProvider(
         }
         val model = request.route?.modelId?.takeIf { it.isNotBlank() }
             ?: throw SearchException(SearchException.Code.UNSUPPORTED, "Gemini model is unknown for this search")
-        val payload = JsonObject().apply {
-            add("contents", JsonArray().apply {
-                add(JsonObject().apply {
-                    addProperty("role", "user")
-                    add("parts", JsonArray().apply {
-                        add(JsonObject().apply {
-                            addProperty("text", "Perform a web search for the query: " + request.query)
-                        })
-                    })
-                })
-            })
-            add("tools", JsonArray().apply {
-                add(JsonObject().apply { add("google_search", JsonObject()) })
-            })
-        }
+        val payload = NativeSearchPayloads.gemini(request.query, options())
         val url = baseUrlTemplate().replace("{model}", model)
         val response = client.postJson(
             url = url,

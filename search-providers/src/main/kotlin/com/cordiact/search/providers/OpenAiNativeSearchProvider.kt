@@ -22,7 +22,7 @@ class OpenAiNativeSearchProvider(
     private val apiKey: () -> String?,
     private val baseUrl: () -> String = { DEFAULT_BASE_URL },
     private val model: () -> String? = { DEFAULT_MODEL },
-    private val searchContextSize: String = "medium",
+    private val options: () -> NativeSearchOptions = { NativeSearchOptions.DEFAULT },
     private val client: HttpJsonClient = HttpJsonClient(),
 ) : SearchProvider {
     override val id: String = PROVIDER_ID
@@ -36,8 +36,7 @@ class OpenAiNativeSearchProvider(
         val endpoint = runCatching { URI(baseUrl()) }.getOrNull() ?: return false
         return (endpoint.scheme == "https" || endpoint.scheme == "http") &&
             !endpoint.host.isNullOrBlank() &&
-            apiKey()?.isNotBlank() == true &&
-            searchContextSize in setOf("low", "medium", "high")
+            apiKey()?.isNotBlank() == true
     }
 
     override fun ready(route: ModelRoute?): Boolean =
@@ -52,17 +51,7 @@ class OpenAiNativeSearchProvider(
         val modelId = request.route?.modelId?.takeIf { it.isNotBlank() }
             ?: model()?.takeIf { it.isNotBlank() }
             ?: throw SearchException(SearchException.Code.UNSUPPORTED, "OpenAI model is unknown for this search")
-        val payload = JsonObject().apply {
-            addProperty("model", modelId)
-            addProperty("input", "Perform a web search for the query: " + request.query)
-            add("tools", JsonArray().apply {
-                add(JsonObject().apply {
-                    addProperty("type", NATIVE_TOOL_TYPE)
-                    addProperty("search_context_size", searchContextSize)
-                })
-            })
-            addProperty("tool_choice", "auto")
-        }
+        val payload = NativeSearchPayloads.openAiResponses(modelId, request.query, options())
         val response = client.postJson(
             url = baseUrl(),
             headers = mapOf(

@@ -23,8 +23,7 @@ class DeepSeekNativeSearchProvider(
     private val apiKey: () -> String?,
     private val model: () -> String?,
     private val baseUrl: () -> String = { DEFAULT_BASE_URL },
-    private val maxUses: Int = DEFAULT_MAX_USES,
-    private val maxTokens: Int = DEFAULT_MAX_TOKENS,
+    private val options: () -> NativeSearchOptions = { NativeSearchOptions.DEFAULT },
     private val apiVersion: String = DEFAULT_API_VERSION,
     private val client: HttpJsonClient = HttpJsonClient(),
 ) : SearchProvider {
@@ -39,9 +38,7 @@ class DeepSeekNativeSearchProvider(
         val endpoint = runCatching { URI(baseUrl()) }.getOrNull() ?: return false
         return (endpoint.scheme == "https" || endpoint.scheme == "http") &&
             !endpoint.host.isNullOrBlank() &&
-            apiKey()?.isNotBlank() == true &&
-            maxUses > 0 &&
-            maxTokens > 0
+            apiKey()?.isNotBlank() == true
     }
 
     override fun ready(route: ModelRoute?): Boolean =
@@ -56,29 +53,7 @@ class DeepSeekNativeSearchProvider(
         if (!available()) {
             throw SearchException(SearchException.Code.PROVIDER_UNAVAILABLE, "DeepSeek native search is not configured")
         }
-        val payload = JsonObject().apply {
-            addProperty("model", routeModel)
-            addProperty("max_tokens", maxTokens)
-            add("messages", JsonArray().apply {
-                add(JsonObject().apply {
-                    addProperty("role", "user")
-                    add("content", JsonArray().apply {
-                        add(JsonObject().apply {
-                            addProperty("type", "text")
-                            addProperty("text", "Perform a web search for the query: ${request.query}")
-                        })
-                    })
-                })
-            })
-            add("tools", JsonArray().apply {
-                add(JsonObject().apply {
-                    addProperty("type", NATIVE_TOOL_TYPE)
-                    addProperty("name", "web_search")
-                    addProperty("max_uses", maxUses)
-                })
-            })
-            add("thinking", JsonObject().apply { addProperty("type", "disabled") })
-        }
+        val payload = NativeSearchPayloads.anthropicStyle(routeModel, request.query, options())
         val response = client.postJson(
             url = "${baseUrl().trimEnd('/')}/messages",
             headers = mapOf(
@@ -101,8 +76,6 @@ class DeepSeekNativeSearchProvider(
         const val DEEPSEEK_MODEL_PROVIDER_ID = "deepseek"
         const val DEFAULT_BASE_URL = "https://api.deepseek.com/anthropic/v1"
         const val DEFAULT_API_VERSION = "2023-06-01"
-        const val DEFAULT_MAX_USES = 5
-        const val DEFAULT_MAX_TOKENS = 4096
         const val NATIVE_TOOL_TYPE = "web_search_20250305"
         private const val SEARCH_TIMEOUT_MS = 60_000L
 
