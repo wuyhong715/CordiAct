@@ -46,6 +46,8 @@ class AndroidToolDispatcher(
             content = renderResult(result),
             toolCallId = call.id,
             toolName = call.name,
+            // Host-only: never serialised to a provider, only persisted for replay.
+            metadataJson = renderMetadata(call.name, result.metadata),
         )
     }
 
@@ -78,6 +80,14 @@ class AndroidToolDispatcher(
             value.keys().asSequence().associateWith { toToolValue(value.get(it)) },
         )
         else -> ToolValue.StringValue(value.toString())
+    }
+
+    private fun renderMetadata(toolId: String, metadata: Map<String, ToolValue>): String? {
+        if (metadata.isEmpty()) return null
+        return JSONObject().apply {
+            put("tool", toolId)
+            metadata.forEach { (key, value) -> put(key, toJson(value)) }
+        }.toString()
     }
 
     private fun renderResult(result: ToolResult): String {

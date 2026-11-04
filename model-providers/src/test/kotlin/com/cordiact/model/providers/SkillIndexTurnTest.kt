@@ -23,8 +23,13 @@ class SkillIndexTurnTest {
             override fun createSession(workspaceId: String, title: String): ConversationSession = session
             override fun getSession(sessionId: String): ConversationSession? = session
             override fun listSessions(workspaceId: String): List<ConversationSession> = listOf(session)
-            override fun appendMessage(sessionId: String, role: MessageRole, content: String): ConversationMessage =
-                ConversationMessage("m${saved.size}", sessionId, role, content, 0).also(saved::add)
+            override fun appendMessage(
+                sessionId: String,
+                role: MessageRole,
+                content: String,
+                metadataJson: String?,
+            ): ConversationMessage =
+                ConversationMessage("m${saved.size}", sessionId, role, content, 0, metadataJson).also(saved::add)
             override fun messages(sessionId: String): List<ConversationMessage> = saved.toList()
         }
         val requests = mutableListOf<ModelGenerationRequest>()

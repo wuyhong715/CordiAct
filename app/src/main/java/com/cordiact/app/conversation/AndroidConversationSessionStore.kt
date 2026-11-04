@@ -401,7 +401,13 @@ class AndroidConversationSessionStore(
         "$COL_UPDATED_AT DESC,$COL_SESSION_ID ASC",
     ).use { c -> buildList { while (c.moveToNext()) add(c.toSession()) } }
 
-    override fun append(sessionId: String, role: MessageRole, content: String, nowMillis: Long): ConversationMessage {
+    override fun append(
+        sessionId: String,
+        role: MessageRole,
+        content: String,
+        nowMillis: Long,
+        metadataJson: String?,
+    ): ConversationMessage {
         require(content.isNotBlank())
         val id = UUID.randomUUID().toString()
         val db = writableDatabase
@@ -412,11 +418,12 @@ class AndroidConversationSessionStore(
             val values = ContentValues().apply {
                 put(COL_MESSAGE_ID, id); put(COL_MESSAGE_SESSION_ID, sessionId); put(COL_ROLE, role.name)
                 put(COL_CONTENT, content); put(COL_CREATED_AT, nowMillis)
+                if (metadataJson != null) put(COL_MESSAGE_METADATA, metadataJson)
             }
             db.insertOrThrow(TABLE_MESSAGES, null, values)
             db.setTransactionSuccessful()
         } finally { db.endTransaction() }
-        return ConversationMessage(id, sessionId, role, content, nowMillis)
+        return ConversationMessage(id, sessionId, role, content, nowMillis, metadataJson)
     }
 
     override fun messages(sessionId: String): List<ConversationMessage> = readableDatabase.query(
@@ -438,11 +445,17 @@ class AndroidConversationSessionStore(
         updatedAtMillis = getLong(getColumnIndexOrThrow(COL_UPDATED_AT)),
     )
 
-    private fun Cursor.toMessage() = ConversationMessage(
-        id = getString(getColumnIndexOrThrow(COL_MESSAGE_ID)), sessionId = getString(getColumnIndexOrThrow(COL_MESSAGE_SESSION_ID)),
-        role = MessageRole.valueOf(getString(getColumnIndexOrThrow(COL_ROLE))), content = getString(getColumnIndexOrThrow(COL_CONTENT)),
-        createdAtMillis = getLong(getColumnIndexOrThrow(COL_CREATED_AT)),
-    )
+    private fun Cursor.toMessage(): ConversationMessage {
+        val metadataIndex = getColumnIndex(COL_MESSAGE_METADATA)
+        return ConversationMessage(
+            id = getString(getColumnIndexOrThrow(COL_MESSAGE_ID)),
+            sessionId = getString(getColumnIndexOrThrow(COL_MESSAGE_SESSION_ID)),
+            role = MessageRole.valueOf(getString(getColumnIndexOrThrow(COL_ROLE))),
+            content = getString(getColumnIndexOrThrow(COL_CONTENT)),
+            createdAtMillis = getLong(getColumnIndexOrThrow(COL_CREATED_AT)),
+            metadataJson = if (metadataIndex >= 0 && !isNull(metadataIndex)) getString(metadataIndex) else null,
+        )
+    }
 
     private fun relativeRoot(id: String): String = "workspaces/${UUID.nameUUIDFromBytes(id.toByteArray())}"
 
@@ -480,6 +493,6 @@ class AndroidConversationSessionStore(
         const val COL_CONTENT = "content"
         val WORKSPACE_COLUMNS = arrayOf(COL_WORKSPACE_ID,COL_WORKSPACE_NAME,COL_WORKSPACE_CREATED,COL_WORKSPACE_UPDATED,COL_WORKSPACE_ARCHIVED)
         val SESSION_COLUMNS = arrayOf(COL_SESSION_ID,COL_WORKSPACE_ID,COL_TITLE,COL_CREATED_AT,COL_UPDATED_AT)
-        val MESSAGE_COLUMNS = arrayOf(COL_MESSAGE_ID,COL_MESSAGE_SESSION_ID,COL_ROLE,COL_CONTENT,COL_CREATED_AT)
+        val MESSAGE_COLUMNS = arrayOf(COL_MESSAGE_ID,COL_MESSAGE_SESSION_ID,COL_ROLE,COL_CONTENT,COL_CREATED_AT,COL_MESSAGE_METADATA)
     }
 }

@@ -110,9 +110,15 @@ class ConversationPluginsTest {
         }
         override fun get(sessionId: String) = sessions[sessionId]
         override fun list(workspaceId: String) = sessions.values.filter { it.workspaceId == workspaceId }
-        override fun append(sessionId: String, role: MessageRole, content: String, nowMillis: Long): ConversationMessage {
+        override fun append(
+            sessionId: String,
+            role: MessageRole,
+            content: String,
+            nowMillis: Long,
+            metadataJson: String?,
+        ): ConversationMessage {
             check(sessionId in sessions)
-            val message = ConversationMessage("message-${++nextMessage}", sessionId, role, content, nowMillis)
+            val message = ConversationMessage("message-${++nextMessage}", sessionId, role, content, nowMillis, metadataJson)
             messages.getOrPut(sessionId) { mutableListOf() }.add(message)
             return message
         }

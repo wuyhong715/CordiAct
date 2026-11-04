@@ -101,12 +101,18 @@ class ConversationTurnService(
             is ToolLoopOutcome.Completed -> outcome.text
             is ToolLoopOutcome.Stopped -> outcome.lastText
         }
+        // Host-only evidence from this turn's tool calls, persisted beside the reply so the UI
+        // can show what the answer was based on after a restart. Never sent to a model.
+        val evidenceJson = when (outcome) {
+            is ToolLoopOutcome.Completed -> outcome.evidence
+            is ToolLoopOutcome.Stopped -> outcome.evidence
+        }.takeIf { it.isNotEmpty() }?.let(::encodeEvidence)
         // The user message is stored before the loop ran, matching the plain path: a turn that
         // fails must still leave the user's own words behind, and the assistant reply is stored
         // only once it exists.
         if (finalText.isNotBlank()) {
             try {
-                sessions.appendMessage(sessionId, MessageRole.ASSISTANT, finalText)
+                sessions.appendMessage(sessionId, MessageRole.ASSISTANT, finalText, evidenceJson)
             } catch (_: Exception) {
                 onEvent(ModelEvent.Failed("persistence_error", "Could not save model reply"))
                 return ModelCall { }
@@ -217,3 +223,23 @@ class ConversationTurnService(
         }
     }
 }
+
+/** Evidence list -> one JSON array, bounded so a chatty tool cannot bloat a message row. */
+internal fun encodeEvidence(evidence: List<com.cordiact.core.toolloop.ToolEvidence>): String? {
+    if (evidence.isEmpty()) return null
+    val array = com.google.gson.JsonArray()
+    var total = 0
+    for (item in evidence) {
+        if (total + item.metadataJson.length > MAX_EVIDENCE_CHARS) break
+        total += item.metadataJson.length
+        val data = runCatching { com.google.gson.JsonParser.parseString(item.metadataJson) }.getOrNull()
+            ?: continue
+        array.add(com.google.gson.JsonObject().apply {
+            addProperty("tool", item.toolId)
+            add("data", data)
+        })
+    }
+    return if (array.size() == 0) null else array.toString()
+}
+
+internal const val MAX_EVIDENCE_CHARS = 32_000

@@ -253,8 +253,20 @@ class DeepSeekBackendTest {
         override fun getSession(sessionId: String): ConversationSession? = sessions[sessionId]
         override fun listSessions(workspaceId: String): List<ConversationSession> =
             sessions.values.filter { it.workspaceId == workspaceId }
-        override fun appendMessage(sessionId: String, role: MessageRole, content: String): ConversationMessage {
-            val item = ConversationMessage("message-${messages[sessionId]!!.size + 1}", sessionId, role, content, 1L)
+        override fun appendMessage(
+            sessionId: String,
+            role: MessageRole,
+            content: String,
+            metadataJson: String?,
+        ): ConversationMessage {
+            val item = ConversationMessage(
+                "message-${messages[sessionId]!!.size + 1}",
+                sessionId,
+                role,
+                content,
+                1L,
+                metadataJson,
+            )
             messages[sessionId]!!.add(item)
             return item
         }

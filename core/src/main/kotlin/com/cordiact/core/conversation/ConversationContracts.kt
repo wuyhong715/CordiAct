@@ -59,6 +59,14 @@ data class ModelMessage(
      * only knows ids can ignore it.
      */
     val toolName: String? = null,
+    /**
+     * Host-only evidence produced by a tool call, as JSON.
+     *
+     * Never sent to a model: providers serialise role/content/toolCalls only. The session
+     * layer persists it so the UI can show what a turn actually looked at (for example web
+     * sources) after a restart.
+     */
+    val metadataJson: String? = null,
 ) {
     init {
         require(role != MessageRole.TOOL || toolCallId != null) {
@@ -151,6 +159,8 @@ data class ConversationMessage(
     val role: MessageRole,
     val content: String,
     val createdAtMillis: Long,
+    /** Host-only evidence for this message, as JSON; null for ordinary text turns. */
+    val metadataJson: String? = null,
 )
 
 /** Storage port; the app implementation is durable SQLite and scoped by session/workspace. */
@@ -158,7 +168,13 @@ interface ConversationSessionStore {
     fun create(id: String, workspaceId: String, title: String, nowMillis: Long): ConversationSession
     fun get(sessionId: String): ConversationSession?
     fun list(workspaceId: String): List<ConversationSession>
-    fun append(sessionId: String, role: MessageRole, content: String, nowMillis: Long): ConversationMessage
+    fun append(
+        sessionId: String,
+        role: MessageRole,
+        content: String,
+        nowMillis: Long,
+        metadataJson: String? = null,
+    ): ConversationMessage
     fun messages(sessionId: String): List<ConversationMessage>
 }
 
@@ -166,7 +182,12 @@ interface SessionManagerService {
     fun createSession(workspaceId: String, title: String = "New conversation"): ConversationSession
     fun getSession(sessionId: String): ConversationSession?
     fun listSessions(workspaceId: String): List<ConversationSession>
-    fun appendMessage(sessionId: String, role: MessageRole, content: String): ConversationMessage
+    fun appendMessage(
+        sessionId: String,
+        role: MessageRole,
+        content: String,
+        metadataJson: String? = null,
+    ): ConversationMessage
     fun messages(sessionId: String): List<ConversationMessage>
 }
 
@@ -328,11 +349,16 @@ class SessionManagerPlugin(
         return store.list(workspaceId)
     }
 
-    override fun appendMessage(sessionId: String, role: MessageRole, content: String): ConversationMessage {
+    override fun appendMessage(
+        sessionId: String,
+        role: MessageRole,
+        content: String,
+        metadataJson: String?,
+    ): ConversationMessage {
         requireEnabled()
         require(sessionId.isNotBlank())
         require(content.isNotBlank())
-        return store.append(sessionId, role, content, clockMillis())
+        return store.append(sessionId, role, content, clockMillis(), metadataJson)
     }
 
     override fun messages(sessionId: String): List<ConversationMessage> {

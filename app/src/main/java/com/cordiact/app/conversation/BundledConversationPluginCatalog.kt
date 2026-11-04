@@ -66,6 +66,9 @@ import com.cordiact.search.providers.DeepSeekNativeSearchProvider
 import com.cordiact.search.providers.DeepSeekSearchApiProvider
 import com.cordiact.search.providers.DeepSeekWebConfig
 import com.cordiact.search.providers.DefaultSearchService
+import com.cordiact.search.providers.AnthropicNativeSearchProvider
+import com.cordiact.search.providers.GeminiNativeSearchProvider
+import com.cordiact.search.providers.OpenAiNativeSearchProvider
 import com.cordiact.search.providers.BochaConfig
 import com.cordiact.search.providers.BochaSearchProvider
 import com.cordiact.search.providers.BraveConfig
@@ -221,6 +224,10 @@ class BundledConversationPlugins private constructor(
                     model = { null as String? },
                 ),
             )
+            // Native providers for the other routes: same auxiliary-call shape, different protocol.
+            registerSearch(AnthropicNativeSearchProvider(apiKey = key("anthropic-native")))
+            registerSearch(OpenAiNativeSearchProvider(apiKey = key("openai-native")))
+            registerSearch(GeminiNativeSearchProvider(apiKey = key("gemini-native")))
             registerSearch(TavilySearchProvider(tavilyConfig))
             registerSearch(BraveSearchProvider(braveConfig))
             registerSearch(ExaSearchProvider(exaConfig))
