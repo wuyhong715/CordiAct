@@ -520,6 +520,35 @@ Tavily、Brave、Exa、博查、SearXNG 适配器；设置页（模式/provider/
 - 原生 provider 的 `ready()` 需要具体模型路由，设置页改用 `available()` 判断“是否已配置”。
 - 新增测试：`ProviderAdaptersTest`（8 个：Tavily/Brave/Exa/博查/SearXNG 的请求与响应映射）、预算用例 2 个。
 
+### 本地抓取与 SSRF 防护（已实现）
+
+`LocalFetchProvider`（provider id `local-fetch`）默认**关闭**，开启后由设备直接抓取。
+
+防护分三层：
+
+1. **地址分类**（`SsrfGuard`）：解析主机名后，任一地址落在 loopback / 私有 / 链路本地 / CGNAT / 组播 / 文档 / 保留段即拒绝；IPv4-mapped IPv6（`::ffff:127.0.0.1`）按 IPv4 规则判定。不可解析的主机也拒绝（fail-closed）。
+2. **逐跳校验**：手动跟随重定向，每一跳都过同一个 guard；最多 5 跳。
+3. **内容约束**：只接受文本类 content-type；HTML 去脚本/样式/标签后转文本，不执行任何脚本；响应体积上限 2 MB。
+
+已知残余风险：DNS rebinding。guard 解析一次、连接另一次，攻击者控制的 DNS 可以二次应答不同地址。要彻底关闭需要“连接到已校验的 IP 并显式设置 Host”，`HttpURLConnection` 不暴露这个能力。
+
+`SsrfGuard` 只用于**外部来源**的 URL（搜索结果、模型输出）。provider 端点不经过它——自建 SearXNG 在局域网是合法配置。
+
+### 厂商特有参数（已实现）
+
+`NativeSearchOptions` 一个对象承载全部原生搜索参数，每次调用现读：
+
+| 参数 | 适用 | 默认 |
+|---|---|---|
+| `maxUses` | Anthropic / DeepSeek | 5（1..20） |
+| `maxTokens` | Anthropic / DeepSeek | 4096（256..16384） |
+| `allowedDomains` / `blockedDomains` | Anthropic / DeepSeek | 空；二者不可同时设置 |
+| `searchContextSize` | OpenAI | medium |
+| `geminiUrlContext` | Gemini | false |
+| `userLocation` | Anthropic / OpenAI | 空（只含 city/region/country/timezone，不含坐标） |
+
+请求体集中在 `NativeSearchPayloads`，厂商差异并排可见，且可以在不构造 provider 的情况下断言。
+
 ### P2 原生 provider 覆盖（部分实现）
 
 已实现：
@@ -531,8 +560,8 @@ Tavily、Brave、Exa、博查、SearXNG 适配器；设置页（模式/provider/
 
 未实现：
 
-- 本地 fetch provider（SSRF 防护未做，P0 只走 DeepSeek 服务端抓取）。
-- OpenAI `search_context_size`、Gemini `url_context` 等厂商特有参数尚未暴露到设置。
+- 设置页尚未暴露这些参数（UI 延后统一设计）。
+- DNS rebinding 的彻底防护（见上文残余风险）。
 
 ### 工具证据持久化（已实现）
 
