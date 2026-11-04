@@ -159,6 +159,104 @@ class DefaultSearchServiceTest {
     }
 
     @Test
+    fun `the same page under different tracking parameters is deduplicated`() {
+        val provider = FakeProvider(
+            "a",
+            perQuery = mapOf(
+                "a" to listOf(
+                    SearchSource(url = "https://www.example.com/page/?utm_source=x&id=7", snippet = "first"),
+                    SearchSource(url = "https://example.com/page?id=7&fbclid=abc", snippet = "second"),
+                ),
+            ),
+        )
+        val result = service(provider).search("ws", route, listOf("a"), null, 8, 2_000)
+        assertEquals(1, result.sources.size)
+        assertEquals("first", result.sources.single().snippet, "the first citation wins")
+    }
+
+    @Test
+    fun `different query parameters are not merged`() {
+        val provider = FakeProvider(
+            "a",
+            perQuery = mapOf(
+                "a" to listOf(
+                    SearchSource(url = "https://example.com/page?id=1", snippet = "one"),
+                    SearchSource(url = "https://example.com/page?id=2", snippet = "two"),
+                ),
+            ),
+        )
+        val result = service(provider).search("ws", route, listOf("a"), null, 8, 2_000)
+        assertEquals(2, result.sources.size)
+    }
+
+    @Test
+    fun `dedupeKey normalises host case slash and fragment`() {
+        val upper = DefaultSearchService.dedupeKey("https://EXAMPLE.com/a/b?x=1")
+        val messy = DefaultSearchService.dedupeKey("https://www.example.com/a/b/?x=1#section")
+        assertEquals(upper, messy)
+    }
+
+    @Test
+    fun `a four-query fan-out spends four billable calls`() {
+        val recorded = mutableListOf<Int>()
+        val service = DefaultSearchService(
+            registry = SearchProviderRegistry().apply { registerSearch(FakeProvider("a", billable = true)) },
+            policies = object : SearchPolicyStore {
+                override fun policy(workspaceId: String) = WorkspaceSearchPolicy(monthlyBudgetCalls = 10)
+            },
+            usage = object : com.cordiact.core.search.SearchUsageStore {
+                override fun usedThisMonth(workspaceId: String) = recorded.sum()
+                override fun record(workspaceId: String, calls: Int) { recorded += calls }
+            },
+            maxQueries = 4,
+            maxResults = 3,
+            summaryMaxChars = 10,
+            searchTimeoutMs = 2_000,
+            fetchTimeoutMs = 2_000,
+        )
+        service.search("ws", route, listOf("a", "b", "c", "d"), null, 3, 2_000)
+        assertEquals(listOf(4), recorded)
+    }
+
+    @Test
+    fun `a fan-out larger than the remaining budget is refused before dispatch`() {
+        val recorded = mutableListOf<Int>()
+        var dispatched = false
+        val provider = object : SearchProvider {
+            override val id = "a"
+            override val billable = true
+            override fun available() = true
+            override fun ready(route: ModelRoute?) = true
+            override fun search(request: SearchRequest, signal: CancellationSignal): SearchResult {
+                dispatched = true
+                return SearchResult()
+            }
+        }
+        val service = DefaultSearchService(
+            registry = SearchProviderRegistry().apply { registerSearch(provider) },
+            policies = object : SearchPolicyStore {
+                override fun policy(workspaceId: String) = WorkspaceSearchPolicy(monthlyBudgetCalls = 10)
+            },
+            usage = object : com.cordiact.core.search.SearchUsageStore {
+                override fun usedThisMonth(workspaceId: String) = 8
+                override fun record(workspaceId: String, calls: Int) { recorded += calls }
+            },
+            maxQueries = 4,
+            maxResults = 3,
+            summaryMaxChars = 10,
+            searchTimeoutMs = 2_000,
+            fetchTimeoutMs = 2_000,
+        )
+        val failure = assertFailsWith<SearchException> {
+            service.search("ws", route, listOf("a", "b", "c"), null, 3, 2_000)
+        }
+        assertEquals(SearchException.Code.BUDGET_EXHAUSTED, failure.code)
+        assertTrue(failure.message!!.contains("needs 3"))
+        assertEquals(false, dispatched, "no provider call may happen after the budget check fails")
+        assertTrue(recorded.isEmpty())
+    }
+
+    @Test
     fun `an exhausted monthly budget fails loudly before dispatch`() {
         val usage = object : com.cordiact.core.search.SearchUsageStore {
             var used = 2

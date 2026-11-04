@@ -28,6 +28,9 @@ class AnthropicNativeSearchProvider(
     override val native: Boolean = true
     override val routeProviderId: String = MODEL_PROVIDER_ID
 
+    /** One native search is one billable model turn, so it counts against the call budget. */
+    override val billable: Boolean = true
+
     override fun available(): Boolean {
         val endpoint = runCatching { URI(baseUrl()) }.getOrNull() ?: return false
         return (endpoint.scheme == "https" || endpoint.scheme == "http") &&

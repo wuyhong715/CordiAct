@@ -57,7 +57,8 @@ class DefaultSearchService(
         val normalized = normalizeQueries(queries)
         val cap = maxResults.coerceIn(1, this.maxResults)
         val provider = resolveSearch(workspaceId, route)
-        enforceBudget(workspaceId, provider)
+        // Fan-out means one tool call can spend several billable calls; reserve them all up front.
+        enforceBudget(workspaceId, provider, normalized.size)
         val tasks = normalized.map { query ->
             Callable {
                 provider.search(
@@ -105,18 +106,23 @@ class DefaultSearchService(
     /**
      * Budget is checked before dispatch: an exhausted budget fails loudly rather
      * than silently returning fewer or empty results.
+     *
+     * [calls] is how many billable calls this operation will make, not how many
+     * tool calls the model made. A four-query fan-out costs four.
      */
-    private fun enforceBudget(workspaceId: String, provider: SearchProvider) {
-        if (!provider.billable) return
+    private fun enforceBudget(workspaceId: String, provider: SearchProvider, calls: Int) {
+        if (!provider.billable || calls <= 0) return
         val limit = policies.policy(workspaceId).monthlyBudgetCalls ?: return
         val used = usage.usedThisMonth(workspaceId)
-        if (used >= limit) {
+        val remaining = limit - used
+        if (remaining < calls) {
             throw SearchException(
                 SearchException.Code.BUDGET_EXHAUSTED,
-                "Monthly search budget of $limit calls is used up",
+                "Monthly search budget of " + limit + " calls has " + remaining.coerceAtLeast(0) +
+                    " left, but this search needs " + calls,
             )
         }
-        usage.record(workspaceId, 1)
+        usage.record(workspaceId, calls)
     }
 
     override fun fetch(
@@ -137,10 +143,11 @@ class DefaultSearchService(
     private fun enforceFetchBudget(workspaceId: String, provider: FetchProvider) {
         if (!provider.billable) return
         val limit = policies.policy(workspaceId).monthlyBudgetCalls ?: return
-        if (usage.usedThisMonth(workspaceId) >= limit) {
+        val remaining = limit - usage.usedThisMonth(workspaceId)
+        if (remaining < 1) {
             throw SearchException(
                 SearchException.Code.BUDGET_EXHAUSTED,
-                "Monthly search budget of $limit calls is used up",
+                "Monthly search budget of " + limit + " calls is used up",
             )
         }
         usage.record(workspaceId, 1)
@@ -255,7 +262,7 @@ class DefaultSearchService(
             for (result in results) {
                 val source = result.sources.getOrNull(index) ?: continue
                 added = true
-                if (seen.add(source.url)) {
+                if (seen.add(dedupeKey(source.url))) {
                     merged += source.copy(
                         snippet = source.snippet?.take(1_200),
                         summary = source.summary?.take(summaryMaxChars),
@@ -305,7 +312,38 @@ class DefaultSearchService(
         }
     }
 
-    private companion object {
-        const val MAX_QUERY_LENGTH = 400
+    companion object {
+        private const val MAX_QUERY_LENGTH = 400
+
+        /** Parameters that never change which page is being cited. */
+        private val TRACKING_PARAMETERS = setOf(
+            "fbclid", "gclid", "msclkid", "yclid", "mc_cid", "mc_eid",
+            "ref", "ref_src", "ref_url", "source", "spm", "share_token",
+            "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
+            "utm_id", "utm_name", "utm_reader", "utm_referrer",
+        )
+
+        /**
+         * URL identity for deduplication.
+         *
+         * Search APIs routinely return the same page with tracking parameters, a trailing
+         * slash, a fragment or a different host case. Comparing raw strings would let one page
+         * occupy several of the eight result slots.
+         */
+        internal fun dedupeKey(url: String): String {
+            val uri = runCatching { URI(url) }.getOrNull() ?: return url
+            val host = uri.host?.lowercase()?.removePrefix("www.") ?: return url
+            val path = uri.path.orEmpty().trimEnd('/').ifEmpty { "/" }
+            val kept = uri.rawQuery
+                ?.split('&')
+                ?.filterNot { it.isEmpty() || it.substringBefore('=').lowercase() in TRACKING_PARAMETERS }
+                ?.joinToString("&")
+                .orEmpty()
+            return buildString {
+                append(host)
+                append(path)
+                if (kept.isNotEmpty()) append('?').append(kept)
+            }
+        }
     }
 }

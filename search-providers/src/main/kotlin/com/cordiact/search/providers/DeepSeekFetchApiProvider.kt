@@ -20,6 +20,13 @@ class DeepSeekFetchApiProvider(
 ) : FetchProvider {
     override val id: String = PROVIDER_ID
 
+    /** DeepSeek bills the Fetch API per successful request. */
+    override val billable: Boolean = true
+    override val pricing: com.cordiact.core.search.SearchPricing = com.cordiact.core.search.SearchPricing(
+        usdPerCall = 0.00075,
+        note = "DeepSeek Fetch: $0.75 per 1,000 successful requests (read 2026-11-03)",
+    )
+
     override fun available(): Boolean = config.available() && config.keyOrNull() != null
 
     override fun ready(route: ModelRoute?): Boolean = available()
