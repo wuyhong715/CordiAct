@@ -192,7 +192,7 @@ class BundledConversationPlugins private constructor(
         skillPlugin = SkillPlugin(AndroidSkillFileSource(fileManager))
         registerSkillTools(registry, skillPlugin)
         toolManagerPlugin = ToolManagerPlugin(
-            toolRegistry = registry,
+            registry = registry,
             preferences = conversationStore,
             workspaces = workspaceManager,
             pluginStates = stateLookup,
