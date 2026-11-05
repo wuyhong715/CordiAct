@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.pm.ApplicationInfo
 import android.graphics.Color
 import android.net.Uri
+import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import android.view.ViewGroup
@@ -65,6 +66,12 @@ class RenderSurfaceHost(
 
     val view: WebView = WebView(context)
 
+    /**
+     * A plain main-thread handler, not [WebView.post]: an unattached View queues its posted
+     * runnables until it is attached, so a surface created before it is displayed (preloading,
+     * or an instrumented test) would silently drop every command.
+     */
+    private val mainHandler = Handler(Looper.getMainLooper())
     private val pending = ArrayDeque<String>()
     private var ready = false
     private var destroyed = false
@@ -258,7 +265,7 @@ class RenderSurfaceHost(
         if (destroyed) return
         if (!isSupported) return
         if (Looper.myLooper() != Looper.getMainLooper()) {
-            view.post { send(command) }
+            mainHandler.post { send(command) }
             return
         }
         val payload = command.toString()
