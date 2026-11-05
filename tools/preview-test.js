@@ -57,6 +57,7 @@ frameWorld.document = {
   body: makeElement('body'),
   getAnimations: () => frameWorld.__anims,
   querySelector: () => null,
+  querySelectorAll: () => [],
   open() {}, close() {},
   write(html) {
     // Evaluate every inline script, exactly as the browser would on document.write.
@@ -97,7 +98,7 @@ assert(sent.some((m) => m.type === 'ready'), 'ready not posted');
 // ---- setContent: mounts, installs the clock -------------------------------------
 api.handle(JSON.stringify({
   type: 'setContent',
-  html: '<h1>你好</h1>',
+  html: '<script>window.__sawClockAtParse = (typeof window.__cordiactClock === "object");</script><h1>你好</h1>',
   css: 'h1{color:#111}',
   viewport: { w: 390, h: 844, scale: 0.5 },
 }));
@@ -147,6 +148,14 @@ assert(frameWorld.performance.now() === 316, 'step did not advance: ' + frameWor
 api.handle(JSON.stringify({ type: 'play' }));
 assert(clock.isFrozen() === false, 'play must unfreeze');
 assert(sent.some((m) => m.type === 'playing'), 'playing not posted');
+
+// ---- probe: the shim must have run before the page's own script -----------------
+api.handle(JSON.stringify({ type: 'probe' }));
+const probe = sent.filter((m) => m.type === 'probe').pop();
+assert(probe, 'probe not posted');
+assert(probe.hasClock === true, 'clock shim missing in the frame');
+assert(probe.pageSawClock === true, 'page script ran before the shim');
+assert(probe.animationsApi === true, 'getAnimations not visible from the frame');
 
 // ---- snapshot shape --------------------------------------------------------------
 api.handle(JSON.stringify({ type: 'snapshot' }));

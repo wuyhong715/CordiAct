@@ -197,6 +197,9 @@ class RenderSurfaceHost(
 
     fun requestSnapshot() = send(JSONObject().put("type", "snapshot"))
 
+    /** Asks the frame what its environment actually looks like; see [RenderEvent.Probed]. */
+    fun probe() = send(JSONObject().put("type", "probe"))
+
     // ---- lifecycle -----------------------------------------------------------------
 
     /** WebView keeps its own clock; pausing the view stops rAF and timers. */
@@ -287,6 +290,22 @@ class RenderSurfaceHost(
                     onEvent(RenderEvent.SnapshotReady(snapshot, UiSnapshotChecks.check(snapshot)))
                 }
             }
+
+            "probe" -> onEvent(
+                RenderEvent.Probed(
+                    hasClock = json.optBoolean("hasClock", false),
+                    frozen = json.optBoolean("frozen", false),
+                    pageSawClock = json.optBoolean("pageSawClock", false),
+                    animationsApi = json.optBoolean("animationsApi", false),
+                    animationCount = json.optInt("animationCount", 0),
+                    animationTimes = json.optJSONArray("animationTimes")?.let { times ->
+                        (0 until times.length()).map { index ->
+                            if (times.isNull(index)) null else times.optDouble(index)
+                        }
+                    } ?: emptyList(),
+                    nodeCount = json.optInt("nodeCount", 0),
+                ),
+            )
 
             "error" -> onEvent(
                 RenderEvent.Failed(

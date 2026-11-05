@@ -56,6 +56,21 @@ sealed interface RenderEvent {
         val findings: List<SnapshotFinding>,
     ) : RenderEvent
 
+    /**
+     * Environment facts reported from inside the frame. Used by the instrumented tests to
+     * answer the questions that cannot be settled by reading Chromium docs: does the shim run
+     * before the page's own scripts, and are CSS animations reachable from the parent document.
+     */
+    data class Probed(
+        val hasClock: Boolean,
+        val frozen: Boolean,
+        val pageSawClock: Boolean,
+        val animationsApi: Boolean,
+        val animationCount: Int,
+        val animationTimes: List<Double?>,
+        val nodeCount: Int,
+    ) : RenderEvent
+
     data class Failed(
         val where: String,
         val message: String,

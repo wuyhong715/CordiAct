@@ -309,6 +309,29 @@
         case 'snapshot':
           post('snapshot', buildSnapshot());
           break;
+        case 'probe': {
+          // Everything the instrumented tests need to assert about the environment, answered
+          // from inside the frame rather than inferred from Kotlin.
+          var win = frame.contentWindow;
+          var doc = frame.contentDocument;
+          var clock = win && win.__cordiactClock;
+          var animations = [];
+          try {
+            animations = doc && doc.getAnimations ? doc.getAnimations({ subtree: true }) : [];
+          } catch (e) { animations = []; }
+          post('probe', {
+            hasClock: !!clock,
+            frozen: !!(clock && clock.isFrozen()),
+            pageSawClock: !!(win && win.__sawClockAtParse),
+            animationsApi: !!(doc && typeof doc.getAnimations === 'function'),
+            animationCount: animations.length,
+            animationTimes: animations.map(function (a) {
+              return typeof a.currentTime === 'number' ? a.currentTime : null;
+            }),
+            nodeCount: doc ? doc.querySelectorAll('*').length : -1
+          });
+          break;
+        }
         case 'ping':
           post('ready', { ua: navigator.userAgent, frozen: state.frozen });
           break;
