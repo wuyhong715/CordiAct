@@ -8,6 +8,7 @@ import android.net.Uri
 import android.os.Looper
 import android.util.Log
 import android.view.ViewGroup
+import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
@@ -51,7 +52,7 @@ class RenderSurfaceHost(
 
     companion object {
         const val ASSET_ORIGIN = "https://appassets.androidplatform.net"
-        const val PAGE_URL = "$ASSET_ORIGIN/render/preview.html"
+        const val PAGE_URL = "$ASSET_ORIGIN/assets/render/preview.html"
         private const val BRIDGE_OBJECT = "CordiActHost"
         private const val TAG = "RenderSurface"
 
@@ -70,7 +71,9 @@ class RenderSurfaceHost(
     private var viewport = PreviewViewport.Phone
 
     private val assetLoader = WebViewAssetLoader.Builder()
-        .addPathHandler("/render/", WebViewAssetLoader.AssetsPathHandler(context))
+        // AssetsPathHandler strips the registered prefix, so "/assets/" maps straight onto
+        // the APK's assets/ root: /assets/render/preview.html -> assets/render/preview.html.
+        .addPathHandler("/assets/", WebViewAssetLoader.AssetsPathHandler(context))
         .build()
 
     init {
@@ -119,6 +122,25 @@ class RenderSurfaceHost(
                 view: WebView,
                 request: WebResourceRequest,
             ): Boolean = true
+
+            /**
+             * A missing or mis-pathed asset otherwise shows up as a silent blank surface: the
+             * page simply never announces itself. Surface the load error instead of letting the
+             * caller sit on a timeout.
+             */
+            override fun onReceivedError(
+                view: WebView,
+                request: WebResourceRequest,
+                error: WebResourceError,
+            ) {
+                if (!request.isForMainFrame) return
+                onEvent(
+                    RenderEvent.Failed(
+                        where = "load",
+                        message = "${error.errorCode} ${error.description} for ${request.url}",
+                    ),
+                )
+            }
         }
     }
 

@@ -127,7 +127,7 @@
     // The shim goes first so the page's own scripts capture the patched rAF; <base> keeps
     // relative URLs pointing at the asset origin instead of the iframe's about:blank.
     return '<!doctype html><html><head><meta charset="utf-8">' +
-      '<base href="https://appassets.androidplatform.net/render/">' +
+      '<base href="https://appassets.androidplatform.net/assets/render/">' +
       '<script>' + SHIM_SOURCE + '<\/script>' +
       '<style>' + (css || '') + '</style>' +
       '</head><body>' + (html || '') + '</body></html>';
