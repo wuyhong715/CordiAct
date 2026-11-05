@@ -310,3 +310,18 @@ surface.snapshot(t: Double)          // 结构化快照（rect + computed）
 | 投放 | 现在由"投放示例"按钮模拟；agent 侧工具（`preview_push`：标题 + html + css + 视口，返回"已投放 N 项未查看"）下一步接 |
 
 这条规则同时解决了三件事：聊天流不再因为预览而爆内存；用户对"什么时候花 CPU"有明确控制权；agent 无法在用户不看的时候偷偷渲染。
+
+### `preview.push`（已接，常开）
+
+```json
+{"title": "登录页 v2", "html": "<main>…</main>", "css": "main{padding:16px}",
+ "width_dp": 390, "height_dp": 844}
+```
+
+返回 `{ok, title, viewport, unseen, truncated, note}`，其中 `unseen` 是本会话里还没被用户看过的条目数——agent 据此知道"用户还没看"，从而不重复投放同一份东西。
+
+三个刻意的决定：
+
+1. **只入队，永不渲染。** 工具语义里写明"renders nothing"；渲染永远是用户动作。
+2. **常开，不做插件开关。** 预览是会话面板能力，不是可选集成；ownership 挂在 `core.workspace-manager`（恒启用）而不是新建一个用户能关掉的插件。代价被"工具只做一次入队"限定住了。
+3. **超限截断而不是报错。** `html` 200k / `css` 100k 字符封顶，超出部分截断并在返回里标 `truncated: true`——一份被截断的预览仍然比一次失败的投放有用。

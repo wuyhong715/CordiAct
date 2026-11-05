@@ -49,6 +49,7 @@ import com.cordiact.core.toolloop.ToolLoopStop
 import com.cordiact.subagent.SubagentRuntime
 import com.cordiact.subagent.BackgroundSubagentRuntime
 import com.cordiact.subagent.OrchestrationPlugin
+import com.cordiact.app.render.registerPreviewTools
 import com.cordiact.subagent.registerSubagentTools
 import com.cordiact.subagent.registerBackgroundSubagentTools
 import com.cordiact.subagent.registerOrchestrationTools
@@ -351,6 +352,8 @@ class CordiActApplication : Application() {
         turnService = ConversationTurnService(sessionManagerPlugin, modelAdapterPlugin, backgroundSubagents)
         // Registered here because the tool list is built from the shared registry, and the
         // delegation tools must be in it before the first turn assembles its specs.
+        // Always published: the preview window is a session surface, not an integration.
+        registerPreviewTools(conversationCatalog.toolRegistry)
         registerSubagentTools(conversationCatalog.toolRegistry, subagentRuntime)
         registerOrchestrationTools(conversationCatalog.toolRegistry, orchestrationPlugin)
         registerBackgroundSubagentTools(conversationCatalog.toolRegistry, backgroundSubagents)
