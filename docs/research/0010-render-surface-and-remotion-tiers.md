@@ -264,8 +264,8 @@ surface.snapshot(t: Double)          // 结构化快照（rect + computed）
 |---|---|---|
 | `core/src/main/kotlin/com/cordiact/core/render/UiSnapshot.kt` | 快照模型 + 6 类确定性检查（溢出 X/Y、同级重叠、对比度、触控热区、可点元素出屏）+ 颜色解析与 WCAG 对比度 | `./gradlew :core:test --tests "com.cordiact.core.render.*"` → **16 个用例通过** |
 | `app/src/main/assets/render/preview.html` / `preview.js` | 舞台与缩放、同源 iframe 挂载、虚拟时钟 shim（`seek`/`step`/`play`/`pause`）、快照生成、错误上报 | `node tools/preview-test.js` → **11 条消息，断言全过** |
-| `app/src/main/java/com/cordiact/app/render/` | `RenderSurfaceHost`（资产域、消息桥、禁跳转、禁网、生命周期）、`SnapshotParser`（不可信负载分片校验）、`RenderSurface`（Compose 宿主）、`RenderLabDialog`（手动验收台） | 未编译（本地无 Android SDK） |
-| `MainActivity` | 工具栏新增"预览"入口，打开 `RenderLabDialog` | 未编译 |
+| `app/src/main/java/com/cordiact/app/render/` | `RenderSurfaceHost`（资产域、消息桥、禁跳转、禁网、生命周期）、`SnapshotParser`（不可信负载分片校验）、`RenderSurface`（Compose 宿主）、`PreviewWindow`（独立预览窗口） | 未编译（本地无 Android SDK） |
+| `MainActivity` | 工具栏新增"预览"入口，打开 `PreviewWindow` | 未编译 |
 
 示例模板故意留了三个缺陷（40dp 按钮、`#a8a8a8` 小字、720px 的溢出行），用于确认"检查"按钮真的能报出来。写这个示例时发现并修掉了一个真 bug：节点背景为 `rgba(0,0,0,0)` 时对比度检查会直接跳过——透明必须回退到页面背景，否则最该被检查的无样式文本永远不被检查。已补 `transparentNodeBackgroundFallsThroughToThePage` 用例。
 
@@ -291,3 +291,22 @@ surface.snapshot(t: Double)          // 结构化快照（rect + computed）
 2. 聊天流还没接：卡片缩略图缓存、单实例切换、全屏 sheet 都没做，现在只有独立验收台。
 3. 三视口是"切换"不是"并排 iframe"（并排属于卡片 UI 的一部分）。
 4. Remotion 路由未接（L0 抽帧 / L1 样片），`assets/render/` 里还没有 Remotion bundle。
+
+
+## 10. 窗口模型（2026-11-05 修订）
+
+**不默认渲染。** 预览不是聊天流的一部分，而是像轨迹窗口那样独立存在：agent 写出来的 HTML/UI 只在被"投放"时进入队列，**渲染由用户按下才发生**，关闭窗口或点"停止渲染"立刻释放 WebView。
+
+理由不是美观，是资源：一个 WebView 实例 50–100 MB、一个常驻渲染进程、以及 30fps 起的持续 CPU。把它挂在消息流上意味着用户只是在翻聊天记录就已经在为没人看的东西付费。
+
+落地形态：
+
+| 概念 | 行为 |
+|---|---|
+| `PreviewInbox` | 会话级队列，只存文本与视口，**不含任何渲染状态**；最多 12 项（旧版本自动淘汰），未查看计数驱动工具栏角标 |
+| `PreviewWindow` | 独立全屏窗口。列表页只显示标题/来源（agent/本地）/视口/是否未查看 |
+| 渲染 | 在列表项上按"渲染"才创建 `RenderSurfaceHost`；面板提供 360/390/768、播放/暂停、定格滑杆、检查（快照）、停止渲染 |
+| 释放 | `rememberRenderSurfaceHost` 位于"正在渲染"的那个分支里，退出分支 = 离开组合 = `destroy()`。同一时刻只有一个 surface |
+| 投放 | 现在由"投放示例"按钮模拟；agent 侧工具（`preview_push`：标题 + html + css + 视口，返回"已投放 N 项未查看"）下一步接 |
+
+这条规则同时解决了三件事：聊天流不再因为预览而爆内存；用户对"什么时候花 CPU"有明确控制权；agent 无法在用户不看的时候偷偷渲染。

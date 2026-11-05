@@ -1,0 +1,234 @@
+package com.cordiact.app.render
+
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Slider
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import com.cordiact.core.render.SnapshotFinding
+
+/**
+ * A separate window for looking at what the agent wrote — not an inline chat card.
+ *
+ * Two rules make this cheap enough to leave open all day:
+ *
+ *  - **nothing renders by itself.** Content arrives as inert [PreviewItem]s; a WebView is
+ *    created only when the user presses 渲染 on one, and is destroyed again when they press
+ *    停止渲染 or close the window. `rememberRenderSurfaceHost` sits inside that branch, so
+ *    leaving it removes the surface from the composition and takes the WebView with it.
+ *  - **one surface at a time.** Switching items re-uses the same window and disposes the
+ *    previous surface instead of stacking WebViews.
+ *
+ * The agent's role is to drop content into [PreviewInbox]; it never decides when something is
+ * rendered.
+ */
+@Composable
+fun PreviewWindow(
+    sessionId: String?,
+    onDismiss: () -> Unit,
+) {
+    var activeId by remember { mutableStateOf<String?>(null) }
+    val queue = PreviewInbox.forSession(sessionId)
+    val active = queue.firstOrNull { it.id == activeId }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+    ) {
+        Surface(modifier = Modifier.fillMaxSize()) {
+            Column(modifier = Modifier.fillMaxSize().padding(12.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Column {
+                        Text("预览", style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            text = if (active == null) "选择一项开始渲染（不会自动加载）" else active.title,
+                            style = MaterialTheme.typography.labelSmall,
+                        )
+                    }
+                    Row {
+                        TextButton(onClick = {
+                            PreviewInbox.push(
+                                sessionId = sessionId,
+                                title = "示例：本周回顾",
+                                html = PreviewSamples.brokenHtml,
+                                css = PreviewSamples.brokenCss,
+                            )
+                        }) { Text("投放示例") }
+                        TextButton(onClick = onDismiss) { Text("关闭") }
+                    }
+                }
+                HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+
+                if (active == null) {
+                    if (queue.isEmpty()) {
+                        Column(
+                            modifier = Modifier.fillMaxSize(),
+                            verticalArrangement = Arrangement.Center,
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                        ) {
+                            Text("还没有内容", style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                "让 agent 生成 HTML/UI 后投放到这里，或点右上角投放示例",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                    } else {
+                        LazyColumn(modifier = Modifier.fillMaxSize()) {
+                            items(queue, key = { it.id }) { item ->
+                                InboxRow(
+                                    item = item,
+                                    onRender = {
+                                        PreviewInbox.markSeen(item.id)
+                                        activeId = item.id
+                                    },
+                                    onRemove = { PreviewInbox.remove(item.id) },
+                                )
+                                HorizontalDivider()
+                            }
+                        }
+                    }
+                } else {
+                    RenderedPreview(
+                        item = active,
+                        onStop = { activeId = null },
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun InboxRow(
+    item: PreviewItem,
+    onRender: () -> Unit,
+    onRemove: () -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(item.title, style = MaterialTheme.typography.bodyMedium)
+            Text(
+                text = buildString {
+                    append(if (item.origin == PreviewOrigin.AGENT) "agent" else "本地")
+                    append(" · ")
+                    append("${item.viewport.widthDp}×${item.viewport.heightDp}")
+                    if (!item.seen) append(" · 未查看")
+                },
+                style = MaterialTheme.typography.labelSmall,
+            )
+        }
+        Row {
+            OutlinedButton(onClick = onRender) { Text("渲染") }
+            TextButton(onClick = onRemove) { Text("移除") }
+        }
+    }
+}
+
+/**
+ * The only place a WebView exists in this feature. Everything below is deliberately local
+ * state: closing this composable must be enough to release the renderer.
+ */
+@Composable
+private fun RenderedPreview(
+    item: PreviewItem,
+    onStop: () -> Unit,
+) {
+    var viewport by remember(item.id) { mutableStateOf(item.viewport) }
+    var findings by remember(item.id) { mutableStateOf<List<SnapshotFinding>>(emptyList()) }
+    var status by remember(item.id) { mutableStateOf("正在加载…") }
+    var timeMs by remember(item.id) { mutableStateOf(0f) }
+
+    val host = rememberRenderSurfaceHost { event ->
+        when (event) {
+            is RenderEvent.Ready -> status = "已就绪"
+            is RenderEvent.Mounted -> status = "已渲染 ${event.viewport.widthDp}dp"
+            is RenderEvent.Failed -> status = "失败(${event.where}): ${event.message}"
+            is RenderEvent.SnapshotReady -> findings = event.findings
+            is RenderEvent.Patched -> status = "已更新"
+            else -> Unit
+        }
+    }
+
+    LaunchedEffect(host) {
+        host.setContent(item.html, item.css, item.viewport)
+    }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(
+                onClick = { viewport = PreviewViewport.SmallPhone; host.setViewport(viewport) },
+                enabled = viewport.widthDp != 360,
+            ) { Text("360") }
+            OutlinedButton(
+                onClick = { viewport = PreviewViewport.Phone; host.setViewport(viewport) },
+                enabled = viewport.widthDp != 390,
+            ) { Text("390") }
+            OutlinedButton(
+                onClick = { viewport = PreviewViewport.Tablet; host.setViewport(viewport) },
+                enabled = viewport.widthDp != 768,
+            ) { Text("768") }
+            OutlinedButton(onClick = { host.play() }) { Text("播放") }
+            OutlinedButton(onClick = { host.pause() }) { Text("暂停") }
+            OutlinedButton(onClick = { host.requestSnapshot() }) { Text("检查") }
+            OutlinedButton(onClick = onStop) { Text("停止渲染") }
+        }
+
+        RenderSurface(
+            host = host,
+            modifier = Modifier.fillMaxWidth().height(420.dp).padding(vertical = 8.dp),
+        )
+
+        Text("定格 ${timeMs.toInt()} ms", style = MaterialTheme.typography.labelMedium)
+        Slider(
+            value = timeMs,
+            onValueChange = {
+                timeMs = it
+                host.seek(it.toDouble())
+            },
+            valueRange = 0f..2000f,
+        )
+
+        Text(status, style = MaterialTheme.typography.labelSmall)
+        Column(modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState())) {
+            if (findings.isEmpty()) {
+                Text("没有发现问题", style = MaterialTheme.typography.bodySmall)
+            } else {
+                findings.forEach { finding ->
+                    Text("• ${finding.message}", style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        }
+    }
+}
