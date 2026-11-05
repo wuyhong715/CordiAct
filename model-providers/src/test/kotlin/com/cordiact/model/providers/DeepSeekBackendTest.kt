@@ -223,12 +223,18 @@ class DeepSeekBackendTest {
             start()
         }
 
+    /**
+     * Waits for an asynchronous stream to reach a terminal state.
+     *
+     * The budget is generous on purpose: this drives a loopback HTTP server on a shared CI
+     * runner, where a 5s deadline was occasionally exceeded under load, turning a real assertion
+     * into a confusing "single() on empty list" failure.
+     */
     private fun waitFor(condition: () -> Boolean) {
-        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20)
         while (!condition() && System.nanoTime() < deadline) Thread.sleep(5)
-        assertTrue(condition(), "condition was not reached in time")
+        check(condition()) { "condition not met within 20s" }
     }
-
     private class AdapterHarness(private val backend: ConfigurableModelBackend) : ModelAdapterService {
         override fun models(): List<ModelDescriptor> = backend.models()
         override fun generate(request: ModelGenerationRequest, onEvent: (ModelEvent) -> Unit): ModelCall {

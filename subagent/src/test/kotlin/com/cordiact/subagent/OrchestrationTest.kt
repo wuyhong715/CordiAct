@@ -128,7 +128,11 @@ class OrchestrationTest {
         assertEquals("true", value(result["ok"]))
         assertEquals("COMPLETED", value(result["stop"]))
         assertEquals("3", value(result["childrenStarted"]))
-        assertEquals(listOf("price of A", "price of B", "price of C"), h.prompts)
+        // Prompt order here is execution-start order, which the runner does not promise: a MAP
+        // stage submits its children to a pool and only guarantees that *outputs* line up with
+        // items (asserted by the next test). Under a loaded CI runner two workers can start out
+        // of submission order, which made this line fail roughly once in six runs.
+        assertEquals(setOf("price of A", "price of B", "price of C"), h.prompts.toSet())
     }
 
     @Test
