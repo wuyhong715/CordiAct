@@ -3,25 +3,42 @@ name: Android build
 on:
   pull_request:
     branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
   workflow_dispatch:
   push:
     branches: [main]
     tags: ['v*']
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
 
 permissions:
   contents: read
 
+# A newer push to the same ref supersedes the run still in flight, except on
+# main, where every merged commit should get a full result.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: true
+          persist-credentials: false
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
       - name: Verify preinstalled Android SDK
         run: |
           test -n "$ANDROID_HOME"
@@ -36,9 +53,15 @@ jobs:
         with:
           name: cordiact-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 14
 
   isolated-service-proof:
     name: Android isolated-service proof (API ${{ matrix.api-level }})
+    # Two emulator legs cost ~12 min per run. Keep them off the routine push
+    # path: they run on main, on demand, or on a PR labelled `emulator`.
+    if: >
+      github.event_name != 'pull_request' ||
+      contains(github.event.pull_request.labels.*.name, 'emulator')
     runs-on: ubuntu-latest
     timeout-minutes: 35
     strategy:
@@ -49,10 +72,12 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: true
+          persist-credentials: false
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
       - name: Reclaim disposable runner space for emulator
         run: |
           df -h "$HOME"
@@ -94,6 +119,7 @@ jobs:
             app/build/outputs/androidTest-results/connected/debug/**
             app/build/sandbox-validation/**
           if-no-files-found: warn
+          retention-days: 14
       - name: Package APKs for real-device sandbox validation
         if: matrix.api-level == 35
         uses: actions/upload-artifact@v4
@@ -103,3 +129,4 @@ jobs:
             app/build/outputs/apk/debug/app-debug.apk
             app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
           if-no-files-found: error
+          retention-days: 14
