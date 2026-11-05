@@ -269,12 +269,21 @@ surface.snapshot(t: Double)          // 结构化快照（rect + computed）
 
 示例模板故意留了三个缺陷（40dp 按钮、`#a8a8a8` 小字、720px 的溢出行），用于确认"检查"按钮真的能报出来。写这个示例时发现并修掉了一个真 bug：节点背景为 `rgba(0,0,0,0)` 时对比度检查会直接跳过——透明必须回退到页面背景，否则最该被检查的无样式文本永远不被检查。已补 `transparentNodeBackgroundFallsThroughToThePage` 用例。
 
-### 未验证（必须在 CI / 真机上确认）
+### CI 结果（PR #30，commit 5f4701d）
 
-1. **Android 编译**：`WebViewClient` 两个回调的可空性、`addWebMessageListener` 的签名、`androidx.lifecycle.compose.LocalLifecycleOwner` 的可用性——本地 Gradle 解析不了 AGP，只能靠 CI。
-2. **`document.write` 里内联脚本真的先于页面脚本执行**：这是时钟 shim 成立的前提。Node 侧只验证了 `write()` 会执行脚本，不能替代浏览器。
-3. **`blockNetworkLoads = true` 是否影响 `appassets` 资源**：预期不影响（资产走 `shouldInterceptRequest`，不进网络栈），但要在真机上看一眼首帧是否白屏。
-4. **iframe 内 `document.getAnimations({subtree:true})`** 能否取到 iframe 文档内的 CSS 动画。
+`build` + `Android isolated-service proof (API 35)` + `Android isolated-service proof (API 29)` 全绿；API 35 模拟器上 `RenderSurfaceHostTest` 四个用例通过（0.1–0.8 s），四个"只能真机回答"的问题全部有了答案：
+
+1. `document.write` 里的内联 shim **确实**先于页面脚本执行（`pageSawClock = true`）；
+2. iframe 文档里 `getAnimations({subtree:true})` **能**取到 CSS/WAAPI 动画，`seek` 后 currentTime 对齐误差 ≤ 1 ms，换起点重 seek 结果一致；
+3. `blockNetworkLoads = true` **不影响** `appassets`（`ready` 只在资产域可加载时才可能到达）；
+4. 桥签名与 `WebViewClient` 回调的可空性都编译通过。
+
+**模拟器抓到两个真 bug（本地推理抓不到）：**
+
+- **资产前缀**：`AssetsPathHandler` 会剥掉注册的前缀，注册 `/render/` 导致请求 `/render/preview.html` 实际去找 `assets/preview.html` → 404、页面永不 announce。改为注册 `/assets/`，同时补 `onReceivedError`，让"加载失败"变成带错误码的上报而不是空白超时。
+- **`View.post` 在未附着时排队**：命令从非主线程发出时走 `view.post`，而 WebView 未 attach 时该 runnable 会一直排队——页面能 announce、所有命令静默丢失。改为绑定主 looper 的 `Handler`。这在生产里同样成立：预览面在真正显示前被创建（预加载）就会命中。
+
+顺带记录一处与本 PR 无关的 flake：`subagent` 的 `OrchestrationTest > a MAP stage starts one child per item in order()` 在 OrchestrationTest.kt:131 失败过一次、重跑通过——MAP 子任务的启动顺序存在竞态，值得单独查。
 
 ### 已知缺口（按优先级）
 
