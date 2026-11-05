@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>CordiAct Render Surface</title>
+  <style>
+    /* The host page owns only the stage. Everything the agent writes lives in iframes, so no
+       style from here can leak into a preview (see preview.js). */
+    html, body { margin: 0; padding: 0; background: #0f1012; height: 100%; overflow: hidden; }
+    #stage {
+      position: absolute; left: 50%; top: 50%;
+      transform-origin: center center;
+      display: flex; align-items: flex-start; gap: 12px;
+    }
+    /* Frames are created by preview.js; width/height come from the layout, inline. */
+    #stage iframe {
+      display: block; border: 0; background: #fff;
+      box-shadow: 0 8px 40px rgba(0, 0, 0, .45);
+      border-radius: 6px;
+    }
+    #boot { position: absolute; inset: 0; display: grid; place-items: center;
+            color: #888; font: 13px/1.5 system-ui, sans-serif; }
+  </style>
+</head>
+<body>
+  <div id="stage"></div>
+  <div id="boot">render surface</div>
+  <script src="preview.js"></script>
+</body>
+</html>
