@@ -3,6 +3,9 @@ name: Android build
 on:
   pull_request:
     branches: [main]
+    # `labeled` is not a default activity type: without it, adding the
+    # `emulator` label to an open PR would not start the proof job.
+    types: [opened, synchronize, reopened, labeled]
     paths-ignore:
       - '**.md'
       - 'docs/**'
