@@ -133,3 +133,11 @@ object PluginManagerPresenter {
             }
         }
 }
+
+const val PLUGIN_MANAGER_PLUGIN_ID = "core.plugin-manager"
+
+fun pluginManagerPluginSpec(): PluginSpec = PluginSpec(
+    id = PLUGIN_MANAGER_PLUGIN_ID,
+    version = "0.1.0",
+    target = PluginTarget.ANDROID_NATIVE,
+)

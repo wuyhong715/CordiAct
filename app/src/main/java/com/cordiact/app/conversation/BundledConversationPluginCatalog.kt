@@ -31,6 +31,7 @@ import com.cordiact.core.workspace.WorkspaceManagerService
 import com.cordiact.core.workspace.workspaceManagerPluginSpec
 import com.cordiact.core.subagent.subagentPluginSpec
 import com.cordiact.core.subagent.backgroundSubagentPluginSpec
+import com.cordiact.core.plugin.pluginManagerPluginSpec
 import com.cordiact.core.subagent.orchestrationPluginSpec
 import com.cordiact.core.file.FileManagerPlugin
 import com.cordiact.core.file.WorkspaceFileService
@@ -136,6 +137,7 @@ object BundledConversationPluginCatalog {
         subagentPluginSpec(),
         orchestrationPluginSpec(),
         backgroundSubagentPluginSpec(),
+        pluginManagerPluginSpec(),
     )
 
     val verifier = BundledPluginVerifier { candidate -> candidate in trustedSpecs }
@@ -192,6 +194,14 @@ class BundledConversationPlugins private constructor(
      * plugin_manager tool is simply not offered.
      */
     var pluginManagerService: PluginManagerService? = null
+        set(value) {
+            field = value
+            value?.let { service ->
+                registerPluginManagerTools(registry, service, registerCredential = { name, header, hValue ->
+                    mcpCredentialWriter?.invoke(name, header, hValue)
+                })
+            }
+        }
 
     /** Persists an MCP auth header without putting it in the plugin config. */
     var mcpCredentialWriter: ((serverName: String, headerName: String, headerValue: String) -> Unit)? = null

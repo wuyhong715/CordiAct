@@ -27,7 +27,7 @@ class McpToolBridgeTest {
                 McpToolDescriptor("now", "Current time"),
             ),
         )
-        val bridge = McpToolBridge("demo", registry, MCP_PLUGIN_ID, 5_000)
+        val bridge = McpToolBridge("demo", registry, "$MCP_PLUGIN_ID.demo", 5_000)
 
         val published = bridge.sync(connection)
 
@@ -35,7 +35,7 @@ class McpToolBridgeTest {
         val echo = registry.get("core.mcp.demo.echo")
         assertNotNull(echo)
         assertEquals("""{"type":"object","properties":{"text":{"type":"string"}},"required":["text"]}""", echo.descriptor.rawInputSchemaJson)
-        assertEquals(MCP_PLUGIN_ID, echo.descriptor.ownerPluginId)
+        assertEquals("core.mcp.demo", echo.descriptor.ownerPluginId)
         // The raw MCP name is what goes back over the wire, even though the tool id is normalized.
         assertEquals("echo", echo.descriptor.name)
     }
@@ -44,7 +44,7 @@ class McpToolBridgeTest {
     fun aFailedListingLeavesTheWorkingGenerationAlone() {
         val registry = InMemoryToolDefinitionRegistry()
         val first = FakeConnection(tools = listOf(McpToolDescriptor("echo", "Echo")))
-        val bridge = McpToolBridge("demo", registry, MCP_PLUGIN_ID, 5_000)
+        val bridge = McpToolBridge("demo", registry, "$MCP_PLUGIN_ID.demo", 5_000)
         bridge.sync(first)
         assertNotNull(registry.get("core.mcp.demo.echo"))
 
@@ -60,7 +60,7 @@ class McpToolBridgeTest {
     @Test
     fun aSecondSyncReplacesRatherThanAccumulates() {
         val registry = InMemoryToolDefinitionRegistry()
-        val bridge = McpToolBridge("demo", registry, MCP_PLUGIN_ID, 5_000)
+        val bridge = McpToolBridge("demo", registry, "$MCP_PLUGIN_ID.demo", 5_000)
         val first = FakeConnection(tools = listOf(McpToolDescriptor("old", "Old")))
         bridge.sync(first)
 
@@ -75,7 +75,7 @@ class McpToolBridgeTest {
     @Test
     fun aRegistrationConflictRollsBackToZeroTools() {
         val registry = InMemoryToolDefinitionRegistry()
-        val bridge = McpToolBridge("demo", registry, MCP_PLUGIN_ID, 5_000)
+        val bridge = McpToolBridge("demo", registry, "$MCP_PLUGIN_ID.demo", 5_000)
         val connection = FakeConnection(
             tools = listOf(McpToolDescriptor("alpha", "A"), McpToolDescriptor("beta", "B")),
         )
@@ -105,7 +105,7 @@ class McpToolBridgeTest {
     @Test
     fun twoRawNamesMappingToOneIdRejectTheWholeGeneration() {
         val registry = InMemoryToolDefinitionRegistry()
-        val bridge = McpToolBridge("demo", registry, MCP_PLUGIN_ID, 5_000)
+        val bridge = McpToolBridge("demo", registry, "$MCP_PLUGIN_ID.demo", 5_000)
         // A space and an underscore both normalize to `_`, so these two genuinely collide.
         // (`-` does not: it is an allowed id character and survives normalization.)
         val connection = FakeConnection(
@@ -119,7 +119,7 @@ class McpToolBridgeTest {
     @Test
     fun dispatchSendsTheRawNameAndMapsContentToAResult() {
         val registry = InMemoryToolDefinitionRegistry()
-        val bridge = McpToolBridge("demo", registry, MCP_PLUGIN_ID, 5_000)
+        val bridge = McpToolBridge("demo", registry, "$MCP_PLUGIN_ID.demo", 5_000)
         val connection = FakeConnection(tools = listOf(McpToolDescriptor("echo", "Echo")))
         bridge.sync(connection)
 
@@ -137,7 +137,7 @@ class McpToolBridgeTest {
     @Test
     fun aToolLevelFailureBecomesAnErrorResultNotAnException() {
         val registry = InMemoryToolDefinitionRegistry()
-        val bridge = McpToolBridge("demo", registry, MCP_PLUGIN_ID, 5_000)
+        val bridge = McpToolBridge("demo", registry, "$MCP_PLUGIN_ID.demo", 5_000)
         val connection = FakeConnection(tools = listOf(McpToolDescriptor("boom", "Fails")))
         bridge.sync(connection)
 
@@ -156,7 +156,7 @@ class McpToolBridgeTest {
     @Test
     fun disposeWithdrawsEverything() {
         val registry = InMemoryToolDefinitionRegistry()
-        val bridge = McpToolBridge("demo", registry, MCP_PLUGIN_ID, 5_000)
+        val bridge = McpToolBridge("demo", registry, "$MCP_PLUGIN_ID.demo", 5_000)
         val connection = FakeConnection(tools = listOf(McpToolDescriptor("echo", "Echo")))
         bridge.sync(connection)
 

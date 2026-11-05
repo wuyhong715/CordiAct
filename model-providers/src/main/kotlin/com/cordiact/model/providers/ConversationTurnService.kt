@@ -151,12 +151,13 @@ class ConversationTurnService(
         val terminal = AtomicBoolean(false)
         try {
             sessions.appendMessage(sessionId, MessageRole.USER, text.trim())
+            // The user message was just persisted, so the history read below already contains it.
+            // Appending it again would send every delegated / child turn a duplicated prompt.
             val initial = buildList {
                 if (!systemContext.isNullOrBlank()) add(ModelMessage(MessageRole.SYSTEM, systemContext))
                 sessions.messages(sessionId)
                     .filter { it.role == MessageRole.SYSTEM || it.role == MessageRole.USER || it.role == MessageRole.ASSISTANT }
                     .forEach { add(ModelMessage(it.role, it.content)) }
-                add(ModelMessage(MessageRole.USER, text.trim()))
             }
 
             val outcome = toolLoop.run(toolContext, initial, dispatcher) { messages ->
