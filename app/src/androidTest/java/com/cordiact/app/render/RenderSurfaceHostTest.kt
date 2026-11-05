@@ -3,6 +3,7 @@ package com.cordiact.app.render
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.cordiact.core.render.SnapshotIssueKind
+import com.cordiact.core.render.UiSnapshot
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -11,6 +12,8 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import kotlin.math.abs
 
 /**
@@ -159,6 +162,40 @@ class RenderSurfaceHostTest {
         assertTrue("overflow not flagged: $kinds", SnapshotIssueKind.OVERFLOW_X in kinds)
         assertTrue("small tap target not flagged: $kinds", SnapshotIssueKind.SMALL_TAP_TARGET in kinds)
         assertTrue("low contrast not flagged: $kinds", SnapshotIssueKind.LOW_CONTRAST in kinds)
+    }
+
+    @Test
+    fun frameSeriesMakesAnAnimationLegibleWithoutPixels() {
+        host.setContent(
+            html = """<div id="dot" style="width:24px;height:24px;background:#111"></div>""",
+            css = """
+                @keyframes drift {
+                  from { transform: translateY(0); }
+                  to   { transform: translateY(200px); }
+                }
+                #dot { animation: drift 2s linear infinite; }
+            """.trimIndent(),
+        )
+        await("mounted") { it as? RenderEvent.Mounted }
+        Thread.sleep(SETTLE_MS)
+
+        val done = CountDownLatch(1)
+        var stops: List<UiSnapshot> = emptyList()
+        host.captureSeries(listOf(0.0, 500.0, 1000.0)) { series ->
+            stops = series
+            done.countDown()
+        }
+        assertTrue("frame series never completed", done.await(30, TimeUnit.SECONDS))
+        assertEquals("one snapshot per requested stop", 3, stops.size)
+
+        val positions = stops.mapNotNull { snapshot ->
+            snapshot.nodes.firstOrNull { it.selector.contains("dot") }?.rect?.y
+        }
+        assertEquals("every stop should contain the animated node", 3, positions.size)
+        assertTrue(
+            "the node must be reported at different positions across stops, got $positions",
+            positions.distinct().size >= 3,
+        )
     }
 
     /**

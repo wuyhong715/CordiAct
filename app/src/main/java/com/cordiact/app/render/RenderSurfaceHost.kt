@@ -21,6 +21,7 @@ import androidx.webkit.WebSettingsCompat
 import androidx.webkit.WebViewAssetLoader
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
+import com.cordiact.core.render.UiSnapshot
 import com.cordiact.core.render.UiSnapshotChecks
 import org.json.JSONObject
 import java.util.ArrayDeque
@@ -76,6 +77,13 @@ class RenderSurfaceHost(
     private var ready = false
     private var destroyed = false
     private var viewport = PreviewViewport.Phone
+
+    // Frame-series driver: the page holds one document, so stops are walked one at a time
+    // instead of firing five probes at once.
+    private var seriesTimes: List<Double> = emptyList()
+    private var seriesIndex = 0
+    private var seriesOut: MutableList<UiSnapshot> = mutableListOf()
+    private var seriesDone: ((List<UiSnapshot>) -> Unit)? = null
 
     private val assetLoader = WebViewAssetLoader.Builder()
         // AssetsPathHandler strips the registered prefix, so "/assets/" maps straight onto
@@ -229,6 +237,25 @@ class RenderSurfaceHost(
     /** Asks the frame what its environment actually looks like; see [RenderEvent.Probed]. */
     fun probe() = send(JSONObject().put("type", "probe"))
 
+    /**
+     * Walks [timesMs] and reports one structural snapshot per stop.
+     *
+     * This is how an animation becomes legible to the agent: a single snapshot says "the button
+     * is at y=300", five snapshots say "it started at y=300 and ended at y=120, and at t=1000 it
+     * overlapped the caption". No pixels, no visible window, no per-frame capture budget.
+     */
+    fun captureSeries(timesMs: List<Double>, onSeries: (List<UiSnapshot>) -> Unit) {
+        if (timesMs.isEmpty()) {
+            onSeries(emptyList())
+            return
+        }
+        seriesTimes = timesMs
+        seriesIndex = 0
+        seriesOut = mutableListOf()
+        seriesDone = onSeries
+        seek(seriesTimes[0])
+    }
+
     // ---- lifecycle -----------------------------------------------------------------
 
     /** WebView keeps its own clock; pausing the view stops rAF and timers. */
@@ -305,7 +332,10 @@ class RenderSurfaceHost(
 
             "patched" -> onEvent(RenderEvent.Patched)
 
-            "seeked" -> onEvent(RenderEvent.Seeked(json.optDouble("t", 0.0)))
+            "seeked" -> {
+                onEvent(RenderEvent.Seeked(json.optDouble("t", 0.0)))
+                if (seriesDone != null) requestSnapshot()
+            }
 
             "playing" -> onEvent(RenderEvent.Playing)
 
@@ -317,6 +347,16 @@ class RenderSurfaceHost(
                     onEvent(RenderEvent.Failed("snapshot", "snapshot carried no viewport"))
                 } else {
                     onEvent(RenderEvent.SnapshotReady(snapshot, UiSnapshotChecks.check(snapshot)))
+                    seriesDone?.let { done ->
+                        seriesOut.add(snapshot)
+                        seriesIndex += 1
+                        if (seriesIndex >= seriesTimes.size) {
+                            seriesDone = null
+                            done(seriesOut.toList())
+                        } else {
+                            seek(seriesTimes[seriesIndex])
+                        }
+                    }
                 }
             }
 

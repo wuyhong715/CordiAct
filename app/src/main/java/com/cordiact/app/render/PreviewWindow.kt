@@ -30,6 +30,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.cordiact.core.render.SnapshotFinding
+import com.cordiact.core.render.UiSnapshot
+import com.cordiact.core.render.UiSnapshotChecks
+import kotlin.math.abs
 
 /**
  * A separate window for looking at what the agent wrote — not an inline chat card.
@@ -169,6 +172,7 @@ private fun RenderedPreview(
     var findings by remember(item.id) { mutableStateOf<List<SnapshotFinding>>(emptyList()) }
     var status by remember(item.id) { mutableStateOf("正在加载…") }
     var timeMs by remember(item.id) { mutableStateOf(0f) }
+    var series by remember(item.id) { mutableStateOf<List<String>>(emptyList()) }
 
     val host = rememberRenderSurfaceHost { event ->
         when (event) {
@@ -202,6 +206,9 @@ private fun RenderedPreview(
             OutlinedButton(onClick = { host.play() }) { Text("播放") }
             OutlinedButton(onClick = { host.pause() }) { Text("暂停") }
             OutlinedButton(onClick = { host.requestSnapshot() }) { Text("检查") }
+            OutlinedButton(onClick = {
+                host.captureSeries(SERIES_TIMES) { stops -> series = summarizeSeries(SERIES_TIMES, stops) }
+            }) { Text("抽帧") }
             OutlinedButton(onClick = onStop) { Text("停止渲染") }
         }
 
@@ -222,6 +229,9 @@ private fun RenderedPreview(
 
         Text(status, style = MaterialTheme.typography.labelSmall)
         Column(modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState())) {
+            series.forEach { line ->
+                Text(line, style = MaterialTheme.typography.bodySmall)
+            }
             if (findings.isEmpty()) {
                 Text("没有发现问题", style = MaterialTheme.typography.bodySmall)
             } else {
@@ -230,5 +240,57 @@ private fun RenderedPreview(
                 }
             }
         }
+    }
+}
+
+
+/** Stops the 抽帧 action walks. Four is enough to see a transition without a capture budget. */
+private val SERIES_TIMES = listOf(0.0, 400.0, 800.0, 1200.0)
+
+private const val MAX_SERIES_LINES = 24
+
+/**
+ * Turns a run of snapshots into movement lines.
+ *
+ * The agent cannot watch an animation; it can read "from t=0 to t=400 #cta moved down 120px and
+ * now overlaps #caption". That sentence is built from numbers the page reported, so it is
+ * stable, cheap, and diffable between iterations.
+ */
+private fun summarizeSeries(times: List<Double>, stops: List<UiSnapshot>): List<String> {
+    if (stops.isEmpty()) return listOf("抽帧失败：页面没有返回快照")
+    if (stops.size == 1) return listOf("只采集到一帧（页面可能还没就绪）")
+
+    val lines = mutableListOf<String>()
+    stops.forEachIndexed { index, stop ->
+        val problems = UiSnapshotChecks.check(stop)
+        val at = times.getOrElse(index) { 0.0 }.toInt()
+        lines += "t=${at}ms · ${stop.nodes.size} 个节点 · ${problems.size} 项问题"
+        problems.take(2).forEach { problem -> lines += "    · ${problem.message}" }
+    }
+
+    stops.zipWithNext().forEachIndexed { index, (before, after) ->
+        val from = times.getOrElse(index) { 0.0 }.toInt()
+        val to = times.getOrElse(index + 1) { 0.0 }.toInt()
+        val earlier = before.nodes.associateBy { it.selector }
+        after.nodes.forEach { node ->
+            val previous = earlier[node.selector] ?: return@forEach
+            val dx = node.rect.x - previous.rect.x
+            val dy = node.rect.y - previous.rect.y
+            val dw = node.rect.w - previous.rect.w
+            val dh = node.rect.h - previous.rect.h
+            if (abs(dx) < 1 && abs(dy) < 1 && abs(dw) < 1 && abs(dh) < 1) return@forEach
+            lines += "t=${from}→${to}ms · ${node.selector} ${describeDelta(dx, dy, dw, dh)}"
+        }
+    }
+    return lines.take(MAX_SERIES_LINES)
+}
+
+private fun describeDelta(dx: Double, dy: Double, dw: Double, dh: Double): String = buildString {
+    if (abs(dx) >= 1 || abs(dy) >= 1) {
+        append("移动 (${dx.toInt()}, ${dy.toInt()})")
+    }
+    if (abs(dw) >= 1 || abs(dh) >= 1) {
+        if (isNotEmpty()) append(" · ")
+        append("尺寸 (${dw.toInt()}, ${dh.toInt()})")
     }
 }

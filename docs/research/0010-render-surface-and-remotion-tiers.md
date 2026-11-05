@@ -325,3 +325,20 @@ surface.snapshot(t: Double)          // 结构化快照（rect + computed）
 1. **只入队，永不渲染。** 工具语义里写明"renders nothing"；渲染永远是用户动作。
 2. **常开，不做插件开关。** 预览是会话面板能力，不是可选集成；ownership 挂在 `core.workspace-manager`（恒启用）而不是新建一个用户能关掉的插件。代价被"工具只做一次入队"限定住了。
 3. **超限截断而不是报错。** `html` 200k / `css` 100k 字符封顶，超出部分截断并在返回里标 `truncated: true`——一份被截断的预览仍然比一次失败的投放有用。
+
+### ① 抽帧：多帧结构化（已实现）
+
+窗口里新增"抽帧"：`captureSeries([0, 400, 800, 1200])` 依次 seek + 快照，得到四份结构性快照，然后相邻两帧做差分，输出人能读、模型也能读的位移行：
+
+```
+t=0ms   · 12 个节点 · 1 项问题
+t=400ms · 12 个节点 · 1 项问题
+t=0→400ms · #dot 移动 (0, 40)
+t=400→800ms · #dot 移动 (0, 40)
+```
+
+为什么先做结构化而不是像素帧（0010 §8.3 的分水岭）：纯 DOM/CSS 内容在不可见状态下**没有**任何办法拿到像素，PixelCopy 要求窗口可见，而 Remotion 的离屏 composer 需要把 `remotion` + `@remotion/web-renderer` 打进 assets（当前没有 npm 构建管线）。结构化抽帧不需要任何这些前提，且对"元素在动、动到哪里、有没有撞上别的元素"这类问题，数字比图片回答得更准。
+
+仪测 `frameSeriesMakesAnAnimationLegibleWithoutPixels` 用一段 `@keyframes` 位移动画验证：三次 stop 都拿到快照，且同一节点在三帧上的 y 各不相同。
+
+剩余（未做）：像素帧（需要可见窗口 + PixelCopy，或 Remotion bundle 管线），以及把抽帧结果变成 agent 可调用的工具——目前是窗口里的人工动作，因为渲染面只存在于 UI 进程内。
