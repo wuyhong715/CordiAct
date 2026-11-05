@@ -105,7 +105,7 @@ private fun executePush(
     context: ToolInvocationContext,
     arguments: ToolArguments,
 ): ToolResult {
-    val html = arguments.string("html")
+    val html = arguments.string("html").orEmpty()
     if (html.isBlank()) {
         return failure("html must not be empty; send the markup you want the user to see")
     }
