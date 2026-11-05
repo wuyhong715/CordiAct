@@ -385,6 +385,35 @@
         case 'snapshot':
           post('snapshot', buildSnapshot(primary()));
           break;
+        case 'compare': {
+          // Mounts the candidate document in a throwaway frame and snapshots both, so an A/B
+          // diff never disturbs the preview the user is looking at.
+          var spec = state.layout.frames[primaryIndex()] || { w: 390, h: 844 };
+          var temp = document.createElement('iframe');
+          temp.className = 'frame';
+          temp.style.width = Math.max(80, Math.min(2000, Number(spec.w) || 390)) + 'px';
+          temp.style.height = Math.max(80, Math.min(3000, Number(spec.h) || 844)) + 'px';
+          temp.style.visibility = 'hidden';
+          stage.appendChild(temp);
+          var candidateFrame = { el: temp, mounted: false };
+          mountInto(candidateFrame, String(cmd.html || ''), String(cmd.css || ''));
+          var finish = function () {
+            try {
+              var candidate = buildSnapshot(candidateFrame);
+              var live = buildSnapshot(primary());
+              post('compared', { previous: candidate, current: live });
+            } catch (e) {
+              fail('compare', e);
+            } finally {
+              if (temp.parentNode) temp.parentNode.removeChild(temp);
+            }
+          };
+          var fonts = temp.contentDocument && temp.contentDocument.fonts && temp.contentDocument.fonts.ready;
+          if (fonts && typeof fonts.then === 'function') fonts.then(finish, finish);
+          // No FontFaceSet (headless harness): layout is forced by getBoundingClientRect anyway.
+          else finish();
+          break;
+        }
         case 'probe': {
           // Everything the instrumented tests need to assert about the environment, answered
           // from inside the primary frame rather than inferred from Kotlin.

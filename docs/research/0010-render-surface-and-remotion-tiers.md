@@ -356,3 +356,21 @@ t=400→800ms · #dot 移动 (0, 40)
 切换并排会重新挂载文档（每个 frame 以自己宽度从干净状态布局）；`setViewport` 在并排模式下会把布局收回单屏。
 
 仪测 `compareLayoutMountsEveryBreakpoint` 断言 `frameCount == 3`、`frameWidths == [360, 390, 768]`、且每个 frame 都拿到了 shim。
+
+### ③ A/B 对比上一版（已实现）
+
+窗口里的"对比上一版"：把队列里**更早的那一条**当作基线，在页面里用一个**一次性 iframe** 挂载它并取快照，同时取当前文档的快照，两边交给 `UiSnapshotDiff` 做几何 + 规则差分。用完即丢弃那个临时 frame，**用户在看的预览不受打扰**（仪测断言对比前后 `nodeCount` 不变）。
+
+输出六类变化：`MOVED` / `RESIZED` / `ADDED` / `REMOVED` / `NEW_ISSUE` / `FIXED_ISSUE`。最后两类是重点——它直接回答"这次改动是修好了还是弄坏了"：
+
+```
+与「登录页 v1」相比 4 处变化
+#cta 移动 (0, 30)
+#cta 尺寸 (0, 8)
+新问题 SMALL_TAP_TARGET：body > div:nth-child(2) > button
+已修好 OVERFLOW_X：body > div:nth-child(1)
+```
+
+差分逻辑放在 `core/render/UiSnapshotDiff.kt`（8 个 JVM 用例，覆盖亚像素抖动不算变化、改名退化为 ADDED/REMOVED、问题新增/修复），因为它是最适合被测的纯函数部分；窗口只负责把 `SnapshotChange.detail` 打出来。
+
+已知局限（写在源码注释里）：选择器按 CSS 路径精确匹配，改类名会让路径重排，diff 退化成 ADDED/REMOVED 对——这对"重构过"的版本不友好，但比"看起来不一样"强。

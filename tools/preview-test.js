@@ -216,6 +216,16 @@ assert(snap.viewport && typeof snap.viewport.w === 'number', 'snapshot viewport 
 assert(Array.isArray(snap.nodes), 'snapshot nodes must be an array');
 assert(snap.backgroundColor === '#ffffff', 'transparent page must fall back to white');
 
+// ---- compare: the candidate lives in a throwaway frame ---------------------------
+const framesBeforeCompare = stage.children.length;
+api.handle(JSON.stringify({ type: 'compare', html: '<p>candidate</p>', css: 'p{color:#111}' }));
+const compared = sent.filter((m) => m.type === 'compared').pop();
+assert(compared, 'compared not posted');
+assert(compared.previous && compared.current, 'compare must report both sides');
+assert(compared.previous.viewport && compared.current.viewport, 'both sides need a viewport');
+assert(stage.children.length === framesBeforeCompare,
+  'the throwaway frame must be removed, live frames = ' + stage.children.length);
+
 // ---- back to a single frame ------------------------------------------------------
 api.handle(JSON.stringify({ type: 'setLayout', frames: [{ w: 390, h: 844 }], primary: 0 }));
 assert(stage.children.length === 1,

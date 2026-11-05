@@ -111,6 +111,12 @@ sealed interface RenderEvent {
         val frameWidths: List<Int> = emptyList(),
     ) : RenderEvent
 
+    /** A/B of the live document against a candidate one; both sides are structural snapshots. */
+    data class Compared(
+        val previous: UiSnapshot,
+        val current: UiSnapshot,
+    ) : RenderEvent
+
     data class Failed(
         val where: String,
         val message: String,

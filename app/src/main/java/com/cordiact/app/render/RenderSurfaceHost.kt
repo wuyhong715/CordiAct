@@ -257,6 +257,19 @@ class RenderSurfaceHost(
 
     fun requestSnapshot() = send(JSONObject().put("type", "snapshot"))
 
+    /**
+     * Snapshots [html]/[css] in a throwaway frame and reports it next to the live document, so a
+     * version comparison does not have to swap the preview out from under the user.
+     */
+    fun compare(html: String, css: String) {
+        send(
+            JSONObject()
+                .put("type", "compare")
+                .put("html", html)
+                .put("css", css),
+        )
+    }
+
     /** Asks the frame what its environment actually looks like; see [RenderEvent.Probed]. */
     fun probe() = send(JSONObject().put("type", "probe"))
 
@@ -365,6 +378,16 @@ class RenderSurfaceHost(
             "paused" -> onEvent(RenderEvent.Paused(json.optDouble("t", 0.0)))
 
             "layout" -> onEvent(RenderEvent.LayoutApplied(json.optJSONArray("frames")?.length() ?: 0))
+
+            "compared" -> {
+                val previous = json.optJSONObject("previous")?.let(SnapshotParser::parse)
+                val current = json.optJSONObject("current")?.let(SnapshotParser::parse)
+                if (previous == null || current == null) {
+                    onEvent(RenderEvent.Failed("compare", "comparison carried no snapshots"))
+                } else {
+                    onEvent(RenderEvent.Compared(previous = previous, current = current))
+                }
+            }
 
             "snapshot" -> {
                 val snapshot = SnapshotParser.parse(json)

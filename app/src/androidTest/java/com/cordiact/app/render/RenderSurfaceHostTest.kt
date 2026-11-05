@@ -222,6 +222,46 @@ class RenderSurfaceHostTest {
         assertTrue("primary frame should see the paragraph", probe.nodeCount >= 2)
     }
 
+    @Test
+    fun versionCompareReportsBothSidesWithoutDisturbingThePreview() {
+        host.setContent(html = """<main><p id="a">v2</p></main>""", css = "p{color:#111}")
+        await("mounted") { it as? RenderEvent.Mounted }
+        Thread.sleep(SETTLE_MS)
+
+        val beforeMark = events.size
+        host.probe()
+        val before = await("probe", since = beforeMark) { it as? RenderEvent.Probed }
+
+        val compareMark = events.size
+        host.compare(
+            html = """<main><p id="a">v1</p><div style="height:40px"></div></main>""",
+            css = "p{color:#111}",
+        )
+        val compared = await(
+            describe = "compare",
+            timeoutMs = ANIMATION_TIMEOUT_MS,
+            since = compareMark,
+        ) { it as? RenderEvent.Compared }
+
+        assertTrue("candidate snapshot came back empty", compared.previous.nodes.isNotEmpty())
+        assertTrue("live snapshot came back empty", compared.current.nodes.isNotEmpty())
+        assertTrue(
+            "the candidate has an extra element, so it must report more nodes",
+            compared.previous.nodes.size > compared.current.nodes.size,
+        )
+
+        val afterMark = events.size
+        host.probe()
+        val after = await("probe after compare", ANIMATION_TIMEOUT_MS, since = afterMark) {
+            it as? RenderEvent.Probed
+        }
+        assertEquals(
+            "comparing must not disturb the document on screen",
+            before.nodeCount,
+            after.nodeCount,
+        )
+    }
+
     /**
      * [since] exists because events accumulate for the whole test: without it, "wait for a
      * seek to 300ms" would be satisfied by the seek issued three lines earlier.

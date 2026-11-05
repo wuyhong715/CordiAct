@@ -29,9 +29,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import com.cordiact.core.render.SnapshotChange
 import com.cordiact.core.render.SnapshotFinding
 import com.cordiact.core.render.UiSnapshot
 import com.cordiact.core.render.UiSnapshotChecks
+import com.cordiact.core.render.UiSnapshotDiff
 import kotlin.math.abs
 
 /**
@@ -121,6 +123,7 @@ fun PreviewWindow(
                 } else {
                     RenderedPreview(
                         item = active,
+                        sessionId = sessionId,
                         onStop = { activeId = null },
                     )
                 }
@@ -166,6 +169,7 @@ private fun InboxRow(
 @Composable
 private fun RenderedPreview(
     item: PreviewItem,
+    sessionId: String?,
     onStop: () -> Unit,
 ) {
     var viewport by remember(item.id) { mutableStateOf(item.viewport) }
@@ -174,6 +178,11 @@ private fun RenderedPreview(
     var timeMs by remember(item.id) { mutableStateOf(0f) }
     var series by remember(item.id) { mutableStateOf<List<String>>(emptyList()) }
     var grid by remember(item.id) { mutableStateOf(false) }
+    var changes by remember(item.id) { mutableStateOf<List<SnapshotChange>>(emptyList()) }
+
+    // The queue is newest-first, so the previous version of this screen is the next entry down.
+    val queue = PreviewInbox.forSession(sessionId)
+    val earlier = queue.getOrNull(queue.indexOfFirst { it.id == item.id } + 1)
 
     val host = rememberRenderSurfaceHost { event ->
         when (event) {
@@ -182,6 +191,8 @@ private fun RenderedPreview(
             is RenderEvent.Failed -> status = "失败(${event.where}): ${event.message}"
             is RenderEvent.SnapshotReady -> findings = event.findings
             is RenderEvent.LayoutApplied -> status = "布局：${event.frames} 个视口"
+            is RenderEvent.Compared ->
+                changes = UiSnapshotDiff.compare(event.previous, event.current)
             is RenderEvent.Patched -> status = "已更新"
             else -> Unit
         }
@@ -227,6 +238,18 @@ private fun RenderedPreview(
             OutlinedButton(onClick = {
                 host.captureSeries(SERIES_TIMES) { stops -> series = summarizeSeries(SERIES_TIMES, stops) }
             }) { Text("抽帧") }
+            OutlinedButton(
+                enabled = earlier != null,
+                onClick = {
+                    val previous = earlier
+                    if (previous == null) {
+                        status = "没有更早的版本可对比"
+                    } else {
+                        status = "对比中…"
+                        host.compare(previous.html, previous.css)
+                    }
+                },
+            ) { Text("对比上一版") }
             OutlinedButton(onClick = onStop) { Text("停止渲染") }
         }
 
@@ -247,6 +270,15 @@ private fun RenderedPreview(
 
         Text(status, style = MaterialTheme.typography.labelSmall)
         Column(modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState())) {
+            if (changes.isNotEmpty()) {
+                Text(
+                    "与「${earlier?.title ?: "上一版"}」相比 ${changes.size} 处变化",
+                    style = MaterialTheme.typography.labelMedium,
+                )
+                changes.take(MAX_CHANGE_LINES).forEach { change ->
+                    Text(change.detail, style = MaterialTheme.typography.bodySmall)
+                }
+            }
             series.forEach { line ->
                 Text(line, style = MaterialTheme.typography.bodySmall)
             }
@@ -266,6 +298,7 @@ private fun RenderedPreview(
 private val SERIES_TIMES = listOf(0.0, 400.0, 800.0, 1200.0)
 
 private const val MAX_SERIES_LINES = 24
+private const val MAX_CHANGE_LINES = 20
 
 /**
  * Turns a run of snapshots into movement lines.
