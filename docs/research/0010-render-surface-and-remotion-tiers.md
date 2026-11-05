@@ -289,7 +289,7 @@ surface.snapshot(t: Double)          // 结构化快照（rect + computed）
 
 1. 没有像素回读：`capture()` 未实现，纯 DOM 内容按 8.3 的分水岭本就不该做后台截图。
 2. 聊天流还没接：卡片缩略图缓存、单实例切换、全屏 sheet 都没做，现在只有独立验收台。
-3. 三视口是"切换"不是"并排 iframe"（并排属于卡片 UI 的一部分）。
+3. ~~三视口是切换不是并排~~ —— 已实现并排（见 §10 ②）。
 4. Remotion 路由未接（L0 抽帧 / L1 样片），`assets/render/` 里还没有 Remotion bundle。
 
 
@@ -342,3 +342,17 @@ t=400→800ms · #dot 移动 (0, 40)
 仪测 `frameSeriesMakesAnAnimationLegibleWithoutPixels` 用一段 `@keyframes` 位移动画验证：三次 stop 都拿到快照，且同一节点在三帧上的 y 各不相同。
 
 剩余（未做）：像素帧（需要可见窗口 + PixelCopy，或 Remotion bundle 管线），以及把抽帧结果变成 agent 可调用的工具——目前是窗口里的人工动作，因为渲染面只存在于 UI 进程内。
+
+### ② 三视口并排（已实现）
+
+窗口多一个"并排"开关：舞台从 1 个 iframe 变成 3 个（360 / 390 / 768），同一份文档同时挂到三个 frame，各自以声明宽度布局，整排再按 `min(1, 可用宽/总宽, 可用高/最高)` 缩放——**只缩显示，不改布局宽度**，否则预览会对断点撒谎。
+
+三个实现要点：
+
+1. **每个 frame 有自己的时钟 shim。** `seek/step/play/pause` 广播到全部 frame；否则并排比较会出现"一个停住、两个还在动"的假象。
+2. **快照/抽帧只针对 primary frame**（默认 390）。"哪个元素动了"必须只有一个答案；想按 360 分析就把 primary 切过去。
+3. **`probe` 报的是声明宽度**（`parseFloat(style.width)`）而不是 `getBoundingClientRect().width`——舞台整体缩放后 rect 量到的是缩放比，不是断点。
+
+切换并排会重新挂载文档（每个 frame 以自己宽度从干净状态布局）；`setViewport` 在并排模式下会把布局收回单屏。
+
+仪测 `compareLayoutMountsEveryBreakpoint` 断言 `frameCount == 3`、`frameWidths == [360, 390, 768]`、且每个 frame 都拿到了 shim。

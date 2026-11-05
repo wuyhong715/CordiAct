@@ -2,19 +2,18 @@
  * CordiAct render surface — host page script.
  *
  * Responsibilities:
- *   1. own the stage geometry (viewport + scale),
- *   2. mount agent HTML into a same-origin iframe together with a virtual-clock shim,
- *   3. answer host commands: setContent / patch / setViewport / play / pause / seek / step /
- *      snapshot.
+ *   1. own the stage geometry: one frame, or several side by side for a breakpoint compare,
+ *   2. mount agent HTML into same-origin iframes together with a virtual-clock shim,
+ *   3. answer host commands: setContent / setLayout / patch / play / pause / seek / step /
+ *      snapshot / probe.
  *
- * Why an iframe instead of writing into this document: the agent's HTML may carry <html>,
+ * Why iframes instead of writing into this document: the agent's HTML may carry <html>,
  * <body>, <style> and <script>. Only a separate document gives it a clean cascade, and only
  * a separate document keeps its globals away from the bridge object below.
  *
- * The iframe must be same-origin (sandbox="allow-scripts allow-same-origin") — we need to
- * read its document to snapshot and to drive its clock. That also means agent code *can*
- * reach this page, so everything crossing the bridge is treated as untrusted data by Kotlin:
- * sizes are clamped, snapshot nodes are attached only after re-validation.
+ * Every frame is same-origin, because we have to read its document to snapshot and to drive
+ * its clock. That means agent code can reach this page, so everything crossing the bridge is
+ * treated as untrusted data by Kotlin: sizes are clamped and snapshot nodes are re-validated.
  */
 (function () {
   'use strict';
@@ -23,21 +22,18 @@
    *  plain browser for debugging. */
   var HOST = window.CordiActHost || null;
   var stage = document.getElementById('stage');
-  var frame = document.getElementById('frame');
   var boot = document.getElementById('boot');
 
   var state = {
-    viewport: { w: 390, h: 844, scale: 1 },
+    layout: { frames: [{ w: 390, h: 844 }], primary: 0 },
     html: '',
     css: '',
     frozen: false,
-    vt: 0,            // virtual time, ms — what the preview believes "now" is
-    lastStepAt: 0,
-    installed: false,
-    shimVersion: 0
+    vt: 0
   };
 
   var MAX_NODES = 400;
+  var MAX_FRAMES = 3;
 
   function post(type, payload) {
     if (!HOST || !HOST.postMessage) return;
@@ -59,12 +55,12 @@
 
   // ---- virtual clock -------------------------------------------------------------
   //
-  // Installed *inside the iframe document before the agent's scripts run*, by prepending
+  // Installed *inside each frame document before the agent's scripts run*, by prepending
   // SHIM_SOURCE to the document we write. It starts in pass-through mode so live preview
   // behaves normally, and switches to frozen mode the first time the host seeks. Flipping the
   // mode later is safe because the patched requestAnimationFrame was captured by the page at
-  // parse time — that is the whole reason the shim must be injected first rather than applied
-  // on demand.
+  // parse time — that is the whole reason the shim is injected first rather than applied on
+  // demand.
   var SHIM_SOURCE = '(' + function () {
     var pending = new Map();
     var nextId = 1;
@@ -98,7 +94,6 @@
     window.__cordiactClock = {
       isFrozen: function () { return frozen; },
       now: function () { return frozen ? vt : realNow(); },
-      // Absolute seek: the host speaks in absolute timeline ms, the shim stores a cursor.
       seek: function (ms) {
         frozen = true;
         vt = ms;
@@ -121,11 +116,37 @@
     };
   }.toString() + ')();';
 
-  // ---- content mounting ----------------------------------------------------------
+  // ---- frame bookkeeping ---------------------------------------------------------
+
+  var frames = [];
+
+  function ensureFrames(count) {
+    count = Math.max(1, Math.min(MAX_FRAMES, count));
+    while (frames.length > count) {
+      var dropped = frames.pop();
+      if (dropped.el.parentNode) dropped.el.parentNode.removeChild(dropped.el);
+    }
+    while (frames.length < count) {
+      var el = document.createElement('iframe');
+      el.className = 'frame';
+      el.setAttribute('title', 'preview');
+      stage.appendChild(el);
+      frames.push({ el: el, mounted: false });
+    }
+  }
+
+  function primaryIndex() {
+    var index = Number(state.layout.primary) || 0;
+    return Math.max(0, Math.min(frames.length - 1, index));
+  }
+
+  function primary() {
+    return frames[primaryIndex()] || null;
+  }
 
   function docFor(html, css) {
     // The shim goes first so the page's own scripts capture the patched rAF; <base> keeps
-    // relative URLs pointing at the asset origin instead of the iframe's about:blank.
+    // relative URLs pointing at the asset origin instead of the frame's about:blank.
     return '<!doctype html><html><head><meta charset="utf-8">' +
       '<base href="https://appassets.androidplatform.net/assets/render/">' +
       '<script>' + SHIM_SOURCE + '<\/script>' +
@@ -133,31 +154,61 @@
       '</head><body>' + (html || '') + '</body></html>';
   }
 
-  function mount(html, css) {
-    var doc = frame.contentDocument;
-    if (!doc) { fail('mount', 'iframe document unavailable'); return; }
+  function mountInto(frame, html, css) {
+    var doc = frame.el.contentDocument;
+    if (!doc) throw new Error('iframe document unavailable');
     doc.open();
     doc.write(docFor(html, css));
     doc.close();
-    if (!state.installed) {
-      state.installed = true;
-      frame.contentWindow.addEventListener('error', function (e) {
-        fail('frame', e.error || e.message);
-      });
-      frame.contentWindow.addEventListener('unhandledrejection', function (e) {
-        fail('frame', e.reason);
-      });
+    if (!frame.mounted) {
+      frame.mounted = true;
+      try {
+        frame.el.contentWindow.addEventListener('error', function (e) {
+          fail('frame', e.error || e.message);
+        });
+        frame.el.contentWindow.addEventListener('unhandledrejection', function (e) {
+          fail('frame', e.reason);
+        });
+      } catch (e) { /* cross-origin should be impossible here */ }
     }
+  }
+
+  function mountAll() {
+    for (var i = 0; i < frames.length; i++) mountInto(frames[i], state.html, state.css);
     state.vt = 0;
   }
 
-  function applyViewport() {
-    var vp = state.viewport;
-    var w = Math.max(80, Math.min(2000, vp.w));
-    var h = Math.max(80, Math.min(3000, vp.h));
-    var scale = Math.max(0.1, Math.min(2, vp.scale));
-    stage.style.width = w + 'px';
-    stage.style.height = h + 'px';
+  /** Applies layout to the stage: one frame centred, or several in a row, scaled to fit. */
+  function applyLayout() {
+    var layout = state.layout;
+    ensureFrames(layout.frames.length);
+    var gap = 12;
+    var totalWidth = 0;
+    var maxHeight = 0;
+
+    stage.className = layout.frames.length > 1 ? 'grid' : 'single';
+    stage.style.width = '';
+    stage.style.height = '';
+
+    for (var i = 0; i < frames.length; i++) {
+      var spec = layout.frames[i] || layout.frames[0];
+      var w = Math.max(80, Math.min(2000, Number(spec.w) || 390));
+      var h = Math.max(80, Math.min(3000, Number(spec.h) || 844));
+      frames[i].el.style.width = w + 'px';
+      frames[i].el.style.height = h + 'px';
+      totalWidth += w + (i > 0 ? gap : 0);
+      maxHeight = Math.max(maxHeight, h);
+    }
+
+    // Fit the row inside the viewport, but never upscale: a preview that lies about pixel
+    // size is worse than a small one.
+    var availWidth = window.innerWidth - 16;
+    var availHeight = window.innerHeight - 16;
+    var scale = Math.min(1, availWidth / totalWidth, availHeight / maxHeight);
+    if (!isFinite(scale) || scale <= 0) scale = 1;
+
+    stage.style.width = totalWidth + 'px';
+    stage.style.height = maxHeight + 'px';
     stage.style.transform = 'translate(-50%, -50%) scale(' + scale + ')';
   }
 
@@ -185,15 +236,16 @@
     return isFinite(n) ? n : null;
   }
 
-  function buildSnapshot() {
-    var doc = frame.contentDocument;
+  function buildSnapshot(frame) {
+    var doc = frame && frame.el.contentDocument;
     if (!doc || !doc.body) return { viewport: null, nodes: [] };
+    var win = frame.el.contentWindow;
     var root = doc.body;
     var nodes = [];
     var all = root.querySelectorAll('*');
     for (var i = 0; i < all.length && nodes.length < MAX_NODES; i++) {
       var el = all[i];
-      var cs = frame.contentWindow.getComputedStyle(el);
+      var cs = win.getComputedStyle(el);
       if (cs.display === 'none' || cs.visibility === 'hidden') continue;
       var r = el.getBoundingClientRect();
       var tag = el.tagName.toLowerCase();
@@ -225,7 +277,7 @@
         }
       });
     }
-    var bodyStyle = frame.contentWindow.getComputedStyle(root);
+    var bodyStyle = win.getComputedStyle(root);
     var pageBackground = bodyStyle.backgroundColor;
     return {
       viewport: { w: root.clientWidth, h: root.clientHeight, density: 1.0 },
@@ -234,6 +286,13 @@
         : '#ffffff',
       nodes: nodes
     };
+  }
+
+  function eachClock(fn) {
+    for (var i = 0; i < frames.length; i++) {
+      var win = frames[i].el.contentWindow;
+      if (win && win.__cordiactClock) fn(win.__cordiactClock);
+    }
   }
 
   // ---- command surface -----------------------------------------------------------
@@ -247,73 +306,91 @@
         case 'setContent':
           state.html = String(cmd.html || '');
           state.css = String(cmd.css || '');
-          if (cmd.viewport) { state.viewport = cmd.viewport; }
+          if (cmd.viewport && state.layout.frames.length === 1) {
+            state.layout.frames = [{
+              w: Number(cmd.viewport.w) || 390,
+              h: Number(cmd.viewport.h) || 844
+            }];
+          }
           boot && (boot.style.display = 'none');
-          applyViewport();
-          mount(state.html, state.css);
-          post('mounted', { viewport: state.viewport });
+          applyLayout();
+          mountAll();
+          post('mounted', { viewport: state.layout.frames[primaryIndex()], frames: frames.length });
           break;
+        case 'setLayout': {
+          var next = Array.isArray(cmd.frames) && cmd.frames.length ? cmd.frames : [{ w: 390, h: 844 }];
+          state.layout = { frames: next.slice(0, MAX_FRAMES), primary: Number(cmd.primary) || 0 };
+          applyLayout();
+          // Remount so each frame lays out at its own width from a clean document.
+          if (state.html) mountAll();
+          post('layout', { frames: state.layout.frames, primary: state.layout.primary });
+          break;
+        }
         case 'patch':
           // Style-only or body-only swap: keeps scroll position and any running animation,
           // which is what makes sub-150ms iteration possible.
           if (typeof cmd.css === 'string') {
-            var styleEl = frame.contentDocument.querySelector('head > style');
-            if (styleEl) styleEl.textContent = cmd.css;
             state.css = cmd.css;
+            for (var p = 0; p < frames.length; p++) {
+              var doc0 = frames[p].el.contentDocument;
+              var styleEl = doc0 && doc0.querySelector('head > style');
+              if (styleEl) styleEl.textContent = cmd.css;
+            }
           }
           if (typeof cmd.html === 'string') {
-            frame.contentDocument.body.innerHTML = cmd.html;
             state.html = cmd.html;
+            for (var q = 0; q < frames.length; q++) {
+              var doc1 = frames[q].el.contentDocument;
+              if (doc1) doc1.body.innerHTML = cmd.html;
+            }
           }
           post('patched', {});
           break;
-        case 'setViewport':
-          state.viewport = {
-            w: Number(cmd.w) || state.viewport.w,
-            h: Number(cmd.h) || state.viewport.h,
-            scale: cmd.scale == null ? state.viewport.scale : Number(cmd.scale)
-          };
-          applyViewport();
-          post('viewport', state.viewport);
+        case 'setViewport': {
+          var w = Number(cmd.w) || 390;
+          var h = Number(cmd.h) || 844;
+          state.layout.frames = [{ w: w, h: h }];
+          state.layout.primary = 0;
+          applyLayout();
+          post('viewport', { w: w, h: h, scale: Number(cmd.scale) || 1 });
           break;
+        }
         case 'seek': {
-          var clock = frame.contentWindow.__cordiactClock;
-          if (!clock) { fail('seek', 'clock shim missing from document'); break; }
-          var t = clock.seek(Number(cmd.t) || 0);
+          var t = Number(cmd.t) || 0;
+          eachClock(function (clock) { clock.seek(t); });
           state.frozen = true;
           state.vt = t;
           post('seeked', { t: t });
           break;
         }
         case 'step': {
-          var clock2 = frame.contentWindow.__cordiactClock;
-          if (!clock2) { fail('step', 'clock shim missing from document'); break; }
-          var next = clock2.seek((cmd.from == null ? clock2.now() : Number(cmd.from)) + (Number(cmd.ms) || 16));
-          state.vt = next;
-          post('seeked', { t: next });
+          var from = cmd.from == null ? state.vt : Number(cmd.from);
+          var to = from + (Number(cmd.ms) || 16);
+          eachClock(function (clock) { clock.seek(to); });
+          state.frozen = true;
+          state.vt = to;
+          post('seeked', { t: to });
           break;
         }
-        case 'play': {
-          var clock3 = frame.contentWindow.__cordiactClock;
+        case 'play':
+          eachClock(function (clock) { clock.resume(); });
           state.frozen = false;
-          if (clock3) clock3.resume();
           post('playing', {});
           break;
-        }
-        case 'pause': {
-          var clock4 = frame.contentWindow.__cordiactClock;
-          if (clock4) { state.vt = clock4.seek(clock4.now()); state.frozen = true; }
+        case 'pause':
+          eachClock(function (clock) { clock.seek(clock.now()); });
+          state.frozen = true;
           post('paused', { t: state.vt });
           break;
-        }
         case 'snapshot':
-          post('snapshot', buildSnapshot());
+          post('snapshot', buildSnapshot(primary()));
           break;
         case 'probe': {
           // Everything the instrumented tests need to assert about the environment, answered
-          // from inside the frame rather than inferred from Kotlin.
-          var win = frame.contentWindow;
-          var doc = frame.contentDocument;
+          // from inside the primary frame rather than inferred from Kotlin.
+          var frame = primary();
+          var win = frame && frame.el.contentWindow;
+          var doc = frame && frame.el.contentDocument;
           var clock = win && win.__cordiactClock;
           var animations = [];
           try {
@@ -328,7 +405,11 @@
             animationTimes: animations.map(function (a) {
               return typeof a.currentTime === 'number' ? a.currentTime : null;
             }),
-            nodeCount: doc ? doc.querySelectorAll('*').length : -1
+            nodeCount: doc ? doc.querySelectorAll('*').length : -1,
+            frameCount: frames.length,
+            // Declared width, not the measured rect: the stage is scaled to fit, so a rect
+            // measurement would report the zoom level instead of the breakpoint.
+            frameWidths: frames.map(function (f) { return Math.round(parseFloat(f.el.style.width) || 0); })
           });
           break;
         }
@@ -344,6 +425,10 @@
   }
 
   window.__cordiact = { handle: handle };
-  applyViewport();
+  ensureFrames(1);
+  applyLayout();
+  window.addEventListener('resize', function () {
+    try { applyLayout(); } catch (e) { /* ignore */ }
+  });
   post('ready', { ua: navigator.userAgent });
 })();

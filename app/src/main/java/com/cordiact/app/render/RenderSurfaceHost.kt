@@ -23,6 +23,7 @@ import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import com.cordiact.core.render.UiSnapshot
 import com.cordiact.core.render.UiSnapshotChecks
+import org.json.JSONArray
 import org.json.JSONObject
 import java.util.ArrayDeque
 
@@ -77,6 +78,7 @@ class RenderSurfaceHost(
     private var ready = false
     private var destroyed = false
     private var viewport = PreviewViewport.Phone
+    private var layout = PreviewLayout.single(PreviewViewport.Phone)
 
     // Frame-series driver: the page holds one document, so stops are walked one at a time
     // instead of firing five probes at once.
@@ -212,6 +214,27 @@ class RenderSurfaceHost(
         send(command)
     }
 
+    /**
+     * Switches between one frame and a row of frames. A compare layout remounts the document in
+     * every frame so each one lays out at its own width from a clean state.
+     */
+    fun setLayout(next: PreviewLayout) {
+        layout = next.clamped()
+        send(
+            JSONObject()
+                .put("type", "setLayout")
+                .put("primary", layout.primary)
+                .put(
+                    "frames",
+                    JSONArray().apply {
+                        layout.frames.forEach { frame ->
+                            put(JSONObject().put("w", frame.widthDp).put("h", frame.heightDp))
+                        }
+                    },
+                ),
+        )
+    }
+
     fun setViewport(viewport: PreviewViewport) {
         this.viewport = viewport.clamped()
         send(
@@ -341,6 +364,8 @@ class RenderSurfaceHost(
 
             "paused" -> onEvent(RenderEvent.Paused(json.optDouble("t", 0.0)))
 
+            "layout" -> onEvent(RenderEvent.LayoutApplied(json.optJSONArray("frames")?.length() ?: 0))
+
             "snapshot" -> {
                 val snapshot = SnapshotParser.parse(json)
                 if (snapshot == null) {
@@ -373,6 +398,10 @@ class RenderSurfaceHost(
                         }
                     } ?: emptyList(),
                     nodeCount = json.optInt("nodeCount", 0),
+                    frameCount = json.optInt("frameCount", 0),
+                    frameWidths = json.optJSONArray("frameWidths")?.let { widths ->
+                        (0 until widths.length()).map { widths.optInt(it) }
+                    } ?: emptyList(),
                 ),
             )
 

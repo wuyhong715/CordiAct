@@ -29,6 +29,41 @@ data class PreviewViewport(
 }
 
 /**
+ * What the stage shows: one frame, or several side by side.
+ *
+ * The compare layout is a *viewing* aid — three frames of the same document at 360/390/768, so
+ * a breakpoint mistake is visible at a glance. Snapshots and frame series still target
+ * [primary] only, because "which element moved" has to have one answer.
+ */
+data class PreviewLayout(
+    val frames: List<PreviewViewport>,
+    val primary: Int = 0,
+) {
+    fun clamped(): PreviewLayout {
+        val safeFrames = frames.take(MAX_FRAMES).map { it.clamped() }.ifEmpty {
+            listOf(PreviewViewport.Phone)
+        }
+        return PreviewLayout(safeFrames, primary.coerceIn(0, safeFrames.lastIndex))
+    }
+
+    companion object {
+        private const val MAX_FRAMES = 3
+
+        fun single(viewport: PreviewViewport) = PreviewLayout(listOf(viewport))
+
+        /** The three widths worth comparing before shipping a screen. */
+        val Compare3 = PreviewLayout(
+            frames = listOf(
+                PreviewViewport(widthDp = 360, heightDp = 800),
+                PreviewViewport(widthDp = 390, heightDp = 844),
+                PreviewViewport(widthDp = 768, heightDp = 1024),
+            ),
+            primary = 1,
+        )
+    }
+}
+
+/**
  * What the surface reports back. Mirrors the `post(...)` calls in `assets/render/preview.js`;
  * adding a message there without adding a branch here degrades to [Unknown] rather than
  * throwing, so a newer page never crashes an older host.
@@ -43,6 +78,9 @@ sealed interface RenderEvent {
     data class Seeked(val timeMs: Double) : RenderEvent
 
     data object Playing : RenderEvent
+
+    /** Emitted after the stage has rearranged itself; [frames] is the live frame count. */
+    data class LayoutApplied(val frames: Int) : RenderEvent
 
     data class Paused(val timeMs: Double) : RenderEvent
 
@@ -69,6 +107,8 @@ sealed interface RenderEvent {
         val animationCount: Int,
         val animationTimes: List<Double?>,
         val nodeCount: Int,
+        val frameCount: Int = 0,
+        val frameWidths: List<Int> = emptyList(),
     ) : RenderEvent
 
     data class Failed(

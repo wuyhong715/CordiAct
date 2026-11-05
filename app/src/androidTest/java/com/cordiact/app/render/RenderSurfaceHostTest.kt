@@ -198,6 +198,30 @@ class RenderSurfaceHostTest {
         )
     }
 
+    @Test
+    fun compareLayoutMountsEveryBreakpoint() {
+        host.setContent(html = "<main><h1>hi</h1></main>")
+        await("mounted") { it as? RenderEvent.Mounted }
+
+        val layoutMark = events.size
+        host.setLayout(PreviewLayout.Compare3)
+        await("layout", since = layoutMark) { event ->
+            (event as? RenderEvent.LayoutApplied)?.takeIf { it.frames == 3 }
+        }
+
+        val probeMark = events.size
+        host.probe()
+        val probe = await("probe", since = probeMark) { it as? RenderEvent.Probed }
+        assertEquals("compare layout must show three frames", 3, probe.frameCount)
+        assertEquals(
+            "each frame must keep its declared breakpoint width",
+            listOf(360, 390, 768),
+            probe.frameWidths,
+        )
+        assertEquals("the document must be mounted in every frame", true, probe.hasClock)
+        assertTrue("primary frame should see the paragraph", probe.nodeCount >= 2)
+    }
+
     /**
      * [since] exists because events accumulate for the whole test: without it, "wait for a
      * seek to 300ms" would be satisfied by the seek issued three lines earlier.

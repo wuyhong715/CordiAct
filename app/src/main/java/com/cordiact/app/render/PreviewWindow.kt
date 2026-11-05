@@ -173,6 +173,7 @@ private fun RenderedPreview(
     var status by remember(item.id) { mutableStateOf("正在加载…") }
     var timeMs by remember(item.id) { mutableStateOf(0f) }
     var series by remember(item.id) { mutableStateOf<List<String>>(emptyList()) }
+    var grid by remember(item.id) { mutableStateOf(false) }
 
     val host = rememberRenderSurfaceHost { event ->
         when (event) {
@@ -180,6 +181,7 @@ private fun RenderedPreview(
             is RenderEvent.Mounted -> status = "已渲染 ${event.viewport.widthDp}dp"
             is RenderEvent.Failed -> status = "失败(${event.where}): ${event.message}"
             is RenderEvent.SnapshotReady -> findings = event.findings
+            is RenderEvent.LayoutApplied -> status = "布局：${event.frames} 个视口"
             is RenderEvent.Patched -> status = "已更新"
             else -> Unit
         }
@@ -192,17 +194,33 @@ private fun RenderedPreview(
     Column(modifier = Modifier.fillMaxSize()) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(
-                onClick = { viewport = PreviewViewport.SmallPhone; host.setViewport(viewport) },
-                enabled = viewport.widthDp != 360,
+                onClick = {
+                    grid = false
+                    viewport = PreviewViewport.SmallPhone
+                    host.setLayout(PreviewLayout.single(viewport))
+                },
+                enabled = grid || viewport.widthDp != 360,
             ) { Text("360") }
             OutlinedButton(
-                onClick = { viewport = PreviewViewport.Phone; host.setViewport(viewport) },
-                enabled = viewport.widthDp != 390,
+                onClick = {
+                    grid = false
+                    viewport = PreviewViewport.Phone
+                    host.setLayout(PreviewLayout.single(viewport))
+                },
+                enabled = grid || viewport.widthDp != 390,
             ) { Text("390") }
             OutlinedButton(
-                onClick = { viewport = PreviewViewport.Tablet; host.setViewport(viewport) },
-                enabled = viewport.widthDp != 768,
+                onClick = {
+                    grid = false
+                    viewport = PreviewViewport.Tablet
+                    host.setLayout(PreviewLayout.single(viewport))
+                },
+                enabled = grid || viewport.widthDp != 768,
             ) { Text("768") }
+            OutlinedButton(onClick = {
+                grid = !grid
+                host.setLayout(if (grid) PreviewLayout.Compare3 else PreviewLayout.single(viewport))
+            }) { Text(if (grid) "单屏" else "并排") }
             OutlinedButton(onClick = { host.play() }) { Text("播放") }
             OutlinedButton(onClick = { host.pause() }) { Text("暂停") }
             OutlinedButton(onClick = { host.requestSnapshot() }) { Text("检查") }
