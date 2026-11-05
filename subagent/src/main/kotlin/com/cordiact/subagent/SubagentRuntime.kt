@@ -80,35 +80,47 @@ class SubagentRuntime(
         deadlineAtMillis: Long,
     ): ChildResult {
         check(enabled) { "Subagent runtime is not enabled" }
-
-        val parentSessionId = requireNotNull(parent.sessionId) {
-            "Delegation requires a calling Session"
+        return when (val admission = admit(spec, parent)) {
+            is Admission.Refused -> failed(spec, admission.reason)
+            is Admission.Admitted -> execute(admission.child, deadlineAtMillis)
         }
+    }
+
+    /**
+     * Everything that decides whether a child may run, and the child Session itself.
+     *
+     * Split from [execute] so a background run can be admitted synchronously — the parent needs
+     * the child's id before it answers — while the turn itself runs elsewhere. Both paths go
+     * through this one function, so depth, Workspace and grant rules cannot diverge between them.
+     */
+    @Synchronized
+    fun admit(spec: ChildSpec, parent: ToolInvocationContext): Admission {
+        val parentSessionId = parent.sessionId
+            ?: return Admission.Refused("Delegation requires a calling Session")
         val parentSession = sessions.getSession(parentSessionId)
-            ?: return failed(spec, "The calling Session no longer exists")
+            ?: return Admission.Refused("The calling Session no longer exists")
 
         // A child may only run where its parent could. The Workspace check is not an
         // optimization: cross-Workspace delegation would need the `@` authorization semantics
         // copied into a second place, and 0003 fixed that authorization to the referencing turn.
         if (spec.workspaceId != parentSession.workspaceId) {
-            return failed(spec, "A delegated agent cannot run in a different Workspace")
+            return Admission.Refused("A delegated agent cannot run in a different Workspace")
         }
 
         val childDepth = parentSession.depth + 1
         if (childDepth > limits.maxDepth) {
-            return failed(spec, "Delegation depth limit reached (max ${limits.maxDepth})")
+            return Admission.Refused("Delegation depth limit reached (max ${limits.maxDepth})")
         }
 
         val existing = sessions.listChildSessions(parentSessionId).size
         if (existing >= limits.maxChildrenPerSession) {
-            return failed(
-                spec,
+            return Admission.Refused(
                 "This Session already delegated $existing tasks (max ${limits.maxChildrenPerSession})",
             )
         }
 
         val model = spec.model ?: parent.modelRoute()
-            ?: return failed(spec, "No model route for the delegated agent")
+            ?: return Admission.Refused("No model route for the delegated agent")
 
         val child = try {
             sessions.createChildSession(
@@ -119,33 +131,41 @@ class SubagentRuntime(
                 depth = childDepth,
             )
         } catch (failure: Exception) {
-            return failed(spec, failure.message ?: "Could not create the delegated Session")
+            return Admission.Refused(failure.message ?: "Could not create the delegated Session")
         }
 
-        // The depth gate has two halves on purpose: hiding the tool keeps a child from planning
-        // work it cannot finish; the check in canDelegate is what actually enforces the ceiling
-        // if this list is ever wrong.
+        // The depth gate has two halves on purpose: hiding the delegation tools keeps a child
+        // from planning work it cannot finish; the check in canDelegate is what actually enforces
+        // the ceiling if that list is ever wrong.
         val tools = toolPlanner.specs(spec.workspaceId, model)
             .filter { childDepth < limits.maxDepth || it.name !in DELEGATION_TOOL_NAMES }
 
-        val outcome = try {
-            runner.run(
-                ChildTurnRequest(
-                    sessionId = child.id,
-                    model = model,
-                    prompt = spec.prompt,
-                    tools = tools,
-                    context = childContext(parent, child.id, spec.prompt),
-                    systemContext = systemContextFor(spec.workspaceId),
-                    deadlineAtMillis = deadlineAtMillis,
-                ),
-            )
+        return Admission.Admitted(
+            AdmittedChild(
+                sessionId = child.id,
+            label = spec.label,
+            request = ChildTurnRequest(
+                sessionId = child.id,
+                model = model,
+                prompt = spec.prompt,
+                tools = tools,
+                context = childContext(parent, child.id, spec.prompt),
+                systemContext = systemContextFor(spec.workspaceId),
+                deadlineAtMillis = 0L,
+            ),
+            ),
+        )
+    }
+
+    /** Runs an admitted child. Callable from any thread; the runner owns its own synchronisation. */
+    fun execute(admitted: AdmittedChild, deadlineAtMillis: Long): ChildResult {        val outcome = try {
+            runner.run(admitted.request.copy(deadlineAtMillis = deadlineAtMillis))
         } catch (failure: Exception) {
             // The child Session stays: it holds whatever the child wrote before failing, and the
             // user can open it. Only the result is reported as a failure.
             return ChildResult(
-                sessionId = child.id,
-                label = spec.label,
+                sessionId = admitted.sessionId,
+                label = admitted.label,
                 text = failure.message ?: "The delegated turn failed",
                 stop = ToolLoopStop.FAILED,
             )
@@ -153,14 +173,74 @@ class SubagentRuntime(
 
         val (text, truncated) = truncate(outcome.text, limits.maxResultChars)
         return ChildResult(
-            sessionId = child.id,
-            label = spec.label,
+            sessionId = admitted.sessionId,
+            label = admitted.label,
             text = text,
             stop = outcome.stop,
             inputTokens = outcome.inputTokens,
             outputTokens = outcome.outputTokens,
             truncated = truncated,
         )
+    }
+
+    /**
+     * Prepares another turn in an **existing** child Session.
+     *
+     * Used by `send_child_message`: the child keeps its transcript, so the follow-up has the
+     * earlier work in view. No admission check is repeated because the Session already passed
+     * one — but the depth ceiling still applies, since the child's own depth has not changed.
+     */
+    fun admitExisting(
+        childSessionId: String,
+        prompt: String,
+        parent: ToolInvocationContext,
+    ): Admission {
+        val parentSessionId = parent.sessionId
+            ?: return Admission.Refused("Delegation requires a calling Session")
+        val child = sessions.getSession(childSessionId)
+            ?: return Admission.Refused("Child Session '$childSessionId' no longer exists")
+        // The id is not a capability: a Session from another conversation must not be drivable
+        // from this one.
+        if (child.parentSessionId != parentSessionId) {
+            return Admission.Refused("Child '$childSessionId' belongs to another conversation")
+        }
+        if (child.depth > limits.maxDepth) {
+            return Admission.Refused("Delegation depth limit reached (max ${limits.maxDepth})")
+        }
+        val model = parent.modelRoute()
+            ?: return Admission.Refused("No model route for the delegated agent")
+
+        val tools = toolPlanner.specs(child.workspaceId, model)
+            .filter { child.depth < limits.maxDepth || it.name !in DELEGATION_TOOL_NAMES }
+
+        return Admission.Admitted(
+            AdmittedChild(
+                sessionId = child.id,
+                label = child.agentLabel ?: child.title,
+                request = ChildTurnRequest(
+                    sessionId = child.id,
+                    model = model,
+                    prompt = prompt,
+                    tools = tools,
+                    context = childContext(parent, child.id, prompt),
+                    systemContext = systemContextFor(child.workspaceId),
+                    deadlineAtMillis = 0L,
+                ),
+            ),
+        )
+    }
+
+    /** One admitted child: everything needed to run the turn, and nothing that can widen it. */
+    data class AdmittedChild(
+        val sessionId: String,
+        val label: String,
+        val request: ChildTurnRequest,
+    )
+
+    /** The outcome of [admit]. A refusal carries its reason instead of a flag to read back. */
+    sealed interface Admission {
+        data class Admitted(val child: AdmittedChild) : Admission
+        data class Refused(val reason: String) : Admission
     }
 
     /** The parent turn's route, carried in its tool context. */

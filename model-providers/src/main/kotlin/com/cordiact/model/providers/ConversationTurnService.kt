@@ -10,6 +10,8 @@ import com.cordiact.core.conversation.ModelId
 import com.cordiact.core.conversation.ModelMessage
 import com.cordiact.core.conversation.SessionManagerService
 import com.cordiact.core.conversation.ModelToolSpec
+import com.cordiact.core.conversation.TurnNotice
+import com.cordiact.core.conversation.TurnNoticeSource
 import com.cordiact.core.tool.ToolInvocationContext
 import com.cordiact.core.toolloop.ToolDispatcher
 import com.cordiact.core.toolloop.ToolLoopOutcome
@@ -22,6 +24,14 @@ import java.util.concurrent.atomic.AtomicBoolean
 class ConversationTurnService(
     private val sessions: SessionManagerService,
     private val models: ModelAdapterService,
+    /**
+     * Where background work hands the turn something to say before it starts.
+     *
+     * Null in tests and in any composition without background delegation. A turn is synchronous
+     * and single-flight per Session, so there is no way to interrupt one with an event; the only
+     * honest delivery point is the next turn's beginning.
+     */
+    private val notices: TurnNoticeSource? = null,
 ) {
     private val activeSessions = ConcurrentHashMap.newKeySet<String>()
 
@@ -53,13 +63,21 @@ class ConversationTurnService(
         check(activeSessions.add(sessionId)) { "A model turn is already active for this Session" }
 
         val terminal = AtomicBoolean(false)
+        val pending = notices?.pending(sessionId).orEmpty()
         sessions.appendMessage(sessionId, MessageRole.USER, text.trim())
+        // The user message was just persisted, so the history read below already contains it.
+        // Appending it again would send every tool-using turn a duplicated prompt.
         val initial = buildList {
             if (!systemContext.isNullOrBlank()) add(ModelMessage(MessageRole.SYSTEM, systemContext))
+            noticeBlock(pending)?.let { add(ModelMessage(MessageRole.SYSTEM, it)) }
             sessions.messages(sessionId)
                 .filter { it.role == MessageRole.SYSTEM || it.role == MessageRole.USER || it.role == MessageRole.ASSISTANT }
                 .forEach { add(ModelMessage(it.role, it.content)) }
-            add(ModelMessage(MessageRole.USER, text.trim()))
+        }
+        // Acknowledged only now: a turn that never reached the model must not consume the notice,
+        // or the parent silently loses the child's outcome.
+        if (pending.isNotEmpty()) {
+            runCatching { notices?.acknowledge(sessionId, pending.map { it.id }) }
         }
 
         val outcome = try {
@@ -236,11 +254,15 @@ class ConversationTurnService(
         val callbackLock = Any()
         val reply = StringBuilder()
 
+        val pending = notices?.pending(sessionId).orEmpty()
         val history = try {
             sessions.appendMessage(sessionId, MessageRole.USER, text.trim())
-            val persisted = sessions.messages(sessionId)
-                .filter { it.role == MessageRole.SYSTEM || it.role == MessageRole.USER || it.role == MessageRole.ASSISTANT }
-                .map { ModelMessage(it.role, it.content) }
+            val persisted = buildList {
+                noticeBlock(pending)?.let { add(ModelMessage(MessageRole.SYSTEM, it)) }
+                sessions.messages(sessionId)
+                    .filter { it.role == MessageRole.SYSTEM || it.role == MessageRole.USER || it.role == MessageRole.ASSISTANT }
+                    .forEach { add(ModelMessage(it.role, it.content)) }
+            }
             // The system context leads, so the index is visible before any conversation and is
             // never mistaken for something the user said.
             val persistedHistory = if (systemContext.isNullOrBlank()) {
@@ -256,6 +278,9 @@ class ConversationTurnService(
         } catch (failure: Exception) {
             activeSessions.remove(sessionId)
             throw failure
+        }
+        if (pending.isNotEmpty()) {
+            runCatching { notices?.acknowledge(sessionId, pending.map { it.id }) }
         }
 
         val delegate = try {
@@ -337,3 +362,22 @@ internal const val MAX_EVIDENCE_CHARS = 32_000
  * timeout is meant to fire first.
  */
 internal const val ROUND_TIMEOUT_MILLIS = 300_000L
+
+/**
+ * Renders pending notices as one system block.
+ *
+ * System, not user: a child's completion is something the runtime observed, and attributing it to
+ * the user would make the transcript claim they said it.
+ */
+internal fun noticeBlock(notices: List<TurnNotice>): String? {
+    if (notices.isEmpty()) return null
+    return buildString {
+        append("Background work you started has settled. This is a runtime report, not a user message.")
+        notices.forEach { notice ->
+            append("\n\n- ").append(notice.heading)
+            notice.body?.takeIf { it.isNotBlank() }?.let { body ->
+                append("\n  ").append(body.trim().replace("\n", "\n  "))
+            }
+        }
+    }
+}

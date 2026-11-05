@@ -10,6 +10,9 @@ import com.cordiact.core.conversation.ConversationSession
 import com.cordiact.core.conversation.ConversationSessionStore
 import com.cordiact.core.conversation.MessageRole
 import com.cordiact.core.conversation.SessionKind
+import com.cordiact.core.subagent.AgentRunRecord
+import com.cordiact.core.subagent.AgentRunStore
+import com.cordiact.core.subagent.ChildRunState
 import com.cordiact.core.workspace.DEFAULT_WORKSPACE_ID
 import com.cordiact.core.workspace.DEFAULT_WORKSPACE_NAME
 import com.cordiact.core.workspace.Workspace
@@ -21,7 +24,8 @@ import java.util.UUID
 class AndroidConversationSessionStore(
     context: Context,
     databaseName: String = DATABASE_NAME,
-) : SQLiteOpenHelper(context.applicationContext, databaseName, null, DATABASE_VERSION), ConversationSessionStore, WorkspaceStore, MutableToolPreferenceStore {
+) : SQLiteOpenHelper(context.applicationContext, databaseName, null, DATABASE_VERSION),
+    ConversationSessionStore, WorkspaceStore, MutableToolPreferenceStore, AgentRunStore {
 
     override fun onConfigure(db: SQLiteDatabase) {
         super.onConfigure(db)
@@ -34,6 +38,7 @@ class AndroidConversationSessionStore(
         createMessageSchema(db, TABLE_MESSAGES, TABLE_SESSIONS)
         createToolPreferenceSchema(db)
         createPluginSettingsSchema(db)
+        createAgentRunSchema(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -41,6 +46,7 @@ class AndroidConversationSessionStore(
         if (oldVersion < 3 && newVersion >= 3) migrateV2ToV3(db)
         if (oldVersion < 4 && newVersion >= 4) migrateV3ToV4(db)
         if (oldVersion < 5 && newVersion >= 5) migrateV4ToV5(db)
+        if (oldVersion < 6 && newVersion >= 6) migrateV5ToV6(db)
         if (newVersion > DATABASE_VERSION) throw IllegalStateException("Unsupported conversation database version $newVersion")
     }
 
@@ -541,6 +547,122 @@ class AndroidConversationSessionStore(
         depth = getColumnIndex(COL_DEPTH).takeIf { it >= 0 }?.let { getInt(it) } ?: 0,
     )
 
+    /**
+     * Background agent runs.
+     *
+     * A separate table rather than columns on the Session: a Session can be driven more than
+     * once (send_child_message), and what has to survive a process death is the *run*, not the
+     * Session it happened in.
+     */
+    private fun createAgentRunSchema(db: SQLiteDatabase) {
+        db.execSQL(
+            """CREATE TABLE IF NOT EXISTS $TABLE_AGENT_RUNS (
+            $COL_RUN_SESSION_ID TEXT PRIMARY KEY NOT NULL,
+            $COL_RUN_PARENT_SESSION_ID TEXT NOT NULL
+                REFERENCES $TABLE_SESSIONS($COL_SESSION_ID) ON DELETE CASCADE,
+            $COL_RUN_LABEL TEXT NOT NULL,
+            $COL_RUN_STATE TEXT NOT NULL,
+            $COL_RUN_STARTED_AT INTEGER NOT NULL,
+            $COL_RUN_DIAGNOSTIC TEXT
+        )""".trimIndent(),
+        )
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS conversation_agent_runs_parent " +
+                "ON $TABLE_AGENT_RUNS($COL_RUN_PARENT_SESSION_ID,$COL_RUN_STARTED_AT)",
+        )
+    }
+
+    private fun migrateV5ToV6(db: SQLiteDatabase) {
+        db.beginTransaction()
+        try {
+            createAgentRunSchema(db)
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    override fun put(run: AgentRunRecord) {
+        val values = ContentValues().apply {
+            put(COL_RUN_SESSION_ID, run.sessionId)
+            put(COL_RUN_PARENT_SESSION_ID, run.parentSessionId)
+            put(COL_RUN_LABEL, run.label)
+            put(COL_RUN_STATE, run.state.name)
+            put(COL_RUN_STARTED_AT, run.startedAtMillis)
+            put(COL_RUN_DIAGNOSTIC, run.diagnostic)
+        }
+        writableDatabase.insertWithOnConflict(
+            TABLE_AGENT_RUNS, null, values, SQLiteDatabase.CONFLICT_REPLACE,
+        )
+    }
+
+    override fun updateState(sessionId: String, state: ChildRunState, diagnostic: String?) {
+        val values = ContentValues().apply {
+            put(COL_RUN_STATE, state.name)
+            put(COL_RUN_DIAGNOSTIC, diagnostic)
+        }
+        writableDatabase.update(
+            TABLE_AGENT_RUNS, values, "$COL_RUN_SESSION_ID = ?", arrayOf(sessionId),
+        )
+    }
+
+    override fun runOf(sessionId: String): AgentRunRecord? = readableDatabase.query(
+        TABLE_AGENT_RUNS, RUN_COLUMNS, "$COL_RUN_SESSION_ID = ?", arrayOf(sessionId),
+        null, null, null,
+    ).use { c -> if (c.moveToNext()) c.toAgentRun() else null }
+
+    override fun runsOf(parentSessionId: String): List<AgentRunRecord> = readableDatabase.query(
+        TABLE_AGENT_RUNS, RUN_COLUMNS, "$COL_RUN_PARENT_SESSION_ID = ?", arrayOf(parentSessionId),
+        null, null, "$COL_RUN_STARTED_AT ASC",
+    ).use { c -> buildList { while (c.moveToNext()) add(c.toAgentRun()) } }
+
+    /**
+     * Anything still RUNNING belongs to a process that is gone.
+     *
+     * There is exactly one app process, so at startup no run can legitimately be running yet.
+     * Without this a child killed with the app would read as RUNNING forever and the parent would
+     * wait on it indefinitely.
+     */
+    override fun abortRunning(): List<AgentRunRecord> {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            val running = db.query(
+                TABLE_AGENT_RUNS, RUN_COLUMNS, "$COL_RUN_STATE = ?", arrayOf(ChildRunState.RUNNING.name),
+                null, null, "$COL_RUN_STARTED_AT ASC",
+            ).use { c -> buildList { while (c.moveToNext()) add(c.toAgentRun()) } }
+            running.forEach { record ->
+                val values = ContentValues().apply {
+                    put(COL_RUN_STATE, ChildRunState.ABORTED.name)
+                    put(
+                        COL_RUN_DIAGNOSTIC,
+                        record.diagnostic ?: "the app was closed while this task was running",
+                    )
+                }
+                db.update(
+                    TABLE_AGENT_RUNS, values, "$COL_RUN_SESSION_ID = ?", arrayOf(record.sessionId),
+                )
+            }
+            db.setTransactionSuccessful()
+            return running.map { it.copy(state = ChildRunState.ABORTED) }
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    private fun Cursor.toAgentRun() = AgentRunRecord(
+        sessionId = getString(getColumnIndexOrThrow(COL_RUN_SESSION_ID)),
+        parentSessionId = getString(getColumnIndexOrThrow(COL_RUN_PARENT_SESSION_ID)),
+        label = getString(getColumnIndexOrThrow(COL_RUN_LABEL)),
+        state = runCatching {
+            ChildRunState.valueOf(getString(getColumnIndexOrThrow(COL_RUN_STATE)))
+        }.getOrDefault(ChildRunState.UNTRACKED),
+        startedAtMillis = getLong(getColumnIndexOrThrow(COL_RUN_STARTED_AT)),
+        diagnostic = getColumnIndex(COL_RUN_DIAGNOSTIC)
+            .takeIf { it >= 0 && !isNull(it) }
+            ?.let { getString(it) },
+    )
+
     private fun Cursor.toMessage(): ConversationMessage {
         val metadataIndex = getColumnIndex(COL_MESSAGE_METADATA)
         return ConversationMessage(
@@ -557,7 +679,7 @@ class AndroidConversationSessionStore(
 
     private companion object {
         const val DATABASE_NAME = "cordiact-conversations.db"
-        const val DATABASE_VERSION = 5
+        const val DATABASE_VERSION = 6
         const val TABLE_WORKSPACES = "workspaces"
         const val TABLE_TOOL_PREFERENCES = "workspace_tool_preferences"
         const val TABLE_PLUGIN_SETTINGS = "workspace_plugin_settings"
@@ -571,6 +693,7 @@ class AndroidConversationSessionStore(
         const val TABLE_WORKSPACE_STATE = "workspace_state"
         const val TABLE_SESSIONS = "conversation_sessions"
         const val TABLE_SESSIONS_NEW = "conversation_sessions_v2"
+        const val TABLE_AGENT_RUNS = "conversation_agent_runs"
         const val TABLE_MESSAGES = "conversation_messages"
         const val TABLE_MESSAGES_NEW = "conversation_messages_v2"
         const val COL_SESSION_ID = "session_id"
@@ -596,6 +719,16 @@ class AndroidConversationSessionStore(
             COL_SESSION_ID,COL_WORKSPACE_ID,COL_TITLE,COL_CREATED_AT,COL_UPDATED_AT,
             COL_PARENT_SESSION_ID,COL_SESSION_KIND,COL_AGENT_LABEL,COL_DEPTH,
         )
+        const val COL_RUN_SESSION_ID = "session_id"
+        const val COL_RUN_PARENT_SESSION_ID = "parent_session_id"
+        const val COL_RUN_LABEL = "label"
+        const val COL_RUN_STATE = "state"
+        const val COL_RUN_STARTED_AT = "started_at"
+        const val COL_RUN_DIAGNOSTIC = "diagnostic"
         val MESSAGE_COLUMNS = arrayOf(COL_MESSAGE_ID,COL_MESSAGE_SESSION_ID,COL_ROLE,COL_CONTENT,COL_CREATED_AT,COL_MESSAGE_METADATA)
+        val RUN_COLUMNS = arrayOf(
+            COL_RUN_SESSION_ID,COL_RUN_PARENT_SESSION_ID,COL_RUN_LABEL,
+            COL_RUN_STATE,COL_RUN_STARTED_AT,COL_RUN_DIAGNOSTIC,
+        )
     }
 }

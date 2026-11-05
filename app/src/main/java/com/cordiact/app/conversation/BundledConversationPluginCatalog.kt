@@ -30,6 +30,7 @@ import com.cordiact.core.workspace.WorkspaceManagerPlugin
 import com.cordiact.core.workspace.WorkspaceManagerService
 import com.cordiact.core.workspace.workspaceManagerPluginSpec
 import com.cordiact.core.subagent.subagentPluginSpec
+import com.cordiact.core.subagent.backgroundSubagentPluginSpec
 import com.cordiact.core.subagent.orchestrationPluginSpec
 import com.cordiact.core.file.FileManagerPlugin
 import com.cordiact.core.file.WorkspaceFileService
@@ -117,6 +118,7 @@ object BundledConversationPluginCatalog {
     internal val BUNDLED_GRANTED_CAPABILITIES = setOf(
         com.cordiact.core.subagent.SUBAGENT_DELEGATE_CAPABILITY,
         com.cordiact.core.subagent.ORCHESTRATION_CAPABILITY,
+        com.cordiact.core.subagent.BACKGROUND_CAPABILITY,
     )
 
     private val trustedSpecs = setOf(
@@ -133,6 +135,7 @@ object BundledConversationPluginCatalog {
         searchPluginSpec(),
         subagentPluginSpec(),
         orchestrationPluginSpec(),
+        backgroundSubagentPluginSpec(),
     )
 
     val verifier = BundledPluginVerifier { candidate -> candidate in trustedSpecs }
