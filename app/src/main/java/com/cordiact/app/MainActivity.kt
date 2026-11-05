@@ -41,6 +41,7 @@ import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.input.TransformedText
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
+import com.cordiact.app.render.RenderLabDialog
 import com.cordiact.app.search.SearchSettingsDialog
 import com.cordiact.core.conversation.ConversationMessage
 import com.cordiact.core.conversation.MessageRole
@@ -91,6 +92,7 @@ private fun InteractionScreen(app: CordiActApplication) {
     var fillVersion by remember { mutableStateOf(0) }
     var showFillDialog by remember { mutableStateOf(false) }
     var showSearchSettings by remember { mutableStateOf(false) }
+    var showRenderLab by remember { mutableStateOf(false) }
     var fillKey by remember { mutableStateOf("") }
     var fillValue by remember { mutableStateOf("") }
     var history by remember(sessionId) {
@@ -241,6 +243,10 @@ private fun InteractionScreen(app: CordiActApplication) {
         )
     }
 
+    if (showRenderLab) {
+        RenderLabDialog(onDismiss = { showRenderLab = false })
+    }
+
     if (showSearchSettings) {
         val workspaceId = app.activeSessionWorkspaceId()
         if (workspaceId == null) {
@@ -327,6 +333,7 @@ private fun InteractionScreen(app: CordiActApplication) {
             Button(onClick = { submit() }, enabled = activeCall == null && !submitting && prepared?.valid == true) { Text("发送") }
             OutlinedButton(onClick = { showFillDialog = true }) { Text("设置 #") }
             OutlinedButton(onClick = { showSearchSettings = true }) { Text("搜索") }
+            OutlinedButton(onClick = { showRenderLab = true }) { Text("预览") }
             if (activeCall != null) OutlinedButton(onClick = { activeCall?.cancel(); activeCall = null }) { Text("取消") }
         }
     }
