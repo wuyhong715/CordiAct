@@ -23,6 +23,7 @@ import com.cordiact.core.conversation.SessionManagerService
 import com.cordiact.core.mcp.MCP_PLUGIN_ID
 import com.cordiact.app.plugin.AndroidPluginManagerService
 import com.cordiact.core.plugin.PluginManagerService
+import com.cordiact.core.plugin.pluginManagerPluginSpec
 import com.cordiact.core.plugin.PluginSpec
 import com.cordiact.core.plugin.ManagedPlugin
 import com.cordiact.core.plugin.PluginLifecycleException
@@ -402,7 +403,10 @@ class CordiActApplication : Application() {
             )
         })
         sandboxManagerPlugin = BundledConversationPluginCatalog.createSandboxManager(applicationInfo.uid)
-        (plugins + sandboxManagerPlugin + subagentRuntime + orchestrationPlugin + backgroundSubagents)
+        val pluginManagerPlugin = object : ManagedPlugin {
+            override val spec: PluginSpec = pluginManagerPluginSpec()
+        }
+        (plugins + sandboxManagerPlugin + subagentRuntime + orchestrationPlugin + backgroundSubagents + pluginManagerPlugin)
             .forEach(::registerAndEnableSystemPlugin)
         // Nothing can legitimately be RUNNING at startup, so anything that says it is belongs to
         // the process that died. Recovering here queues a notice so the parent learns a child was
@@ -410,7 +414,10 @@ class CordiActApplication : Application() {
         runCatching { backgroundSubagents.recoverAbandonedRuns() }
             .onFailure { Log.e(TAG, "Recovering abandoned delegations failed", it) }
         conversationCatalog.pluginManagerService = pluginManagerService()
-        restoreUserPlugins()
+        // Restore user plugins in the background so slow/offline MCP servers do not block Application.onCreate() or trigger NetworkOnMainThreadException.
+        java.util.concurrent.Executors.newSingleThreadExecutor().execute {
+            restoreUserPlugins()
+        }
         val workspace = workspaceManager.initializeDefaultIfEligible()
         activeSessionId = sessions.listSessions(workspace.id).firstOrNull()?.id
             ?: sessions.createSession(workspace.id, "New conversation").id

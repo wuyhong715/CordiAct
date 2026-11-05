@@ -207,4 +207,32 @@ class TurnNoticeTest {
         assertEquals(2, adapter.requests.size)
         assertTrue(adapter.requests.all { it.messages.first().content.contains("child finished") })
     }
+
+    @Test
+    fun `the user message appears once in runTurnToCompletion`() {
+        val store = RecordingStore()
+        val adapter = FakeAdapter()
+        val session = store.create("s1", WS, "chat", 1L, null, SessionKind.USER, null, 0)
+        val service = service(store, adapter, null)
+        val sessions = SessionManagerPlugin(
+            store,
+            WorkspaceSessionResolver { id -> if (id == WS) Workspace(id, id, 1L, 1L) else null },
+        ).apply { onEnable() }
+
+        service.runTurnToCompletion(
+            sessionId = session.id,
+            model = ModelId("p", "m"),
+            text = "analyze the subtask",
+            tools = listOf(ModelToolSpec("t", "d", "{}")),
+            toolLoop = ToolLoopPlugin().apply { onEnable() },
+            dispatcher = ToolDispatcher { _, _ -> error("no tool should be called") },
+            toolContext = ToolInvocationContext(workspaceId = WS, sessionId = session.id),
+            onEvent = {},
+        )
+
+        val userMessages = adapter.requests.first().messages.filter { it.role == MessageRole.USER }
+        assertEquals(1, userMessages.size, "prompt must not be duplicated in runTurnToCompletion: $userMessages")
+        assertEquals("analyze the subtask", userMessages.single().content)
+        assertEquals(1, sessions.messages(session.id).count { it.role == MessageRole.USER })
+    }
 }

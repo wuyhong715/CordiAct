@@ -275,6 +275,47 @@ class PluginLifecycleTest {
         override val spec: PluginSpec = spec0
     }
 
+    @Test
+    fun `enable invokes onEnable without holding the manager lock`() {
+        val events = mutableListOf<String>()
+        val records = FakeRecords()
+        val manager = PluginLifecycleManager(
+            records = records,
+            runtime = FakeRuntime(events),
+            capabilities = FakeCapabilities(events),
+            ownedData = FakeData(events),
+            bundledVerifier = BundledPluginVerifier { false },
+        )
+        val spec = PluginSpec("user.slow", "1.0.0", PluginTarget.ANDROID_NATIVE)
+        val reachedOnEnable = java.util.concurrent.CountDownLatch(1)
+        val allowComplete = java.util.concurrent.CountDownLatch(1)
+        var readSucceededConcurrently = false
+
+        val slowPlugin = object : ManagedPlugin {
+            override val spec: PluginSpec = spec
+            override fun onEnable() {
+                reachedOnEnable.countDown()
+                allowComplete.await(2, java.util.concurrent.TimeUnit.SECONDS)
+            }
+        }
+
+        manager.register(slowPlugin)
+        val enableThread = Thread {
+            manager.enable(spec.id)
+        }
+        enableThread.start()
+
+        assertTrue(reachedOnEnable.await(2, java.util.concurrent.TimeUnit.SECONDS))
+        // While onEnable is still blocking in the enable thread, calling all() from another thread must not block
+        val currentRecords = manager.all()
+        readSucceededConcurrently = currentRecords.any { it.spec.id == spec.id && it.state == PluginState.ENABLING }
+        allowComplete.countDown()
+        enableThread.join(2000)
+
+        assertTrue(readSucceededConcurrently, "all() should have read records concurrently during onEnable")
+        assertEquals(PluginState.ENABLED, manager.get(spec.id)?.state)
+    }
+
     private class FakeRecords : PluginRecordStore {
         private val values = mutableMapOf<String, PluginRecord>()
         override fun get(id: String) = values[id]

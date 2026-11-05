@@ -35,7 +35,7 @@ class McpPlugin(
     private val bridge = McpToolBridge(
         serverName = config.serverName,
         registry = registry,
-        ownerPluginId = MCP_PLUGIN_ID,
+        ownerPluginId = spec.id,
         toolTimeoutMs = config.toolCallTimeoutMs,
     )
 

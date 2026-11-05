@@ -188,37 +188,47 @@ class PluginLifecycleManager(
         }
     }
 
-    fun enable(id: String): PluginRecord = synchronized(lock) {
-        val current = requireRecord(id)
-        when (current.state) {
-            PluginState.ENABLED -> return@synchronized current
-            PluginState.REGISTERED, PluginState.DISABLED -> Unit
-            else -> throw PluginLifecycleException("Cannot enable '$id' from ${current.state}")
-        }
-        val plugin = bindings[id]
-            ?: throw PluginLifecycleException("Plugin '$id' must be loaded and registered before enable")
-        current.spec.dependencies.forEach { dependencyId ->
-            val dependency = records.get(dependencyId)
-            if (dependency?.state != PluginState.ENABLED) {
-                throw PluginLifecycleException("Plugin '$id' requires enabled dependency '$dependencyId'")
+    fun enable(id: String): PluginRecord {
+        val (plugin, enabling) = synchronized(lock) {
+            val current = requireRecord(id)
+            when (current.state) {
+                PluginState.ENABLED -> return current
+                PluginState.REGISTERED, PluginState.DISABLED -> Unit
+                else -> throw PluginLifecycleException("Cannot enable '$id' from ${current.state}")
             }
-        }
-        val enabling = current.copy(state = PluginState.ENABLING, lastError = null)
-        records.put(enabling)
-        try {
+            val plugin = bindings[id]
+                ?: throw PluginLifecycleException("Plugin '$id' must be loaded and registered before enable")
+            current.spec.dependencies.forEach { dependencyId ->
+                val dependency = records.get(dependencyId)
+                if (dependency?.state != PluginState.ENABLED) {
+                    throw PluginLifecycleException("Plugin '$id' requires enabled dependency '$dependencyId'")
+                }
+            }
+            val enabling = current.copy(state = PluginState.ENABLING, lastError = null)
+            records.put(enabling)
             capabilities.activateConsentedAccess(id)
+            plugin to enabling
+        }
+
+        try {
             plugin.onEnable()
-            runtime.resume(id)
-            enabling.copy(state = PluginState.ENABLED).also(records::put)
         } catch (failure: Exception) {
-            // Fail closed: no action dispatch or capability grant survives a partial enable.
-            runCleanup("quiesce after failed enable", id) { runtime.quiesce(id) }
-            runCleanup("disable after failed enable", id) { bindings[id]?.onDisable() }
-            runCleanup("drain after failed enable", id) { runtime.stopAndDrain(id) }
-            runCleanup("detach after failed enable", id) { runtime.detach(id) }
-            runCleanup("suspend capabilities after failed enable", id) { capabilities.suspendRuntimeAccess(id) }
-            records.put(enabling.copy(state = PluginState.FAILED, lastError = failure.message ?: failure::class.simpleName))
+            synchronized(lock) {
+                runCleanup("quiesce after failed enable", id) { runtime.quiesce(id) }
+                runCleanup("disable after failed enable", id) { bindings[id]?.onDisable() }
+                runCleanup("drain after failed enable", id) { runtime.stopAndDrain(id) }
+                runCleanup("detach after failed enable", id) { runtime.detach(id) }
+                runCleanup("suspend capabilities after failed enable", id) { capabilities.suspendRuntimeAccess(id) }
+                records.put(enabling.copy(state = PluginState.FAILED, lastError = failure.message ?: failure::class.simpleName))
+            }
             throw PluginLifecycleException("Enable failed for '$id'", failure)
+        }
+
+        return synchronized(lock) {
+            runtime.resume(id)
+            val enabled = enabling.copy(state = PluginState.ENABLED)
+            records.put(enabled)
+            enabled
         }
     }
 
@@ -374,75 +384,85 @@ class PluginLifecycleManager(
      * Bundled plugins must still go through [recoverAfterProcessRestart]; their provenance
      * comes from the APK, not from a database row.
      */
-    fun rebuildUserPlugins(factory: PluginFactory): PluginRebuildReport = synchronized(lock) {
+    fun rebuildUserPlugins(factory: PluginFactory): PluginRebuildReport {
         val restored = mutableListOf<String>()
         val rebuiltDisabled = mutableListOf<String>()
         val unsupported = mutableListOf<String>()
         val stillPending = mutableListOf<String>()
+        val toEnable = mutableListOf<String>()
 
-        // A plain loop, not forEach: the per-record branches need `continue` and `break`-style
-        // early exits, which a lambda cannot express without leaking a non-local return.
-        for (record in records.all().filter { it.origin == PluginOrigin.USER_INSTALLED }) {
-            val id = record.spec.id
-            when (record.state) {
-                PluginState.UNINSTALLING,
-                PluginState.REGISTERING -> {
-                    // Interrupted install: same cleanup the bundled path performs.
-                    try { uninstall(id) } catch (_: Exception) { stillPending += id }
-                }
+        synchronized(lock) {
+            for (record in records.all().filter { it.origin == PluginOrigin.USER_INSTALLED }) {
+                val id = record.spec.id
+                when (record.state) {
+                    PluginState.UNINSTALLING,
+                    PluginState.REGISTERING -> {
+                        try { uninstall(id) } catch (_: Exception) { stillPending += id }
+                    }
 
-                PluginState.FAILED -> {
-                    runtime.quiesce(id)
-                    runtime.stopAndDrain(id)
-                    capabilities.suspendRuntimeAccess(id)
-                    runtime.detach(id)
-                    stillPending += id
-                }
+                    PluginState.FAILED -> {
+                        runtime.quiesce(id)
+                        runtime.stopAndDrain(id)
+                        capabilities.suspendRuntimeAccess(id)
+                        runtime.detach(id)
+                        stillPending += id
+                    }
 
-                else -> {
-                    val wasEnabled = record.state == PluginState.ENABLING ||
-                        record.state == PluginState.ENABLED ||
-                        record.state == PluginState.DISABLING
-                    val plugin = try {
-                        factory.create(record.spec)
-                    } catch (failure: Exception) {
-                        records.put(record.copy(state = PluginState.FAILED, lastError = failure.describe()))
-                        unsupported += id
-                        continue
-                    }
-                    if (plugin == null) {
-                        records.put(record.copy(state = PluginState.FAILED, lastError = "This build cannot host the plugin"))
-                        unsupported += id
-                        continue
-                    }
-                    if (plugin.spec != record.spec) {
-                        records.put(record.copy(state = PluginState.FAILED, lastError = "Factory returned different plugin metadata"))
-                        unsupported += id
-                        continue
-                    }
-                    bindings[id] = plugin
-                    try {
-                        plugin.onRegister()
-                        if (wasEnabled) {
-                            // Enable derives its own transient states, so start from a clean
-                            // REGISTERED; a crash mid-enable stays detectable.
-                            records.put(record.copy(state = PluginState.REGISTERED, lastError = null))
-                            enable(id)
-                            restored += id
-                        } else {
-                            // A plugin the user had disabled stays disabled: rebuilding it must not
-                            // quietly turn it back on, and must not collapse DISABLED into REGISTERED.
-                            records.put(record.copy(state = PluginState.DISABLED, lastError = null))
-                            rebuiltDisabled += id
+                    else -> {
+                        val wasEnabled = record.state == PluginState.ENABLING ||
+                            record.state == PluginState.ENABLED ||
+                            record.state == PluginState.DISABLING
+                        val plugin = try {
+                            factory.create(record.spec)
+                        } catch (failure: Exception) {
+                            records.put(record.copy(state = PluginState.FAILED, lastError = failure.describe()))
+                            unsupported += id
+                            continue
                         }
-                    } catch (failure: Exception) {
-                        records.put(record.copy(state = PluginState.FAILED, lastError = failure.describe()))
-                        unsupported += id
+                        if (plugin == null) {
+                            records.put(record.copy(state = PluginState.FAILED, lastError = "This build cannot host the plugin"))
+                            unsupported += id
+                            continue
+                        }
+                        if (plugin.spec != record.spec) {
+                            records.put(record.copy(state = PluginState.FAILED, lastError = "Factory returned different plugin metadata"))
+                            unsupported += id
+                            continue
+                        }
+                        bindings[id] = plugin
+                        try {
+                            plugin.onRegister()
+                            if (wasEnabled) {
+                                records.put(record.copy(state = PluginState.REGISTERED, lastError = null))
+                                toEnable += id
+                            } else {
+                                records.put(record.copy(state = PluginState.DISABLED, lastError = null))
+                                rebuiltDisabled += id
+                            }
+                        } catch (failure: Exception) {
+                            records.put(record.copy(state = PluginState.FAILED, lastError = failure.describe()))
+                            unsupported += id
+                        }
                     }
                 }
             }
         }
-        PluginRebuildReport(restored, rebuiltDisabled, unsupported, stillPending)
+
+        for (id in toEnable) {
+            try {
+                enable(id)
+                restored += id
+            } catch (failure: Exception) {
+                synchronized(lock) {
+                    records.get(id)?.let { rec ->
+                        records.put(rec.copy(state = PluginState.FAILED, lastError = failure.describe()))
+                    }
+                }
+                unsupported += id
+            }
+        }
+
+        return PluginRebuildReport(restored, rebuiltDisabled, unsupported, stillPending)
     }
 
     private fun Throwable.describe(): String = message ?: this::class.simpleName ?: "Unknown failure"
