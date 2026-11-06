@@ -6,3 +6,4 @@ local.properties
 .DS_Store
 *.keystore
 *.jks
+build-artifacts/

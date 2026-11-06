@@ -24,6 +24,16 @@ android { namespace = "com.cordiact.app"; compileSdk = 35
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk { abiFilters += setOf("arm64-v8a", "x86_64") }
     }
+    signingConfigs {
+        // Checked-in debug key so CI builds keep one signature across runs and
+        // `adb install -r` upgrades the app instead of demanding an uninstall.
+        getByName("debug") {
+            storeFile = rootProject.file("keystore/debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
     testOptions { unitTests.isIncludeAndroidResources = true }
 }
 
@@ -40,6 +50,9 @@ dependencies {
     implementation("androidx.compose.material3:material3:1.3.1")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
     implementation("androidx.work:work-runtime-ktx:2.10.0")
+    // Shizuku client: the privileged channel binds a user service running as the shell uid.
+    implementation("dev.rikka.shizuku:api:13.1.5")
+    implementation("dev.rikka.shizuku:provider:13.1.5")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.robolectric:robolectric:4.14.1")
     androidTestImplementation("androidx.test:runner:1.6.2")

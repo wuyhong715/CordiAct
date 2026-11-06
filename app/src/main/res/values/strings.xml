@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">CordiAct</string>
+    <string name="accessibility_service_label">CordiAct 屏幕自动化</string>
+    <string name="accessibility_service_description">CordiAct 用无障碍服务读取屏幕结构并执行你授权的点击、滑动和输入。数据只在本机处理，不会上传。</string>
+</resources>
