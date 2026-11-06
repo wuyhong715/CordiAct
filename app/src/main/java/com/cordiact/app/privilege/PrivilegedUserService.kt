@@ -2,6 +2,7 @@ package com.cordiact.app.privilege
 
 import android.content.Context
 import android.content.Intent
+import android.os.Looper
 import android.graphics.Bitmap
 import android.graphics.PixelFormat
 import android.hardware.display.DisplayManager
@@ -25,10 +26,17 @@ class PrivilegedUserService : IPrivilegedService.Stub() {
 
     private val displays = ConcurrentHashMap<Int, DisplayEntry>()
 
-    /** No Application in a Shizuku user-service process: borrow the system context. */
+    /**
+     * No Application exists in a Shizuku user-service process, so borrow the
+     * system context. `ActivityThread.systemMain()` builds a Handler from the
+     * *calling* thread's Looper, and binder threads have none — prepare one
+     * first, then fall back to an existing ActivityThread if systemMain refuses.
+     */
     private val context: Context by lazy {
+        if (Looper.myLooper() == null) Looper.prepare()
         val activityThread = Class.forName("android.app.ActivityThread")
-        val thread = activityThread.getMethod("systemMain").invoke(null)
+        val thread = runCatching { activityThread.getMethod("systemMain").invoke(null) }
+            .getOrElse { activityThread.getMethod("currentActivityThread").invoke(null) }
         activityThread.getMethod("getSystemContext").invoke(thread) as Context
     }
 
