@@ -5,6 +5,8 @@ import android.content.Context
 import android.content.Intent
 import android.os.Bundle
 import com.cordiact.app.CordiActApplication
+import com.cordiact.app.display.BackgroundScreenDriver
+import com.cordiact.core.automation.ScreenTarget
 import com.cordiact.core.automation.ScreenHandle
 import org.json.JSONObject
 import java.io.File
@@ -38,6 +40,7 @@ class AutomationProbeReceiver : BroadcastReceiver() {
                     "priv_request" -> probePrivRequest(app)
                     "display" -> probeDisplay(app)
                     "flow" -> probeFlow(app)
+                    "driver" -> probeDriver(app)
                     else -> JSONObject().put("ok", false).put("error", "unknown case: $case")
                 }
             } catch (failure: Throwable) {
@@ -85,6 +88,49 @@ class AutomationProbeReceiver : BroadcastReceiver() {
     private fun probePrivRequest(app: CordiActApplication): JSONObject {
         app.automationRuntime.shizukuChannel.requestPermission { }
         return JSONObject().put("ok", true).put("requested", true)
+    }
+
+    /**
+     * The user-facing path: the same driver and snapshot decode the screen tools
+     * use, not the raw binder.
+     */
+    private fun probeDriver(app: CordiActApplication): JSONObject {
+        val runtime = app.automationRuntime
+        val driver = BackgroundScreenDriver(runtime.shizukuChannel, ScreenHandle.background(0))
+        val steps = JSONObject()
+        try {
+            steps.put("openOk", driver.open("com.android.settings", null, true).ok)
+            val first = driver.snapshot(60, false)
+            steps.put("snapshotError", first.error?.code)
+            steps.put("snapshotMessage", first.error?.message)
+            steps.put("package", first.packageName)
+            steps.put("size", "${first.width}x${first.height}")
+            steps.put("nodes", first.elements.size)
+            steps.put(
+                "labels",
+                first.elements.map { it.label }.filter { it.isNotBlank() }.take(6).joinToString(" | "),
+            )
+            val target = first.elements.firstOrNull { it.clickable && it.bounds.width > 40 }
+            if (target == null) {
+                steps.put("tapOk", false)
+                steps.put("tapReason", "no clickable element in the snapshot")
+            } else {
+                steps.put("fingerprint", target.fingerprint)
+                val tapped = driver.tap(ScreenTarget.Node(target.index, target.fingerprint))
+                steps.put("tapOk", tapped.ok)
+                steps.put("tapChanged", tapped.changed)
+                steps.put("tapError", tapped.error?.code)
+                val second = driver.snapshot(60, false)
+                steps.put("afterNodes", second.elements.size)
+                steps.put("afterPackage", second.packageName)
+            }
+        } catch (failure: Throwable) {
+            steps.put("exception", failure.toString())
+        } finally {
+            driver.release()
+            steps.put("released", true)
+        }
+        return steps
     }
 
     private fun probeDisplay(app: CordiActApplication): JSONObject {
