@@ -43,8 +43,6 @@ class AutomationProbeReceiver : BroadcastReceiver() {
                     "driver" -> probeDriver(app)
                     "type" -> probeType(app)
                     "web" -> probeWeb(app)
-                    "webmain" -> probeWebMain(app)
-                    "webzero" -> probeWebZero(app)
                     else -> JSONObject().put("ok", false).put("error", "unknown case: $case")
                 }
             } catch (failure: Throwable) {
@@ -133,53 +131,6 @@ class AutomationProbeReceiver : BroadcastReceiver() {
     }
 
 
-
-    /** The privileged channel reading the physical display: no CordiAct a11y service needed. */
-    private fun probeWebZero(app: CordiActApplication): JSONObject {
-        val steps = JSONObject()
-        val context = app.applicationContext
-        val intent = android.content.Intent().setClassName(
-            app.packageName,
-            "com.cordiact.app.debug.WebProbeActivity",
-        ).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
-        context.startActivity(intent)
-        Thread.sleep(3_000)
-        val binder = app.automationRuntime.shizukuChannel.binder()
-            ?: return steps.put("ok", false).put("stage", "bind")
-        val web = binder.dumpWeb(0, 4000)
-        steps.put("webOk", web.getBoolean("ok"))
-        steps.put("error", web.getString("error"))
-        steps.put("message", web.getString("message"))
-        steps.put("title", web.getString("title"))
-        steps.put("text", web.getString("text")?.take(200))
-        steps.put("elements", web.getInt("elements"))
-        steps.put("links", web.getInt("links"))
-        return steps
-    }
-
-    /** Same WebView reader, but on the physical screen: isolates tree issues from display issues. */
-    private fun probeWebMain(app: CordiActApplication): JSONObject {
-        val steps = JSONObject()
-        val context = app.applicationContext
-        val intent = android.content.Intent().setClassName(
-            app.packageName,
-            "com.cordiact.app.debug.WebProbeActivity",
-        ).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
-        context.startActivity(intent)
-        Thread.sleep(3_000)
-        val driver = app.automationRuntime.screenService.driver(ScreenHandle.main())
-            ?: return steps.put("ok", false).put("stage", "no_main_driver")
-        val document = driver.webDocument(4000)
-        steps.put("webOk", document != null && document.error == null)
-        steps.put("error", document?.error?.code)
-        steps.put("message", document?.error?.message)
-        steps.put("title", document?.title)
-        steps.put("text", document?.text?.take(200))
-        steps.put("elements", document?.elements ?: 0)
-        return steps
-    }
-
-    /** The browser bridge: read the WebView rendered on a background display. */
     private fun probeWeb(app: CordiActApplication): JSONObject {
         val runtime = app.automationRuntime
         val binder = runtime.shizukuChannel.binder()
