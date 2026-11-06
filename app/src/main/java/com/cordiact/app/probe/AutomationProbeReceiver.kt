@@ -134,6 +134,16 @@ class AutomationProbeReceiver : BroadcastReceiver() {
             steps.put("capture1", first?.let { "${it.width}x${it.height}" })
             steps.put("sample1", first?.let { sample(it) })
 
+            val tree = binder.dumpDisplay(id)
+            steps.put("treeError", tree.getString("errorCode") ?: tree.getString("error"))
+            steps.put("treeMessage", tree.getString("errorMessage") ?: tree.getString("message"))
+            steps.put("treePackage", tree.getString("package"))
+            steps.put("treeSize", "${tree.getInt("width")}x${tree.getInt("height")}")
+            @Suppress("DEPRECATION")
+            val nodes = tree.getParcelableArrayList<Bundle>("elements").orEmpty()
+            steps.put("treeNodes", nodes.size)
+            steps.put("treeLabels", nodes.mapNotNull { it.getString("l") }.take(6).joinToString(" | "))
+
             val tapped = binder.tap(id, 360, 240, 60L)
             steps.put("tap", tapped)
             Thread.sleep(1_200)
@@ -147,15 +157,6 @@ class AutomationProbeReceiver : BroadcastReceiver() {
             val third = binder.captureDisplay(id)
             steps.put("sample3", third?.let { sample(it) })
 
-            val tree = binder.dumpDisplay(id)
-            steps.put("treeError", tree.getString("errorCode") ?: tree.getString("error"))
-            steps.put("treeMessage", tree.getString("errorMessage") ?: tree.getString("message"))
-            steps.put("treePackage", tree.getString("package"))
-            steps.put("treeSize", "${tree.getInt("width")}x${tree.getInt("height")}")
-            @Suppress("DEPRECATION")
-            val nodes = tree.getParcelableArrayList<Bundle>("elements").orEmpty()
-            steps.put("treeNodes", nodes.size)
-            steps.put("treeLabels", nodes.mapNotNull { it.getString("l") }.take(6).joinToString(" | "))
 
             steps.put("visible", displayVisible(id))
         } finally {
