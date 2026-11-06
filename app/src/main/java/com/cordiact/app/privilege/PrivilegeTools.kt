@@ -157,16 +157,16 @@ private fun param(
     type: ToolValueType,
     description: String,
     required: Boolean = false,
-    min: Double? = null,
-    max: Double? = null,
+    minimum: Double? = null,
+    maximum: Double? = null,
     maxLength: Int? = null,
 ) = ToolParameter(
     name = name,
     type = type,
     required = required,
     description = description,
-    minimum = min,
-    maximum = max,
+    minimum = minimum,
+    maximum = maximum,
     maxLength = maxLength,
 )
 

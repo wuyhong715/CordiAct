@@ -73,13 +73,13 @@ class BackgroundScreenDriver(
                 ),
             )
         }
-        val ok = runCatching { service()?.tap(id, x, y, 60L) }.getOrDefault(false)
+        val ok = runCatching { service()?.tap(id, x, y, 60L) }.getOrDefault(false) == true
         return okOrError(ok, "tap")
     }
 
     override fun type(index: Int, fingerprint: String, text: String, submit: Boolean): ActionResult {
         val id = ensureDisplay() ?: return notPrivileged()
-        val ok = runCatching { service()?.text(id, text) }.getOrDefault(false)
+        val ok = runCatching { service()?.text(id, text) }.getOrDefault(false) == true
         if (!ok) return okOrError(false, "type")
         if (submit) runCatching { service()?.key(id, 66) }
         return ActionResult(ok = true)
@@ -100,7 +100,7 @@ class BackgroundScreenDriver(
             ScrollDirection.BACKWARD, ScrollDirection.DOWN -> end to start
             else -> start to end
         }
-        val ok = runCatching { service()?.swipe(id, x, y1, x, y2, 300L) }.getOrDefault(false)
+        val ok = runCatching { service()?.swipe(id, x, y1, x, y2, 300L) }.getOrDefault(false) == true
         return okOrError(ok, "scroll")
     }
 
@@ -119,7 +119,7 @@ class BackgroundScreenDriver(
             ScreenKey.LEFT -> 21
             ScreenKey.RIGHT -> 22
         }
-        val ok = runCatching { service()?.key(id, code) }.getOrDefault(false)
+        val ok = runCatching { service()?.key(id, code) }.getOrDefault(false) == true
         return okOrError(ok, "key")
     }
 
@@ -136,7 +136,7 @@ class BackgroundScreenDriver(
 
     override fun handoff(): ActionResult {
         val id = displayId.takeIf { it > 0 } ?: return notPrivileged()
-        val ok = runCatching { service()?.handoff(id) }.getOrDefault(false)
+        val ok = runCatching { service()?.handoff(id) }.getOrDefault(false) == true
         return okOrError(ok, "handoff")
     }
 

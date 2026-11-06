@@ -277,7 +277,8 @@ private fun executeSnapshot(
     val handle = arguments.screenHandle(service) ?: return invalidHandle()
     val maxNodes = arguments.int("max_nodes")?.coerceIn(1, 200) ?: ScreenFormat.DEFAULT_MAX_NODES
     val snapshot = service.snapshot(handle, maxNodes)
-    if (snapshot.error != null) return errorResult(snapshot.error)
+    val snapshotError = snapshot.error
+    if (snapshotError != null) return errorResult(snapshotError)
     service.remember(snapshot)
     return snapshotResult(snapshot)
 }
@@ -294,7 +295,8 @@ private fun executeOpen(
         ?: return errorResult(service.unknown(handle).error!!)
 
     val preview = service.snapshot(handle, 1)
-    if (preview.error == null) {
+    val previewError = preview.error
+    if (previewError == null) {
         guard.checkAction(preview, "open $packageName", packageName)?.let { return errorResult(it) }
     }
 
@@ -317,7 +319,7 @@ private fun executeTap(
     val driver = service.driver(handle) ?: return errorResult(service.unknown(handle).error!!)
 
     val nodeId = arguments.int("node_id")
-    val target = if (nodeId != null) {
+    val target: com.cordiact.core.automation.ScreenTarget = if (nodeId != null) {
         service.resolve(handle, nodeId).getOrElse {
             return errorResult(ScreenError(ScreenErrorCodes.STALE_SNAPSHOT, it.message ?: "stale node"))
         }
@@ -329,7 +331,8 @@ private fun executeTap(
     }
 
     val snapshot = service.snapshot(handle, ScreenFormat.DEFAULT_MAX_NODES)
-    if (snapshot.error != null) return errorResult(snapshot.error)
+    val snapshotError = snapshot.error
+    if (snapshotError != null) return errorResult(snapshotError)
     val label = (target as? com.cordiact.core.automation.ScreenTarget.Node)
         ?.let { node -> snapshot.elements.firstOrNull { it.index == node.index }?.label }
     guard.checkAction(snapshot, "tap", label)?.let { return errorResult(it) }
@@ -355,7 +358,8 @@ private fun executeType(
         return errorResult(ScreenError(ScreenErrorCodes.STALE_SNAPSHOT, it.message ?: "stale node"))
     }
     val snapshot = service.snapshot(handle, ScreenFormat.DEFAULT_MAX_NODES)
-    if (snapshot.error != null) return errorResult(snapshot.error)
+    val snapshotError = snapshot.error
+    if (snapshotError != null) return errorResult(snapshotError)
     val label = snapshot.elements.firstOrNull { it.index == nodeId }?.label
     guard.checkAction(snapshot, "type", label)?.let { return errorResult(it) }
 
@@ -386,7 +390,8 @@ private fun executeScroll(
         }
     }
     val snapshot = service.snapshot(handle, ScreenFormat.DEFAULT_MAX_NODES)
-    if (snapshot.error != null) return errorResult(snapshot.error)
+    val snapshotError = snapshot.error
+    if (snapshotError != null) return errorResult(snapshotError)
     guard.checkAction(snapshot, "scroll $direction", null)?.let { return errorResult(it) }
 
     val result = driver.scroll(target?.index, target?.fingerprint, direction)
@@ -431,7 +436,8 @@ private fun executeWait(
 
     var last = service.snapshot(handle, ScreenFormat.DEFAULT_MAX_NODES)
     while (System.currentTimeMillis() < deadline) {
-        if (last.error != null) return errorResult(last.error)
+        val lastError = last.error
+        if (lastError != null) return errorResult(lastError)
         val textHit = text == null || last.elements.any { it.label.contains(text, ignoreCase = true) }
         val packageHit = packageName == null || last.packageName == packageName
         if (textHit && packageHit) return snapshotResult(last, extra = mapOf("matched" to ToolValue.BooleanValue(true)))

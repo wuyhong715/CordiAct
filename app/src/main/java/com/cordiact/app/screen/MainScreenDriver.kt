@@ -104,7 +104,7 @@ class MainScreenDriver(
             )
         }
         if (submit && android.os.Build.VERSION.SDK_INT >= 30) {
-            node.performAction(AccessibilityNodeInfo.ACTION_IME_ENTER)
+            node.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id)
         }
         sleep(SETTLE_MS)
         return resultAfter(service, before)
