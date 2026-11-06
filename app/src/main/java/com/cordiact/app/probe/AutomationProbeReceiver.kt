@@ -43,6 +43,7 @@ class AutomationProbeReceiver : BroadcastReceiver() {
                     "driver" -> probeDriver(app)
                     "type" -> probeType(app)
                     "web" -> probeWeb(app)
+                    "webmain" -> probeWebMain(app)
                     else -> JSONObject().put("ok", false).put("error", "unknown case: $case")
                 }
             } catch (failure: Throwable) {
@@ -127,6 +128,29 @@ class AutomationProbeReceiver : BroadcastReceiver() {
             binder.destroyDisplay(id)
             steps.put("destroyed", true)
         }
+        return steps
+    }
+
+
+    /** Same WebView reader, but on the physical screen: isolates tree issues from display issues. */
+    private fun probeWebMain(app: CordiActApplication): JSONObject {
+        val steps = JSONObject()
+        val context = app.applicationContext
+        val intent = android.content.Intent().setClassName(
+            app.packageName,
+            "com.cordiact.app.debug.WebProbeActivity",
+        ).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+        context.startActivity(intent)
+        Thread.sleep(3_000)
+        val driver = app.automationRuntime.screenService.driver(ScreenHandle.main())
+            ?: return steps.put("ok", false).put("stage", "no_main_driver")
+        val document = driver.webDocument(4000)
+        steps.put("webOk", document != null && document.error == null)
+        steps.put("error", document?.error?.code)
+        steps.put("message", document?.error?.message)
+        steps.put("title", document?.title)
+        steps.put("text", document?.text?.take(200))
+        steps.put("elements", document?.elements ?: 0)
         return steps
     }
 

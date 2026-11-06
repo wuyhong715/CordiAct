@@ -118,6 +118,9 @@ class PrivilegedUserService : IPrivilegedService.Stub() {
         if (document == null) {
             return errorBundle("no_webview", "Display $displayId shows no readable WebView")
         }
+        document.error?.let { failure ->
+            return errorBundle(failure.code, failure.message)
+        }
         return Bundle().apply {
             putBoolean("ok", true)
             putString("title", document.title)

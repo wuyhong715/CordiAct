@@ -361,10 +361,41 @@ internal class DisplayTreeReader(
         }.getOrNull() ?: return null
         val automation = runCatching { open(display) }.getOrNull() ?: return null
         return try {
-            val root = applicationRoot(automation, display) ?: return null
-            WebContentExtractor.fromRoot(root, handle.value, maxChars)
+            val root = applicationRoot(automation, display)
+                ?: return ScreenWebDocument(
+                    handle = handle.value,
+                    title = "",
+                    url = null,
+                    text = "",
+                    links = emptyList(),
+                    elements = 0,
+                    error = com.cordiact.core.automation.ScreenError(
+                        "no_window",
+                        "Display $displayId has no application window to read",
+                    ),
+                )
+            WebContentExtractor.fromRoot(root, handle.value, maxChars) ?: ScreenWebDocument(
+                handle = handle.value,
+                title = "",
+                url = null,
+                text = "",
+                links = emptyList(),
+                elements = 0,
+                error = com.cordiact.core.automation.ScreenError("no_webview", classHistogram(root)),
+            )
         } catch (failure: Throwable) {
-            null
+            ScreenWebDocument(
+                handle = handle.value,
+                title = "",
+                url = null,
+                text = "",
+                links = emptyList(),
+                elements = 0,
+                error = com.cordiact.core.automation.ScreenError(
+                    "web_read_failed",
+                    failure.message ?: failure.javaClass.simpleName,
+                ),
+            )
         } finally {
             runCatching { automation.javaClass.getMethod("disconnect").invoke(automation) }
         }
@@ -397,6 +428,24 @@ internal class DisplayTreeReader(
             }
         }
         return null
+    }
+
+    /** What classes the window actually contains, for "why is there no WebView". */
+    private fun classHistogram(root: AccessibilityNodeInfo): String {
+        val counts = linkedMapOf<String, Int>()
+        var visited = 0
+        val queue = ArrayDeque<AccessibilityNodeInfo>()
+        queue += root
+        while (queue.isNotEmpty() && visited++ < 600) {
+            val node = queue.removeFirst()
+            val name = node.className?.toString()?.substringAfterLast('.') ?: "?"
+            counts[name] = (counts[name] ?: 0) + 1
+            for (index in 0 until node.childCount) {
+                node.getChild(index)?.let(queue::addLast)
+            }
+        }
+        return counts.entries.sortedByDescending { it.value }.take(12)
+            .joinToString(", ") { "${it.key}x${it.value}" }
     }
 
     private fun unavailable(
