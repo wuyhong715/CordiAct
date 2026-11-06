@@ -132,7 +132,7 @@ private fun InteractionScreen(app: CordiActApplication) {
         } else emptyList()
     }
     val mentionState = remember(input.text, context, app.interactionService) {
-        val structuredParent = Regex("@\\{([^}]*)}：$").find(input.text)?.groupValues?.get(1)
+        val structuredParent = Regex("@\\{([^\\{\\}]*)\\}\\s*[：:]$").find(input.text)?.groupValues?.get(1)
         val at = input.text.lastIndexOf('@')
         val fragment = if (structuredParent == null && at >= 0) input.text.substring(at + 1) else ""
         if (context != null && (structuredParent != null || (at >= 0 && !fragment.contains(Regex("[\\s，。；,.;!?！？]"))))) {

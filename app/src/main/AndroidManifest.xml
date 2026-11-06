@@ -28,6 +28,14 @@
                 <action android:name="com.cordiact.app.privilege.IPrivilegedService" />
             </intent-filter>
         </service>
+        <receiver
+            android:name=".probe.AutomationProbeReceiver"
+            android:exported="true"
+            android:permission="android.permission.DUMP">
+            <intent-filter>
+                <action android:name="com.cordiact.app.PROBE" />
+            </intent-filter>
+        </receiver>
         <service
             android:name=".sandbox.SandboxProbeService"
             android:exported="false"
