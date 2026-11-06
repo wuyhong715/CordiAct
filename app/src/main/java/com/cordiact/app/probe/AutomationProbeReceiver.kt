@@ -4,6 +4,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import com.cordiact.app.CordiActApplication
+import com.cordiact.core.automation.ScreenHandle
 import org.json.JSONObject
 import java.io.File
 import kotlin.concurrent.thread
