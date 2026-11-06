@@ -135,7 +135,7 @@ class ShizukuChannel(private val context: Context) : PrivilegedChannel {
         const val SHIZUKU_PACKAGE = "moe.shizuku.privileged.api"
         const val REQUEST_CODE = 4213
         const val VERSION = 1
-        const val BIND_TIMEOUT_MS = 4_000L
+        const val BIND_TIMEOUT_MS = 8_000L
         const val BIND_RETRY_MS = 2_000L
     }
 }

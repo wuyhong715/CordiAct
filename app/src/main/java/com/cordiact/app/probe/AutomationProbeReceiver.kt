@@ -4,7 +4,6 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import com.cordiact.app.CordiActApplication
-import com.cordiact.core.automation.ScreenHandle
 import org.json.JSONObject
 import java.io.File
 import kotlin.concurrent.thread
@@ -87,17 +86,27 @@ class AutomationProbeReceiver : BroadcastReceiver() {
 
     private fun probeDisplay(app: CordiActApplication): JSONObject {
         val runtime = app.automationRuntime
-        val driver = runtime.backgroundDriver(ScreenHandle.background(0))
-        val open = driver.open("com.android.settings", null, forceStop = false)
+        val binder = runtime.shizukuChannel.binder()
+            ?: return JSONObject().put("ok", false).put("stage", "bind")
+        val raw = binder.createDisplay(720, 1280, 320)
+        val fields = JSONObject()
+        for (key in raw.keySet()) fields.put(key, raw.get(key))
+        if (raw.getInt("displayId", -1) <= 0) {
+            return JSONObject().put("ok", false).put("stage", "create").put("raw", fields)
+        }
+        val id = raw.getInt("displayId")
+        val launched = binder.launchOnDisplay(id, "com.android.settings", null)
         Thread.sleep(1_500)
-        val snapshot = driver.snapshot(40, includeImage = false)
-        return JSONObject()
-            .put("ok", open.ok && snapshot.error == null)
-            .put("openOk", open.ok)
-            .put("openError", open.error?.code)
-            .put("snapshotError", snapshot.error?.code)
-            .put("snapshotMessage", snapshot.error?.message)
-            .put("display", ScreenHandle.background(0).value)
+        val capture = binder.captureDisplay(id)
+        val result = JSONObject()
+            .put("ok", true)
+            .put("stage", "created")
+            .put("displayId", id)
+            .put("launchError", launched.getString("error"))
+            .put("capture", capture?.let { "${it.width}x${it.height}" })
+            .put("raw", fields)
+        runCatching { binder.destroyDisplay(id) }
+        return result
     }
 
     companion object {
