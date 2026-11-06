@@ -1,6 +1,7 @@
 package com.cordiact.app.privilege
 
 import android.content.Context
+import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.PixelFormat
 import android.hardware.display.DisplayManager
@@ -73,8 +74,6 @@ class PrivilegedUserService : IPrivilegedService.Stub() {
 
     override fun handoff(displayId: Int): Boolean =
         runCommand("am display move-stack $displayId 0", 10_000).getInt("exitCode", -1) == 0
-    }
-
 
     // ------------------------------------------------------------- display ops
 
@@ -155,7 +154,7 @@ class PrivilegedUserService : IPrivilegedService.Stub() {
         val intent = if (activity != null) {
             Intent().apply { setClassName(packageName, activity) }
         } else {
-            packageManager.getLaunchIntentForPackage(packageName)
+            context.packageManager.getLaunchIntentForPackage(packageName)
         }
         if (intent == null) {
             putString("error", "package_not_found")
@@ -164,7 +163,7 @@ class PrivilegedUserService : IPrivilegedService.Stub() {
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_MULTIPLE_TASK)
         val options = android.app.ActivityOptions.makeBasic().setLaunchDisplayId(displayId)
         try {
-            startActivity(intent, options.toBundle())
+            context.startActivity(intent, options.toBundle())
             putBoolean("ok", true)
         } catch (failure: Exception) {
             putString("error", "launch_failed")
