@@ -14,12 +14,14 @@
 | browser 插件 | `app/browser/*` | 离屏 `WebView`（无 WindowManager 权限）、`BrowserSessionPool`、10 个 `browser_*` 工具、`BrowserPlugin` |
 | privilege 插件 | `app/privilege/*` | Shizuku `bindUserService` + AIDL、root `su` 通道、`PrivilegeRouter`、4 个 `priv_*` 工具、`PrivilegePlugin` |
 | display 驱动 | `app/display/BackgroundScreenDriver.kt` | 调用 shell 侧 `PrivilegedUserService` 建公开屏/启动/注入；树读取暂返回 `text_connection_unavailable` |
+| display 插件入口 | `app/display/DisplayPlugin.kt` | 四插件之一；无独立工具，向 screen 注册 `b*` 驱动 |
 | 接线 | `app/automation/AutomationRuntime.kt`、`CordiActApplication`、`BundledConversationPluginCatalog`、Manifest | 四插件注册、工具注册、AccessibilityService 声明、ShizukuProvider、无障碍配置 |
 
 ## 已验证
 
 - `:core:test` 本地通过（含 `ScreenFormatTest`、`ScreenSafetyTest`、`ShellCommandPolicyTest`）。
-- CI `Android build` 编译结果见 PR #33（推送后自动触发）。
+- GitHub Actions `Android build`（run 42157618887，commit `eb77bc4`）：**Build and test 通过**，产物 `cordiact-debug-apk`（约 12.7MB）。
+- PR #33 已创建并持续更新。
 
 ## 尚未完成（明确留给下一步）
 
