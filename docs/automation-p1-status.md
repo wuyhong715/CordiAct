@@ -55,5 +55,11 @@
   binder 线程只用 `CountDownLatch` 等结果（15s 超时）。
 - 证据（16:19，displayId=16，720×1280）：`display 16 windows=1` → `window type=1 root=com.android.settings/android.widget.FrameLayout` → 79 个节点，
   含「飞行模式」「WLAN」等真实文本，坐标全部落在 720×1280 内。同屏默认显示（display 0）也照常可读。
+- **最容易踩的坑：注册时必须 `setCapabilities(CAPABILITY_CAN_RETRIEVE_WINDOW_CONTENT)`**（隐藏方法，走反射）。
+  少了它，`getWindowsOnAllDisplays()` 返回的是**空 SparseArray**——连主屏窗口都没有，症状看起来像"连接没建立"。
+  用反向对照实验确认：spike 去掉 `setCapabilities` 后窗口列表消失，加回去立刻恢复。
+- 真机（App 内、走 `BackgroundScreenDriver` 完整路径，2026-11-06 19:54）：
+  `openOk=true`，快照 `com.android.settings` 720×1280、38 个元素，标签「飞行模式 / WLAN, CMCC-502-5G / 蓝牙, 已开启 / 移动网络 / 更多连接」；
+  指纹 `18494|51,0,770,200|LinearLayout||false` 跨 binder 原样保留，按该节点点击 `tapOk=true`。
 - 键位提示：虚拟屏要有真实 surface（ImageReader）+ 同一组 flags（PUBLIC/OWN_CONTENT_ONLY/SUPPORTS_TOUCH/DESTROY_CONTENT_ON_REMOVAL/TRUSTED/OWN_FOCUS/STEAL_TOP_FOCUS_DISABLED），
   否则 `getWindowsOnAllDisplays()` 里该 display 的窗口列表为空；设备锁屏时目标 App 不会出现在该屏上，读到的只有 keyguard。
