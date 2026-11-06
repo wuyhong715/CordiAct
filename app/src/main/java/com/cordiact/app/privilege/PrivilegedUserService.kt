@@ -96,7 +96,13 @@ class PrivilegedUserService : IPrivilegedService.Stub() {
         }
         val alignedWidth = (width + 15) and 15.inv()
         val alignedHeight = (height + 15) and 15.inv()
-        val manager = context.getSystemService(DisplayManager::class.java)
+        // The user service runs as uid 2000 (shell) but a system context reports
+        // opPackageName "android" (uid 1000); DisplayManagerService rejects that
+        // with "packageName must match the calling uid". Borrow the shell package.
+        val displayContext = runCatching {
+            context.createPackageContext("com.android.shell", 0)
+        }.getOrDefault(context)
+        val manager = displayContext.getSystemService(DisplayManager::class.java)
         val reader = ImageReader.newInstance(alignedWidth, alignedHeight, PixelFormat.RGBA_8888, 2)
         val flags = reflectionFlags()
         val display = try {
