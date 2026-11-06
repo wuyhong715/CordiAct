@@ -36,6 +36,7 @@ class AutomationProbeReceiver : BroadcastReceiver() {
                     "priv" -> probePriv(app)
                     "priv_request" -> probePrivRequest(app)
                     "display" -> probeDisplay(app)
+                    "flow" -> probeFlow(app)
                     else -> JSONObject().put("ok", false).put("error", "unknown case: $case")
                 }
             } catch (failure: Throwable) {
@@ -109,6 +110,73 @@ class AutomationProbeReceiver : BroadcastReceiver() {
         runCatching { binder.destroyDisplay(id) }
         return result
     }
+
+    /** End-to-end P0: create -> launch -> capture -> tap -> capture -> key -> destroy. */
+    private fun probeFlow(app: CordiActApplication): JSONObject {
+        val binder = app.automationRuntime.shizukuChannel.binder()
+            ?: return JSONObject().put("ok", false).put("stage", "bind")
+        val created = binder.createDisplay(720, 1280, 320)
+        val id = created.getInt("displayId", -1)
+        if (id <= 0) {
+            val fields = JSONObject()
+            for (key in created.keySet()) fields.put(key, created.get(key))
+            return JSONObject().put("ok", false).put("stage", "create").put("raw", fields)
+        }
+        val steps = JSONObject()
+        try {
+            val launch = binder.launchOnDisplay(id, "com.android.settings", null)
+            steps.put("launchOk", launch.getBoolean("ok"))
+            steps.put("launchMessage", launch.getString("message") ?: launch.getString("stdout"))
+            Thread.sleep(2_500)
+
+            val first = binder.captureDisplay(id)
+            steps.put("capture1", first?.let { "${it.width}x${it.height}" })
+            steps.put("sample1", first?.let { sample(it) })
+
+            val tapped = binder.tap(id, 360, 240, 60L)
+            steps.put("tap", tapped)
+            Thread.sleep(1_200)
+            val second = binder.captureDisplay(id)
+            steps.put("sample2", second?.let { sample(it) })
+            steps.put("changedAfterTap", steps.opt("sample1") != steps.opt("sample2"))
+
+            val backOk = binder.key(id, 4)
+            steps.put("key", backOk)
+            Thread.sleep(1_200)
+            val third = binder.captureDisplay(id)
+            steps.put("sample3", third?.let { sample(it) })
+
+            val tree = binder.dumpDisplay(id)
+            steps.put("treeError", tree.getString("error"))
+
+            steps.put("visible", displayVisible(id))
+        } finally {
+            runCatching { binder.destroyDisplay(id) }
+            steps.put("destroyed", !displayVisible(id))
+        }
+        return JSONObject().put("ok", true).put("displayId", id).put("steps", steps)
+    }
+
+    private fun sample(bitmap: android.graphics.Bitmap): String {
+        val software = bitmap.copy(android.graphics.Bitmap.Config.ARGB_8888, false) ?: return "copy_failed"
+        val points = listOf(
+            software.width / 4 to software.height / 4,
+            software.width / 2 to software.height / 2,
+            software.width / 4 to software.height * 3 / 4,
+            software.width * 3 / 4 to software.height / 4,
+        )
+        val sum = points.sumOf { (x, y) -> software.getPixel(x, y) }
+        val text = software.width.toString() + "x" + software.height + ":" + Integer.toHexString(sum)
+        software.recycle()
+        return text
+    }
+
+    private fun displayVisible(id: Int): Boolean = runCatching {
+        val process = ProcessBuilder("/system/bin/sh", "-c", "dumpsys display | grep -c 'mDisplayId=$id'")
+            .start()
+        process.waitFor()
+        process.inputStream.bufferedReader().readText().trim().toIntOrNull() ?: 0
+    }.getOrDefault(0) > 0
 
     companion object {
         const val ACTION_PROBE = "com.cordiact.app.PROBE"
