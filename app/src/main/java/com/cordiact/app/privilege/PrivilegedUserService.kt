@@ -111,7 +111,11 @@ class PrivilegedUserService : IPrivilegedService.Stub() {
     }
 
     override fun dumpWeb(displayId: Int, maxChars: Int): Bundle {
-        if (!ownsDisplay(displayId)) return errorBundle("display_missing", missingDisplayMessage(displayId))
+        // Display 0 is the phone's own screen: readable through the same channel,
+        // and useful when the app's accessibility service is off.
+        if (displayId != android.view.Display.DEFAULT_DISPLAY && !ownsDisplay(displayId)) {
+            return errorBundle("display_missing", missingDisplayMessage(displayId))
+        }
         val document = onTreeThread(DUMP_TIMEOUT_MS) { reader ->
             reader.webDocument(displayId, ScreenHandle.background(0), maxChars.coerceIn(500, 20_000))
         }

@@ -2,6 +2,7 @@ package com.cordiact.app.debug
 
 import android.app.Activity
 import android.os.Bundle
+import android.view.View
 import android.webkit.WebView
 
 /**
@@ -17,6 +18,8 @@ class WebProbeActivity : Activity() {
         super.onCreate(savedInstanceState)
         val web = WebView(this)
         web.settings.javaScriptEnabled = false
+        web.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
+        web.requestFocus()
         web.loadDataWithBaseURL(
             "https://example.test/probe",
             """
