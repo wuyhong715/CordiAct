@@ -165,23 +165,21 @@ class PrivilegedUserService : IPrivilegedService.Stub() {
             putString("error", "unknown_display")
             return@apply
         }
-        val intent = if (activity != null) {
-            Intent().apply { setClassName(packageName, activity) }
+        // context.startActivity would carry the system context's identity, which
+        // ActivityManager rejects for uid 2000; `am` runs with the shell identity.
+        val command = if (activity != null) {
+            "am start --display $displayId -n $packageName/$activity"
         } else {
-            context.packageManager.getLaunchIntentForPackage(packageName)
+            "am start --display $displayId -a android.intent.action.MAIN " +
+                "-c android.intent.category.LAUNCHER -p $packageName"
         }
-        if (intent == null) {
-            putString("error", "package_not_found")
-            return@apply
-        }
-        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_MULTIPLE_TASK)
-        val options = android.app.ActivityOptions.makeBasic().setLaunchDisplayId(displayId)
-        try {
-            context.startActivity(intent, options.toBundle())
+        val result = runCommand(command, 20_000)
+        if (result.getInt("exitCode", -1) == 0 && !result.getString("stdout").orEmpty().contains("Error")) {
             putBoolean("ok", true)
-        } catch (failure: Exception) {
+            putString("stdout", result.getString("stdout"))
+        } else {
             putString("error", "launch_failed")
-            putString("message", failure.message ?: "startActivity failed")
+            putString("message", (result.getString("stdout").orEmpty() + result.getString("stderr").orEmpty()).trim())
         }
     }
 
