@@ -41,6 +41,8 @@ class AutomationProbeReceiver : BroadcastReceiver() {
                     "display" -> probeDisplay(app)
                     "flow" -> probeFlow(app)
                     "driver" -> probeDriver(app)
+                    "type" -> probeType(app)
+                    "web" -> probeWeb(app)
                     else -> JSONObject().put("ok", false).put("error", "unknown case: $case")
                 }
             } catch (failure: Throwable) {
@@ -88,6 +90,79 @@ class AutomationProbeReceiver : BroadcastReceiver() {
     private fun probePrivRequest(app: CordiActApplication): JSONObject {
         app.automationRuntime.shizukuChannel.requestPermission { }
         return JSONObject().put("ok", true).put("requested", true)
+    }
+
+
+    /** Chinese text must survive the trip into a background display's EditText. */
+    private fun probeType(app: CordiActApplication): JSONObject {
+        val runtime = app.automationRuntime
+        val binder = runtime.shizukuChannel.binder()
+            ?: return JSONObject().put("ok", false).put("stage", "bind")
+        val steps = JSONObject()
+        val created = binder.createDisplay(720, 1280, 320)
+        val id = created.getInt("displayId")
+        steps.put("displayId", id)
+        try {
+            steps.put("launchOk", binder.launchOnDisplay(id, "com.android.settings", null).getBoolean("ok"))
+            Thread.sleep(3_000)
+            // Focus Settings' search field before typing.
+            steps.put("focusTap", binder.tap(id, 360, 150, 60L))
+            Thread.sleep(900)
+            val typed = binder.typeText(id, "蓝牙", false)
+            steps.put("typeOk", typed.getBoolean("ok"))
+            steps.put("typeMethod", typed.getString("method"))
+            steps.put("typeObserved", typed.getString("observed"))
+            steps.put("typeMessage", typed.getString("message"))
+            Thread.sleep(700)
+            val tree = binder.dumpDisplay(id)
+            @Suppress("DEPRECATION")
+            val nodes = tree.getParcelableArrayList<Bundle>("elements").orEmpty()
+            steps.put("treeNodes", nodes.size)
+            steps.put(
+                "labels",
+                nodes.mapNotNull { it.getString("l") }.filter { it.isNotBlank() }.take(8).joinToString(" | "),
+            )
+            steps.put("hasTypedText", nodes.any { it.getString("l")?.contains("蓝牙") == true })
+        } finally {
+            binder.destroyDisplay(id)
+            steps.put("destroyed", true)
+        }
+        return steps
+    }
+
+
+    private fun probeWeb(app: CordiActApplication): JSONObject {
+        val runtime = app.automationRuntime
+        val binder = runtime.shizukuChannel.binder()
+            ?: return JSONObject().put("ok", false).put("stage", "bind")
+        val steps = JSONObject()
+        val created = binder.createDisplay(720, 1280, 320)
+        val id = created.getInt("displayId")
+        steps.put("displayId", id)
+        try {
+            val launched = binder.launchOnDisplay(
+                id,
+                "com.cordiact.app",
+                "com.cordiact.app.debug.WebProbeActivity",
+            )
+            steps.put("launchOk", launched.getBoolean("ok"))
+            steps.put("launchMessage", launched.getString("message"))
+            Thread.sleep(4_000)
+            val web = binder.dumpWeb(id, 4000)
+            steps.put("webOk", web.getBoolean("ok"))
+            steps.put("webError", web.getString("error"))
+            steps.put("webMessage", web.getString("message"))
+            steps.put("title", web.getString("title"))
+            steps.put("url", web.getString("url"))
+            steps.put("text", web.getString("text")?.take(200))
+            steps.put("links", web.getInt("links"))
+            steps.put("linkLabels", web.getString("linkLabels"))
+            steps.put("elements", web.getInt("elements"))
+        } finally {
+            binder.destroyDisplay(id)
+            steps.put("destroyed", true)
+        }
+        return steps
     }
 
     /**

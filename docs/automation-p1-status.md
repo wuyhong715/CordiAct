@@ -63,3 +63,34 @@
   指纹 `18494|51,0,770,200|LinearLayout||false` 跨 binder 原样保留，按该节点点击 `tapOk=true`。
 - 键位提示：虚拟屏要有真实 surface（ImageReader）+ 同一组 flags（PUBLIC/OWN_CONTENT_ONLY/SUPPORTS_TOUCH/DESTROY_CONTENT_ON_REMOVAL/TRUSTED/OWN_FOCUS/STEAL_TOP_FOCUS_DISABLED），
   否则 `getWindowsOnAllDisplays()` 里该 display 的窗口列表为空；设备锁屏时目标 App 不会出现在该屏上，读到的只有 keyguard。
+
+## E4/E5：虚拟屏中文输入 + 屏幕 WebView 联动（2026-11-07 00:20 真机）
+
+**E4 打字**：`input text` 经 key character map，中文根本发不进去；改为无障碍 `ACTION_SET_TEXT`。
+`DisplayTreeReader.typeText()` 在目标 display 上先找 `findFocus(FOCUS_INPUT)` 的可编辑节点，再退回第一个 editable，
+设置文本后**读回节点文本**作为证据。真机（Settings 搜索框，displayId=34）：
+
+```
+typeOk=true  typeMethod=accessibility_set_text  typeObserved=搜索设置项
+labels=取消 | 蓝牙 | 清空 | 蓝牙 | 蓝牙 | 蓝牙 | 通知与状态栏 > 系统状态图标 | 蓝牙
+hasTypedText=true
+```
+
+**E5 WebView 联动**：`WebContentExtractor` 从 a11y 树里找 WebView 节点（className 含 WebView/chromium），
+提取标题、URL（仅当页面/应用明确公布）、渲染文本与可点链接；`ScreenDriver.webDocument(maxChars)` 成为统一契约，
+Main 与 Background 两个驱动都实现，browser 插件新增 `browser_read_screen` 工具（默认 s0，可传 b0/b1）。
+
+真机（后台虚拟屏 displayId=33，debug-only `WebProbeActivity` 里的 data: 页面）：
+
+```
+webOk=true  elements=7  links=1  linkLabels=更多内容
+text=虚拟屏网页探针 / 这是用于验证浏览器联动的示例正文。 / 更多内容
+```
+
+**两个必须知道的边界**
+1. 宿主 WebView 必须真的暴露给无障碍（`importantForAccessibility=YES` 且已绘制）。否则只会看到 1 个没有子节点的 WebView 壳，
+   `dumpWeb` 返回 `no_webview` + 节点类名直方图（如 `Viewx72, TextViewx24, ComposeView…`）方便定位，而不是假装成功。
+2. 嵌入式 WebView 没有调试端口，所以拿不到 DOM/URL；这里给的是"渲染后的可见文本 + 链接"。需要 DOM 时仍要用离屏 browser 会话打开同一 URL。
+
+**运维坑（vivo）**：重装 APK 会把 `com.cordiact.app` 从 `enabled_accessibility_services` 里抹掉，而 shell 的
+`settings put secure enabled_accessibility_services` 在该机型上被静默忽略，只能由用户在「设置 → 无障碍」里重新打开。

@@ -6,6 +6,7 @@ import android.content.Context
 import android.hardware.display.DisplayManager
 import android.os.Binder
 import android.os.IBinder
+import android.os.Bundle
 import android.os.Process
 import android.os.UserHandle
 import android.view.Display
@@ -18,6 +19,7 @@ import com.cordiact.core.automation.ScreenError
 import com.cordiact.core.automation.ScreenErrorCodes
 import com.cordiact.core.automation.ScreenHandle
 import com.cordiact.core.automation.ScreenSnapshot
+import com.cordiact.core.automation.ScreenWebDocument
 import java.lang.reflect.InvocationHandler
 import java.lang.reflect.Method
 import java.lang.reflect.Proxy
@@ -297,6 +299,155 @@ internal class DisplayTreeReader(
             .getInt(null)
     }.getOrDefault(FLAG_DONT_SUPPRESS_FALLBACK)
 
+    /**
+     * Result of a typing attempt. [method] says how the text got in, and
+     * [observed] carries what the node reports afterwards, so a caller can tell
+     * "typed" from "asked the platform nicely".
+     */
+    data class TypeOutcome(
+        val ok: Boolean,
+        val method: String,
+        val packageName: String?,
+        val observed: String,
+        val error: String?,
+    )
+
+    /**
+     * Types into the display's editable node.
+     *
+     * `input text` cannot carry CJK (it goes through the key character map), so
+     * the text is set through accessibility instead: pick the focused editable
+     * node on that display, then `ACTION_SET_TEXT`. Chinese, emoji and long
+     * strings all work, and nothing needs the display to own the IME.
+     */
+    fun typeText(displayId: Int, value: String): TypeOutcome {
+        val display = runCatching {
+            context.getSystemService(DisplayManager::class.java)?.getDisplay(displayId)
+        }.getOrNull() ?: return TypeOutcome(false, "none", null, "", "display $displayId is not visible")
+
+        val automation = try {
+            open(display)
+        } catch (failure: Throwable) {
+            return TypeOutcome(false, "none", null, "", failure.message ?: failure.javaClass.simpleName)
+        }
+        return try {
+            val root = applicationRoot(automation, display)
+                ?: return TypeOutcome(false, "none", null, "", "no application window on display $displayId")
+            val target = editable(root)
+                ?: return TypeOutcome(false, "none", null, "", "no editable node on display $displayId")
+            val arguments = Bundle().apply {
+                putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, value)
+            }
+            val accepted = target.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments)
+            val observed = target.text?.toString().orEmpty()
+            TypeOutcome(
+                ok = accepted,
+                method = "accessibility_set_text",
+                packageName = target.packageName?.toString(),
+                observed = observed,
+                error = if (accepted) null else "the node refused ACTION_SET_TEXT",
+            )
+        } catch (failure: Throwable) {
+            TypeOutcome(false, "none", null, "", failure.message ?: failure.javaClass.simpleName)
+        } finally {
+            runCatching { automation.javaClass.getMethod("disconnect").invoke(automation) }
+        }
+    }
+
+    /** Rendered text of the WebView on the display, if the display shows one. */
+    fun webDocument(displayId: Int, handle: ScreenHandle, maxChars: Int): ScreenWebDocument? {
+        val display = runCatching {
+            context.getSystemService(DisplayManager::class.java)?.getDisplay(displayId)
+        }.getOrNull() ?: return null
+        val automation = runCatching { open(display) }.getOrNull() ?: return null
+        return try {
+            val root = applicationRoot(automation, display)
+                ?: return ScreenWebDocument(
+                    handle = handle.value,
+                    title = "",
+                    url = null,
+                    text = "",
+                    links = emptyList(),
+                    elements = 0,
+                    error = com.cordiact.core.automation.ScreenError(
+                        "no_window",
+                        "Display $displayId has no application window to read",
+                    ),
+                )
+            WebContentExtractor.fromRoot(root, handle.value, maxChars) ?: ScreenWebDocument(
+                handle = handle.value,
+                title = "",
+                url = null,
+                text = "",
+                links = emptyList(),
+                elements = 0,
+                error = com.cordiact.core.automation.ScreenError("no_webview", classHistogram(root)),
+            )
+        } catch (failure: Throwable) {
+            ScreenWebDocument(
+                handle = handle.value,
+                title = "",
+                url = null,
+                text = "",
+                links = emptyList(),
+                elements = 0,
+                error = com.cordiact.core.automation.ScreenError(
+                    "web_read_failed",
+                    failure.message ?: failure.javaClass.simpleName,
+                ),
+            )
+        } finally {
+            runCatching { automation.javaClass.getMethod("disconnect").invoke(automation) }
+        }
+    }
+
+    /** The app window's root on the display, or null when nothing is drawing. */
+    private fun applicationRoot(automation: UiAutomation, display: Display): AccessibilityNodeInfo? {
+        repeat(WINDOW_RETRIES) { attempt ->
+            if (attempt > 0) Thread.sleep(WINDOW_RETRY_DELAY_MS)
+            val all = invokeOrNull(automation, "getWindowsOnAllDisplays")
+            val windows = all?.let { perDisplayOf(it, display.displayId) }
+            val window = windows?.firstOrNull { it.type == AccessibilityWindowInfo.TYPE_APPLICATION }
+            window?.root?.let { return it }
+        }
+        return null
+    }
+
+    /** Focused editable node first, then the first editable one in the window. */
+    private fun editable(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        val focused = runCatching { root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) }.getOrNull()
+        if (focused != null && focused.isEditable) return focused
+        var visited = 0
+        val queue = ArrayDeque<AccessibilityNodeInfo>()
+        queue += root
+        while (queue.isNotEmpty() && visited++ < EDITABLE_SEARCH_LIMIT) {
+            val node = queue.removeFirst()
+            if (node.isEditable) return node
+            for (index in 0 until node.childCount) {
+                node.getChild(index)?.let(queue::addLast)
+            }
+        }
+        return null
+    }
+
+    /** What classes the window actually contains, for "why is there no WebView". */
+    private fun classHistogram(root: AccessibilityNodeInfo): String {
+        val counts = linkedMapOf<String, Int>()
+        var visited = 0
+        val queue = ArrayDeque<AccessibilityNodeInfo>()
+        queue += root
+        while (queue.isNotEmpty() && visited++ < 600) {
+            val node = queue.removeFirst()
+            val name = node.className?.toString()?.substringAfterLast('.') ?: "?"
+            counts[name] = (counts[name] ?: 0) + 1
+            for (index in 0 until node.childCount) {
+                node.getChild(index)?.let(queue::addLast)
+            }
+        }
+        return counts.entries.sortedByDescending { it.value }.take(12)
+            .joinToString(", ") { "${it.key}x${it.value}" }
+    }
+
     private fun unavailable(
         handle: ScreenHandle,
         code: String,
@@ -321,6 +472,7 @@ internal class DisplayTreeReader(
     companion object {
         const val DEFAULT_MAX_NODES = 200
         private const val CONNECT_TIMEOUT_MS = 3000L
+        private const val EDITABLE_SEARCH_LIMIT = 2_000
         private const val WINDOW_RETRIES = 3
         private const val WINDOW_RETRY_DELAY_MS = 400L
         private const val FLAG_DONT_SUPPRESS_FALLBACK = 1

@@ -11,6 +11,7 @@ import com.cordiact.core.automation.ScreenHandle
 import com.cordiact.core.automation.ScreenKey
 import com.cordiact.core.automation.ScreenSnapshot
 import com.cordiact.core.automation.ScreenTarget
+import com.cordiact.core.automation.ScreenWebDocument
 import com.cordiact.core.automation.ScrollDirection
 
 /**
@@ -84,10 +85,51 @@ class BackgroundScreenDriver(
 
     override fun type(index: Int, fingerprint: String, text: String, submit: Boolean): ActionResult {
         val id = ensureDisplay() ?: return notPrivileged()
-        val ok = runCatching { service()?.text(id, text) }.getOrDefault(false) == true
-        if (!ok) return okOrError(false, "type")
-        if (submit) runCatching { service()?.key(id, 66) }
-        return ActionResult(ok = true)
+        val result = runCatching { service()?.typeText(id, text, submit) }.getOrNull()
+            ?: return ActionResult(
+                ok = false,
+                error = ScreenError(
+                    ScreenErrorCodes.REQUIRES_PRIVILEGE,
+                    "The privileged process did not answer the typing request",
+                    "Restart Shizuku and retry.",
+                ),
+            )
+        val ok = result.getBoolean("ok")
+        if (ok) return ActionResult(ok = true, changed = true)
+        return ActionResult(
+            ok = false,
+            error = ScreenError(
+                ScreenErrorCodes.ACTION_UNSUPPORTED,
+                "Could not type on display $id: ${result.getString("message") ?: "no editable node"}",
+                "Tap the text field first, then retry; background screens type through accessibility, not the IME.",
+            ),
+        )
+    }
+
+    override fun webDocument(maxChars: Int): ScreenWebDocument? {
+        val id = ensureDisplay() ?: return null
+        val raw = runCatching { service()?.dumpWeb(id, maxChars) }.getOrNull() ?: return null
+        val error = raw.getString("error")
+        if (error != null) {
+            return ScreenWebDocument(
+                handle = handle.value,
+                title = "",
+                url = null,
+                text = "",
+                links = emptyList(),
+                elements = 0,
+                error = ScreenError(error, raw.getString("message").orEmpty()),
+            )
+        }
+        return ScreenWebDocument(
+            handle = handle.value,
+            title = raw.getString("title").orEmpty(),
+            url = raw.getString("url"),
+            text = raw.getString("text").orEmpty(),
+            links = emptyList(),
+            elements = raw.getInt("elements"),
+            truncated = raw.getBoolean("truncated"),
+        )
     }
 
     override fun scroll(
