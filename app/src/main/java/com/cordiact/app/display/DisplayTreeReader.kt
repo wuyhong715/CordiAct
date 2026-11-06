@@ -243,6 +243,13 @@ internal class DisplayTreeReader(
                 AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS or
                 AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS
         }
+        // setCapabilities is hidden, and it is what makes the connection able to
+        // list windows at all: without it getWindowsOnAllDisplays comes back empty.
+        runCatching {
+            AccessibilityServiceInfo::class.java
+                .getMethod("setCapabilities", Integer.TYPE)
+                .invoke(info, AccessibilityServiceInfo.CAPABILITY_CAN_RETRIEVE_WINDOW_CONTENT)
+        }
         val userId = runCatching {
             UserHandle::class.java.getMethod("getUserId", Integer.TYPE)
                 .invoke(null, Process.myUid()) as Int
