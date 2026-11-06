@@ -148,8 +148,8 @@ class AutomationProbeReceiver : BroadcastReceiver() {
             steps.put("sample3", third?.let { sample(it) })
 
             val tree = binder.dumpDisplay(id)
-            steps.put("treeError", tree.getString("error"))
-            steps.put("treeMessage", tree.getString("message"))
+            steps.put("treeError", tree.getString("errorCode") ?: tree.getString("error"))
+            steps.put("treeMessage", tree.getString("errorMessage") ?: tree.getString("message"))
             steps.put("treePackage", tree.getString("package"))
             steps.put("treeSize", "${tree.getInt("width")}x${tree.getInt("height")}")
             @Suppress("DEPRECATION")

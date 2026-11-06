@@ -81,6 +81,13 @@ internal class DisplayTreeReader(
         }
         return try {
             read(automation, display, handle, maxNodes)
+        } catch (failure: Throwable) {
+            unavailable(
+                handle,
+                "text_connection_unavailable",
+                "Reading display $displayId failed: ${failure.message ?: failure.javaClass.simpleName}",
+                "Retry once; if it persists the display channel is unavailable on this build.",
+            )
         } finally {
             runCatching { automation.javaClass.getMethod("disconnect").invoke(automation) }
         }
@@ -131,12 +138,9 @@ internal class DisplayTreeReader(
 
     /** Windows on every display, filtered to the one that belongs to [displayId]. */
     private fun windowsOn(automation: UiAutomation, displayId: Int): List<AccessibilityWindowInfo>? {
-        val all = runCatching {
-            @Suppress("UNCHECKED_CAST")
-            automation.javaClass.getMethod("getWindowsOnAllDisplays").invoke(automation)
-        }.getOrNull() ?: return null
-        val perDisplay = runCatching { perDisplayOf(all, displayId) }.getOrNull() ?: return null
-        return perDisplay
+        val all = automation.javaClass.getMethod("getWindowsOnAllDisplays").invoke(automation)
+            ?: throw IllegalStateException("getWindowsOnAllDisplays returned null")
+        return perDisplayOf(all, displayId)
     }
 
     private fun perDisplayOf(all: Any, displayId: Int): List<AccessibilityWindowInfo>? {
