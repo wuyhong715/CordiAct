@@ -3,6 +3,7 @@ package com.cordiact.app.probe
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.os.Bundle
 import com.cordiact.app.CordiActApplication
 import com.cordiact.core.automation.ScreenHandle
 import org.json.JSONObject
@@ -148,6 +149,13 @@ class AutomationProbeReceiver : BroadcastReceiver() {
 
             val tree = binder.dumpDisplay(id)
             steps.put("treeError", tree.getString("error"))
+            steps.put("treeMessage", tree.getString("message"))
+            steps.put("treePackage", tree.getString("package"))
+            steps.put("treeSize", "${tree.getInt("width")}x${tree.getInt("height")}")
+            @Suppress("DEPRECATION")
+            val nodes = tree.getParcelableArrayList<Bundle>("elements").orEmpty()
+            steps.put("treeNodes", nodes.size)
+            steps.put("treeLabels", nodes.mapNotNull { it.getString("l") }.take(6).joinToString(" | "))
 
             steps.put("visible", displayVisible(id))
         } finally {

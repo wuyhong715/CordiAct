@@ -22,9 +22,10 @@ import com.cordiact.core.automation.ScrollDirection
  * Keeping creation, capture and input in the same shell process avoids that
  * whole class of failure.
  *
- * Tree reads are not wired yet: UiAutomation bound to a secondary display needs
- * a dedicated channel (API 34+). Until then [snapshot] returns a structured
- * `text_connection_unavailable` error instead of pretending the screen is empty.
+ * Tree reads go through `DisplayTreeReader` in the same privileged process: a
+ * UiAutomation bound to the virtual display's own context. Element fingerprints
+ * therefore survive the binder hop, and node taps resolve to the element's
+ * centre before the input injection happens.
  */
 class BackgroundScreenDriver(
     private val shizuku: ShizukuChannel,
@@ -46,32 +47,36 @@ class BackgroundScreenDriver(
             )
 
         val dump = runCatching { service()?.dumpDisplay(id) }.getOrNull()
-        val error = dump?.getString("error")
-        if (error != null) {
-            return failure(
-                ScreenErrorCodes.TEXT_CONNECTION_UNAVAILABLE,
-                "Display $id is running, but its accessibility tree is not readable yet",
-                "Use screen_open and coordinate taps; tree reads land with the UiAutomation channel.",
+            ?: return failure(
+                ScreenErrorCodes.REQUIRES_PRIVILEGE,
+                "Display $id is running but the privileged process did not answer",
+                "Restart Shizuku, then reopen the background screen.",
             )
+        val snapshot = runCatching { SnapshotBundle.decode(handle.value, dump) }.getOrNull()
+            ?: return failure(
+                ScreenErrorCodes.TEXT_CONNECTION_UNAVAILABLE,
+                "Display $id returned an unreadable tree",
+                "Retry once; if it persists, reopen the background screen.",
+            )
+        snapshot.error?.let { error ->
+            return failure(error.code, error.message, error.recovery)
         }
-        return failure(
-            ScreenErrorCodes.TEXT_CONNECTION_UNAVAILABLE,
-            "Display $id returned no tree",
-            "Retry after the app draws its first frame.",
-        )
+        return snapshot
     }
 
     override fun tap(target: ScreenTarget): ActionResult {
         val id = ensureDisplay() ?: return notPrivileged()
         val (x, y) = when (target) {
             is ScreenTarget.Point -> target.x to target.y
-            is ScreenTarget.Node -> return ActionResult(
-                ok = false,
-                error = ScreenError(
-                    ScreenErrorCodes.TEXT_CONNECTION_UNAVAILABLE,
-                    "Node taps need a readable tree; use coordinates on background screens",
-                ),
-            )
+            is ScreenTarget.Node -> resolveNode(id, target)
+                ?: return ActionResult(
+                    ok = false,
+                    error = ScreenError(
+                        ScreenErrorCodes.STALE_SNAPSHOT,
+                        "Node ${target.index} is no longer on display $id",
+                        "Take a fresh snapshot and use one of its element indices.",
+                    ),
+                )
         }
         val ok = runCatching { service()?.tap(id, x, y, 60L) }.getOrDefault(false) == true
         return okOrError(ok, "tap")
@@ -130,7 +135,7 @@ class BackgroundScreenDriver(
         val error = bundle?.getString("error")
         return if (error == null) ActionResult(ok = true, changed = true) else ActionResult(
             ok = false,
-            error = ScreenError(error, bundle?.getString("message") ?: "launch failed"),
+            error = ScreenError(error, bundle.getString("message") ?: "launch failed"),
         )
     }
 
@@ -158,6 +163,22 @@ class BackgroundScreenDriver(
     }
 
     private fun service(): IPrivilegedService? = shizuku.binder()
+
+    /**
+     * Resolves a node target to a tap point by reading the background display's
+     * tree. The fingerprint is tried first because it survives re-layouts; the
+     * node index only ever describes the snapshot it came from.
+     */
+    private fun resolveNode(displayId: Int, target: ScreenTarget.Node): Pair<Int, Int>? {
+        val dump = runCatching { service()?.dumpDisplay(displayId) }.getOrNull() ?: return null
+        val snapshot = runCatching { SnapshotBundle.decode(handle.value, dump) }.getOrNull() ?: return null
+        if (snapshot.error != null) return null
+        val element = snapshot.elements.firstOrNull { it.fingerprint == target.fingerprint }
+            ?: snapshot.elements.firstOrNull { it.index == target.index }
+            ?: return null
+        if (element.bounds.isEmpty) return null
+        return element.bounds.centerX to element.bounds.centerY
+    }
 
     private fun notPrivileged() = ActionResult(
         ok = false,

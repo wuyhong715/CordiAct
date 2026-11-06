@@ -9,8 +9,15 @@ import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
 import android.media.ImageReader
 import android.os.Bundle
+import android.os.Handler
+import android.os.HandlerThread
+import com.cordiact.app.display.DisplayTreeReader
+import com.cordiact.app.display.SnapshotBundle
+import com.cordiact.core.automation.ScreenHandle
+import com.cordiact.core.automation.ScreenSnapshot
 import com.cordiact.core.automation.ShellLimits
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 /**
@@ -25,6 +32,12 @@ import java.util.concurrent.TimeUnit
 class PrivilegedUserService : IPrivilegedService.Stub() {
 
     private val displays = ConcurrentHashMap<Int, DisplayEntry>()
+
+    /** Looper thread for UiAutomation reads: the automation posts to its creator's looper. */
+    private val treeThread: HandlerThread by lazy {
+        HandlerThread("cordiact-tree").apply { start() }
+    }
+    private val treeHandler: Handler by lazy { Handler(treeThread.looper) }
 
     /**
      * No Application exists in a Shizuku user-service process, so borrow the
@@ -73,11 +86,49 @@ class PrivilegedUserService : IPrivilegedService.Stub() {
     override fun text(displayId: Int, value: String): Boolean =
         runCommand("input -d $displayId text ${shellQuote(value)}", 15_000).getInt("exitCode", -1) == 0
 
-    override fun dumpDisplay(displayId: Int): Bundle = Bundle().apply {
-        // UiAutomation bound to a secondary display is not wired up yet; report
-        // the limitation instead of returning a misleading empty tree.
-        putString("error", "text_connection_unavailable")
-        putString("message", "Tree read for virtual displays requires the UiAutomation display channel (Android 14+), not implemented yet.")
+    /**
+     * Reads the accessibility tree of a background display.
+     *
+     * The virtual display has no accessibility service; the tree comes from a
+     * UiAutomation bound to *that display's* context. UiAutomation delivers its
+     * window callbacks through the looper of the thread that created it, so the
+     * whole read runs on a dedicated HandlerThread and this binder thread only
+     * waits for the result.
+     */
+    override fun dumpDisplay(displayId: Int): Bundle {
+        if (displayId <= 0) {
+            return errorBundle("display_missing", "Display $displayId does not exist")
+        }
+        if (!displays.containsKey(displayId)) {
+            return errorBundle("display_missing", "Display $displayId is not owned by this process")
+        }
+        val result = readTree(displayId, DUMP_TIMEOUT_MS)
+            ?: return errorBundle(
+                "text_connection_unavailable",
+                "Timed out reading the tree of display $displayId after ${DUMP_TIMEOUT_MS}ms",
+            )
+        return SnapshotBundle.encode(result)
+    }
+
+    private fun readTree(displayId: Int, timeoutMs: Long): ScreenSnapshot? {
+        val latch = CountDownLatch(1)
+        val holder = arrayOfNulls<ScreenSnapshot>(1)
+        val posted = treeHandler.post {
+            try {
+                holder[0] = DisplayTreeReader(context).snapshot(displayId, ScreenHandle.background(0))
+            } catch (failure: Throwable) {
+                holder[0] = null
+            } finally {
+                latch.countDown()
+            }
+        }
+        if (!posted || !latch.await(timeoutMs, TimeUnit.MILLISECONDS)) return null
+        return holder[0]
+    }
+
+    private fun errorBundle(code: String, message: String): Bundle = Bundle().apply {
+        putString("error", code)
+        putString("message", message)
     }
 
     override fun handoff(displayId: Int): Boolean =
@@ -252,5 +303,6 @@ class PrivilegedUserService : IPrivilegedService.Stub() {
 
     private companion object {
         const val MAX_DISPLAYS = 2
+        const val DUMP_TIMEOUT_MS = 15_000L
     }
 }

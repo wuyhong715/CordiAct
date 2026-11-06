@@ -35,10 +35,30 @@ class TreeCapture {
                     "Open the target app and retry; if this persists, re-enable the accessibility service.",
                 ),
             )
+        return captureFrom(
+            root = root,
+            handle = handle,
+            maxNodes = maxNodes,
+            fallbackWidth = service.resources.displayMetrics.widthPixels,
+            fallbackHeight = service.resources.displayMetrics.heightPixels,
+        )
+    }
 
+    /**
+     * Walks a root the caller already resolved. The privileged path uses this
+     * to read a virtual-display window through `UiAutomation`, where there is
+     * no [AccessibilityService] to ask for the active window.
+     */
+    fun captureFrom(
+        root: AccessibilityNodeInfo,
+        handle: ScreenHandle,
+        maxNodes: Int = 60,
+        fallbackWidth: Int = 0,
+        fallbackHeight: Int = 0,
+    ): ScreenSnapshot {
         val windowRect = Rect().also { root.getBoundsInScreen(it) }
-        val width = windowRect.width().takeIf { it > 0 } ?: service.resources.displayMetrics.widthPixels
-        val height = windowRect.height().takeIf { it > 0 } ?: service.resources.displayMetrics.heightPixels
+        val width = windowRect.width().takeIf { it > 0 } ?: fallbackWidth
+        val height = windowRect.height().takeIf { it > 0 } ?: fallbackHeight
 
         val elements = ArrayList<ScreenElement>(maxNodes)
         val queue = ArrayDeque<AccessibilityNodeInfo>()
