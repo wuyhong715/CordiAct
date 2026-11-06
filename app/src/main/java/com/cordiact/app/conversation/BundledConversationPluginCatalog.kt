@@ -62,6 +62,7 @@ import com.cordiact.app.search.AndroidSearchProviderSettings
 import com.cordiact.app.search.AndroidSearchUsageStore
 import com.cordiact.app.search.SearchPlugin
 import com.cordiact.app.browser.browserPluginSpec
+import com.cordiact.app.display.displayPluginSpec
 import com.cordiact.app.privilege.privilegePluginSpec
 import com.cordiact.app.screen.screenPluginSpec
 import com.cordiact.app.search.registerSearchTools
@@ -129,6 +130,7 @@ object BundledConversationPluginCatalog {
         com.cordiact.core.automation.AutomationCapabilities.SCREEN_ACT,
         com.cordiact.core.automation.AutomationCapabilities.BROWSER_CONTROL,
         com.cordiact.core.automation.AutomationCapabilities.PRIV_SHELL,
+        com.cordiact.core.automation.AutomationCapabilities.DISPLAY_CONTROL,
     )
 
     private val trustedSpecs = setOf(
@@ -150,6 +152,7 @@ object BundledConversationPluginCatalog {
         screenPluginSpec(),
         browserPluginSpec(),
         privilegePluginSpec(),
+        displayPluginSpec(),
     )
 
     val verifier = BundledPluginVerifier { candidate -> candidate in trustedSpecs }

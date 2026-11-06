@@ -5,6 +5,7 @@ import com.cordiact.app.browser.BrowserPlugin
 import com.cordiact.app.browser.BrowserSessionPool
 import com.cordiact.app.browser.registerBrowserTools
 import com.cordiact.app.display.BackgroundScreenDriver
+import com.cordiact.app.display.DisplayPlugin
 import com.cordiact.app.privilege.PrivilegePlugin
 import com.cordiact.app.privilege.PrivilegeRouter
 import com.cordiact.app.privilege.PrivilegeService
@@ -40,6 +41,7 @@ class AutomationRuntime(context: Context) {
     val privilegeRouter = PrivilegeRouter(shizukuChannel, rootChannel)
     val privilegeService = PrivilegeService(privilegeRouter)
     val privilegePlugin = PrivilegePlugin(privilegeService)
+    val displayPlugin = DisplayPlugin()
 
     val mainDriver: ScreenDriver = MainScreenDriver(appContext)
 
@@ -63,7 +65,7 @@ class AutomationRuntime(context: Context) {
         backgroundDrivers.firstOrNull { it.handle == handle }
             ?: BackgroundScreenDriver(shizukuChannel, handle).also { backgroundDrivers += it }
 
-    fun plugins(): List<ManagedPlugin> = listOf(privilegePlugin, screenPlugin, browserPlugin)
+    fun plugins(): List<ManagedPlugin> = listOf(privilegePlugin, displayPlugin, screenPlugin, browserPlugin)
 
     fun registerTools(registry: ToolDefinitionRegistry) {
         registerPrivilegeTools(registry, privilegeService)
