@@ -100,23 +100,43 @@ internal class DisplayTreeReader(
         maxNodes: Int,
     ): ScreenSnapshot {
         runCatching { automation.javaClass.getMethod("clearCache").invoke(automation) }
-        val windows = windowsOn(automation, display.displayId)
-            ?: return unavailable(
-                handle,
-                "text_connection_unavailable",
-                "No accessibility windows reported for display ${display.displayId}",
-                "The display has no readable window yet; wait for the app to draw and retry.",
-            )
-        val application = windows.firstOrNull { it.type == AccessibilityWindowInfo.TYPE_APPLICATION }
-            ?: windows.firstOrNull()
-            ?: return unavailable(
-                handle,
-                "text_connection_unavailable",
-                "Display ${display.displayId} has no window to read",
-                "Start an app on the background screen, then retry.",
-            )
-        val bounds = android.graphics.Rect().also { application.getBoundsInScreen(it) }
-        val root: AccessibilityNodeInfo = application.root ?: return unavailable(
+        val target = display.displayId
+        var diagnosis = "the automation reported no window lists"
+        // A freshly launched app shows up in the window list a beat after its
+        // first frame, so give it a few tries before calling the channel dead.
+        repeat(WINDOW_RETRIES) { attempt ->
+            if (attempt > 0) Thread.sleep(WINDOW_RETRY_DELAY_MS)
+            val all = invokeOrNull(automation, "getWindowsOnAllDisplays")
+            val windows = all?.let { perDisplayOf(it, target) }
+            val window = windows?.firstOrNull { it.type == AccessibilityWindowInfo.TYPE_APPLICATION }
+            if (window != null) return capture(window, display, handle, maxNodes)
+            diagnosis = describeWindows(all, target)
+        }
+        // Fallback: the connection's own window list, scoped to whatever display
+        // the automation attached to. Guarded by size so it can never silently
+        // read the phone's main screen instead of the background one.
+        val own = (invokeOrNull(automation, "getWindows") as? List<*>)
+            ?.filterIsInstance<AccessibilityWindowInfo>()
+        val fallback = own?.firstOrNull {
+            it.type == AccessibilityWindowInfo.TYPE_APPLICATION && fits(it, display)
+        }
+        if (fallback != null) return capture(fallback, display, handle, maxNodes)
+        return unavailable(
+            handle,
+            "text_connection_unavailable",
+            "Display $target exposed no application window: $diagnosis",
+            "Start an app on the background screen and retry; the message lists what the display channel can see.",
+        )
+    }
+
+    private fun capture(
+        window: AccessibilityWindowInfo,
+        display: Display,
+        handle: ScreenHandle,
+        maxNodes: Int,
+    ): ScreenSnapshot {
+        val bounds = android.graphics.Rect().also { window.getBoundsInScreen(it) }
+        val root: AccessibilityNodeInfo = window.root ?: return unavailable(
             handle,
             "text_connection_unavailable",
             "Window on display ${display.displayId} exposed no root node",
@@ -136,12 +156,34 @@ internal class DisplayTreeReader(
         }
     }
 
-    /** Windows on every display, filtered to the one that belongs to [displayId]. */
-    private fun windowsOn(automation: UiAutomation, displayId: Int): List<AccessibilityWindowInfo>? {
-        val all = automation.javaClass.getMethod("getWindowsOnAllDisplays").invoke(automation)
-            ?: throw IllegalStateException("getWindowsOnAllDisplays returned null")
-        return perDisplayOf(all, displayId)
+    /** True when the window cannot be the phone's own (larger) screen. */
+    private fun fits(window: AccessibilityWindowInfo, display: Display): Boolean {
+        val bounds = android.graphics.Rect().also { window.getBoundsInScreen(it) }
+        if (bounds.width() <= 0 || bounds.height() <= 0) return false
+        val width = modeWidth(display)
+        val height = modeHeight(display)
+        if (width <= 0 || height <= 0) return true
+        return bounds.width() <= width && bounds.height() <= height
     }
+
+    /** What the automation can actually see, for the error message. */
+    private fun describeWindows(all: Any?, target: Int): String {
+        if (all == null) return "getWindowsOnAllDisplays returned nothing"
+        val perDisplay = runCatching {
+            val size = all.javaClass.getMethod("size").invoke(all) as Int
+            val keyAt = all.javaClass.getMethod("keyAt", Integer.TYPE)
+            val valueAt = all.javaClass.getMethod("valueAt", Integer.TYPE)
+            (0 until size).joinToString(", ") { i ->
+                val key = keyAt.invoke(all, i)
+                val windows = valueAt.invoke(all, i) as? List<*>
+                "$key=${windows?.size ?: "?"}"
+            }
+        }.getOrElse { "unreadable window list (${it.message})" }
+        return "displays present: [$perDisplay], wanted $target"
+    }
+
+    private fun invokeOrNull(automation: UiAutomation, method: String): Any? =
+        runCatching { automation.javaClass.getMethod(method).invoke(automation) }.getOrNull()
 
     private fun perDisplayOf(all: Any, displayId: Int): List<AccessibilityWindowInfo>? {
         // SparseArray<List<AccessibilityWindowInfo>>; reflection keeps the SDK stubs clean.
@@ -272,6 +314,8 @@ internal class DisplayTreeReader(
     companion object {
         const val DEFAULT_MAX_NODES = 200
         private const val CONNECT_TIMEOUT_MS = 3000L
+        private const val WINDOW_RETRIES = 3
+        private const val WINDOW_RETRY_DELAY_MS = 400L
         private const val FLAG_DONT_SUPPRESS_FALLBACK = 1
     }
 }
