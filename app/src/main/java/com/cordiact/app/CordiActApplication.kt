@@ -3,6 +3,7 @@ package com.cordiact.app
 import android.app.Application
 import android.util.Log
 import android.os.Process
+import com.cordiact.app.automation.AutomationRuntime
 import com.cordiact.app.conversation.AndroidConversationSessionStore
 import com.cordiact.app.conversation.BundledConversationPluginCatalog
 import com.cordiact.app.conversation.BundledConversationPlugins
@@ -102,6 +103,10 @@ class CordiActApplication : Application() {
     lateinit var sandboxManagerPlugin: SandboxManagerPlugin
         private set
     lateinit var interactionPlugin: com.cordiact.interaction.InteractionPlugin
+        private set
+
+    /** Screen / browser / display / privilege plugins. Created once per process. */
+    lateinit var automationRuntime: AutomationRuntime
         private set
 
     /**
@@ -339,6 +344,8 @@ class CordiActApplication : Application() {
         deepSeekApiKeyStore = AndroidDeepSeekApiKeyStore(this)
         providerApiKeyStore = AndroidProviderApiKeyStore(this)
         conversationCatalog = BundledConversationPlugins.create(this, deepSeekApiKeyStore)
+        automationRuntime = AutomationRuntime(this)
+        automationRuntime.registerTools(conversationCatalog.toolRegistry)
         conversationStore = conversationCatalog.conversationStore
         workspaceManager = conversationCatalog.workspacePlugin
         val needsRepair = pluginLifecycle.recoverBeforeDispatch()
@@ -409,7 +416,7 @@ class CordiActApplication : Application() {
         val pluginManagerPlugin = object : ManagedPlugin {
             override val spec: PluginSpec = pluginManagerPluginSpec()
         }
-        (plugins + sandboxManagerPlugin + subagentRuntime + orchestrationPlugin + backgroundSubagents + pluginManagerPlugin)
+        (plugins + automationRuntime.plugins() + sandboxManagerPlugin + subagentRuntime + orchestrationPlugin + backgroundSubagents + pluginManagerPlugin)
             .forEach(::registerAndEnableSystemPlugin)
         // Nothing can legitimately be RUNNING at startup, so anything that says it is belongs to
         // the process that died. Recovering here queues a notice so the parent learns a child was

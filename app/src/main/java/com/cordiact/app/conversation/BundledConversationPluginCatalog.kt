@@ -61,6 +61,9 @@ import com.cordiact.app.search.AndroidSearchPolicyStore
 import com.cordiact.app.search.AndroidSearchProviderSettings
 import com.cordiact.app.search.AndroidSearchUsageStore
 import com.cordiact.app.search.SearchPlugin
+import com.cordiact.app.browser.browserPluginSpec
+import com.cordiact.app.privilege.privilegePluginSpec
+import com.cordiact.app.screen.screenPluginSpec
 import com.cordiact.app.search.registerSearchTools
 import com.cordiact.app.search.searchPluginSpec
 import com.cordiact.app.search.searchRoute
@@ -120,6 +123,12 @@ object BundledConversationPluginCatalog {
         com.cordiact.core.subagent.SUBAGENT_DELEGATE_CAPABILITY,
         com.cordiact.core.subagent.ORCHESTRATION_CAPABILITY,
         com.cordiact.core.subagent.BACKGROUND_CAPABILITY,
+        // Automation capabilities are declared here but the tools themselves default to
+        // off; the user must enable each tool (and the accessibility service) explicitly.
+        com.cordiact.core.automation.AutomationCapabilities.SCREEN_OBSERVE,
+        com.cordiact.core.automation.AutomationCapabilities.SCREEN_ACT,
+        com.cordiact.core.automation.AutomationCapabilities.BROWSER_CONTROL,
+        com.cordiact.core.automation.AutomationCapabilities.PRIV_SHELL,
     )
 
     private val trustedSpecs = setOf(
@@ -138,6 +147,9 @@ object BundledConversationPluginCatalog {
         orchestrationPluginSpec(),
         backgroundSubagentPluginSpec(),
         pluginManagerPluginSpec(),
+        screenPluginSpec(),
+        browserPluginSpec(),
+        privilegePluginSpec(),
     )
 
     val verifier = BundledPluginVerifier { candidate -> candidate in trustedSpecs }
