@@ -86,7 +86,14 @@ class ShizukuChannel(private val context: Context) : PrivilegedChannel {
     }
 
     /** Binder to the shell user service, or null when the channel is not ready. */
-    fun binder(): IPrivilegedService? = ensureService()
+    fun binder(): IPrivilegedService? {
+        val cached = service
+        if (cached != null && cached.asBinder().isBinderAlive) return cached
+        // The user-service process can die (app update, low memory); never keep
+        // handing out a dead proxy or every call degrades to requires_privilege.
+        service = null
+        return ensureService()
+    }
 
     fun requestPermission(onResult: (Boolean) -> Unit) {
         runCatching { Shizuku.requestPermission(REQUEST_CODE) }
