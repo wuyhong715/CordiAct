@@ -32,10 +32,10 @@ class AutomationProbeReceiver : BroadcastReceiver() {
         thread(name = "automation-probe-$case") {
             val result = try {
                 when (case) {
-                    "a11y" -> probeA11y(runtime)
-                    "priv" -> probePriv(runtime)
-                    "priv_request" -> probePrivRequest(runtime)
-                    "display" -> probeDisplay(runtime)
+                    "a11y" -> probeA11y(app)
+                    "priv" -> probePriv(app)
+                    "priv_request" -> probePrivRequest(app)
+                    "display" -> probeDisplay(app)
                     else -> JSONObject().put("ok", false).put("error", "unknown case: $case")
                 }
             } catch (failure: Throwable) {
