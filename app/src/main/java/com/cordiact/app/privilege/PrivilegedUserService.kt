@@ -1,14 +1,12 @@
 package com.cordiact.app.privilege
 
-import android.app.Service
-import android.content.Intent
+import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.PixelFormat
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
 import android.media.ImageReader
 import android.os.Bundle
-import android.os.IBinder
 import com.cordiact.core.automation.ShellLimits
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
@@ -22,9 +20,16 @@ import java.util.concurrent.TimeUnit
  * only reachable by its creator, and `screencap -d` refuses it. Created here,
  * with the shell uid, the display is public and `screencap`/`input -d` work.
  */
-class PrivilegedUserService : Service() {
+class PrivilegedUserService : IPrivilegedService.Stub() {
 
     private val displays = ConcurrentHashMap<Int, DisplayEntry>()
+
+    /** No Application in a Shizuku user-service process: borrow the system context. */
+    private val context: Context by lazy {
+        val activityThread = Class.forName("android.app.ActivityThread")
+        val thread = activityThread.getMethod("systemMain").invoke(null)
+        activityThread.getMethod("getSystemContext").invoke(thread) as Context
+    }
 
     private class DisplayEntry(
         val display: VirtualDisplay,
@@ -33,50 +38,43 @@ class PrivilegedUserService : Service() {
         val height: Int,
     )
 
-    private val binder = object : IPrivilegedService.Stub() {
-        override fun exec(command: String, timeoutMs: Long): Bundle = runCommand(command, timeoutMs)
+    override fun exec(command: String, timeoutMs: Long): Bundle = runCommand(command, timeoutMs)
 
-        override fun uid(): Int = android.os.Process.myUid()
+    override fun uid(): Int = android.os.Process.myUid()
 
-        override fun createDisplay(width: Int, height: Int, dpi: Int): Bundle = createDisplayInternal(width, height, dpi)
+    override fun createDisplay(width: Int, height: Int, dpi: Int): Bundle = createDisplayInternal(width, height, dpi)
 
-        override fun destroyDisplay(displayId: Int): Boolean = destroyDisplayInternal(displayId)
+    override fun destroyDisplay(displayId: Int): Boolean = destroyDisplayInternal(displayId)
 
-        override fun captureDisplay(displayId: Int): Bitmap? = captureInternal(displayId)
+    override fun captureDisplay(displayId: Int): Bitmap? = captureInternal(displayId)
 
-        override fun launchOnDisplay(displayId: Int, packageName: String, activity: String?): Bundle =
-            launchInternal(displayId, packageName, activity)
+    override fun launchOnDisplay(displayId: Int, packageName: String, activity: String?): Bundle =
+        launchInternal(displayId, packageName, activity)
 
-        override fun tap(displayId: Int, x: Int, y: Int, durationMs: Long): Boolean =
-            runCommand("input -d $displayId tap $x $y", 10_000).getInt("exitCode", -1) == 0
+    override fun tap(displayId: Int, x: Int, y: Int, durationMs: Long): Boolean =
+        runCommand("input -d $displayId tap $x $y", 10_000).getInt("exitCode", -1) == 0
 
-        override fun swipe(displayId: Int, x1: Int, y1: Int, x2: Int, y2: Int, durationMs: Long): Boolean =
-            runCommand("input -d $displayId swipe $x1 $y1 $x2 $y2 ${durationMs.coerceIn(50, 3_000)}", 15_000)
-                .getInt("exitCode", -1) == 0
+    override fun swipe(displayId: Int, x1: Int, y1: Int, x2: Int, y2: Int, durationMs: Long): Boolean =
+        runCommand("input -d $displayId swipe $x1 $y1 $x2 $y2 ${durationMs.coerceIn(50, 3_000)}", 15_000)
+            .getInt("exitCode", -1) == 0
 
-        override fun key(displayId: Int, keyCode: Int): Boolean =
-            runCommand("input -d $displayId keyevent $keyCode", 10_000).getInt("exitCode", -1) == 0
+    override fun key(displayId: Int, keyCode: Int): Boolean =
+        runCommand("input -d $displayId keyevent $keyCode", 10_000).getInt("exitCode", -1) == 0
 
-        override fun text(displayId: Int, value: String): Boolean =
-            runCommand("input -d $displayId text ${shellQuote(value)}", 15_000).getInt("exitCode", -1) == 0
+    override fun text(displayId: Int, value: String): Boolean =
+        runCommand("input -d $displayId text ${shellQuote(value)}", 15_000).getInt("exitCode", -1) == 0
 
-        override fun dumpDisplay(displayId: Int): Bundle = Bundle().apply {
-            // UiAutomation bound to a secondary display is not wired up yet; report
-            // the limitation instead of returning a misleading empty tree.
-            putString("error", "text_connection_unavailable")
-            putString("message", "Tree read for virtual displays requires the UiAutomation display channel (Android 14+), not implemented yet.")
-        }
-
-        override fun handoff(displayId: Int): Boolean =
-            runCommand("am display move-stack $displayId 0", 10_000).getInt("exitCode", -1) == 0
+    override fun dumpDisplay(displayId: Int): Bundle = Bundle().apply {
+        // UiAutomation bound to a secondary display is not wired up yet; report
+        // the limitation instead of returning a misleading empty tree.
+        putString("error", "text_connection_unavailable")
+        putString("message", "Tree read for virtual displays requires the UiAutomation display channel (Android 14+), not implemented yet.")
     }
 
-    override fun onBind(intent: Intent?): IBinder = binder
-
-    override fun onDestroy() {
-        displays.keys.toList().forEach(::destroyDisplayInternal)
-        super.onDestroy()
+    override fun handoff(displayId: Int): Boolean =
+        runCommand("am display move-stack $displayId 0", 10_000).getInt("exitCode", -1) == 0
     }
+
 
     // ------------------------------------------------------------- display ops
 
@@ -91,7 +89,7 @@ class PrivilegedUserService : Service() {
         }
         val alignedWidth = (width + 15) and 15.inv()
         val alignedHeight = (height + 15) and 15.inv()
-        val manager = getSystemService(DisplayManager::class.java)
+        val manager = context.getSystemService(DisplayManager::class.java)
         val reader = ImageReader.newInstance(alignedWidth, alignedHeight, PixelFormat.RGBA_8888, 2)
         val flags = reflectionFlags()
         val display = try {

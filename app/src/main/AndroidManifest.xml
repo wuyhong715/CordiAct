@@ -20,14 +20,6 @@
                 android:name="android.accessibilityservice"
                 android:resource="@xml/accessibility_service_config" />
         </service>
-        <service
-            android:name=".privilege.PrivilegedUserService"
-            android:exported="true"
-            android:process=":privileged">
-            <intent-filter>
-                <action android:name="com.cordiact.app.privilege.IPrivilegedService" />
-            </intent-filter>
-        </service>
         <receiver
             android:name=".probe.AutomationProbeReceiver"
             android:exported="true"

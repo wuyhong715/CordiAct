@@ -24,6 +24,16 @@ android { namespace = "com.cordiact.app"; compileSdk = 35
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk { abiFilters += setOf("arm64-v8a", "x86_64") }
     }
+    signingConfigs {
+        // Checked-in debug key so CI builds keep one signature across runs and
+        // `adb install -r` upgrades the app instead of demanding an uninstall.
+        getByName("debug") {
+            storeFile = rootProject.file("keystore/debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
     testOptions { unitTests.isIncludeAndroidResources = true }
 }
 
