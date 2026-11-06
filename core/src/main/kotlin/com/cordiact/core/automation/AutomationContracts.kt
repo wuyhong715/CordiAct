@@ -106,6 +106,27 @@ data class ScreenSnapshot(
     val error: ScreenError? = null,
 )
 
+/**
+ * Text the browser layer can read from a WebView that is *rendered on a screen*.
+ *
+ * Accessibility exposes the rendered page, not the DOM: [text] and [links] come
+ * from the WebView's accessibility nodes, and [url] is only filled when the page
+ * or the app publishes one. This is the bridge for WebViews inside other apps,
+ * where no debugging socket is available.
+ */
+data class ScreenWebDocument(
+    val handle: String,
+    val title: String,
+    val url: String?,
+    val text: String,
+    val links: List<ScreenWebLink>,
+    val elements: Int,
+    val truncated: Boolean = false,
+    val error: ScreenError? = null,
+)
+
+data class ScreenWebLink(val label: String, val bounds: ScreenRect)
+
 data class ScreenError(
     val code: String,
     val message: String,
@@ -171,6 +192,13 @@ interface ScreenDriver {
         ScreenErrorCodes.ACTION_UNSUPPORTED,
         "handoff is only available on background screens",
     ))
+
+    /**
+     * Text of a WebView rendered on this screen, or null when the screen shows
+     * no WebView at all. Errors inside the WebView read land in
+     * [ScreenWebDocument.error] instead of being thrown.
+     */
+    fun webDocument(maxChars: Int = 4_000): ScreenWebDocument? = null
 
     fun release() = Unit
 }

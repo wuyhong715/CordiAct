@@ -9,12 +9,12 @@ import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
 import android.media.ImageReader
 import android.os.Bundle
+import android.view.KeyEvent
 import android.os.Handler
 import android.os.HandlerThread
 import com.cordiact.app.display.DisplayTreeReader
 import com.cordiact.app.display.SnapshotBundle
 import com.cordiact.core.automation.ScreenHandle
-import com.cordiact.core.automation.ScreenSnapshot
 import com.cordiact.core.automation.ShellLimits
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
@@ -83,8 +83,58 @@ class PrivilegedUserService : IPrivilegedService.Stub() {
     override fun key(displayId: Int, keyCode: Int): Boolean =
         runCommand("input -d $displayId keyevent $keyCode", 10_000).getInt("exitCode", -1) == 0
 
-    override fun text(displayId: Int, value: String): Boolean =
-        runCommand("input -d $displayId text ${shellQuote(value)}", 15_000).getInt("exitCode", -1) == 0
+    /**
+     * `input text` goes through the key character map and simply cannot carry
+     * Chinese; accessibility can, so that is the primary path and the shell
+     * command stays as a fallback for displays with no readable node.
+     */
+    override fun text(displayId: Int, value: String): Boolean {
+        val typed = typeText(displayId, value, submit = false)
+        if (typed.getBoolean("ok")) return true
+        return runCommand("input -d $displayId text ${shellQuote(value)}", 15_000).getInt("exitCode", -1) == 0
+    }
+
+    override fun typeText(displayId: Int, value: String, submit: Boolean): Bundle {
+        if (!ownsDisplay(displayId)) return errorBundle("display_missing", missingDisplayMessage(displayId))
+        val outcome = onTreeThread(DUMP_TIMEOUT_MS) { reader -> reader.typeText(displayId, value) }
+            ?: return errorBundle("timeout", "Typing into display $displayId timed out after ${DUMP_TIMEOUT_MS}ms")
+        if (submit && outcome.ok) {
+            key(displayId, KeyEvent.KEYCODE_ENTER)
+        }
+        return Bundle().apply {
+            putBoolean("ok", outcome.ok)
+            putString("method", outcome.method)
+            putString("package", outcome.packageName)
+            putString("observed", outcome.observed)
+            outcome.error?.let { putString("message", it) }
+        }
+    }
+
+    override fun dumpWeb(displayId: Int, maxChars: Int): Bundle {
+        if (!ownsDisplay(displayId)) return errorBundle("display_missing", missingDisplayMessage(displayId))
+        val document = onTreeThread(DUMP_TIMEOUT_MS) { reader ->
+            reader.webDocument(displayId, ScreenHandle.background(0), maxChars.coerceIn(500, 20_000))
+        }
+        if (document == null) {
+            return errorBundle("no_webview", "Display $displayId shows no readable WebView")
+        }
+        return Bundle().apply {
+            putBoolean("ok", true)
+            putString("title", document.title)
+            putString("url", document.url)
+            putString("text", document.text)
+            putInt("elements", document.elements)
+            putBoolean("truncated", document.truncated)
+            putInt("links", document.links.size)
+            putString("linkLabels", document.links.take(10).joinToString(" | ") { it.label })
+        }
+    }
+
+    private fun ownsDisplay(displayId: Int): Boolean = displayId > 0 && displays.containsKey(displayId)
+
+    private fun missingDisplayMessage(displayId: Int): String =
+        if (displayId <= 0) "Display $displayId does not exist"
+        else "Display $displayId is not owned by this process"
 
     /**
      * Reads the accessibility tree of a background display.
@@ -96,26 +146,27 @@ class PrivilegedUserService : IPrivilegedService.Stub() {
      * waits for the result.
      */
     override fun dumpDisplay(displayId: Int): Bundle {
-        if (displayId <= 0) {
-            return errorBundle("display_missing", "Display $displayId does not exist")
-        }
-        if (!displays.containsKey(displayId)) {
-            return errorBundle("display_missing", "Display $displayId is not owned by this process")
-        }
-        val result = readTree(displayId, DUMP_TIMEOUT_MS)
-            ?: return errorBundle(
-                "text_connection_unavailable",
-                "Timed out reading the tree of display $displayId after ${DUMP_TIMEOUT_MS}ms",
-            )
+        if (!ownsDisplay(displayId)) return errorBundle("display_missing", missingDisplayMessage(displayId))
+        val result = onTreeThread(DUMP_TIMEOUT_MS) { reader ->
+            reader.snapshot(displayId, ScreenHandle.background(0))
+        } ?: return errorBundle(
+            "text_connection_unavailable",
+            "Timed out reading the tree of display $displayId after ${DUMP_TIMEOUT_MS}ms",
+        )
         return SnapshotBundle.encode(result)
     }
 
-    private fun readTree(displayId: Int, timeoutMs: Long): ScreenSnapshot? {
+    /**
+     * Runs an accessibility read on the dedicated tree thread. UiAutomation
+     * dispatches its callbacks through the looper of the thread that created it,
+     * so the work must not run on this binder thread.
+     */
+    private fun <T> onTreeThread(timeoutMs: Long, block: (DisplayTreeReader) -> T): T? {
         val latch = CountDownLatch(1)
-        val holder = arrayOfNulls<ScreenSnapshot>(1)
+        val holder = arrayOfNulls<Any>(1)
         val posted = treeHandler.post {
             try {
-                holder[0] = DisplayTreeReader(context).snapshot(displayId, ScreenHandle.background(0))
+                holder[0] = block(DisplayTreeReader(context))
             } catch (failure: Throwable) {
                 holder[0] = null
             } finally {
@@ -123,7 +174,8 @@ class PrivilegedUserService : IPrivilegedService.Stub() {
             }
         }
         if (!posted || !latch.await(timeoutMs, TimeUnit.MILLISECONDS)) return null
-        return holder[0]
+        @Suppress("UNCHECKED_CAST")
+        return holder[0] as? T
     }
 
     private fun errorBundle(code: String, message: String): Bundle = Bundle().apply {

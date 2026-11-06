@@ -70,6 +70,6 @@ class AutomationRuntime(context: Context) {
     fun registerTools(registry: ToolDefinitionRegistry) {
         registerPrivilegeTools(registry, privilegeService)
         registerScreenTools(registry, screenService, screenGuard)
-        registerBrowserTools(registry, browserPool)
+        registerBrowserTools(registry, browserPool, screenService)
     }
 }

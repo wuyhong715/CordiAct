@@ -9,6 +9,7 @@ import android.graphics.Rect
 import android.os.Bundle
 import android.os.SystemClock
 import android.view.accessibility.AccessibilityNodeInfo
+import com.cordiact.app.display.WebContentExtractor
 import com.cordiact.core.automation.ActionResult
 import com.cordiact.core.automation.ScreenDriver
 import com.cordiact.core.automation.ScreenError
@@ -16,6 +17,7 @@ import com.cordiact.core.automation.ScreenErrorCodes
 import com.cordiact.core.automation.ScreenHandle
 import com.cordiact.core.automation.ScreenKey
 import com.cordiact.core.automation.ScreenSnapshot
+import com.cordiact.core.automation.ScreenWebDocument
 import com.cordiact.core.automation.ScreenTarget
 import com.cordiact.core.automation.ScrollDirection
 
@@ -32,6 +34,12 @@ class MainScreenDriver(
 ) : ScreenDriver {
 
     private val capture = TreeCapture()
+
+    override fun webDocument(maxChars: Int): ScreenWebDocument? {
+        val service = ScreenServiceBridge.service ?: return null
+        val root = service.rootInActiveWindow ?: return null
+        return WebContentExtractor.fromRoot(root, handle.value, maxChars)
+    }
 
     override fun snapshot(maxNodes: Int, includeImage: Boolean): ScreenSnapshot {
         val service = ScreenServiceBridge.service

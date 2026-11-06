@@ -36,6 +36,15 @@ interface IPrivilegedService {
     /** Accessibility tree of the display, or {error} when the platform refuses. */
     Bundle dumpDisplay(int displayId);
 
+    /**
+     * Types into the display's editable node through accessibility, so CJK and
+     * emoji work. Returns {ok, method, package, observed, error}.
+     */
+    Bundle typeText(int displayId, String value, boolean submit);
+
+    /** Rendered WebView content of the display, or {error} when it shows none. */
+    Bundle dumpWeb(int displayId, int maxChars);
+
     /** Moves the display's top task back to the default display. */
     boolean handoff(int displayId);
 }
