@@ -14,6 +14,12 @@ data class ModelDescriptor(
     val id: ModelId,
     val displayName: String,
     val supportsStreaming: Boolean = true,
+    /**
+     * Total context window size in tokens, if known.
+     *
+     * When null, callers fall back to the provider default lookup table or conservative limits.
+     */
+    val contextWindowTokens: Int? = null,
 )
 
 enum class MessageRole { SYSTEM, USER, ASSISTANT, TOOL }

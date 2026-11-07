@@ -212,7 +212,10 @@ class CordiActApplication : Application() {
     private val skillIndexRenderer = SkillIndexRenderer()
 
     /** Runs model/tool rounds. Owned by the application, not by the turn service. */
-    private val toolLoopPlugin = ToolLoopPlugin().apply { onEnable() }
+    private val toolLoopPlugin by lazy {
+        val gate = com.cordiact.core.context.DefaultToolOutputGate(conversationCatalog.spillStore)
+        ToolLoopPlugin(gate = gate).apply { onEnable() }
+    }
 
     /**
      * Version control for memory artifacts.

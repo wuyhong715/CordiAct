@@ -56,6 +56,9 @@ import com.cordiact.core.tool.ToolExecutor
 import com.cordiact.core.tool.toolManagerPluginSpec
 import com.cordiact.app.file.AndroidWorkspaceFileBackend
 import com.cordiact.app.file.registerWorkspaceFileTools
+import com.cordiact.core.context.SpillStore
+import com.cordiact.core.context.StandardSpillStore
+import com.cordiact.core.context.registerContextTools
 import com.cordiact.app.search.AndroidSearchApiKeyStore
 import com.cordiact.app.search.AndroidSearchPolicyStore
 import com.cordiact.app.search.AndroidSearchProviderSettings
@@ -178,6 +181,7 @@ class BundledConversationPlugins private constructor(
     private val fillValues: MutableFillValueStore,
     private val configuredSearchProviderSettings: AndroidSearchProviderSettings? = null,
     private val configuredSearchApiKeys: AndroidSearchApiKeyStore? = null,
+    private val spillStoreDir: File? = null,
 ) {
     val workspaceManager: WorkspaceManagerService get() = workspacePlugin
     val fillValueStore: MutableFillValueStore get() = fillValues
@@ -233,7 +237,12 @@ class BundledConversationPlugins private constructor(
      */
     val toolRegistry: ToolDefinitionRegistry get() = registry
 
+    val spillStore: SpillStore by lazy {
+        StandardSpillStore(spillStoreDir ?: File(System.getProperty("java.io.tmpdir"), "cordiact-spills"))
+    }
+
     fun create(stateLookup: ToolPluginStateLookup): List<ManagedPlugin> {
+        registerContextTools(registry, spillStore)
         registerWorkspaceFileTools(registry, fileManager)
         skillPlugin = SkillPlugin(AndroidSkillFileSource(fileManager))
         registerSkillTools(registry, skillPlugin)
@@ -436,6 +445,7 @@ class BundledConversationPlugins private constructor(
             fillValues: MutableFillValueStore = InMemoryFillValueStore(),
             searchProviderSettings: AndroidSearchProviderSettings? = null,
             searchApiKeys: AndroidSearchApiKeyStore? = null,
+            spillStoreDir: File? = File(privateRoot, "spills"),
         ): BundledConversationPlugins {
             val workspace = WorkspaceManagerPlugin(store, privateRoot)
             val fileManager = FileManagerPlugin(workspace, AndroidWorkspaceFileBackend())
@@ -453,6 +463,7 @@ class BundledConversationPlugins private constructor(
                 fillValues,
                 searchProviderSettings,
                 searchApiKeys,
+                spillStoreDir,
             )
         }
     }
