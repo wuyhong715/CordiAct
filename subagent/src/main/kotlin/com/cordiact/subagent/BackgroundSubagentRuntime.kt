@@ -32,9 +32,10 @@ import java.util.concurrent.TimeUnit
  * 1. **A run outlives the turn that started it.** It therefore needs its own wall clock, its own
  *    concurrency budget, and durable bookkeeping — a run killed with the process must be
  *    discoverable afterwards, or the parent waits forever.
- * 2. **Results cannot be pushed into a turn.** A CordiAct turn is synchronous and single-flight
- *    per Session, so a settled child queues a notice that the parent's *next* turn reads. That
- *    is the mailbox, reduced to what this architecture can actually deliver.
+ * 2. **Results reach the parent at two points, not by interruption.** A settled child queues a
+ *    notice that the parent's *next* turn reads, and `onReportQueued` lets the host also hand the
+ *    same report to a tool loop that is already running, at its next round boundary. A model
+ *    request in flight is never interrupted.
  * 3. **A finished child still holds a slot.** Slots are the scarce resource; `close` is how the
  *    parent says it is done reading.
  */
@@ -43,6 +44,13 @@ class BackgroundSubagentRuntime(
     private val runs: AgentRunStore,
     private val limits: BackgroundLimits = BackgroundLimits(),
     private val clockMillis: () -> Long = System::currentTimeMillis,
+    /**
+     * Called the moment a child's report is queued, before any parent turn reads it.
+     *
+     * This is what lets the host deliver a report *inside* a running turn instead of only at the
+     * head of the next one, and decide whether an idle Session should be woken.
+     */
+    private val onReportQueued: ((ChildNotice) -> Unit)? = null,
     private val executor: ExecutorService = Executors.newCachedThreadPool { runnable ->
         Thread(runnable, "cordiact-subagent-bg").apply { isDaemon = true }
     },
@@ -408,5 +416,8 @@ class BackgroundSubagentRuntime(
             list.removeAll { it.id == notice.id }
             list += notice
         }
+        // Outside the lock: the host may start a turn from here, and that must not run while the
+        // queue is held.
+        runCatching { onReportQueued?.invoke(notice) }
     }
 }

@@ -485,6 +485,12 @@ data class TurnNotice(
     val id: String,
     val heading: String,
     val body: String? = null,
+    /**
+     * Whether this is something a child chose to say, or the runtime's account of an outcome.
+     *
+     * Kept because a transcript that merged the two would credit a child with the runtime's words.
+     */
+    val kind: com.cordiact.core.inbox.InboxItemKind = com.cordiact.core.inbox.InboxItemKind.CHILD_SETTLED,
 )
 
 /** Where a turn gets its notices, and where it reports that they were delivered. */
