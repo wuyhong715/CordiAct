@@ -232,6 +232,16 @@ class CordiActApplication : Application() {
         )
     }
 
+    /**
+     * Bounds how many child Sessions keep their working set in memory.
+     *
+     * Only a closed child is evictable: an open one can still be continued, and dropping it would
+     * silently turn "continue this child" into "that child never existed".
+     */
+    private val residentSessions = com.cordiact.core.subagent.ResidentSessions(maxResident = 8) { childSessionId ->
+        backgroundSubagents.isForgettable(childSessionId)
+    }
+
     private val toolLoopPlugin by lazy {
         val gate = com.cordiact.core.context.DefaultToolOutputGate(conversationCatalog.spillStore)
         ToolLoopPlugin(
@@ -366,6 +376,12 @@ class CordiActApplication : Application() {
         if (decision != com.cordiact.core.inbox.WakeDecision.WOKE) {
             Log.d(TAG, "Child report ${notice.id} queued for ${notice.parentSessionId}: $decision")
         }
+        // A settled child is a candidate for leaving memory once the parent is done with it.
+        residentSessions.touch(notice.childSessionId)
+        residentSessions.reap().forEach { evicted ->
+            backgroundSubagents.forget(evicted)
+            Log.d(TAG, "Evicted child session $evicted from memory; its transcript stays in the database")
+        }
     }
 
     /**
@@ -374,6 +390,20 @@ class CordiActApplication : Application() {
      * Refuses when no background model is configured rather than picking one: an automatic wake
      * that quietly runs on an unexpected model would be a surprising bill.
      */
+    /**
+     * Prepares a compaction summary for [sessionId] while the app is idle.
+     *
+     * Called from [com.cordiact.app.context.ContextCompactionWorker], never from a turn: producing
+     * a summary is the one part of compaction that costs the user wall-clock time.
+     */
+    fun prepareCompactionCandidate(sessionId: String) {
+        val model = runCatching {
+            com.cordiact.app.memory.ExtractionModelSelectionStore(this).selectedModel()
+        }.getOrNull() ?: return
+        runCatching { turnService.prepareCompactionCandidate(sessionId, model) }
+            .onFailure { Log.e(TAG, "Preparing a compaction candidate for $sessionId failed", it) }
+    }
+
     private fun wakeSession(sessionId: String) {
         val model = runCatching {
             com.cordiact.app.memory.ExtractionModelSelectionStore(this).selectedModel()
@@ -430,6 +460,12 @@ class CordiActApplication : Application() {
             .onFailure { Log.e(TAG, "Job reconciliation failed", it) }
         val executionManager = com.cordiact.app.service.AgentExecutionManager(this, conversationCatalog.jobRegistry)
         executionManager.start()
+
+        // A finished turn is the cheapest moment to think about the next one: the summary can be
+        // prepared while nobody is waiting, and installed only if it still applies.
+        turnService.onTurnCompleted = { sessionId ->
+            com.cordiact.app.context.ContextCompactionWorker.enqueue(this, sessionId)
+        }
         conversationStore = conversationCatalog.conversationStore
         workspaceManager = conversationCatalog.workspacePlugin
         val needsRepair = pluginLifecycle.recoverBeforeDispatch()

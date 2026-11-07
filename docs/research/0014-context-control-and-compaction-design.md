@@ -577,7 +577,7 @@ spillCount, foldCount, compactDurationMs, fallbackLevel, estimatorFactor
 
 **验收**：模拟 provider 返回 400 `context_length_exceeded`，第一轮触发紧急压缩、第二轮成功，用户只看到一条“已自动压缩”提示；分类器对四家 provider 的样例错误各自命中，且普通 400（参数错误）不被误判为溢出；设置项修改后下一次请求生效，无需重启。
 
-### P3 — 后台候选压缩（约 2 天）
+### P3 — 后台候选压缩（约 2 天）✅ 已实现（2026-11-07，PR #44）
 
 - 在回合结束、`WorkManager` 约束满足时预生成候选摘要（对应 Codex `async_compaction.rs`）；
 - 下次请求前若候选仍然有效（覆盖区间未被新消息插入打断）则直接安装，否则丢弃重算；

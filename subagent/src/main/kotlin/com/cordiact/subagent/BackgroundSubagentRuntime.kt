@@ -289,6 +289,24 @@ class BackgroundSubagentRuntime(
         return describe(run)
     }
 
+    /**
+     * Drops a released child's retained result from memory.
+     *
+     * A run keeps its result text (up to `maxResultChars`) for as long as the process lives, even
+     * after the parent closed it. Only a closed run may be forgotten: an open child can still be
+     * continued, and dropping it would turn "continue this child" into "that child never existed".
+     *
+     * The database record is untouched, so the transcript still opens.
+     */
+    fun forget(childSessionId: String): Boolean {
+        val run = live[childSessionId] ?: return false
+        if (!run.closed) return false
+        return live.remove(childSessionId) != null
+    }
+
+    /** Whether [forget] would succeed right now; used by the residency policy. */
+    fun isForgettable(childSessionId: String): Boolean = live[childSessionId]?.closed == true
+
     override fun send(parent: ToolInvocationContext, childId: String, message: String): ChildRun {
         check(enabled) { "Background delegation is not enabled" }
         val parentSessionId = parent.sessionId ?: error("Sending requires a calling Session")

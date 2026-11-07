@@ -357,4 +357,24 @@ class BackgroundSubagentTest {
         assertEquals(1, h.background.pendingNotices(h.root.id).size)
         assertTrue(h.background.pendingNotices(other.id).isEmpty())
     }
+
+    @Test
+    fun `only a released child may be dropped from memory`() {
+        val h = BackgroundHarness()
+        val run = h.spawn()
+        h.background.waitFor(h.context(), listOf(run.sessionId), 5_000)
+
+        // Settled but still open: the parent may continue it, so it must stay addressable.
+        assertTrue(!h.background.isForgettable(run.sessionId))
+        assertTrue(!h.background.forget(run.sessionId))
+
+        h.background.close(h.context(), run.sessionId)
+
+        // Released: its retained result text can go. The database row is untouched, so the
+        // transcript still opens — that is the whole point of evicting memory rather than state.
+        assertTrue(h.background.isForgettable(run.sessionId))
+        assertTrue(h.background.forget(run.sessionId))
+        assertTrue(!h.background.forget(run.sessionId))
+        assertNotNull(h.sessions.getSession(run.sessionId))
+    }
 }
