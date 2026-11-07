@@ -100,7 +100,7 @@ class SshToolsTest {
             ToolArguments()
         )
         assertTrue((listResult.values["ok"] as ToolValue.BooleanValue).value)
-        val hosts = (listResult.values["hosts"] as ToolValue.ArrayValue).items
+        val hosts = (listResult.values["hosts"] as ToolValue.ArrayValue).values
         assertEquals(1, hosts.size)
 
         // 3. Exec saved
@@ -126,7 +126,7 @@ class SshToolsTest {
         assertTrue((delResult.values["deleted"] as ToolValue.BooleanValue).value)
 
         val emptyListResult = toolMap["ssh_list_hosts"]!!.executor.invoke(dummyContext, ToolArguments())
-        val emptyHosts = (emptyListResult.values["hosts"] as ToolValue.ArrayValue).items
+        val emptyHosts = (emptyListResult.values["hosts"] as ToolValue.ArrayValue).values
         assertEquals(0, emptyHosts.size)
 
         // 5. Test Tunnel Tools
@@ -145,7 +145,7 @@ class SshToolsTest {
 
         val listTunResult = toolMap["ssh_list_tunnels"]!!.executor.invoke(dummyContext, ToolArguments())
         assertTrue((listTunResult.values["ok"] as ToolValue.BooleanValue).value)
-        val tunnels = (listTunResult.values["tunnels"] as ToolValue.ArrayValue).items
+        val tunnels = (listTunResult.values["tunnels"] as ToolValue.ArrayValue).values
         assertEquals(1, tunnels.size)
 
         val closeTunResult = toolMap["ssh_close_tunnel"]!!.executor.invoke(

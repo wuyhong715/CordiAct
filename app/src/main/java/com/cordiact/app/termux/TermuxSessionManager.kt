@@ -81,8 +81,44 @@ class TermuxSessionManager(
             return pollForPattern(params)
         }
 
-        // Default: capture current pane
-        return readScreen(params)
+        // Settle detection: poll until output stabilizes (no change for settleMs)
+        return pollForSettle(params)
+    }
+
+    private fun pollForSettle(params: TermuxSessionParams): TermuxSessionResult {
+        val startTime = System.currentTimeMillis()
+        var lastOutput = ""
+        var stableSince = System.currentTimeMillis()
+        val pollIntervalMs = 150L
+        val settleTargetMs = params.settleMs.coerceIn(200L, 5000L)
+
+        while (System.currentTimeMillis() - startTime < params.timeoutMs) {
+            val readRes = readScreen(params)
+            if (!readRes.active) return readRes
+            val currentOutput = readRes.screenOutput
+
+            if (currentOutput != lastOutput) {
+                lastOutput = currentOutput
+                stableSince = System.currentTimeMillis()
+            } else if (currentOutput.isNotBlank() && System.currentTimeMillis() - stableSince >= settleTargetMs) {
+                return TermuxSessionResult(
+                    sessionName = params.sessionName,
+                    active = true,
+                    screenOutput = currentOutput,
+                    matched = false,
+                    reason = "SETTLED",
+                )
+            }
+            Thread.sleep(pollIntervalMs)
+        }
+
+        return TermuxSessionResult(
+            sessionName = params.sessionName,
+            active = true,
+            screenOutput = lastOutput,
+            matched = false,
+            reason = "TIMEOUT",
+        )
     }
 
     private fun readScreen(params: TermuxSessionParams): TermuxSessionResult {

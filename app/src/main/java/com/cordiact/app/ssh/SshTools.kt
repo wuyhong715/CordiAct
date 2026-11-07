@@ -24,6 +24,7 @@ fun sshTools(plugin: SshPlugin): List<ToolDefinition> = listOf(
     saveHostTool(plugin),
     listHostsTool(plugin),
     deleteHostTool(plugin),
+    probeTool(plugin),
     execTool(plugin),
     execSavedTool(plugin),
     uploadTool(plugin),
@@ -158,6 +159,45 @@ private fun deleteHostTool(plugin: SshPlugin) = ToolDefinition(
                 "ok" to ToolValue.BooleanValue(true),
                 "name" to ToolValue.StringValue(name),
                 "deleted" to ToolValue.BooleanValue(deleted),
+            ),
+        )
+    },
+)
+
+private fun probeTool(plugin: SshPlugin) = ToolDefinition(
+    descriptor = ToolDescriptor(
+        id = "ssh_probe",
+        name = "ssh_probe",
+        description = "Probe an SSH endpoint for reachability, presented key fingerprint, and round-trip handshake latency without credentials.",
+        inputSchema = ToolInputSchema(
+            parameters = listOf(
+                param("host", ToolValueType.STRING, "Remote host or IP address.", required = true),
+                param("port", ToolValueType.INTEGER, "SSH port (default: 22).", minimum = 1.0, maximum = 65535.0),
+                param("timeout_ms", ToolValueType.INTEGER, "Probe timeout in milliseconds (default: 5000).", minimum = 500.0, maximum = 30000.0),
+            ),
+        ),
+        ownerPluginId = AutomationPlugins.SSH,
+        defaultEnabled = false,
+        requiredCapabilities = setOf(AutomationCapabilities.SSH_EXEC),
+        timeoutMs = TIMEOUT_HOST_OPS,
+        concurrencySafe = true,
+    ),
+    executor = { _, args ->
+        val host = args.string("host") ?: return@ToolDefinition error("missing_arg", "host is required")
+        val port = args.int("port") ?: 22
+        val timeoutMs = (args.int("timeout_ms")?.toLong() ?: 5_000L).coerceIn(500L, 30_000L)
+
+        val probe = plugin.service.probe(host, port, timeoutMs)
+        ToolResult(
+            values = linkedMapOf(
+                "ok" to ToolValue.BooleanValue(probe.reachable),
+                "host" to ToolValue.StringValue(host),
+                "port" to ToolValue.NumberValue(port.toDouble()),
+                "reachable" to ToolValue.BooleanValue(probe.reachable),
+                "latency_ms" to ToolValue.NumberValue(probe.latencyMs.toDouble()),
+                "host_key_type" to (probe.hostKeyType?.let { ToolValue.StringValue(it) } ?: ToolValue.NullValue),
+                "fingerprint_sha256" to (probe.fingerprintSha256?.let { ToolValue.StringValue(it) } ?: ToolValue.NullValue),
+                "error" to (probe.error?.let { ToolValue.StringValue(it) } ?: ToolValue.NullValue),
             ),
         )
     },

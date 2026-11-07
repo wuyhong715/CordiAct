@@ -115,6 +115,7 @@ private fun sessionTool(plugin: TermuxPlugin) = ToolDefinition(
                 param("action", ToolValueType.STRING, "Action to perform: start, send, read, kill, list.", required = true),
                 param("input", ToolValueType.STRING, "Input text/command to send (for action='send')."),
                 param("wait_for_pattern", ToolValueType.STRING, "Optional regex to poll output until matched (for action='send' or 'read')."),
+                param("settle_ms", ToolValueType.INTEGER, "Duration in ms screen output must stay unchanged before returning when no pattern given (default: 500).", minimum = 200.0, maximum = 5000.0),
                 param("timeout_ms", ToolValueType.INTEGER, "Timeout in milliseconds (default: 10000).", minimum = 1_000.0, maximum = 120_000.0),
                 param("max_lines", ToolValueType.INTEGER, "Max lines to capture from history (default: 100).", minimum = 10.0, maximum = 500.0),
             ),
@@ -130,6 +131,7 @@ private fun sessionTool(plugin: TermuxPlugin) = ToolDefinition(
         val actionStr = args.string("action")?.lowercase().orEmpty()
         val input = args.string("input")
         val waitForPattern = args.string("wait_for_pattern")
+        val settleMs = (args.int("settle_ms")?.toLong() ?: 500L).coerceIn(200L, 5000L)
         val timeoutMs = (args.int("timeout_ms")?.toLong() ?: 10_000L).coerceIn(1000L, 120_000L)
         val maxLines = args.int("max_lines") ?: 100
 
@@ -151,6 +153,7 @@ private fun sessionTool(plugin: TermuxPlugin) = ToolDefinition(
             action = action,
             input = input,
             waitForPattern = waitForPattern,
+            settleMs = settleMs,
             timeoutMs = timeoutMs,
             maxLines = maxLines,
         )
@@ -163,6 +166,7 @@ private fun sessionTool(plugin: TermuxPlugin) = ToolDefinition(
                 "active" to ToolValue.BooleanValue(result.active),
                 "screen_output" to ToolValue.StringValue(result.screenOutput),
                 "matched" to ToolValue.BooleanValue(result.matched),
+                "reason" to ToolValue.StringValue(result.reason),
                 "error" to (result.error?.let { ToolValue.StringValue(it) } ?: ToolValue.NullValue),
             ),
         )

@@ -66,6 +66,17 @@ data class SshFileResult(
 )
 
 /**
+ * Result of a remote SSH server probe (presented host key & latency).
+ */
+data class SshProbeResult(
+    val reachable: Boolean,
+    val hostKeyType: String? = null,
+    val fingerprintSha256: String? = null,
+    val latencyMs: Long = 0,
+    val error: String? = null,
+)
+
+/**
  * Summary of an active SSH local port forwarding tunnel.
  */
 data class SshTunnelInfo(
@@ -83,6 +94,7 @@ data class SshTunnelInfo(
 interface SshExecutionService {
     fun execute(config: SshHostConfig, params: SshExecParams): ExecutionResult
     fun testConnection(config: SshHostConfig, timeoutMs: Long = 10_000): Pair<Boolean, String>
+    fun probe(host: String, port: Int = 22, timeoutMs: Long = 5_000): SshProbeResult
     fun upload(config: SshHostConfig, localBytes: ByteArray, remotePath: String): SshFileResult
     fun download(config: SshHostConfig, remotePath: String, maxBytes: Long = 10 * 1024 * 1024): Pair<ByteArray?, String?>
     fun openTunnel(config: SshHostConfig, localPort: Int, remoteHost: String, remotePort: Int): Pair<String?, String?> = null to "Tunneling not supported"

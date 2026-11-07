@@ -75,6 +75,50 @@ class JSchSshService : SshExecutionService {
         }
     }
 
+    override fun probe(host: String, port: Int, timeoutMs: Long): SshProbeResult {
+        val startTime = System.currentTimeMillis()
+        return try {
+            val jsch = JSch()
+            val session = jsch.getSession("probe", host, port)
+            val prop = Properties()
+            prop["StrictHostKeyChecking"] = "no"
+            session.setConfig(prop)
+            // Connect with timeout to perform key exchange
+            try {
+                session.connect(timeoutMs.coerceAtLeast(500).toInt())
+            } catch (_: Exception) {
+                // Expected to fail authentication after key exchange
+            }
+            val latency = System.currentTimeMillis() - startTime
+            val hostKey = session.hostKey
+            val fp = hostKey?.getFingerPrint(jsch)
+            val keyType = hostKey?.type
+            try {
+                session.disconnect()
+            } catch (_: Throwable) {}
+
+            if (hostKey != null) {
+                SshProbeResult(
+                    reachable = true,
+                    hostKeyType = keyType,
+                    fingerprintSha256 = fp,
+                    latencyMs = latency,
+                )
+            } else {
+                SshProbeResult(
+                    reachable = false,
+                    error = "No host key presented within timeout",
+                )
+            }
+        } catch (e: Exception) {
+            SshProbeResult(
+                reachable = false,
+                latencyMs = System.currentTimeMillis() - startTime,
+                error = e.message ?: e.javaClass.simpleName,
+            )
+        }
+    }
+
     override fun execute(config: SshHostConfig, params: SshExecParams): ExecutionResult {
         var session: Session? = null
         var channel: ChannelExec? = null

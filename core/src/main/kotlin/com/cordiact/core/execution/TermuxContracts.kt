@@ -43,6 +43,7 @@ data class TermuxSessionParams(
     val action: TermuxSessionAction,
     val input: String? = null,
     val waitForPattern: String? = null,
+    val settleMs: Long = 500,
     val timeoutMs: Long = 10_000,
     val maxLines: Int = 100,
 )
@@ -55,6 +56,7 @@ data class TermuxSessionResult(
     val active: Boolean,
     val screenOutput: String = "",
     val matched: Boolean = false,
+    val reason: String = "DONE",
     val error: String? = null,
 )
 
