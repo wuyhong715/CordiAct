@@ -13,7 +13,7 @@ import org.junit.Test
 
 class SshJobProbeTest {
 
-    private val prod = SshHostConfig(name = "prod", host = "prod.example", user = "deploy")
+    private val prod = SshHostConfig(name = "prod", host = "prod.example", user = "deploy", password = "secret")
 
     private fun snapshot(pid: Long? = 4242L, hostRef: String? = "prod") = JobSnapshot(
         id = "job-1",
