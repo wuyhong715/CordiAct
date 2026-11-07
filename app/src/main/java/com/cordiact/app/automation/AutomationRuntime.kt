@@ -19,6 +19,12 @@ import com.cordiact.app.screen.ScreenPlugin
 import com.cordiact.app.screen.ScreenRegistryImpl
 import com.cordiact.app.screen.ScreenService
 import com.cordiact.app.screen.registerScreenTools
+import com.cordiact.app.ssh.SshHostStore
+import com.cordiact.app.ssh.SshPlugin
+import com.cordiact.app.ssh.registerSshTools
+import com.cordiact.app.termux.TermuxBridge
+import com.cordiact.app.termux.TermuxPlugin
+import com.cordiact.app.termux.registerTermuxTools
 import com.cordiact.core.automation.ScreenDriver
 import com.cordiact.core.automation.ScreenHandle
 import com.cordiact.core.plugin.ManagedPlugin
@@ -31,6 +37,9 @@ import com.cordiact.core.tool.ToolDefinitionRegistry
  * top of it, and screen is the single tool surface the model sees. The display
  * plugin contributes background drivers but no tools of its own, so the model
  * never has to choose between `screen_*` and `vd_*`.
+ *
+ * SSH and Termux plugins provide execution backends for remote hosts and the
+ * local Termux Linux environment.
  */
 class AutomationRuntime(context: Context) {
 
@@ -60,16 +69,31 @@ class AutomationRuntime(context: Context) {
     val browserPool = BrowserSessionPool(appContext)
     val browserPlugin = BrowserPlugin(browserPool)
 
+    val sshHostStore = SshHostStore(appContext)
+    val sshPlugin = SshPlugin(hostStore = sshHostStore)
+
+    val termuxBridge = TermuxBridge(appContext)
+    val termuxPlugin = TermuxPlugin(bridge = termuxBridge)
+
     /** Returns the background driver for [handle], creating it on first use. */
     fun backgroundDriver(handle: ScreenHandle): BackgroundScreenDriver =
         backgroundDrivers.firstOrNull { it.handle == handle }
             ?: BackgroundScreenDriver(shizukuChannel, handle).also { backgroundDrivers += it }
 
-    fun plugins(): List<ManagedPlugin> = listOf(privilegePlugin, displayPlugin, screenPlugin, browserPlugin)
+    fun plugins(): List<ManagedPlugin> = listOf(
+        privilegePlugin,
+        displayPlugin,
+        screenPlugin,
+        browserPlugin,
+        sshPlugin,
+        termuxPlugin,
+    )
 
     fun registerTools(registry: ToolDefinitionRegistry) {
         registerPrivilegeTools(registry, privilegeService)
         registerScreenTools(registry, screenService, screenGuard)
         registerBrowserTools(registry, browserPool, screenService)
+        registerSshTools(registry, sshPlugin)
+        registerTermuxTools(registry, termuxPlugin)
     }
 }
