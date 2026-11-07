@@ -54,7 +54,26 @@ class AndroidConversationSessionStore(
         if (oldVersion < 6 && newVersion >= 6) migrateV5ToV6(db)
         if (oldVersion < 7 && newVersion >= 7) migrateV6ToV7(db)
         if (oldVersion < 8 && newVersion >= 8) migrateV7ToV8(db)
+        if (oldVersion < 9 && newVersion >= 9) migrateV8ToV9(db)
         if (newVersion > DATABASE_VERSION) throw IllegalStateException("Unsupported conversation database version $newVersion")
+    }
+
+    /**
+     * Adds the host reference a detached job needs in order to be probed later.
+     *
+     * Nullable and defaulted: every existing job row predates probing, and "no host recorded" is
+     * exactly what those rows mean.
+     */
+    private fun migrateV8ToV9(db: SQLiteDatabase) {
+        db.beginTransaction()
+        try {
+            if (!db.hasColumn(TABLE_JOBS, COL_JOB_REMOTE_HOST)) {
+                db.execSQL("ALTER TABLE $TABLE_JOBS ADD COLUMN $COL_JOB_REMOTE_HOST TEXT")
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
     }
 
     private fun migrateV7ToV8(db: SQLiteDatabase) {
@@ -758,6 +777,7 @@ class AndroidConversationSessionStore(
                 $COL_JOB_OUTPUT_PATH TEXT,
                 $COL_JOB_OUTPUT_BYTES INTEGER NOT NULL DEFAULT 0,
                 $COL_JOB_REMOTE_PID INTEGER,
+                $COL_JOB_REMOTE_HOST TEXT,
                 $COL_JOB_DIAGNOSTIC TEXT,
                 $COL_JOB_HEARTBEAT INTEGER NOT NULL,
                 FOREIGN KEY ($COL_JOB_OWNER) REFERENCES $TABLE_SESSIONS($COL_SESSION_ID) ON DELETE CASCADE
@@ -851,6 +871,7 @@ class AndroidConversationSessionStore(
         outputPath?.let { put(COL_JOB_OUTPUT_PATH, it) } ?: putNull(COL_JOB_OUTPUT_PATH)
         put(COL_JOB_OUTPUT_BYTES, outputBytes)
         remotePid?.let { put(COL_JOB_REMOTE_PID, it) } ?: putNull(COL_JOB_REMOTE_PID)
+        remoteHostRef?.let { put(COL_JOB_REMOTE_HOST, it) } ?: putNull(COL_JOB_REMOTE_HOST)
         diagnostic?.let { put(COL_JOB_DIAGNOSTIC, it) } ?: putNull(COL_JOB_DIAGNOSTIC)
         put(COL_JOB_HEARTBEAT, lastHeartbeatAtMillis)
     }
@@ -875,6 +896,8 @@ class AndroidConversationSessionStore(
             outputBytes = getLong(getColumnIndexOrThrow(COL_JOB_OUTPUT_BYTES)),
             remotePid = getColumnIndex(COL_JOB_REMOTE_PID)
                 .takeIf { it >= 0 && !isNull(it) }?.let { getLong(it) },
+            remoteHostRef = getColumnIndex(COL_JOB_REMOTE_HOST)
+                .takeIf { it >= 0 && !isNull(it) }?.let { getString(it) },
             diagnostic = getColumnIndex(COL_JOB_DIAGNOSTIC)
                 .takeIf { it >= 0 && !isNull(it) }?.let { getString(it) },
             lastHeartbeatAtMillis = getLong(getColumnIndexOrThrow(COL_JOB_HEARTBEAT)),
@@ -924,7 +947,7 @@ class AndroidConversationSessionStore(
 
     private companion object {
         const val DATABASE_NAME = "cordiact-conversations.db"
-        const val DATABASE_VERSION = 8
+        const val DATABASE_VERSION = 9
         const val TABLE_WORKSPACES = "workspaces"
         const val TABLE_TOOL_PREFERENCES = "workspace_tool_preferences"
         const val TABLE_PLUGIN_SETTINGS = "workspace_plugin_settings"
@@ -973,12 +996,14 @@ class AndroidConversationSessionStore(
         const val COL_JOB_OUTPUT_PATH = "output_path"
         const val COL_JOB_OUTPUT_BYTES = "output_bytes"
         const val COL_JOB_REMOTE_PID = "remote_pid"
+        const val COL_JOB_REMOTE_HOST = "remote_host_ref"
         const val COL_JOB_DIAGNOSTIC = "diagnostic"
         const val COL_JOB_HEARTBEAT = "last_heartbeat_at"
         val JOB_COLUMNS = arrayOf(
             COL_JOB_ID, COL_JOB_KIND, COL_JOB_SURVIVAL, COL_JOB_OWNER, COL_JOB_LABEL,
             COL_JOB_STATE, COL_JOB_STARTED_AT, COL_JOB_FINISHED_AT, COL_JOB_EXIT_CODE,
             COL_JOB_PROGRESS, COL_JOB_OUTPUT_PATH, COL_JOB_OUTPUT_BYTES, COL_JOB_REMOTE_PID,
+            COL_JOB_REMOTE_HOST,
             COL_JOB_DIAGNOSTIC, COL_JOB_HEARTBEAT,
         )
         const val TABLE_MESSAGES = "conversation_messages"
