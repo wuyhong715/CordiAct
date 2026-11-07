@@ -5,6 +5,8 @@ import android.content.Context
 import android.database.Cursor
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
+import com.cordiact.core.context.CompactionRecord
+import com.cordiact.core.context.ContextCompactionStore
 import com.cordiact.core.conversation.ConversationMessage
 import com.cordiact.core.conversation.ConversationSession
 import com.cordiact.core.conversation.ConversationSessionStore
@@ -25,7 +27,7 @@ class AndroidConversationSessionStore(
     context: Context,
     databaseName: String = DATABASE_NAME,
 ) : SQLiteOpenHelper(context.applicationContext, databaseName, null, DATABASE_VERSION),
-    ConversationSessionStore, WorkspaceStore, MutableToolPreferenceStore, AgentRunStore {
+    ConversationSessionStore, WorkspaceStore, MutableToolPreferenceStore, AgentRunStore, ContextCompactionStore {
 
     override fun onConfigure(db: SQLiteDatabase) {
         super.onConfigure(db)
@@ -39,6 +41,7 @@ class AndroidConversationSessionStore(
         createToolPreferenceSchema(db)
         createPluginSettingsSchema(db)
         createAgentRunSchema(db)
+        createContextCompactionSchema(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -47,7 +50,18 @@ class AndroidConversationSessionStore(
         if (oldVersion < 4 && newVersion >= 4) migrateV3ToV4(db)
         if (oldVersion < 5 && newVersion >= 5) migrateV4ToV5(db)
         if (oldVersion < 6 && newVersion >= 6) migrateV5ToV6(db)
+        if (oldVersion < 7 && newVersion >= 7) migrateV6ToV7(db)
         if (newVersion > DATABASE_VERSION) throw IllegalStateException("Unsupported conversation database version $newVersion")
+    }
+
+    private fun migrateV6ToV7(db: SQLiteDatabase) {
+        db.beginTransaction()
+        try {
+            createContextCompactionSchema(db)
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
     }
 
     /**
@@ -650,6 +664,86 @@ class AndroidConversationSessionStore(
         }
     }
 
+    override fun insert(record: CompactionRecord) {
+        val values = ContentValues().apply {
+            put(COL_COMPACTION_ID, record.id)
+            put(COL_COMPACTION_SESSION_ID, record.sessionId)
+            put(COL_COMPACTION_START_MESSAGE_ID, record.startMessageId)
+            put(COL_COMPACTION_END_MESSAGE_ID, record.endMessageId)
+            put(COL_COMPACTION_SUMMARY, record.summary)
+            put(COL_COMPACTION_TOKENS_BEFORE, record.tokensBefore)
+            put(COL_COMPACTION_TOKENS_AFTER, record.tokensAfter)
+            put(COL_COMPACTION_FALLBACK_LEVEL, record.fallbackLevel)
+            put(COL_COMPACTION_CREATED_AT, record.createdAt)
+            put(COL_COMPACTION_SUPERSEDED_BY, record.supersededBy)
+            put(COL_COMPACTION_ACTIVE, if (record.active) 1 else 0)
+        }
+        writableDatabase.insertWithOnConflict(
+            TABLE_CONTEXT_COMPACTIONS, null, values, SQLiteDatabase.CONFLICT_REPLACE,
+        )
+    }
+
+    override fun listActive(sessionId: String): List<CompactionRecord> = readableDatabase.query(
+        TABLE_CONTEXT_COMPACTIONS, COMPACTION_COLUMNS,
+        "$COL_COMPACTION_SESSION_ID = ? AND $COL_COMPACTION_ACTIVE = 1",
+        arrayOf(sessionId),
+        null, null, "$COL_COMPACTION_CREATED_AT ASC",
+    ).use { c -> buildList { while (c.moveToNext()) add(c.toCompactionRecord()) } }
+
+    override fun getCompaction(id: String): CompactionRecord? = readableDatabase.query(
+        TABLE_CONTEXT_COMPACTIONS, COMPACTION_COLUMNS,
+        "$COL_COMPACTION_ID = ?",
+        arrayOf(id),
+        null, null, null,
+    ).use { c -> if (c.moveToNext()) c.toCompactionRecord() else null }
+
+    override fun supersede(id: String, supersededBy: String) {
+        val values = ContentValues().apply {
+            put(COL_COMPACTION_ACTIVE, 0)
+            put(COL_COMPACTION_SUPERSEDED_BY, supersededBy)
+        }
+        writableDatabase.update(
+            TABLE_CONTEXT_COMPACTIONS, values, "$COL_COMPACTION_ID = ?", arrayOf(id),
+        )
+    }
+
+    private fun createContextCompactionSchema(db: SQLiteDatabase) {
+        db.execSQL(
+            """CREATE TABLE IF NOT EXISTS $TABLE_CONTEXT_COMPACTIONS (
+                $COL_COMPACTION_ID TEXT PRIMARY KEY NOT NULL,
+                $COL_COMPACTION_SESSION_ID TEXT NOT NULL,
+                $COL_COMPACTION_START_MESSAGE_ID TEXT NOT NULL,
+                $COL_COMPACTION_END_MESSAGE_ID TEXT NOT NULL,
+                $COL_COMPACTION_SUMMARY TEXT NOT NULL,
+                $COL_COMPACTION_TOKENS_BEFORE INTEGER NOT NULL,
+                $COL_COMPACTION_TOKENS_AFTER INTEGER NOT NULL,
+                $COL_COMPACTION_FALLBACK_LEVEL INTEGER NOT NULL,
+                $COL_COMPACTION_CREATED_AT INTEGER NOT NULL,
+                $COL_COMPACTION_SUPERSEDED_BY TEXT,
+                $COL_COMPACTION_ACTIVE INTEGER NOT NULL DEFAULT 1,
+                FOREIGN KEY ($COL_COMPACTION_SESSION_ID) REFERENCES $TABLE_SESSIONS($COL_SESSION_ID) ON DELETE CASCADE
+            )""".trimIndent(),
+        )
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS context_compactions_session ON $TABLE_CONTEXT_COMPACTIONS($COL_COMPACTION_SESSION_ID, $COL_COMPACTION_CREATED_AT)",
+        )
+    }
+
+    private fun Cursor.toCompactionRecord(): CompactionRecord = CompactionRecord(
+        id = getString(getColumnIndexOrThrow(COL_COMPACTION_ID)),
+        sessionId = getString(getColumnIndexOrThrow(COL_COMPACTION_SESSION_ID)),
+        startMessageId = getString(getColumnIndexOrThrow(COL_COMPACTION_START_MESSAGE_ID)),
+        endMessageId = getString(getColumnIndexOrThrow(COL_COMPACTION_END_MESSAGE_ID)),
+        summary = getString(getColumnIndexOrThrow(COL_COMPACTION_SUMMARY)),
+        tokensBefore = getInt(getColumnIndexOrThrow(COL_COMPACTION_TOKENS_BEFORE)),
+        tokensAfter = getInt(getColumnIndexOrThrow(COL_COMPACTION_TOKENS_AFTER)),
+        fallbackLevel = getInt(getColumnIndexOrThrow(COL_COMPACTION_FALLBACK_LEVEL)),
+        createdAt = getLong(getColumnIndexOrThrow(COL_COMPACTION_CREATED_AT)),
+        supersededBy = getColumnIndex(COL_COMPACTION_SUPERSEDED_BY)
+            .takeIf { it >= 0 && !isNull(it) }?.let { getString(it) },
+        active = getInt(getColumnIndexOrThrow(COL_COMPACTION_ACTIVE)) == 1,
+    )
+
     private fun Cursor.toAgentRun() = AgentRunRecord(
         sessionId = getString(getColumnIndexOrThrow(COL_RUN_SESSION_ID)),
         parentSessionId = getString(getColumnIndexOrThrow(COL_RUN_PARENT_SESSION_ID)),
@@ -679,7 +773,7 @@ class AndroidConversationSessionStore(
 
     private companion object {
         const val DATABASE_NAME = "cordiact-conversations.db"
-        const val DATABASE_VERSION = 6
+        const val DATABASE_VERSION = 7
         const val TABLE_WORKSPACES = "workspaces"
         const val TABLE_TOOL_PREFERENCES = "workspace_tool_preferences"
         const val TABLE_PLUGIN_SETTINGS = "workspace_plugin_settings"
@@ -694,6 +788,26 @@ class AndroidConversationSessionStore(
         const val TABLE_SESSIONS = "conversation_sessions"
         const val TABLE_SESSIONS_NEW = "conversation_sessions_v2"
         const val TABLE_AGENT_RUNS = "conversation_agent_runs"
+        const val TABLE_CONTEXT_COMPACTIONS = "context_compactions"
+        const val COL_COMPACTION_ID = "id"
+        const val COL_COMPACTION_SESSION_ID = "session_id"
+        const val COL_COMPACTION_START_MESSAGE_ID = "start_message_id"
+        const val COL_COMPACTION_END_MESSAGE_ID = "end_message_id"
+        const val COL_COMPACTION_SUMMARY = "summary"
+        const val COL_COMPACTION_TOKENS_BEFORE = "tokens_before"
+        const val COL_COMPACTION_TOKENS_AFTER = "tokens_after"
+        const val COL_COMPACTION_FALLBACK_LEVEL = "fallback_level"
+        const val COL_COMPACTION_CREATED_AT = "created_at"
+        const val COL_COMPACTION_SUPERSEDED_BY = "superseded_by"
+        const val COL_COMPACTION_ACTIVE = "active"
+        val COMPACTION_COLUMNS = arrayOf(
+            COL_COMPACTION_ID, COL_COMPACTION_SESSION_ID,
+            COL_COMPACTION_START_MESSAGE_ID, COL_COMPACTION_END_MESSAGE_ID,
+            COL_COMPACTION_SUMMARY, COL_COMPACTION_TOKENS_BEFORE,
+            COL_COMPACTION_TOKENS_AFTER, COL_COMPACTION_FALLBACK_LEVEL,
+            COL_COMPACTION_CREATED_AT, COL_COMPACTION_SUPERSEDED_BY,
+            COL_COMPACTION_ACTIVE,
+        )
         const val TABLE_MESSAGES = "conversation_messages"
         const val TABLE_MESSAGES_NEW = "conversation_messages_v2"
         const val COL_SESSION_ID = "session_id"

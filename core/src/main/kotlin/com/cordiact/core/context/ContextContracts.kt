@@ -10,8 +10,8 @@ import com.cordiact.core.conversation.ModelMessage
  */
 data class ContextBudget(
     val contextWindowTokens: Int,
-    val maxOutputTokens: Int = 8_192,
-    val safetyMarginTokens: Int = 2_048,
+    val maxOutputTokens: Int = ((contextWindowTokens * 0.25).toInt().coerceAtLeast(1)).coerceAtMost(8_192),
+    val safetyMarginTokens: Int = ((contextWindowTokens * 0.05).toInt()).coerceAtMost(2_048),
     val thresholdRatio: Double = 0.8,
     val retainRatio: Double = 0.16,
 ) {
@@ -31,6 +31,19 @@ data class ContextBudget(
 
     val retainTailTokens: Int
         get() = (contextWindowTokens * retainRatio).toInt().coerceAtLeast(1)
+}
+
+fun ContextPolicy.createBudget(contextWindowTokens: Int): ContextBudget {
+    val window = (contextWindowOverride ?: contextWindowTokens).coerceAtLeast(2)
+    val safeMaxOutput = maxOutputTokens.coerceIn(1, (window * 0.25).toInt().coerceAtLeast(1))
+    val safeMargin = ((window * 0.05).toInt()).coerceIn(0, (window - safeMaxOutput - 1).coerceAtLeast(0))
+    return ContextBudget(
+        contextWindowTokens = window,
+        maxOutputTokens = safeMaxOutput,
+        safetyMarginTokens = safeMargin,
+        thresholdRatio = thresholdRatio,
+        retainRatio = retainRatio,
+    )
 }
 
 /**
@@ -145,9 +158,11 @@ interface ToolOutputGate {
  * Plan for candidate history compaction.
  */
 data class CompactionPlan(
-    val head: List<ModelMessage>,
-    val body: List<ModelMessage>,
-    val tail: List<ModelMessage>,
+    val startMessageId: String,
+    val endMessageId: String,
+    val head: List<ConversationMessage>,
+    val body: List<ConversationMessage>,
+    val tail: List<ConversationMessage>,
     val bodyTokens: Int,
     val tailTokens: Int,
     val reason: CompactionReason,
@@ -157,6 +172,8 @@ enum class CompactionReason { AUTO, MANUAL, OVERFLOW, BACKGROUND }
 
 data class CompactionResult(
     val recordId: String,
+    val startMessageId: String,
+    val endMessageId: String,
     val tokensBefore: Int,
     val tokensAfter: Int,
     val fallbackLevel: Int,
@@ -187,3 +204,14 @@ interface ContextProjector {
         records: List<CompactionRecord>,
     ): List<ModelMessage>
 }
+
+/**
+ * Storage for durable compaction records.
+ */
+interface ContextCompactionStore {
+    fun insert(record: CompactionRecord)
+    fun listActive(sessionId: String): List<CompactionRecord>
+    fun getCompaction(id: String): CompactionRecord?
+    fun supersede(id: String, supersededBy: String)
+}
+
