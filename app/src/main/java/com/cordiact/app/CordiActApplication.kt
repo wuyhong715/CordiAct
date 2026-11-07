@@ -348,7 +348,7 @@ class CordiActApplication : Application() {
         providerApiKeyStore = AndroidProviderApiKeyStore(this)
         conversationCatalog = BundledConversationPlugins.create(this, deepSeekApiKeyStore)
         automationRuntime = AutomationRuntime(this)
-        automationRuntime.registerTools(conversationCatalog.toolRegistry)
+        automationRuntime.registerTools(conversationCatalog.toolRegistry, conversationCatalog.jobRegistry)
         conversationStore = conversationCatalog.conversationStore
         workspaceManager = conversationCatalog.workspacePlugin
         val needsRepair = pluginLifecycle.recoverBeforeDispatch()

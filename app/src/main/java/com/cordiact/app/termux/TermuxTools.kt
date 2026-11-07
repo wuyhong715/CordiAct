@@ -20,14 +20,24 @@ private const val TIMEOUT_STATUS = 5_000L
 private const val TIMEOUT_DEFAULT_EXEC = 60_000L
 private const val TIMEOUT_SESSION_OP = 120_000L
 
-fun termuxTools(plugin: TermuxPlugin): List<ToolDefinition> = listOf(
+fun termuxTools(
+    plugin: TermuxPlugin,
+    jobRegistry: com.cordiact.core.jobs.JobRegistry? = null,
+): List<ToolDefinition> = listOf(
     statusTool(plugin),
-    runCommandTool(plugin),
+    runCommandTool(plugin, jobRegistry),
     sessionTool(plugin),
 )
 
-fun registerTermuxTools(registry: ToolDefinitionRegistry, plugin: TermuxPlugin) {
-    termuxTools(plugin).forEach(registry::register)
+fun registerTermuxTools(
+    registry: ToolDefinitionRegistry,
+    plugin: TermuxPlugin,
+    jobRegistry: com.cordiact.core.jobs.JobRegistry? = null,
+) {
+    termuxTools(plugin, jobRegistry).forEach { def ->
+        registry.unregister(def.descriptor.id)
+        registry.register(def)
+    }
 }
 
 private fun statusTool(plugin: TermuxPlugin) = ToolDefinition(
@@ -57,16 +67,19 @@ private fun statusTool(plugin: TermuxPlugin) = ToolDefinition(
     },
 )
 
-private fun runCommandTool(plugin: TermuxPlugin) = ToolDefinition(
+private fun runCommandTool(
+    plugin: TermuxPlugin,
+    jobRegistry: com.cordiact.core.jobs.JobRegistry? = null,
+) = ToolDefinition(
     descriptor = ToolDescriptor(
         id = "termux_run_command",
         name = "termux_run_command",
-        description = "Run a shell command or script inside Termux using the official RUN_COMMAND service.",
+        description = "Run a shell command or script inside Termux using the official RUN_COMMAND service. Pass background=true for async detached execution.",
         inputSchema = ToolInputSchema(
             parameters = listOf(
                 param("command", ToolValueType.STRING, "Shell command or script to execute.", required = true, maxLength = 8_192),
                 param("work_dir", ToolValueType.STRING, "Working directory inside Termux (default: /data/data/com.termux/files/home)."),
-                param("background", ToolValueType.BOOLEAN, "Run command silently in background without popping up the Termux window (default: true)."),
+                param("background", ToolValueType.BOOLEAN, "Run command in background. When job runtime is present, returns job_id immediately without blocking (default: false)."),
                 param("timeout_ms", ToolValueType.INTEGER, "Timeout in milliseconds, max 300000 (default: 30000).", minimum = 1_000.0, maximum = 300_000.0),
             ),
         ),
@@ -76,11 +89,53 @@ private fun runCommandTool(plugin: TermuxPlugin) = ToolDefinition(
         timeoutMs = TIMEOUT_DEFAULT_EXEC,
         concurrencySafe = false,
     ),
-    executor = { _, args ->
+    executor = { context, args ->
         val command = args.string("command") ?: return@ToolDefinition error("missing_arg", "command is required")
         val workDir = args.string("work_dir")
-        val background = args.boolean("background") ?: true
+        val background = args.boolean("background") ?: false
         val timeoutMs = (args.int("timeout_ms")?.toLong() ?: 30_000L).coerceIn(1000L, 300_000L)
+
+        val targetSessionId = context.sessionId ?: "ephemeral"
+        if (background && jobRegistry != null) {
+            val handle = jobRegistry.start(
+                com.cordiact.core.jobs.JobSpec(
+                    kind = com.cordiact.core.jobs.JobKind.TERMUX,
+                    survival = com.cordiact.core.jobs.JobSurvival.PROCESS_LOCAL,
+                    label = "termux: $command",
+                    ownerSessionId = targetSessionId,
+                ),
+            )
+            kotlin.concurrent.thread {
+                val params = TermuxCommandParams(
+                    command = command,
+                    workDir = workDir,
+                    background = true,
+                    timeoutMs = timeoutMs,
+                )
+                val execResult = plugin.bridge.executeCommand(params)
+                if (execResult.stdout.isNotBlank()) {
+                    handle.append(execResult.stdout)
+                }
+                if (execResult.stderr.isNotBlank()) {
+                    handle.append("\n[stderr]: ${execResult.stderr}")
+                }
+                if (execResult.isSuccess) {
+                    handle.settle(com.cordiact.core.jobs.JobState.SUCCEEDED, exitCode = execResult.exitCode)
+                } else if (execResult.timedOut) {
+                    handle.settle(com.cordiact.core.jobs.JobState.FAILED, exitCode = -1, diagnostic = "Command timed out after $timeoutMs ms")
+                } else {
+                    handle.settle(com.cordiact.core.jobs.JobState.FAILED, exitCode = execResult.exitCode, diagnostic = execResult.stderr)
+                }
+            }
+            return@ToolDefinition ToolResult(
+                values = linkedMapOf(
+                    "ok" to ToolValue.BooleanValue(true),
+                    "job_id" to ToolValue.StringValue(handle.id),
+                    "state" to ToolValue.StringValue("running"),
+                    "content" to ToolValue.StringValue("Termux command started asynchronously as job '${handle.id}'. Use job_output(job_id=\"${handle.id}\") to monitor."),
+                ),
+            )
+        }
 
         val params = TermuxCommandParams(
             command = command,

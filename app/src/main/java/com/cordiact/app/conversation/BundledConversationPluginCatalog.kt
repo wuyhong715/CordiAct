@@ -59,6 +59,9 @@ import com.cordiact.app.file.registerWorkspaceFileTools
 import com.cordiact.core.context.SpillStore
 import com.cordiact.core.context.StandardSpillStore
 import com.cordiact.core.context.registerContextTools
+import com.cordiact.core.jobs.DefaultJobRegistry
+import com.cordiact.core.jobs.JobRegistry
+import com.cordiact.core.jobs.registerJobTools
 import com.cordiact.app.search.AndroidSearchApiKeyStore
 import com.cordiact.app.search.AndroidSearchPolicyStore
 import com.cordiact.app.search.AndroidSearchProviderSettings
@@ -241,8 +244,13 @@ class BundledConversationPlugins private constructor(
         StandardSpillStore(spillStoreDir ?: File(System.getProperty("java.io.tmpdir"), "cordiact-spills"))
     }
 
+    val jobRegistry: JobRegistry by lazy {
+        DefaultJobRegistry(spillStore)
+    }
+
     fun create(stateLookup: ToolPluginStateLookup): List<ManagedPlugin> {
         registerContextTools(registry, spillStore)
+        registerJobTools(registry, jobRegistry)
         registerWorkspaceFileTools(registry, fileManager)
         skillPlugin = SkillPlugin(AndroidSkillFileSource(fileManager))
         registerSkillTools(registry, skillPlugin)
