@@ -242,6 +242,18 @@ class CordiActApplication : Application() {
         backgroundSubagents.isForgettable(childSessionId)
     }
 
+    /** The user's choice of summarisation model; unset means rule-based summaries. */
+    private val summaryModelStore by lazy { com.cordiact.app.context.SummaryModelSelectionStore(this) }
+
+    /**
+     * Where the user's summarisation-model choice lives.
+     *
+     * Exposed so the settings surface (designed later, in one pass) has one entry point to read and
+     * set it, instead of a second bespoke picker grown here.
+     */
+    val summaryModelSelection: com.cordiact.app.context.SummaryModelSelectionStore
+        get() = summaryModelStore
+
     private val toolLoopPlugin by lazy {
         val gate = com.cordiact.core.context.DefaultToolOutputGate(conversationCatalog.spillStore)
         ToolLoopPlugin(
@@ -477,6 +489,7 @@ class CordiActApplication : Application() {
             notices = backgroundSubagents,
             compactionStore = conversationCatalog.conversationStore,
             inbox = asyncTurnInbox,
+            summaryModelProvider = { summaryModelStore.selectedModel() },
         )
         // A finished turn is the cheapest moment to think about the next one: the summary can be
         // prepared while nobody is waiting, and installed only if it still applies.

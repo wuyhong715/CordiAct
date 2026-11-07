@@ -61,6 +61,14 @@ class ConversationTurnService(
      * would otherwise see it twice, so the shadow copy is dropped here.
      */
     private val inbox: com.cordiact.core.inbox.AgentInbox? = null,
+    /**
+     * The model the user chose for compaction summaries, or null when none was chosen.
+     *
+     * Null is not a failure: compaction still happens, it just uses the deterministic rule-based
+     * summary. That is deliberately different from background extraction, where an unset model
+     * means "do not run at all" — compaction is not optional, its quality is.
+     */
+    private val summaryModelProvider: () -> ModelId? = { null },
 ) {
     /** Owns "should I compact, and how", so this service only decides *when* to ask. */
     private val compactor = DefaultContextCompactor(
@@ -68,6 +76,12 @@ class ConversationTurnService(
         estimator = tokenEstimator,
         policy = contextPolicy,
         projector = contextProjector,
+        summarizer = { prompt, body ->
+            summaryModelProvider()?.let { model ->
+                ModelSummarizer(models, contextPolicy.summaryTimeoutMs)
+                    .summarize(prompt, body, model, sessionId = "compaction")
+            }
+        },
     )
     private val activeSessions = ConcurrentHashMap.newKeySet<String>()
 
