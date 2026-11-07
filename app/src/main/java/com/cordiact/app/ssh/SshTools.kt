@@ -20,13 +20,16 @@ private const val TIMEOUT_HOST_OPS = 5_000L
 private const val TIMEOUT_DEFAULT_EXEC = 60_000L
 private const val TIMEOUT_SFTP = 120_000L
 
-fun sshTools(plugin: SshPlugin): List<ToolDefinition> = listOf(
+fun sshTools(
+    plugin: SshPlugin,
+    jobRegistry: com.cordiact.core.jobs.JobRegistry? = null,
+): List<ToolDefinition> = listOf(
     saveHostTool(plugin),
     listHostsTool(plugin),
     deleteHostTool(plugin),
     probeTool(plugin),
-    execTool(plugin),
-    execSavedTool(plugin),
+    execTool(plugin, jobRegistry),
+    execSavedTool(plugin, jobRegistry),
     uploadTool(plugin),
     downloadTool(plugin),
     openTunnelTool(plugin),
@@ -34,8 +37,15 @@ fun sshTools(plugin: SshPlugin): List<ToolDefinition> = listOf(
     listTunnelsTool(plugin),
 )
 
-fun registerSshTools(registry: ToolDefinitionRegistry, plugin: SshPlugin) {
-    sshTools(plugin).forEach(registry::register)
+fun registerSshTools(
+    registry: ToolDefinitionRegistry,
+    plugin: SshPlugin,
+    jobRegistry: com.cordiact.core.jobs.JobRegistry? = null,
+) {
+    sshTools(plugin, jobRegistry).forEach { def ->
+        registry.unregister(def.descriptor.id)
+        registry.register(def)
+    }
 }
 
 private fun saveHostTool(plugin: SshPlugin) = ToolDefinition(
@@ -203,11 +213,14 @@ private fun probeTool(plugin: SshPlugin) = ToolDefinition(
     },
 )
 
-private fun execTool(plugin: SshPlugin) = ToolDefinition(
+private fun execTool(
+    plugin: SshPlugin,
+    jobRegistry: com.cordiact.core.jobs.JobRegistry? = null,
+) = ToolDefinition(
     descriptor = ToolDescriptor(
         id = "ssh_exec",
         name = "ssh_exec",
-        description = "Run a shell command on an ad-hoc remote SSH host without saving credentials.",
+        description = "Run a shell command on an ad-hoc remote SSH host without saving credentials. Pass background=true to run detached.",
         inputSchema = ToolInputSchema(
             parameters = listOf(
                 param("host", ToolValueType.STRING, "Hostname or IP address.", required = true),
@@ -219,7 +232,7 @@ private fun execTool(plugin: SshPlugin) = ToolDefinition(
                 param("command", ToolValueType.STRING, "Shell command to run.", required = true, maxLength = 8_192),
                 param("stdin", ToolValueType.STRING, "Optional stdin data to pipe to the command."),
                 param("timeout_ms", ToolValueType.INTEGER, "Timeout in milliseconds (default: 30000).", minimum = 1_000.0, maximum = 300_000.0),
-                param("background", ToolValueType.BOOLEAN, "Run detached via nohup and return PID immediately."),
+                param("background", ToolValueType.BOOLEAN, "Run detached via nohup. Returns job_id when background job runtime is available."),
             ),
         ),
         ownerPluginId = AutomationPlugins.SSH,
@@ -228,7 +241,7 @@ private fun execTool(plugin: SshPlugin) = ToolDefinition(
         timeoutMs = TIMEOUT_DEFAULT_EXEC,
         concurrencySafe = false,
     ),
-    executor = { _, args ->
+    executor = { context, args ->
         val host = args.string("host") ?: return@ToolDefinition error("missing_arg", "host is required")
         val port = args.int("port") ?: 22
         val user = args.string("user") ?: return@ToolDefinition error("missing_arg", "user is required")
@@ -261,6 +274,45 @@ private fun execTool(plugin: SshPlugin) = ToolDefinition(
             background = background,
         )
 
+        val targetSessionId = context.sessionId ?: "ephemeral"
+        if (background && jobRegistry != null) {
+            val handle = jobRegistry.start(
+                com.cordiact.core.jobs.JobSpec(
+                    kind = com.cordiact.core.jobs.JobKind.SSH,
+                    survival = com.cordiact.core.jobs.JobSurvival.REMOTE_DETACHED,
+                    label = "ssh: $command",
+                    ownerSessionId = targetSessionId,
+                ),
+            )
+            // Execute nohup asynchronously
+            kotlin.concurrent.thread {
+                val execResult = plugin.service.execute(config, params)
+                val pid = execResult.stdout.trim().toLongOrNull()
+                if (pid != null) {
+                    handle.updateRemotePid(pid)
+                    handle.append("Detached remote PID: $pid\n")
+                } else if (execResult.stdout.isNotBlank()) {
+                    handle.append(execResult.stdout)
+                }
+                if (execResult.stderr.isNotBlank()) {
+                    handle.append("\n[stderr]: ${execResult.stderr}")
+                }
+                if (execResult.isSuccess) {
+                    handle.settle(com.cordiact.core.jobs.JobState.RUNNING, diagnostic = "Detached on remote host, PID: $pid")
+                } else {
+                    handle.settle(com.cordiact.core.jobs.JobState.FAILED, exitCode = execResult.exitCode, diagnostic = execResult.stderr)
+                }
+            }
+            return@ToolDefinition ToolResult(
+                values = linkedMapOf(
+                    "ok" to ToolValue.BooleanValue(true),
+                    "job_id" to ToolValue.StringValue(handle.id),
+                    "state" to ToolValue.StringValue("running"),
+                    "content" to ToolValue.StringValue("SSH command dispatched in background as job '${handle.id}'. Use job_output(job_id=\"${handle.id}\") to monitor."),
+                ),
+            )
+        }
+
         val result = plugin.service.execute(config, params)
         ToolResult(
             values = linkedMapOf(
@@ -276,18 +328,21 @@ private fun execTool(plugin: SshPlugin) = ToolDefinition(
     },
 )
 
-private fun execSavedTool(plugin: SshPlugin) = ToolDefinition(
+private fun execSavedTool(
+    plugin: SshPlugin,
+    jobRegistry: com.cordiact.core.jobs.JobRegistry? = null,
+) = ToolDefinition(
     descriptor = ToolDescriptor(
         id = "ssh_exec_saved",
         name = "ssh_exec_saved",
-        description = "Run a shell command on a previously-saved SSH host looked up by name.",
+        description = "Run a shell command on a previously-saved SSH host. Pass background=true to run detached.",
         inputSchema = ToolInputSchema(
             parameters = listOf(
                 param("name", ToolValueType.STRING, "Saved host name.", required = true),
                 param("command", ToolValueType.STRING, "Shell command to run.", required = true, maxLength = 8_192),
                 param("stdin", ToolValueType.STRING, "Optional stdin data to pipe to the command."),
                 param("timeout_ms", ToolValueType.INTEGER, "Timeout in milliseconds (default: 30000).", minimum = 1_000.0, maximum = 300_000.0),
-                param("background", ToolValueType.BOOLEAN, "Run detached via nohup and return PID immediately."),
+                param("background", ToolValueType.BOOLEAN, "Run detached via nohup. Returns job_id when background job runtime is available."),
             ),
         ),
         ownerPluginId = AutomationPlugins.SSH,
@@ -296,7 +351,7 @@ private fun execSavedTool(plugin: SshPlugin) = ToolDefinition(
         timeoutMs = TIMEOUT_DEFAULT_EXEC,
         concurrencySafe = false,
     ),
-    executor = { _, args ->
+    executor = { context, args ->
         val name = args.string("name") ?: return@ToolDefinition error("missing_arg", "name is required")
         val command = args.string("command") ?: return@ToolDefinition error("missing_arg", "command is required")
         val stdin = args.string("stdin")
@@ -304,7 +359,7 @@ private fun execSavedTool(plugin: SshPlugin) = ToolDefinition(
         val background = args.boolean("background") ?: false
 
         val config = plugin.hostStore.get(name)
-            ?: return@ToolDefinition error("host_not_found", "Saved SSH host '$name' not found. Use ssh_save_host first.")
+            ?: return@ToolDefinition error("host_not_found", "No saved host named '$name'")
 
         val params = SshExecParams(
             command = command,
@@ -312,6 +367,44 @@ private fun execSavedTool(plugin: SshPlugin) = ToolDefinition(
             timeoutMs = timeoutMs,
             background = background,
         )
+
+        val targetSessionId = context.sessionId ?: "ephemeral"
+        if (background && jobRegistry != null) {
+            val handle = jobRegistry.start(
+                com.cordiact.core.jobs.JobSpec(
+                    kind = com.cordiact.core.jobs.JobKind.SSH,
+                    survival = com.cordiact.core.jobs.JobSurvival.REMOTE_DETACHED,
+                    label = "ssh ($name): $command",
+                    ownerSessionId = targetSessionId,
+                ),
+            )
+            kotlin.concurrent.thread {
+                val execResult = plugin.service.execute(config, params)
+                val pid = execResult.stdout.trim().toLongOrNull()
+                if (pid != null) {
+                    handle.updateRemotePid(pid)
+                    handle.append("Detached remote PID on $name: $pid\n")
+                } else if (execResult.stdout.isNotBlank()) {
+                    handle.append(execResult.stdout)
+                }
+                if (execResult.stderr.isNotBlank()) {
+                    handle.append("\n[stderr]: ${execResult.stderr}")
+                }
+                if (execResult.isSuccess) {
+                    handle.settle(com.cordiact.core.jobs.JobState.RUNNING, diagnostic = "Detached on $name, PID: $pid")
+                } else {
+                    handle.settle(com.cordiact.core.jobs.JobState.FAILED, exitCode = execResult.exitCode, diagnostic = execResult.stderr)
+                }
+            }
+            return@ToolDefinition ToolResult(
+                values = linkedMapOf(
+                    "ok" to ToolValue.BooleanValue(true),
+                    "job_id" to ToolValue.StringValue(handle.id),
+                    "state" to ToolValue.StringValue("running"),
+                    "content" to ToolValue.StringValue("SSH command dispatched in background as job '${handle.id}'. Use job_output(job_id=\"${handle.id}\") to monitor."),
+                ),
+            )
+        }
 
         val result = plugin.service.execute(config, params)
         ToolResult(

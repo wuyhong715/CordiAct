@@ -100,11 +100,14 @@ class AutomationRuntime(context: Context) {
         termuxPlugin,
     )
 
-    fun registerTools(registry: ToolDefinitionRegistry) {
+    fun registerTools(
+        registry: ToolDefinitionRegistry,
+        jobRegistry: com.cordiact.core.jobs.JobRegistry? = null,
+    ) {
         registerPrivilegeTools(registry, privilegeService)
         registerScreenTools(registry, screenService, screenGuard)
         registerBrowserTools(registry, browserPool, screenService)
-        registerSshTools(registry, sshPlugin)
-        registerTermuxTools(registry, termuxPlugin)
+        registerSshTools(registry, sshPlugin, jobRegistry)
+        registerTermuxTools(registry, termuxPlugin, jobRegistry)
     }
 }
