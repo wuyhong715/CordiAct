@@ -38,6 +38,15 @@ class SshToolsTest {
             return true to "Connected"
         }
 
+        override fun probe(host: String, port: Int, timeoutMs: Long): com.cordiact.core.execution.SshProbeResult {
+            return com.cordiact.core.execution.SshProbeResult(
+                reachable = true,
+                hostKeyType = "ssh-ed25519",
+                fingerprintSha256 = "SHA256:fake_fingerprint",
+                latencyMs = 15,
+            )
+        }
+
         override fun upload(config: SshHostConfig, localBytes: ByteArray, remotePath: String): SshFileResult {
             return SshFileResult(success = true, path = remotePath, bytesTransferred = localBytes.size.toLong())
         }
