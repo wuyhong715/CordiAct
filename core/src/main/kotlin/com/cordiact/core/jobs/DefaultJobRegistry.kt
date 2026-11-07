@@ -26,7 +26,7 @@ class DefaultJobRegistry(
         require(maxRunningGlobal > 0) { "maxRunningGlobal must be positive" }
     }
 
-    fun registerProbeHandler(kind: JobKind, handler: (JobSnapshot) -> JobSnapshot) {
+    override fun registerProbeHandler(kind: JobKind, handler: (JobSnapshot) -> JobSnapshot) {
         probeHandlers[kind] = handler
     }
 
@@ -60,6 +60,7 @@ class DefaultJobRegistry(
                 ownerSessionId = spec.ownerSessionId,
                 startedAtMillis = now,
                 remotePid = spec.remotePid,
+                remoteHostRef = spec.remoteHostRef,
                 lastHeartbeatAtMillis = now,
             )
 

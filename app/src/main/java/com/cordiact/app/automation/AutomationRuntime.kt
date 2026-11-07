@@ -107,7 +107,15 @@ class AutomationRuntime(context: Context) {
         registerPrivilegeTools(registry, privilegeService)
         registerScreenTools(registry, screenService, screenGuard)
         registerBrowserTools(registry, browserPool, screenService)
-        registerSshTools(registry, sshPlugin, jobRegistry)
+        // The SSH backend owns the only thing a detached job needs to be checked on later: how to
+        // reach its host. Registering the probe here keeps that knowledge out of the registry.
+        val sshProbe = com.cordiact.app.ssh.SshJobProbe(
+            execute = sshPlugin.service::execute,
+            resolveSavedHost = sshPlugin.hostStore::get,
+        ).also { probe ->
+            jobRegistry?.let(probe::registerWith)
+        }
+        registerSshTools(registry, sshPlugin, jobRegistry, sshProbe)
         registerTermuxTools(registry, termuxPlugin, jobRegistry)
     }
 }

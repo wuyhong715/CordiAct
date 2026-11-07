@@ -23,13 +23,14 @@ private const val TIMEOUT_SFTP = 120_000L
 fun sshTools(
     plugin: SshPlugin,
     jobRegistry: com.cordiact.core.jobs.JobRegistry? = null,
+    probe: SshJobProbe? = null,
 ): List<ToolDefinition> = listOf(
     saveHostTool(plugin),
     listHostsTool(plugin),
     deleteHostTool(plugin),
     probeTool(plugin),
-    execTool(plugin, jobRegistry),
-    execSavedTool(plugin, jobRegistry),
+    execTool(plugin, jobRegistry, probe),
+    execSavedTool(plugin, jobRegistry, probe),
     uploadTool(plugin),
     downloadTool(plugin),
     openTunnelTool(plugin),
@@ -41,8 +42,9 @@ fun registerSshTools(
     registry: ToolDefinitionRegistry,
     plugin: SshPlugin,
     jobRegistry: com.cordiact.core.jobs.JobRegistry? = null,
+    probe: SshJobProbe? = null,
 ) {
-    sshTools(plugin, jobRegistry).forEach { def ->
+    sshTools(plugin, jobRegistry, probe).forEach { def ->
         registry.unregister(def.descriptor.id)
         registry.register(def)
     }
@@ -216,6 +218,7 @@ private fun probeTool(plugin: SshPlugin) = ToolDefinition(
 private fun execTool(
     plugin: SshPlugin,
     jobRegistry: com.cordiact.core.jobs.JobRegistry? = null,
+    probe: SshJobProbe? = null,
 ) = ToolDefinition(
     descriptor = ToolDescriptor(
         id = "ssh_exec",
@@ -282,8 +285,12 @@ private fun execTool(
                     survival = com.cordiact.core.jobs.JobSurvival.REMOTE_DETACHED,
                     label = "ssh: $command",
                     ownerSessionId = targetSessionId,
+                    // Ad-hoc credentials never reach the database, so the probe keeps them in
+                    // memory for as long as this process lives and gives up after a restart.
+                    remoteHostRef = null,
                 ),
             )
+            probe?.rememberAdHocHost(handle.id, config)
             // Execute nohup asynchronously
             kotlin.concurrent.thread {
                 com.cordiact.core.jobs.JobHeartbeats.start(handle).use {
@@ -337,6 +344,7 @@ private fun execTool(
 private fun execSavedTool(
     plugin: SshPlugin,
     jobRegistry: com.cordiact.core.jobs.JobRegistry? = null,
+    probe: SshJobProbe? = null,
 ) = ToolDefinition(
     descriptor = ToolDescriptor(
         id = "ssh_exec_saved",
@@ -382,6 +390,8 @@ private fun execSavedTool(
                     survival = com.cordiact.core.jobs.JobSurvival.REMOTE_DETACHED,
                     label = "ssh ($name): $command",
                     ownerSessionId = targetSessionId,
+                    // A saved host can be probed after a restart: its credentials are on disk.
+                    remoteHostRef = name,
                 ),
             )
             kotlin.concurrent.thread {
