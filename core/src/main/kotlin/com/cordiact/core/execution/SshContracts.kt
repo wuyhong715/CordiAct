@@ -66,6 +66,18 @@ data class SshFileResult(
 )
 
 /**
+ * Summary of an active SSH local port forwarding tunnel.
+ */
+data class SshTunnelInfo(
+    val tunnelId: String,
+    val hostName: String,
+    val localPort: Int,
+    val remoteHost: String,
+    val remotePort: Int,
+    val active: Boolean,
+)
+
+/**
  * Abstract interface for SSH operations.
  */
 interface SshExecutionService {
@@ -73,4 +85,7 @@ interface SshExecutionService {
     fun testConnection(config: SshHostConfig, timeoutMs: Long = 10_000): Pair<Boolean, String>
     fun upload(config: SshHostConfig, localBytes: ByteArray, remotePath: String): SshFileResult
     fun download(config: SshHostConfig, remotePath: String, maxBytes: Long = 10 * 1024 * 1024): Pair<ByteArray?, String?>
+    fun openTunnel(config: SshHostConfig, localPort: Int, remoteHost: String, remotePort: Int): Pair<String?, String?> = null to "Tunneling not supported"
+    fun closeTunnel(tunnelId: String): Boolean = false
+    fun listTunnels(): List<SshTunnelInfo> = emptyList()
 }

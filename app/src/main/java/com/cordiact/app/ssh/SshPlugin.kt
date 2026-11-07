@@ -15,6 +15,7 @@ fun sshPluginSpec(): PluginSpec = PluginSpec(
     requestedCapabilities = setOf(
         AutomationCapabilities.SSH_EXEC,
         AutomationCapabilities.SSH_SFTP,
+        AutomationCapabilities.SSH_TUNNEL,
     ),
 )
 

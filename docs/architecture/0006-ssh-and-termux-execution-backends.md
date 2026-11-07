@@ -32,11 +32,17 @@
 5. `ssh_exec_saved`: Command execution on saved hosts.
 6. `ssh_upload`: SFTP upload (UTF-8 text or Base64 binary).
 7. `ssh_download`: SFTP download (as text or Base64).
+8. `ssh_open_tunnel`: Open local port forwarding tunnel via SSH (`127.0.0.1:localPort -> remoteHost:remotePort`).
+9. `ssh_close_tunnel`: Close an active port forwarding tunnel by ID.
+10. `ssh_list_tunnels`: List active SSH tunnels established on this device.
 
 ### Termux Backend (`com.cordiact.termux`)
 1. `termux_status`: Probe installation, RUN_COMMAND permission, and external app readiness.
 2. `termux_run_command`: Fire-and-forget or synchronous command/script execution via Intent service.
 3. `termux_session`: Interactive tmux session controller (`start`, `send`, `read`, `kill`, `list`).
+4. **Self-Healing & Diagnostics**:
+   - Automatic permission grant via `PrivilegeRouter` (Shizuku/root) if `com.termux.permission.RUN_COMMAND` is not granted.
+   - Diagnostic prompt when execution error indicates `allow-external-apps` is disabled.
 
 ---
 

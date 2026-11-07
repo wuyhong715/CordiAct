@@ -45,6 +45,27 @@ class SshToolsTest {
         override fun download(config: SshHostConfig, remotePath: String, maxBytes: Long): Pair<ByteArray?, String?> {
             return "hello world".toByteArray(Charsets.UTF_8) to null
         }
+
+        override fun openTunnel(config: SshHostConfig, localPort: Int, remoteHost: String, remotePort: Int): Pair<String?, String?> {
+            return "tun_12345678" to null
+        }
+
+        override fun closeTunnel(tunnelId: String): Boolean {
+            return tunnelId == "tun_12345678"
+        }
+
+        override fun listTunnels(): List<com.cordiact.core.execution.SshTunnelInfo> {
+            return listOf(
+                com.cordiact.core.execution.SshTunnelInfo(
+                    tunnelId = "tun_12345678",
+                    hostName = "vps1",
+                    localPort = 18080,
+                    remoteHost = "127.0.0.1",
+                    remotePort = 8080,
+                    active = true,
+                )
+            )
+        }
     }
 
     private val dummyContext = ToolInvocationContext(workspaceId = "test-ws")
@@ -107,5 +128,31 @@ class SshToolsTest {
         val emptyListResult = toolMap["ssh_list_hosts"]!!.executor.invoke(dummyContext, ToolArguments())
         val emptyHosts = (emptyListResult.values["hosts"] as ToolValue.ArrayValue).items
         assertEquals(0, emptyHosts.size)
+
+        // 5. Test Tunnel Tools
+        val openTunResult = toolMap["ssh_open_tunnel"]!!.executor.invoke(
+            dummyContext,
+            ToolArguments(
+                linkedMapOf(
+                    "name" to ToolValue.StringValue("vps1"),
+                    "local_port" to ToolValue.NumberValue(18080.0),
+                    "remote_port" to ToolValue.NumberValue(8080.0),
+                )
+            )
+        )
+        // host 'vps1' was deleted in step 4, so expect host_not_found
+        assertFalse((openTunResult.values["ok"] as ToolValue.BooleanValue).value)
+
+        val listTunResult = toolMap["ssh_list_tunnels"]!!.executor.invoke(dummyContext, ToolArguments())
+        assertTrue((listTunResult.values["ok"] as ToolValue.BooleanValue).value)
+        val tunnels = (listTunResult.values["tunnels"] as ToolValue.ArrayValue).items
+        assertEquals(1, tunnels.size)
+
+        val closeTunResult = toolMap["ssh_close_tunnel"]!!.executor.invoke(
+            dummyContext,
+            ToolArguments(linkedMapOf("tunnel_id" to ToolValue.StringValue("tun_12345678")))
+        )
+        assertTrue((closeTunResult.values["ok"] as ToolValue.BooleanValue).value)
+        assertTrue((closeTunResult.values["closed"] as ToolValue.BooleanValue).value)
     }
 }

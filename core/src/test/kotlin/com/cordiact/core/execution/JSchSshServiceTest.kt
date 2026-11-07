@@ -50,4 +50,29 @@ class JSchSshServiceTest {
         assertEquals(null, bytes)
         assertTrue(downloadError != null)
     }
+
+    @Test
+    fun `test tunnel operations on disconnected host`() {
+        val service = JSchSshService()
+        val config = SshHostConfig(
+            name = "test-fake-tun",
+            host = "127.0.0.1",
+            port = 54323,
+            user = "user",
+            password = "password",
+        )
+
+        // Invalid port validation
+        val (tunIdInvalid, errInvalid) = service.openTunnel(config, localPort = -1, remoteHost = "127.0.0.1", remotePort = 8080)
+        assertEquals(null, tunIdInvalid)
+        assertTrue(errInvalid != null)
+
+        // Unreachable host
+        val (tunId, err) = service.openTunnel(config, localPort = 18080, remoteHost = "127.0.0.1", remotePort = 8080)
+        assertEquals(null, tunId)
+        assertTrue(err != null)
+
+        assertEquals(0, service.listTunnels().size)
+        assertFalse(service.closeTunnel("non-existent"))
+    }
 }

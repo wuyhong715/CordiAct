@@ -44,6 +44,9 @@ object AutomationCapabilities {
     /** Transfer files over SFTP. */
     const val SSH_SFTP = "ssh.sftp"
 
+    /** Open local port forwarding tunnels via SSH. */
+    const val SSH_TUNNEL = "ssh.tunnel"
+
     /** Run commands in the Termux environment. */
     const val TERMUX_EXEC = "termux.exec"
 

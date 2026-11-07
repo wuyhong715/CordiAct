@@ -28,6 +28,9 @@ fun sshTools(plugin: SshPlugin): List<ToolDefinition> = listOf(
     execSavedTool(plugin),
     uploadTool(plugin),
     downloadTool(plugin),
+    openTunnelTool(plugin),
+    closeTunnelTool(plugin),
+    listTunnelsTool(plugin),
 )
 
 fun registerSshTools(registry: ToolDefinitionRegistry, plugin: SshPlugin) {
@@ -376,6 +379,114 @@ private fun downloadTool(plugin: SshPlugin) = ToolDefinition(
                 "bytes_read" to ToolValue.NumberValue(bytes.size.toDouble()),
                 "content" to if (asText) ToolValue.StringValue(String(bytes, Charsets.UTF_8)) else ToolValue.StringValue(Base64.encodeToString(bytes, Base64.NO_WRAP)),
                 "is_binary" to ToolValue.BooleanValue(!asText),
+            ),
+        )
+    },
+)
+
+private fun openTunnelTool(plugin: SshPlugin) = ToolDefinition(
+    descriptor = ToolDescriptor(
+        id = "ssh_open_tunnel",
+        name = "ssh_open_tunnel",
+        description = "Open a local port forwarding tunnel via SSH (binds 127.0.0.1:local_port on phone -> remote_host:remote_port).",
+        inputSchema = ToolInputSchema(
+            parameters = listOf(
+                param("name", ToolValueType.STRING, "Saved host name.", required = true),
+                param("local_port", ToolValueType.INTEGER, "Local port to listen on Android device.", required = true, minimum = 1024.0, maximum = 65535.0),
+                param("remote_host", ToolValueType.STRING, "Destination host reachable from the SSH server (default: 127.0.0.1)."),
+                param("remote_port", ToolValueType.INTEGER, "Destination port on the remote target.", required = true, minimum = 1.0, maximum = 65535.0),
+            ),
+        ),
+        ownerPluginId = AutomationPlugins.SSH,
+        defaultEnabled = false,
+        requiredCapabilities = setOf(AutomationCapabilities.SSH_TUNNEL),
+        timeoutMs = TIMEOUT_HOST_OPS,
+        concurrencySafe = false,
+    ),
+    executor = { _, args ->
+        val name = args.string("name") ?: return@ToolDefinition error("missing_arg", "name is required")
+        val localPort = args.int("local_port") ?: return@ToolDefinition error("missing_arg", "local_port is required")
+        val remoteHost = args.string("remote_host") ?: "127.0.0.1"
+        val remotePort = args.int("remote_port") ?: return@ToolDefinition error("missing_arg", "remote_port is required")
+
+        val config = plugin.hostStore.get(name)
+            ?: return@ToolDefinition error("host_not_found", "Saved SSH host '$name' not found")
+
+        val (tunnelId, err) = plugin.service.openTunnel(config, localPort, remoteHost, remotePort)
+        if (err != null || tunnelId == null) {
+            return@ToolDefinition error("tunnel_failed", err ?: "Unknown tunnel error")
+        }
+
+        ToolResult(
+            values = linkedMapOf(
+                "ok" to ToolValue.BooleanValue(true),
+                "tunnel_id" to ToolValue.StringValue(tunnelId),
+                "local_endpoint" to ToolValue.StringValue("127.0.0.1:$localPort"),
+                "remote_target" to ToolValue.StringValue("$remoteHost:$remotePort"),
+            ),
+        )
+    },
+)
+
+private fun closeTunnelTool(plugin: SshPlugin) = ToolDefinition(
+    descriptor = ToolDescriptor(
+        id = "ssh_close_tunnel",
+        name = "ssh_close_tunnel",
+        description = "Close an active SSH port forwarding tunnel by its tunnel_id.",
+        inputSchema = ToolInputSchema(
+            parameters = listOf(
+                param("tunnel_id", ToolValueType.STRING, "Tunnel ID returned by ssh_open_tunnel.", required = true),
+            ),
+        ),
+        ownerPluginId = AutomationPlugins.SSH,
+        defaultEnabled = false,
+        requiredCapabilities = setOf(AutomationCapabilities.SSH_TUNNEL),
+        timeoutMs = TIMEOUT_HOST_OPS,
+        concurrencySafe = true,
+    ),
+    executor = { _, args ->
+        val tunnelId = args.string("tunnel_id") ?: return@ToolDefinition error("missing_arg", "tunnel_id is required")
+        val closed = plugin.service.closeTunnel(tunnelId)
+        ToolResult(
+            values = linkedMapOf(
+                "ok" to ToolValue.BooleanValue(true),
+                "tunnel_id" to ToolValue.StringValue(tunnelId),
+                "closed" to ToolValue.BooleanValue(closed),
+            ),
+        )
+    },
+)
+
+private fun listTunnelsTool(plugin: SshPlugin) = ToolDefinition(
+    descriptor = ToolDescriptor(
+        id = "ssh_list_tunnels",
+        name = "ssh_list_tunnels",
+        description = "List all active SSH port forwarding tunnels currently established on this device.",
+        inputSchema = ToolInputSchema(),
+        ownerPluginId = AutomationPlugins.SSH,
+        defaultEnabled = false,
+        requiredCapabilities = setOf(AutomationCapabilities.SSH_TUNNEL),
+        timeoutMs = TIMEOUT_HOST_OPS,
+        concurrencySafe = true,
+    ),
+    executor = { _, _ ->
+        val tunnels = plugin.service.listTunnels()
+        val items = tunnels.map { t ->
+            ToolValue.ObjectValue(
+                linkedMapOf(
+                    "tunnel_id" to ToolValue.StringValue(t.tunnelId),
+                    "host_name" to ToolValue.StringValue(t.hostName),
+                    "local_port" to ToolValue.NumberValue(t.localPort.toDouble()),
+                    "remote_host" to ToolValue.StringValue(t.remoteHost),
+                    "remote_port" to ToolValue.NumberValue(t.remotePort.toDouble()),
+                    "active" to ToolValue.BooleanValue(t.active),
+                ),
+            )
+        }
+        ToolResult(
+            values = linkedMapOf(
+                "ok" to ToolValue.BooleanValue(true),
+                "tunnels" to ToolValue.ArrayValue(items),
             ),
         )
     },

@@ -72,7 +72,18 @@ class AutomationRuntime(context: Context) {
     val sshHostStore = SshHostStore(appContext)
     val sshPlugin = SshPlugin(hostStore = sshHostStore)
 
-    val termuxBridge = TermuxBridge(appContext)
+    val termuxBridge = TermuxBridge(
+        appContext,
+        privilegedShellRunner = { cmd ->
+            val status = privilegeRouter.status()
+            if (status.ready) {
+                val res = privilegeRouter.exec(cmd)
+                res.exitCode to res.stdout
+            } else {
+                -1 to (status.reason ?: "privileged router not ready")
+            }
+        },
+    )
     val termuxPlugin = TermuxPlugin(bridge = termuxBridge)
 
     /** Returns the background driver for [handle], creating it on first use. */

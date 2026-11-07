@@ -21,6 +21,7 @@ import java.util.concurrent.atomic.AtomicReference
  */
 open class TermuxBridge(
     private val context: Context,
+    private val privilegedShellRunner: ((String) -> Pair<Int, String>)? = null,
 ) {
     companion object {
         const val TERMUX_PACKAGE_NAME = "com.termux"
@@ -62,10 +63,23 @@ open class TermuxBridge(
             )
         }
 
-        val hasPermission = ContextCompat.checkSelfPermission(
+        var hasPermission = ContextCompat.checkSelfPermission(
             context,
             TERMUX_PERMISSION
         ) == PackageManager.PERMISSION_GRANTED
+
+        // Attempt automatic permission self-healing via privileged shell runner if available
+        if (!hasPermission && privilegedShellRunner != null) {
+            try {
+                val (exit, _) = privilegedShellRunner.invoke("pm grant ${context.packageName} $TERMUX_PERMISSION")
+                if (exit == 0) {
+                    hasPermission = ContextCompat.checkSelfPermission(
+                        context,
+                        TERMUX_PERMISSION
+                    ) == PackageManager.PERMISSION_GRANTED
+                }
+            } catch (_: Exception) {}
+        }
 
         val message = if (!hasPermission) {
             "Permission $TERMUX_PERMISSION is not granted. Please grant it in system settings or via Shizuku."
@@ -106,10 +120,15 @@ open class TermuxBridge(
                 val err = intent.getIntExtra("err", 0)
                 val errmsg = intent.getStringExtra("errmsg")
 
-                val finalStderr = if (err != 0 && !errmsg.isNullOrBlank()) {
+                var finalStderr = if (err != 0 && !errmsg.isNullOrBlank()) {
                     if (stderr.isNotBlank()) "$stderr\n[Termux internal error $err: $errmsg]" else "[Termux internal error $err: $errmsg]"
                 } else {
                     stderr
+                }
+
+                // Friendly diagnosis for common Termux configuration obstacles
+                if (finalStderr.contains("Execution error: 2") || finalStderr.contains("not allowed to run commands")) {
+                    finalStderr += "\n[Diagnosis: Termux 'allow-external-apps' setting may be disabled. Run 'echo allow-external-apps = true >> ~/.termux/termux.properties' inside Termux]"
                 }
 
                 val (outText, outTrunc) = ExecutionResult.truncateOutput(stdout)

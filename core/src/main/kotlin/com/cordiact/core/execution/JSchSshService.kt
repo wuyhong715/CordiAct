@@ -7,11 +7,24 @@ import com.jcraft.jsch.Session
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.util.Properties
+import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Robust, production-grade SSH service backed by modern JSch (mwiede fork).
  */
 class JSchSshService : SshExecutionService {
+
+    private data class ActiveTunnel(
+        val tunnelId: String,
+        val hostName: String,
+        val localPort: Int,
+        val remoteHost: String,
+        val remotePort: Int,
+        val session: Session,
+    )
+
+    private val activeTunnels = ConcurrentHashMap<String, ActiveTunnel>()
 
     private fun createSession(config: SshHostConfig, timeoutMs: Long): Session {
         val jsch = JSch()
@@ -70,7 +83,6 @@ class JSchSshService : SshExecutionService {
             channel = session.openChannel("exec") as ChannelExec
 
             val finalCommand = if (params.background) {
-                // Background execution detached with PID returned
                 "nohup sh -c " + escapeShellArg(params.command) + " > /dev/null 2>&1 & echo $!"
             } else {
                 params.command
@@ -185,6 +197,66 @@ class JSchSshService : SshExecutionService {
                 session?.disconnect()
             } catch (_: Throwable) {}
         }
+    }
+
+    override fun openTunnel(
+        config: SshHostConfig,
+        localPort: Int,
+        remoteHost: String,
+        remotePort: Int,
+    ): Pair<String?, String?> {
+        if (localPort !in 1..65535 || remotePort !in 1..65535) {
+            return null to "Port numbers must be between 1 and 65535"
+        }
+        val existing = activeTunnels.values.firstOrNull { it.localPort == localPort }
+        if (existing != null) {
+            return null to "Local port $localPort is already used by tunnel ${existing.tunnelId}"
+        }
+
+        return try {
+            val session = createSession(config, 15_000)
+            val boundPort = session.setPortForwardingL("127.0.0.1", localPort, remoteHost, remotePort)
+            val tunnelId = "tun_${UUID.randomUUID().toString().take(8)}"
+            val tunnel = ActiveTunnel(
+                tunnelId = tunnelId,
+                hostName = config.name,
+                localPort = boundPort,
+                remoteHost = remoteHost,
+                remotePort = remotePort,
+                session = session,
+            )
+            activeTunnels[tunnelId] = tunnel
+            tunnelId to null
+        } catch (e: Exception) {
+            null to "Failed to establish tunnel: ${e.message ?: e.javaClass.simpleName}"
+        }
+    }
+
+    override fun closeTunnel(tunnelId: String): Boolean {
+        val tunnel = activeTunnels.remove(tunnelId) ?: return false
+        return try {
+            tunnel.session.delPortForwardingL("127.0.0.1", tunnel.localPort)
+            tunnel.session.disconnect()
+            true
+        } catch (_: Exception) {
+            try {
+                tunnel.session.disconnect()
+            } catch (_: Exception) {}
+            true
+        }
+    }
+
+    override fun listTunnels(): List<SshTunnelInfo> {
+        return activeTunnels.values.map {
+            SshTunnelInfo(
+                tunnelId = it.tunnelId,
+                hostName = it.hostName,
+                localPort = it.localPort,
+                remoteHost = it.remoteHost,
+                remotePort = it.remotePort,
+                active = it.session.isConnected,
+            )
+        }.sortedBy { it.localPort }
     }
 
     private fun escapeShellArg(arg: String): String {
