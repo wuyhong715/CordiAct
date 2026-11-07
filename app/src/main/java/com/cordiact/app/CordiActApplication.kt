@@ -42,6 +42,7 @@ import com.cordiact.interaction.MentionType
 import com.cordiact.app.tool.AndroidToolDispatcher
 import com.cordiact.core.toolloop.ToolLoopPlugin
 import com.cordiact.core.conversation.ModelToolSpec
+import com.cordiact.core.subagent.ChildNotice
 import com.cordiact.core.subagent.ChildToolPlanner
 import com.cordiact.core.subagent.ChildTurnOutcome
 import com.cordiact.core.subagent.ChildTurnRunner
@@ -212,9 +213,39 @@ class CordiActApplication : Application() {
     private val skillIndexRenderer = SkillIndexRenderer()
 
     /** Runs model/tool rounds. Owned by the application, not by the turn service. */
+    /**
+     * Reports waiting to reach a parent Session.
+     *
+     * One FIFO, ordered by a single sequence: a child's message and its settlement can never be
+     * reordered, which is the failure mode two queues with different drain priorities produce.
+     */
+    private val asyncTurnInbox = com.cordiact.core.inbox.DefaultAgentInbox()
+
+    private val wakePolicy = com.cordiact.core.inbox.WakePolicy()
+
+    private val asyncTurnCoordinator by lazy {
+        com.cordiact.core.inbox.AsyncTurnCoordinator(
+            policy = wakePolicy,
+            ledger = com.cordiact.core.inbox.SlidingWindowWakeLedger(wakePolicy),
+            activity = com.cordiact.core.inbox.SessionActivity { sessionId -> turnService.isTurnActive(sessionId) },
+            startTurn = { sessionId -> wakeSession(sessionId) },
+        )
+    }
+
     private val toolLoopPlugin by lazy {
         val gate = com.cordiact.core.context.DefaultToolOutputGate(conversationCatalog.spillStore)
-        ToolLoopPlugin(gate = gate).apply { onEnable() }
+        ToolLoopPlugin(
+            gate = gate,
+            inbox = asyncTurnInbox,
+            onReportsDelivered = { items ->
+                // Mid-turn delivery consumed the report; the durable queue must drop it or the
+                // next turn would repeat a child's outcome the model already saw.
+                val bySession = items.groupBy { it.sessionId }
+                bySession.forEach { (sessionId, delivered) ->
+                    runCatching { backgroundSubagents.acknowledgeNotices(sessionId, delivered.map { it.sourceId }) }
+                }
+            },
+        ).apply { onEnable() }
     }
 
     /**
@@ -313,7 +344,51 @@ class CordiActApplication : Application() {
         BackgroundSubagentRuntime(
             runtime = subagentRuntime,
             runs = conversationStore,
+            onReportQueued = ::onChildReportQueued,
         )
+    }
+
+    /**
+     * A child settled (or spoke). Queue it for the parent and decide whether to wake it.
+     *
+     * The durable queue is the authority; the inbox is the mid-turn channel. Both are fed here so
+     * a report reaches the parent whether it is busy or idle.
+     */
+    private fun onChildReportQueued(notice: ChildNotice) {
+        val item = asyncTurnInbox.enqueue(
+            kind = com.cordiact.core.inbox.InboxItemKind.CHILD_SETTLED,
+            sessionId = notice.parentSessionId,
+            sourceId = notice.id,
+            heading = notice.summary,
+            body = notice.body,
+        )
+        val decision = asyncTurnCoordinator.onEnqueued(item)
+        if (decision != com.cordiact.core.inbox.WakeDecision.WOKE) {
+            Log.d(TAG, "Child report ${notice.id} queued for ${notice.parentSessionId}: $decision")
+        }
+    }
+
+    /**
+     * Starts a turn the runtime asked for, not the user.
+     *
+     * Refuses when no background model is configured rather than picking one: an automatic wake
+     * that quietly runs on an unexpected model would be a surprising bill.
+     */
+    private fun wakeSession(sessionId: String) {
+        val model = runCatching {
+            com.cordiact.app.memory.ExtractionModelSelectionStore(this).selectedModel()
+        }.getOrNull()
+        if (model == null) {
+            Log.d(TAG, "No background model configured; report for $sessionId stays queued")
+            return
+        }
+        runCatching {
+            turnService.submitWoken(
+                sessionId = sessionId,
+                model = model,
+                systemContext = null,
+            ) { }
+        }.onFailure { Log.e(TAG, "Woken turn for $sessionId failed to start", it) }
     }
 
     /**
@@ -370,6 +445,7 @@ class CordiActApplication : Application() {
             models = modelAdapterPlugin,
             notices = backgroundSubagents,
             compactionStore = conversationCatalog.conversationStore,
+            inbox = asyncTurnInbox,
         )
         // Registered here because the tool list is built from the shared registry, and the
         // delegation tools must be in it before the first turn assembles its specs.

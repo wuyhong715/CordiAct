@@ -50,8 +50,19 @@ class ConversationTurnService(
     private val contextPolicy: ContextPolicy = ContextPolicy(),
     private val tokenEstimator: TokenEstimator = WeightedTokenEstimator(),
     private val contextProjector: ContextProjector = DefaultContextProjector(),
+    /**
+     * Mid-turn report channel.
+     *
+     * The durable notice queue is what a turn reads at its head; this inbox is what a tool loop
+     * drains between rounds. A turn that starts after a report was queued for mid-turn delivery
+     * would otherwise see it twice, so the shadow copy is dropped here.
+     */
+    private val inbox: com.cordiact.core.inbox.AgentInbox? = null,
 ) {
     private val activeSessions = ConcurrentHashMap.newKeySet<String>()
+
+    /** Whether a turn currently owns this Session. Used to decide if a report may wake it. */
+    fun isTurnActive(sessionId: String): Boolean = activeSessions.contains(sessionId)
 
     /**
      * Submits a turn that may use tools.
@@ -266,6 +277,39 @@ class ConversationTurnService(
         onEvent: (ModelEvent) -> Unit,
     ): ModelCall {
         require(text.isNotBlank()) { "Message must not be blank" }
+        return runTurn(sessionId, model, text.trim(), transientContext, parameters, systemContext, onEvent)
+    }
+
+    /**
+     * Runs a turn the runtime started, not the user.
+     *
+     * Used when a child settles while this Session is idle. No user message is fabricated: the
+     * transcript must not claim the user said something they did not. Refuses when nothing is
+     * pending, so a wake can never produce a turn with nothing to say.
+     */
+    fun submitWoken(
+        sessionId: String,
+        model: ModelId,
+        systemContext: String? = null,
+        parameters: GenerationParameters? = null,
+        onEvent: (ModelEvent) -> Unit,
+    ): ModelCall {
+        requireNotNull(sessions.getSession(sessionId)) { "Session does not exist" }
+        require(notices?.pending(sessionId).orEmpty().isNotEmpty()) {
+            "A woken turn needs at least one pending report"
+        }
+        return runTurn(sessionId, model, userText = null, emptyList(), parameters, systemContext, onEvent)
+    }
+
+    private fun runTurn(
+        sessionId: String,
+        model: ModelId,
+        userText: String?,
+        transientContext: List<String>,
+        parameters: GenerationParameters?,
+        systemContext: String?,
+        onEvent: (ModelEvent) -> Unit,
+    ): ModelCall {
         requireNotNull(sessions.getSession(sessionId)) { "Session does not exist" }
         check(activeSessions.add(sessionId)) { "A model turn is already active for this Session" }
         val terminal = AtomicBoolean(false)
@@ -273,8 +317,13 @@ class ConversationTurnService(
         val reply = StringBuilder()
 
         val pending = notices?.pending(sessionId).orEmpty()
+        // The durable queue wins at the head of a turn; drop the mid-turn shadow copy so the same
+        // report is not delivered twice.
+        inbox?.drain(sessionId)
         val history = try {
-            sessions.appendMessage(sessionId, MessageRole.USER, text.trim())
+            // A woken turn has no user message to persist: the report block is its trigger, and
+            // storing one would put words in the user's mouth on the next replay.
+            if (userText != null) sessions.appendMessage(sessionId, MessageRole.USER, userText)
             val projected = buildProjectedHistory(sessionId, model, systemContext, pending)
             if (transientContext.isEmpty()) projected else projected + ModelMessage(
                 MessageRole.USER,
@@ -450,15 +499,25 @@ internal const val ROUND_TIMEOUT_MILLIS = 300_000L
  * System, not user: a child's completion is something the runtime observed, and attributing it to
  * the user would make the transcript claim they said it.
  */
+/**
+ * Renders pending notices as one structured system block.
+ *
+ * System, not user: a child's completion is something the runtime observed, and attributing it to
+ * the user would make the transcript claim they said it. Structured rather than prose so the model
+ * can tell a child's own words from the runtime's account of how it ended.
+ */
 internal fun noticeBlock(notices: List<TurnNotice>): String? {
     if (notices.isEmpty()) return null
-    return buildString {
-        append("Background work you started has settled. This is a runtime report, not a user message.")
-        notices.forEach { notice ->
-            append("\n\n- ").append(notice.heading)
-            notice.body?.takeIf { it.isNotBlank() }?.let { body ->
-                append("\n  ").append(body.trim().replace("\n", "\n  "))
-            }
-        }
-    }
+    return com.cordiact.core.inbox.ChildReportRenderer.render(
+        notices.mapIndexed { index, notice ->
+            com.cordiact.core.inbox.InboxItem(
+                seq = index.toLong(),
+                kind = notice.kind,
+                sessionId = "",
+                sourceId = notice.id,
+                heading = notice.heading,
+                body = notice.body,
+            )
+        },
+    )
 }

@@ -625,7 +625,7 @@ peakRunningJobs, admissionRejects, wakeCount, wakeRejects
 
 ## 9. 分期与验收
 
-### P0 — `core.jobs` + 三个工具 + 语义统一（约 2 天）
+### P0 — `core.jobs` + 三个工具 + 语义统一（约 2 天）✅ 已实现（2026-11-07，PR #39）
 
 - `JobRegistry`（四后端注册、准入、ring、spill 输出、结算事件）；
 - `jobs` 表 + 启动对账（本地 ABORTED / 远端 DETACHED_UNKNOWN）；
@@ -634,7 +634,7 @@ peakRunningJobs, admissionRejects, wakeCount, wakeRejects
 
 **验收**：一个跑 90 秒的 Termux 命令在 `background=true` 时**立即**返回 `job_id`（改前会阻塞 30 秒后返回 `timedOut`）；`job_output(wait=true, timeout=5s)` 在任务未完成时返回 `state=running` 且**不是** tool error；准入上限生效（第 5 个任务被拒绝且错误信息可读）；杀掉 App 后重启，本地任务全为 `ABORTED`、SSH 后台任务全为 `DETACHED_UNKNOWN` 且 `job_probe` 能正确报告远端进程是否还活着。
 
-### P1 — 执行窗口（前台服务）（约 1.5 天）
+### P1 — 执行窗口（前台服务）（约 1.5 天）✅ 已实现（2026-11-07，PR #41）
 
 - `AgentExecutionService` + 汇总通知 + WakeLock + 30 分钟上限；
 - `POST_NOTIFICATIONS` 申请与降级路径；
@@ -642,7 +642,7 @@ peakRunningJobs, admissionRejects, wakeCount, wakeRejects
 
 **验收**：启动一个 5 分钟的后台任务后按 Home，任务在 5 分钟后**正常完成**（改前大概率被杀）；通知在任务期间常驻、结束后消失；拒绝通知权限时服务仍能启动且任务照常完成；30 分钟上限到点后任务被 `ABORTED` 且通知可见；人为制造一个卡死协程（不更新心跳），`JobReaper` 在 15 秒内把它标 `ABORTED`。
 
-### P2 — 异步回合（约 2 天）
+### P2 — 异步回合（约 2 天）✅ 已实现（2026-11-07，PR #42）
 
 - `InboxItem` + 单 FIFO + `seq` 保序；
 - `ToolLoopPlugin` 轮次边界投递；

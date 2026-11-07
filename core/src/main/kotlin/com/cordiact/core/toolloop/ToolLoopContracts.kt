@@ -136,6 +136,21 @@ interface ToolLoopService {
 class ToolLoopPlugin(
     private val limits: ToolLoopLimits = ToolLoopLimits(),
     private val gate: com.cordiact.core.context.ToolOutputGate? = null,
+    /**
+     * Reports from children and background jobs, delivered at round boundaries.
+     *
+     * Null in tests and in compositions without background work. The loop is the only place a
+     * turn can be extended mid-flight: the model request itself is never interrupted.
+     */
+    private val inbox: com.cordiact.core.inbox.AgentInbox? = null,
+    private val maxReportsPerRound: Int = 8,
+    /**
+     * Called once reports have actually been handed to a model request.
+     *
+     * The durable notice queue must be told, or the same report would be delivered again at the
+     * head of the next turn. Deliberately not called when the request never left.
+     */
+    private val onReportsDelivered: ((List<com.cordiact.core.inbox.InboxItem>) -> Unit)? = null,
 ) : ManagedPlugin, ToolLoopService {
 
     override val spec: PluginSpec = toolLoopPluginSpec()
@@ -167,12 +182,32 @@ class ToolLoopPlugin(
 
         while (rounds < limits.maxRounds) {
             rounds++
+
+            // Deliver queued reports before the request, so the model sees them in this round
+            // rather than only at the head of the next turn. Consumed by drain; put back if the
+            // request never leaves, or a child's outcome would be silently lost.
+            val delivered = context.sessionId
+                ?.let { inbox?.drain(it, maxReportsPerRound) }
+                .orEmpty()
+            if (delivered.isNotEmpty()) {
+                com.cordiact.core.inbox.ChildReportRenderer.render(delivered)?.let {
+                    messages += ModelMessage(role = com.cordiact.core.conversation.MessageRole.SYSTEM, content = it)
+                }
+            }
+
             val round = try {
                 send(messages)
             } catch (e: Exception) {
                 // A transport or provider failure ends the turn; retrying inside the loop would
                 // duplicate whatever the model already streamed.
+                if (delivered.isNotEmpty()) inbox?.requeue(delivered)
                 return ToolLoopOutcome.Stopped(ToolLoopStop.FAILED, rounds, lastText, evidence.toList())
+            }
+
+            // The request left, so the reports are genuinely delivered. Only now may the durable
+            // queue drop them; acknowledging earlier would lose a report the model never saw.
+            if (delivered.isNotEmpty()) {
+                runCatching { onReportsDelivered?.invoke(delivered) }
             }
             lastText = round.text.ifBlank { lastText }
 

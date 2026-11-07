@@ -550,7 +550,7 @@ spillCount, foldCount, compactDurationMs, fallbackLevel, estimatorFactor
 
 ## 7. 分期与验收
 
-### P0 — 预算 + 溢出 + 修死参数（约 1.5 天）
+### P0 — 预算 + 溢出 + 修死参数（约 1.5 天）✅ 已实现（2026-11-07，PR #38）
 
 - `TokenEstimator` + `ContextBudget` + `ContextPolicy`；
 - `ToolOutputGate` 接入 `ToolLoopPlugin`，`maxResultChars` 真正生效；
@@ -560,7 +560,7 @@ spillCount, foldCount, compactDurationMs, fallbackLevel, estimatorFactor
 
 **验收**：单测覆盖估算器（中英混排、代码、空白、emoji 的加权与单调性）；一个 24 次工具调用、每次 50k 字符的合成回合，在 mock provider 下不抛 400，且每次 tool result 都能通过 `tool_output_read` 完整取回；`maxResultChars` 有测试证明被读取（改小后输出变短）。
 
-### P1 — G3 压缩 + `/compact` + 压缩卡片（约 2 天）
+### P1 — G3 压缩 + `/compact` + 压缩卡片（约 2 天）✅ 核心已实现（2026-11-07，PR #40）；压缩卡片 UI 待做
 
 - `CompactionPlanner`（Head/Body/Tail + `safeCutIndex`）；
 - `SummaryCompactor`（七节 prompt + 三条校验 + L1 降级）；
