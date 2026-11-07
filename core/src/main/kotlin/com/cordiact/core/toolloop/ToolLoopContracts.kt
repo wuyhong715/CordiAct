@@ -34,11 +34,20 @@ data class ToolLoopLimits(
     val maxToolCalls: Int = 24,
     /** Characters of a single tool result handed back to the model. */
     val maxResultChars: Int = 32_000,
+    /**
+     * How many of the most recent tool results stay verbatim.
+     *
+     * Older results are folded to a one-line stub: a turn with two dozen calls otherwise carries
+     * every result in full until it ends, and most of that text stopped mattering immediately.
+     * Zero disables folding.
+     */
+    val foldToolResultsAfter: Int = 6,
 ) {
     init {
         require(maxRounds > 0) { "maxRounds must be positive" }
         require(maxToolCalls > 0) { "maxToolCalls must be positive" }
         require(maxResultChars > 0) { "maxResultChars must be positive" }
+        require(foldToolResultsAfter >= 0) { "foldToolResultsAfter must not be negative" }
     }
 }
 
@@ -192,6 +201,16 @@ class ToolLoopPlugin(
             if (delivered.isNotEmpty()) {
                 com.cordiact.core.inbox.ChildReportRenderer.render(delivered)?.let {
                     messages += ModelMessage(role = com.cordiact.core.conversation.MessageRole.SYSTEM, content = it)
+                }
+            }
+
+            // Fold results the model has already moved past, so a long turn does not pay for
+            // text it stopped reading several calls ago.
+            if (limits.foldToolResultsAfter > 0) {
+                val folded = com.cordiact.core.context.ToolResultFolder.fold(messages, limits.foldToolResultsAfter)
+                if (folded !== messages) {
+                    messages.clear()
+                    messages.addAll(folded)
                 }
             }
 

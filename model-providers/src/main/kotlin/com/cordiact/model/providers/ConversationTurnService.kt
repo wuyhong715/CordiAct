@@ -7,8 +7,11 @@ import com.cordiact.core.context.ContextBudget
 import com.cordiact.core.context.ContextCompactionStore
 import com.cordiact.core.context.ContextPolicy
 import com.cordiact.core.context.ContextProjector
+import com.cordiact.core.context.DefaultContextCompactor
 import com.cordiact.core.context.DefaultContextProjector
 import com.cordiact.core.context.DefaultContextWindows
+import com.cordiact.core.context.ModelFailure
+import com.cordiact.core.context.OverflowClassifier
 import com.cordiact.core.context.SummaryCompactor
 import com.cordiact.core.context.TokenEstimator
 import com.cordiact.core.context.WeightedTokenEstimator
@@ -59,6 +62,13 @@ class ConversationTurnService(
      */
     private val inbox: com.cordiact.core.inbox.AgentInbox? = null,
 ) {
+    /** Owns "should I compact, and how", so this service only decides *when* to ask. */
+    private val compactor = DefaultContextCompactor(
+        store = compactionStore,
+        estimator = tokenEstimator,
+        policy = contextPolicy,
+        projector = contextProjector,
+    )
     private val activeSessions = ConcurrentHashMap.newKeySet<String>()
 
     /** Whether a turn currently owns this Session. Used to decide if a report may wake it. */
@@ -338,58 +348,107 @@ class ConversationTurnService(
             runCatching { notices?.acknowledge(sessionId, pending.map { it.id }) }
         }
 
-        val delegate = try {
-            models.generate(
-                ModelGenerationRequest(sessionId = sessionId, model = model, messages = history, parameters = parameters),
-            ) { event ->
-                synchronized(callbackLock) {
-                    if (terminal.get()) return@generate
-                    when (event) {
-                        is ModelEvent.Delta -> reply.append(event.text)
-                        is ModelEvent.Completed -> {
-                            event.inputTokens?.let { actual ->
-                                val estimated = tokenEstimator.estimateMessages(history)
-                                tokenEstimator.calibrate(actual, estimated, model.modelId)
+        val pendingCall = java.util.concurrent.atomic.AtomicReference<ModelCall?>(null)
+
+        fun issue(historyToSend: List<ModelMessage>, attempt: Int): ModelCall {
+            val call = try {
+                models.generate(
+                    ModelGenerationRequest(
+                        sessionId = sessionId,
+                        model = model,
+                        messages = historyToSend,
+                        parameters = parameters,
+                    ),
+                ) { event ->
+                    synchronized(callbackLock) {
+                        if (terminal.get()) return@generate
+                        when (event) {
+                            is ModelEvent.Delta -> reply.append(event.text)
+                            is ModelEvent.Completed -> {
+                                event.inputTokens?.let { actual ->
+                                    val estimated = tokenEstimator.estimateMessages(historyToSend)
+                                    tokenEstimator.calibrate(actual, estimated, model.modelId)
+                                }
+                                if (reply.isNotEmpty()) {
+                                    try {
+                                        sessions.appendMessage(sessionId, MessageRole.ASSISTANT, reply.toString())
+                                    } catch (_: Exception) {
+                                        terminal.set(true)
+                                        activeSessions.remove(sessionId)
+                                        onEvent(ModelEvent.Failed("persistence_error", "Could not save model reply"))
+                                        return@generate
+                                    }
+                                }
                             }
-                            if (reply.isNotEmpty()) {
-                                try {
-                                    sessions.appendMessage(sessionId, MessageRole.ASSISTANT, reply.toString())
-                                } catch (_: Exception) {
-                                    terminal.set(true)
-                                    activeSessions.remove(sessionId)
-                                    onEvent(ModelEvent.Failed("persistence_error", "Could not save model reply"))
-                                    return@generate
+                            // This service owns one plain round trip. A turn that asks for tools is
+                            // driven by the tool loop, which supplies its own send callback; here the
+                            // event is only relayed so the caller can decide.
+                            is ModelEvent.ToolCallsRequested -> Unit
+                            is ModelEvent.Failed -> {
+                                val failure = OverflowClassifier.classify(event.code, event.message, model.providerId)
+                                if (failure is ModelFailure.ContextOverflow && attempt < MAX_OVERFLOW_RETRIES) {
+                                    val recovered = recoverFromOverflow(sessionId, model)
+                                    if (recovered != null) {
+                                        // The prompt was too long, not the turn: compact and try once
+                                        // more rather than making the user resend the message.
+                                        reply.clear()
+                                        pendingCall.set(issue(recovered, attempt + 1))
+                                        return@generate
+                                    }
                                 }
                             }
                         }
-                        // This service owns one plain round trip. A turn that asks for tools is
-                        // driven by the tool loop, which supplies its own send callback; here the
-                        // event is only relayed so the caller can decide.
-                        is ModelEvent.ToolCallsRequested -> Unit
-                        is ModelEvent.Failed -> Unit
+                        if (event is ModelEvent.Completed || event is ModelEvent.Failed) {
+                            terminal.set(true)
+                            activeSessions.remove(sessionId)
+                        }
+                        onEvent(event)
                     }
-                    if (event is ModelEvent.Completed || event is ModelEvent.Failed) {
-                        terminal.set(true)
-                        activeSessions.remove(sessionId)
-                    }
-                    onEvent(event)
                 }
+            } catch (_: Exception) {
+                terminal.set(true)
+                activeSessions.remove(sessionId)
+                onEvent(ModelEvent.Failed("dispatch_error", "Model request could not be started"))
+                return ModelCall {}
             }
-        } catch (_: Exception) {
-            terminal.set(true)
-            activeSessions.remove(sessionId)
-            onEvent(ModelEvent.Failed("dispatch_error", "Model request could not be started"))
-            return ModelCall {}
+            pendingCall.set(call)
+            return call
         }
+
+        issue(history, 0)
 
         return ModelCall {
             synchronized(callbackLock) {
                 if (terminal.compareAndSet(false, true)) {
                     activeSessions.remove(sessionId)
-                    delegate.cancel()
+                    pendingCall.get()?.cancel()
                 }
             }
         }
+    }
+
+    /**
+     * Shrinks history after a provider refused it as too long, and returns the rebuilt prompt.
+     *
+     * Returns null when nothing could be freed, in which case the original failure stands: a
+     * second identical request would only fail again.
+     */
+    private fun recoverFromOverflow(sessionId: String, model: ModelId): List<ModelMessage>? {
+        val raw = sessions.messages(sessionId)
+            .filter { it.role == MessageRole.SYSTEM || it.role == MessageRole.USER || it.role == MessageRole.ASSISTANT }
+        val result = compactor.emergencyCompact(sessionId, windowFor(model), raw) ?: return null
+        // Worth a log line: the turn continued, so nothing else would explain the sudden shrink.
+        java.util.logging.Logger.getLogger(ConversationTurnService::class.java.name).warning(
+            "Context overflow recovered for $sessionId: ${result.tokensBefore} -> ${result.tokensAfter} tokens " +
+                "(level ${result.fallbackLevel})",
+        )
+        return buildProjectedHistory(sessionId, model, null, emptyList())
+    }
+
+    private fun windowFor(model: ModelId): Int {
+        val descriptor = models.models().firstOrNull { it.id == model }
+        return descriptor?.let { DefaultContextWindows.resolve(it, contextPolicy.contextWindowOverride) }
+            ?: DefaultContextWindows.resolveByModelId(model)
     }
 
     private fun buildProjectedHistory(
@@ -424,43 +483,7 @@ class ConversationTurnService(
     }
 
     private fun maybeCompact(sessionId: String, model: ModelId, rawMessages: List<ConversationMessage>) {
-        val descriptor = models.models().firstOrNull { it.id == model }
-        val window = descriptor?.let { DefaultContextWindows.resolve(it, contextPolicy.contextWindowOverride) }
-            ?: DefaultContextWindows.resolveByModelId(model)
-
-        val budget = contextPolicy.createBudget(window)
-
-        val activeRecords = compactionStore?.listActive(sessionId).orEmpty()
-        val currentProjected = contextProjector.project(sessionId, rawMessages, activeRecords)
-        val currentTokens = tokenEstimator.estimateMessages(currentProjected)
-
-        if (currentTokens >= budget.compactAtTokens) {
-            val plan = CompactionPlanner.plan(
-                messages = rawMessages,
-                estimator = tokenEstimator,
-                budget = budget,
-                minRetainTurns = contextPolicy.minRetainTurns,
-                reason = CompactionReason.AUTO,
-            )
-            if (plan != null) {
-                val result = SummaryCompactor.compact(plan, tokenEstimator)
-                val record = CompactionRecord(
-                    id = result.recordId,
-                    sessionId = sessionId,
-                    startMessageId = result.startMessageId,
-                    endMessageId = result.endMessageId,
-                    summary = result.summary,
-                    tokensBefore = result.tokensBefore,
-                    tokensAfter = result.tokensAfter,
-                    fallbackLevel = result.fallbackLevel,
-                    createdAt = System.currentTimeMillis(),
-                    supersededBy = null,
-                    active = true,
-                )
-                activeRecords.forEach { compactionStore?.supersede(it.id, record.id) }
-                compactionStore?.insert(record)
-            }
-        }
+        compactor.compactIfNeeded(sessionId, windowFor(model), rawMessages)
     }
 }
 
@@ -492,6 +515,9 @@ internal const val MAX_EVIDENCE_CHARS = 32_000
  * timeout is meant to fire first.
  */
 internal const val ROUND_TIMEOUT_MILLIS = 300_000L
+
+/** One retry after an overflow: a second identical failure would only cost the user again. */
+internal const val MAX_OVERFLOW_RETRIES = 1
 
 /**
  * Renders pending notices as one system block.

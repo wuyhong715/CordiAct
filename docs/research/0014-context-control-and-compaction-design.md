@@ -569,7 +569,7 @@ spillCount, foldCount, compactDurationMs, fallbackLevel, estimatorFactor
 
 **验收**：构造 300 轮、每轮 2k tokens 的会话，在阈值处触发一次压缩，压缩后请求 token < 阈值的 50%；`ContextProjector` 黄金测试：给定 history + 记录，输出稳定；摘要失败（mock 超时）时走 L1 且回合仍成功；压缩卡片能展开原文且原文与 DB 一致；DB v6→v7 迁移在旧库上幂等。
 
-### P2 — 折叠 + 自愈 + 设置页（约 1.5 天）
+### P2 — 折叠 + 自愈 + 设置页（约 1.5 天）✅ 折叠与自愈已实现（2026-11-07，PR #43）；设置页 UI 待做
 
 - `ToolResultFolder`：历史工具结果（同一回合内超过 `foldAfterRounds` 的）压成一行 stub；
 - `OverflowClassifier` + `EmergencyCompactor` + 重试一次；
