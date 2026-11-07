@@ -75,6 +75,28 @@ class ConversationTurnService(
     fun isTurnActive(sessionId: String): Boolean = activeSessions.contains(sessionId)
 
     /**
+     * Called when a turn reaches a terminal event.
+     *
+     * The host uses it to schedule work that should not happen while the user waits, such as
+     * preparing the next compaction summary.
+     */
+    @Volatile
+    var onTurnCompleted: ((sessionId: String) -> Unit)? = null
+
+    /**
+     * Prepares a compaction candidate for a Session, off the critical path.
+     *
+     * Returns null when there is nothing worth compressing yet, which is the common case: this is
+     * called after every turn and must stay cheap when it has nothing to do.
+     */
+    fun prepareCompactionCandidate(sessionId: String, model: ModelId) =
+        compactor.prepareCandidate(sessionId, windowFor(model), rawHistoryOf(sessionId))
+
+    private fun rawHistoryOf(sessionId: String): List<ConversationMessage> =
+        sessions.messages(sessionId)
+            .filter { it.role == MessageRole.SYSTEM || it.role == MessageRole.USER || it.role == MessageRole.ASSISTANT }
+
+    /**
      * Submits a turn that may use tools.
      *
      * The loop owns message assembly for tool rounds; this service still owns persistence, so a
@@ -151,6 +173,7 @@ class ConversationTurnService(
             onEvent(ModelEvent.Failed("tool_loop_stopped", "Turn ended early: ${outcome.reason}"))
         }
         onEvent(ModelEvent.Completed())
+        runCatching { onTurnCompleted?.invoke(sessionId) }
         terminal.set(true)
 
         return ModelCall {
@@ -401,6 +424,9 @@ class ConversationTurnService(
                         if (event is ModelEvent.Completed || event is ModelEvent.Failed) {
                             terminal.set(true)
                             activeSessions.remove(sessionId)
+                            // Fired outside the caller's turn so the host can schedule work that
+                            // must not delay the user's next request.
+                            runCatching { onTurnCompleted?.invoke(sessionId) }
                         }
                         onEvent(event)
                     }

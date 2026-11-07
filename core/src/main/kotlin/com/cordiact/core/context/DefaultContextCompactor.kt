@@ -28,6 +28,7 @@ class DefaultContextCompactor(
      * because a failed summary must never fail the turn.
      */
     private val summarizer: ((String, List<ConversationMessage>) -> String?)? = null,
+    private val candidates: CompactionCandidateStore = CompactionCandidateStore(),
 ) {
 
     fun compactIfNeeded(
@@ -46,7 +47,91 @@ class DefaultContextCompactor(
 
         if (!force && projectedTokens < budget.compactAtTokens) return null
 
+        // Prefer a candidate prepared off the turn's critical path. It is only used when the range
+        // it describes is still the range that needs compressing.
+        installCandidate(sessionId, windowTokens, rawMessages)?.let { return it }
+
         return compactWith(sessionId, rawMessages, budget, reason)
+    }
+
+    /**
+     * Prepares a summary now, for a later turn to install.
+     *
+     * Called off the critical path (a worker, not the turn). Returns null when there is nothing
+     * worth compressing yet, and drops any older candidate for the Session: two proposals for
+     * different ranges would force a choice the request is better placed to make.
+     */
+    fun prepareCandidate(
+        sessionId: String,
+        windowTokens: Int,
+        rawMessages: List<ConversationMessage>,
+    ): CompactionCandidate? {
+        if (store == null || !policy.enabled) return null
+
+        val budget = policy.createBudget(windowTokens)
+        val plan = CompactionPlanner.plan(
+            messages = rawMessages,
+            estimator = estimator,
+            budget = budget,
+            minRetainTurns = policy.minRetainTurns,
+            reason = CompactionReason.BACKGROUND,
+        )
+        if (plan == null || plan.bodyTokens < MIN_CANDIDATE_BODY_TOKENS) {
+            candidates.remove(sessionId)
+            return null
+        }
+
+        val result = SummaryCompactor.compact(plan, estimator, summarizer)
+        val candidate = CompactionCandidate(
+            sessionId = sessionId,
+            startMessageId = result.startMessageId,
+            endMessageId = result.endMessageId,
+            summary = result.summary,
+            tokensBefore = result.tokensBefore,
+            tokensAfter = result.tokensAfter,
+            fallbackLevel = result.fallbackLevel,
+            generatedAtMillis = clockMillis(),
+        )
+        candidates.put(candidate)
+        return candidate
+    }
+
+    /** Installs the pending candidate when it still applies; null means "do the work now". */
+    fun installCandidate(
+        sessionId: String,
+        windowTokens: Int,
+        rawMessages: List<ConversationMessage>,
+    ): CompactionResult? {
+        val compactionStore = store ?: return null
+        val candidate = candidates.get(sessionId) ?: return null
+
+        val plan = CompactionPlanner.plan(
+            messages = rawMessages,
+            estimator = estimator,
+            budget = policy.createBudget(windowTokens),
+            minRetainTurns = policy.minRetainTurns,
+            reason = CompactionReason.AUTO,
+        )
+        val verdict = CandidateValidator.validate(candidate, rawMessages, plan)
+        if (verdict != CandidateVerdict.USABLE) {
+            candidates.remove(sessionId)
+            return null
+        }
+
+        candidates.remove(sessionId)
+        return record(
+            sessionId = sessionId,
+            result = CompactionResult(
+                recordId = newRecordId(),
+                startMessageId = candidate.startMessageId,
+                endMessageId = candidate.endMessageId,
+                tokensBefore = candidate.tokensBefore,
+                tokensAfter = candidate.tokensAfter,
+                fallbackLevel = candidate.fallbackLevel,
+                summary = candidate.summary,
+            ),
+            compactionStore = compactionStore,
+        )
     }
 
     /**
@@ -140,6 +225,8 @@ class DefaultContextCompactor(
         return record(sessionId, SummaryCompactor.compact(plan, estimator, summarizer), compactionStore)
     }
 
+    private fun newRecordId(): String = "cmp-${java.util.UUID.randomUUID().toString().take(8)}"
+
     private fun record(
         sessionId: String,
         result: CompactionResult,
@@ -162,5 +249,15 @@ class DefaultContextCompactor(
         compactionStore.listActive(sessionId).forEach { compactionStore.supersede(it.id, record.id) }
         compactionStore.insert(record)
         return result
+    }
+
+    private companion object {
+        /**
+         * Below this, a background summary would cost more to install than it saves.
+         *
+         * A candidate covering a couple of short messages is not worth a record, a projection
+         * change and a card in the transcript.
+         */
+        const val MIN_CANDIDATE_BODY_TOKENS = 400
     }
 }
