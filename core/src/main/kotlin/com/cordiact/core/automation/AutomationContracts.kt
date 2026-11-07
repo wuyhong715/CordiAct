@@ -12,6 +12,8 @@ object AutomationPlugins {
     const val DISPLAY = "com.cordiact.display"
     const val SCREEN = "com.cordiact.screen"
     const val BROWSER = "com.cordiact.browser"
+    const val SSH = "com.cordiact.ssh"
+    const val TERMUX = "com.cordiact.termux"
 }
 
 object AutomationCapabilities {
@@ -35,6 +37,21 @@ object AutomationCapabilities {
 
     /** Drive the in-app WebView browser. */
     const val BROWSER_CONTROL = "browser.control"
+
+    /** Execute commands on remote hosts via SSH. */
+    const val SSH_EXEC = "ssh.exec"
+
+    /** Transfer files over SFTP. */
+    const val SSH_SFTP = "ssh.sftp"
+
+    /** Open local port forwarding tunnels via SSH. */
+    const val SSH_TUNNEL = "ssh.tunnel"
+
+    /** Run commands in the Termux environment. */
+    const val TERMUX_EXEC = "termux.exec"
+
+    /** Run interactive tmux-based sessions in Termux. */
+    const val TERMUX_SESSION = "termux.session"
 }
 
 /**

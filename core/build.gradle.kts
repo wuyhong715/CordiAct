@@ -4,8 +4,10 @@ kotlin { jvmToolchain(17) }
 
 dependencies {
     implementation("org.eclipse.jgit:org.eclipse.jgit:7.8.0.202609011348-r")
+    implementation("com.github.mwiede:jsch:0.2.21")
     testImplementation(kotlin("test"))
     testImplementation("org.eclipse.jgit:org.eclipse.jgit:7.8.0.202609011348-r")
+    testImplementation("com.github.mwiede:jsch:0.2.21")
 }
 
 tasks.test { useJUnitPlatform() }
