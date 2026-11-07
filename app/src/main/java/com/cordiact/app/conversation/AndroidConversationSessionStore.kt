@@ -27,7 +27,8 @@ class AndroidConversationSessionStore(
     context: Context,
     databaseName: String = DATABASE_NAME,
 ) : SQLiteOpenHelper(context.applicationContext, databaseName, null, DATABASE_VERSION),
-    ConversationSessionStore, WorkspaceStore, MutableToolPreferenceStore, AgentRunStore, ContextCompactionStore {
+    ConversationSessionStore, WorkspaceStore, MutableToolPreferenceStore, AgentRunStore, ContextCompactionStore,
+    com.cordiact.core.jobs.JobStore {
 
     override fun onConfigure(db: SQLiteDatabase) {
         super.onConfigure(db)
@@ -42,6 +43,7 @@ class AndroidConversationSessionStore(
         createPluginSettingsSchema(db)
         createAgentRunSchema(db)
         createContextCompactionSchema(db)
+        createJobSchema(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -51,7 +53,18 @@ class AndroidConversationSessionStore(
         if (oldVersion < 5 && newVersion >= 5) migrateV4ToV5(db)
         if (oldVersion < 6 && newVersion >= 6) migrateV5ToV6(db)
         if (oldVersion < 7 && newVersion >= 7) migrateV6ToV7(db)
+        if (oldVersion < 8 && newVersion >= 8) migrateV7ToV8(db)
         if (newVersion > DATABASE_VERSION) throw IllegalStateException("Unsupported conversation database version $newVersion")
+    }
+
+    private fun migrateV7ToV8(db: SQLiteDatabase) {
+        db.beginTransaction()
+        try {
+            createJobSchema(db)
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
     }
 
     private fun migrateV6ToV7(db: SQLiteDatabase) {
@@ -729,6 +742,144 @@ class AndroidConversationSessionStore(
         )
     }
 
+    private fun createJobSchema(db: SQLiteDatabase) {
+        db.execSQL(
+            """CREATE TABLE IF NOT EXISTS $TABLE_JOBS (
+                $COL_JOB_ID TEXT PRIMARY KEY NOT NULL,
+                $COL_JOB_KIND TEXT NOT NULL,
+                $COL_JOB_SURVIVAL TEXT NOT NULL,
+                $COL_JOB_OWNER TEXT NOT NULL,
+                $COL_JOB_LABEL TEXT NOT NULL,
+                $COL_JOB_STATE TEXT NOT NULL,
+                $COL_JOB_STARTED_AT INTEGER NOT NULL,
+                $COL_JOB_FINISHED_AT INTEGER,
+                $COL_JOB_EXIT_CODE INTEGER,
+                $COL_JOB_PROGRESS TEXT,
+                $COL_JOB_OUTPUT_PATH TEXT,
+                $COL_JOB_OUTPUT_BYTES INTEGER NOT NULL DEFAULT 0,
+                $COL_JOB_REMOTE_PID INTEGER,
+                $COL_JOB_DIAGNOSTIC TEXT,
+                $COL_JOB_HEARTBEAT INTEGER NOT NULL,
+                FOREIGN KEY ($COL_JOB_OWNER) REFERENCES $TABLE_SESSIONS($COL_SESSION_ID) ON DELETE CASCADE
+            )""".trimIndent(),
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS jobs_owner ON $TABLE_JOBS($COL_JOB_OWNER, $COL_JOB_STARTED_AT)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS jobs_state ON $TABLE_JOBS($COL_JOB_STATE)")
+    }
+
+    override fun insert(snapshot: com.cordiact.core.jobs.JobSnapshot) {
+        writableDatabase.insertWithOnConflict(
+            TABLE_JOBS, null, snapshot.toJobValues(), SQLiteDatabase.CONFLICT_REPLACE,
+        )
+    }
+
+    override fun update(snapshot: com.cordiact.core.jobs.JobSnapshot) {
+        writableDatabase.update(
+            TABLE_JOBS, snapshot.toJobValues(), "$COL_JOB_ID = ?", arrayOf(snapshot.id),
+        )
+    }
+
+    override fun find(jobId: String): com.cordiact.core.jobs.JobSnapshot? = readableDatabase.query(
+        TABLE_JOBS, JOB_COLUMNS, "$COL_JOB_ID = ?", arrayOf(jobId), null, null, null,
+    ).use { c -> if (c.moveToNext()) c.toJobSnapshot() else null }
+
+    override fun listByOwner(ownerSessionId: String): List<com.cordiact.core.jobs.JobSnapshot> =
+        readableDatabase.query(
+            TABLE_JOBS, JOB_COLUMNS, "$COL_JOB_OWNER = ?", arrayOf(ownerSessionId),
+            null, null, "$COL_JOB_STARTED_AT DESC",
+        ).use { c -> buildList { while (c.moveToNext()) add(c.toJobSnapshot()) } }
+
+    override fun listActive(): List<com.cordiact.core.jobs.JobSnapshot> = readableDatabase.query(
+        TABLE_JOBS, JOB_COLUMNS,
+        "$COL_JOB_STATE IN (?, ?, ?)",
+        arrayOf(
+            com.cordiact.core.jobs.JobState.PENDING.name,
+            com.cordiact.core.jobs.JobState.RUNNING.name,
+            com.cordiact.core.jobs.JobState.STOPPING.name,
+        ),
+        null, null, "$COL_JOB_STARTED_AT ASC",
+    ).use { c -> buildList { while (c.moveToNext()) add(c.toJobSnapshot()) } }
+
+    override fun updateHeartbeat(jobId: String, timestamp: Long) {
+        val values = ContentValues().apply { put(COL_JOB_HEARTBEAT, timestamp) }
+        writableDatabase.update(TABLE_JOBS, values, "$COL_JOB_ID = ?", arrayOf(jobId))
+    }
+
+    /**
+     * Reconciles jobs left running by a previous process.
+     *
+     * A `PROCESS_LOCAL` job cannot have survived the restart, so it becomes ABORTED. A
+     * `REMOTE_DETACHED` job may still be running on the far side, so it becomes
+     * DETACHED_UNKNOWN: claiming either success or failure would be a guess.
+     */
+    override fun reconcileOnStartup(): List<com.cordiact.core.jobs.JobSnapshot> {
+        val stranded = listActive()
+        val reconciled = mutableListOf<com.cordiact.core.jobs.JobSnapshot>()
+        val now = System.currentTimeMillis()
+        for (job in stranded) {
+            val updated = if (job.survival == com.cordiact.core.jobs.JobSurvival.PROCESS_LOCAL) {
+                job.copy(
+                    state = com.cordiact.core.jobs.JobState.ABORTED,
+                    finishedAtMillis = now,
+                    diagnostic = "The app was closed while this job was running; it did not survive.",
+                )
+            } else {
+                job.copy(
+                    state = com.cordiact.core.jobs.JobState.DETACHED_UNKNOWN,
+                    finishedAtMillis = now,
+                    diagnostic = "The app restarted. The remote process may still be running; " +
+                        "use job_probe to check before assuming an outcome.",
+                )
+            }
+            update(updated)
+            reconciled.add(updated)
+        }
+        return reconciled
+    }
+
+    private fun com.cordiact.core.jobs.JobSnapshot.toJobValues(): ContentValues = ContentValues().apply {
+        put(COL_JOB_ID, id)
+        put(COL_JOB_KIND, kind.name)
+        put(COL_JOB_SURVIVAL, survival.name)
+        put(COL_JOB_OWNER, ownerSessionId)
+        put(COL_JOB_LABEL, label)
+        put(COL_JOB_STATE, state.name)
+        put(COL_JOB_STARTED_AT, startedAtMillis)
+        finishedAtMillis?.let { put(COL_JOB_FINISHED_AT, it) } ?: putNull(COL_JOB_FINISHED_AT)
+        exitCode?.let { put(COL_JOB_EXIT_CODE, it) } ?: putNull(COL_JOB_EXIT_CODE)
+        progressLine?.let { put(COL_JOB_PROGRESS, it) } ?: putNull(COL_JOB_PROGRESS)
+        outputPath?.let { put(COL_JOB_OUTPUT_PATH, it) } ?: putNull(COL_JOB_OUTPUT_PATH)
+        put(COL_JOB_OUTPUT_BYTES, outputBytes)
+        remotePid?.let { put(COL_JOB_REMOTE_PID, it) } ?: putNull(COL_JOB_REMOTE_PID)
+        diagnostic?.let { put(COL_JOB_DIAGNOSTIC, it) } ?: putNull(COL_JOB_DIAGNOSTIC)
+        put(COL_JOB_HEARTBEAT, lastHeartbeatAtMillis)
+    }
+
+    private fun Cursor.toJobSnapshot(): com.cordiact.core.jobs.JobSnapshot =
+        com.cordiact.core.jobs.JobSnapshot(
+            id = getString(getColumnIndexOrThrow(COL_JOB_ID)),
+            kind = com.cordiact.core.jobs.JobKind.valueOf(getString(getColumnIndexOrThrow(COL_JOB_KIND))),
+            survival = com.cordiact.core.jobs.JobSurvival.valueOf(getString(getColumnIndexOrThrow(COL_JOB_SURVIVAL))),
+            state = com.cordiact.core.jobs.JobState.valueOf(getString(getColumnIndexOrThrow(COL_JOB_STATE))),
+            label = getString(getColumnIndexOrThrow(COL_JOB_LABEL)),
+            ownerSessionId = getString(getColumnIndexOrThrow(COL_JOB_OWNER)),
+            startedAtMillis = getLong(getColumnIndexOrThrow(COL_JOB_STARTED_AT)),
+            finishedAtMillis = getColumnIndex(COL_JOB_FINISHED_AT)
+                .takeIf { it >= 0 && !isNull(it) }?.let { getLong(it) },
+            exitCode = getColumnIndex(COL_JOB_EXIT_CODE)
+                .takeIf { it >= 0 && !isNull(it) }?.let { getInt(it) },
+            progressLine = getColumnIndex(COL_JOB_PROGRESS)
+                .takeIf { it >= 0 && !isNull(it) }?.let { getString(it) },
+            outputPath = getColumnIndex(COL_JOB_OUTPUT_PATH)
+                .takeIf { it >= 0 && !isNull(it) }?.let { getString(it) },
+            outputBytes = getLong(getColumnIndexOrThrow(COL_JOB_OUTPUT_BYTES)),
+            remotePid = getColumnIndex(COL_JOB_REMOTE_PID)
+                .takeIf { it >= 0 && !isNull(it) }?.let { getLong(it) },
+            diagnostic = getColumnIndex(COL_JOB_DIAGNOSTIC)
+                .takeIf { it >= 0 && !isNull(it) }?.let { getString(it) },
+            lastHeartbeatAtMillis = getLong(getColumnIndexOrThrow(COL_JOB_HEARTBEAT)),
+        )
+
     private fun Cursor.toCompactionRecord(): CompactionRecord = CompactionRecord(
         id = getString(getColumnIndexOrThrow(COL_COMPACTION_ID)),
         sessionId = getString(getColumnIndexOrThrow(COL_COMPACTION_SESSION_ID)),
@@ -773,7 +924,7 @@ class AndroidConversationSessionStore(
 
     private companion object {
         const val DATABASE_NAME = "cordiact-conversations.db"
-        const val DATABASE_VERSION = 7
+        const val DATABASE_VERSION = 8
         const val TABLE_WORKSPACES = "workspaces"
         const val TABLE_TOOL_PREFERENCES = "workspace_tool_preferences"
         const val TABLE_PLUGIN_SETTINGS = "workspace_plugin_settings"
@@ -807,6 +958,28 @@ class AndroidConversationSessionStore(
             COL_COMPACTION_TOKENS_AFTER, COL_COMPACTION_FALLBACK_LEVEL,
             COL_COMPACTION_CREATED_AT, COL_COMPACTION_SUPERSEDED_BY,
             COL_COMPACTION_ACTIVE,
+        )
+        const val TABLE_JOBS = "jobs"
+        const val COL_JOB_ID = "id"
+        const val COL_JOB_KIND = "kind"
+        const val COL_JOB_SURVIVAL = "survival"
+        const val COL_JOB_OWNER = "owner_session_id"
+        const val COL_JOB_LABEL = "label"
+        const val COL_JOB_STATE = "state"
+        const val COL_JOB_STARTED_AT = "started_at"
+        const val COL_JOB_FINISHED_AT = "finished_at"
+        const val COL_JOB_EXIT_CODE = "exit_code"
+        const val COL_JOB_PROGRESS = "progress_line"
+        const val COL_JOB_OUTPUT_PATH = "output_path"
+        const val COL_JOB_OUTPUT_BYTES = "output_bytes"
+        const val COL_JOB_REMOTE_PID = "remote_pid"
+        const val COL_JOB_DIAGNOSTIC = "diagnostic"
+        const val COL_JOB_HEARTBEAT = "last_heartbeat_at"
+        val JOB_COLUMNS = arrayOf(
+            COL_JOB_ID, COL_JOB_KIND, COL_JOB_SURVIVAL, COL_JOB_OWNER, COL_JOB_LABEL,
+            COL_JOB_STATE, COL_JOB_STARTED_AT, COL_JOB_FINISHED_AT, COL_JOB_EXIT_CODE,
+            COL_JOB_PROGRESS, COL_JOB_OUTPUT_PATH, COL_JOB_OUTPUT_BYTES, COL_JOB_REMOTE_PID,
+            COL_JOB_DIAGNOSTIC, COL_JOB_HEARTBEAT,
         )
         const val TABLE_MESSAGES = "conversation_messages"
         const val TABLE_MESSAGES_NEW = "conversation_messages_v2"

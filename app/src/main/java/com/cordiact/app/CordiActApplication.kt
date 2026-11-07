@@ -349,6 +349,12 @@ class CordiActApplication : Application() {
         conversationCatalog = BundledConversationPlugins.create(this, deepSeekApiKeyStore)
         automationRuntime = AutomationRuntime(this)
         automationRuntime.registerTools(conversationCatalog.toolRegistry, conversationCatalog.jobRegistry)
+        // Jobs left RUNNING by the previous process must be classified before anything reads them:
+        // a local job is provably dead, a detached remote one is merely unknown.
+        runCatching { conversationCatalog.jobRegistry.reconcileOnStartup() }
+            .onFailure { Log.e(TAG, "Job reconciliation failed", it) }
+        val executionManager = com.cordiact.app.service.AgentExecutionManager(this, conversationCatalog.jobRegistry)
+        executionManager.start()
         conversationStore = conversationCatalog.conversationStore
         workspaceManager = conversationCatalog.workspacePlugin
         val needsRepair = pluginLifecycle.recoverBeforeDispatch()

@@ -286,21 +286,27 @@ private fun execTool(
             )
             // Execute nohup asynchronously
             kotlin.concurrent.thread {
-                val execResult = plugin.service.execute(config, params)
-                val pid = execResult.stdout.trim().toLongOrNull()
-                if (pid != null) {
-                    handle.updateRemotePid(pid)
-                    handle.append("Detached remote PID: $pid\n")
-                } else if (execResult.stdout.isNotBlank()) {
-                    handle.append(execResult.stdout)
-                }
-                if (execResult.stderr.isNotBlank()) {
-                    handle.append("\n[stderr]: ${execResult.stderr}")
-                }
-                if (execResult.isSuccess) {
-                    handle.settle(com.cordiact.core.jobs.JobState.RUNNING, diagnostic = "Detached on remote host, PID: $pid")
-                } else {
-                    handle.settle(com.cordiact.core.jobs.JobState.FAILED, exitCode = execResult.exitCode, diagnostic = execResult.stderr)
+                com.cordiact.core.jobs.JobHeartbeats.start(handle).use {
+                    val execResult = plugin.service.execute(config, params)
+                    val pid = execResult.stdout.trim().toLongOrNull()
+                    if (pid != null) {
+                        handle.updateRemotePid(pid)
+                        handle.append("Detached remote PID: $pid\n")
+                    } else if (execResult.stdout.isNotBlank()) {
+                        handle.append(execResult.stdout)
+                    }
+                    if (execResult.stderr.isNotBlank()) {
+                        handle.append("\n[stderr]: ${execResult.stderr}")
+                    }
+                    if (execResult.isSuccess) {
+                        handle.settle(
+                            com.cordiact.core.jobs.JobState.DETACHED_UNKNOWN,
+                            diagnostic = "Dispatched to $host; remote PID ${pid ?: "unknown"} may still be running. " +
+                                "Use job_probe to check before assuming an outcome.",
+                        )
+                    } else {
+                        handle.settle(com.cordiact.core.jobs.JobState.FAILED, exitCode = execResult.exitCode, diagnostic = execResult.stderr)
+                    }
                 }
             }
             return@ToolDefinition ToolResult(
@@ -379,21 +385,27 @@ private fun execSavedTool(
                 ),
             )
             kotlin.concurrent.thread {
-                val execResult = plugin.service.execute(config, params)
-                val pid = execResult.stdout.trim().toLongOrNull()
-                if (pid != null) {
-                    handle.updateRemotePid(pid)
-                    handle.append("Detached remote PID on $name: $pid\n")
-                } else if (execResult.stdout.isNotBlank()) {
-                    handle.append(execResult.stdout)
-                }
-                if (execResult.stderr.isNotBlank()) {
-                    handle.append("\n[stderr]: ${execResult.stderr}")
-                }
-                if (execResult.isSuccess) {
-                    handle.settle(com.cordiact.core.jobs.JobState.RUNNING, diagnostic = "Detached on $name, PID: $pid")
-                } else {
-                    handle.settle(com.cordiact.core.jobs.JobState.FAILED, exitCode = execResult.exitCode, diagnostic = execResult.stderr)
+                com.cordiact.core.jobs.JobHeartbeats.start(handle).use {
+                    val execResult = plugin.service.execute(config, params)
+                    val pid = execResult.stdout.trim().toLongOrNull()
+                    if (pid != null) {
+                        handle.updateRemotePid(pid)
+                        handle.append("Detached remote PID on $name: $pid\n")
+                    } else if (execResult.stdout.isNotBlank()) {
+                        handle.append(execResult.stdout)
+                    }
+                    if (execResult.stderr.isNotBlank()) {
+                        handle.append("\n[stderr]: ${execResult.stderr}")
+                    }
+                    if (execResult.isSuccess) {
+                        handle.settle(
+                            com.cordiact.core.jobs.JobState.DETACHED_UNKNOWN,
+                            diagnostic = "Dispatched to saved host '$name'; remote PID ${pid ?: "unknown"} may still " +
+                                "be running. Use job_probe to check before assuming an outcome.",
+                        )
+                    } else {
+                        handle.settle(com.cordiact.core.jobs.JobState.FAILED, exitCode = execResult.exitCode, diagnostic = execResult.stderr)
+                    }
                 }
             }
             return@ToolDefinition ToolResult(

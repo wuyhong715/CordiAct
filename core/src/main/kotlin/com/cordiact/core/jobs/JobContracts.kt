@@ -49,6 +49,14 @@ interface JobHandle {
     fun append(text: String)
     fun updateProgress(line: String?)
     fun updateRemotePid(pid: Long)
+
+    /**
+     * Refreshes the liveness lease without producing output.
+     *
+     * A worker blocked in a long call should tick this from a watchdog; a worker that is simply
+     * gone stops ticking, which is what [JobReaper] is looking for.
+     */
+    fun heartbeat()
     fun settle(state: JobState, exitCode: Int? = null, diagnostic: String? = null)
 }
 
@@ -70,7 +78,15 @@ data class JobSnapshot(
     val lastHeartbeatAtMillis: Long = startedAtMillis,
 ) {
     val isTerminal: Boolean
-        get() = state in setOf(JobState.SUCCEEDED, JobState.FAILED, JobState.KILLED, JobState.ABORTED)
+        get() = state in setOf(
+            JobState.SUCCEEDED,
+            JobState.FAILED,
+            JobState.KILLED,
+            JobState.ABORTED,
+            // A detached remote job has no local worker left to wait on. Its remote outcome is
+            // unknown rather than pending, so it must not hold a quota slot or a wake lock.
+            JobState.DETACHED_UNKNOWN,
+        )
 }
 
 data class JobRead(
@@ -95,10 +111,12 @@ interface JobStore {
 interface JobRegistry {
     fun start(spec: JobSpec): JobHandle
     fun list(ownerSessionId: String): List<JobSnapshot>
+    fun listActive(): List<JobSnapshot>
     fun get(jobId: String): JobSnapshot?
     fun read(jobId: String, offset: Long = 0, limitBytes: Int = 8_000): JobRead?
     fun kill(jobId: String, reason: String = "user requested"): JobSnapshot?
     fun probe(jobId: String): JobSnapshot?
+    fun addStartedListener(listener: (JobSnapshot) -> Unit)
     fun addSettledListener(listener: (JobSnapshot) -> Unit)
     fun reconcileOnStartup(): List<JobSnapshot>
 }
