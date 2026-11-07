@@ -359,7 +359,12 @@ class CordiActApplication : Application() {
         val plugins = conversationCatalog.create { pluginId -> pluginLifecycle.manager.get(pluginId)?.state }
         modelAdapterPlugin = plugins.filterIsInstance<ModelAdapterPlugin>().single()
         sessionManagerPlugin = plugins.filterIsInstance<SessionManagerPlugin>().single()
-        turnService = ConversationTurnService(sessionManagerPlugin, modelAdapterPlugin, backgroundSubagents)
+        turnService = ConversationTurnService(
+            sessions = sessionManagerPlugin,
+            models = modelAdapterPlugin,
+            notices = backgroundSubagents,
+            compactionStore = conversationCatalog.conversationStore,
+        )
         // Registered here because the tool list is built from the shared registry, and the
         // delegation tools must be in it before the first turn assembles its specs.
         // Always published: the preview window is a session surface, not an integration.

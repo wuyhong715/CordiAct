@@ -408,6 +408,26 @@ class BundledConversationPlugins private constructor(
                 },
             ),
         )
+        commandRegistry.register(
+            CommandDescriptor(
+                id = "core.interaction.compact",
+                name = "compact",
+                ownerPluginId = INTERACTION_PLUGIN_ID,
+                aliases = setOf("压缩"),
+                allowedMentionTypes = emptySet(),
+                requiredCapabilities = setOf("interaction.execute"),
+                requiresMention = false,
+                allowsEmptyBody = true,
+                executor = InteractionCommandExecutor { envelope, modelId, submitter, onEvent ->
+                    val instruction = envelope.commandInput.ifBlank { "执行上下文检查点压缩并精简历史" }
+                    val prompt = "【用户指令】/compact $instruction\n请结合当前已完成任务进展、核心约束和下一步计划，对历史上下文进行整理归档。"
+                    CommandExecutionResult(
+                        completed = false,
+                        modelCall = submitter.submit(envelope.copy(submittedText = prompt), modelId, parameters = null, onEvent = onEvent),
+                    )
+                },
+            ),
+        )
         return listOf(
             workspacePlugin,
             fileManagerPlugin,
