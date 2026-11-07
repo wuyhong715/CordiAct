@@ -17,6 +17,7 @@ class DefaultJobRegistry(
 
     private val activeHandles = ConcurrentHashMap<String, DefaultJobHandle>()
     private val completedSnapshots = ConcurrentHashMap<String, JobSnapshot>()
+    private val startedListeners = CopyOnWriteArrayList<(JobSnapshot) -> Unit>()
     private val settledListeners = CopyOnWriteArrayList<(JobSnapshot) -> Unit>()
     private val probeHandlers = ConcurrentHashMap<JobKind, (JobSnapshot) -> JobSnapshot>()
 
@@ -78,8 +79,17 @@ class DefaultJobRegistry(
             )
 
             activeHandles[jobId] = handle
+            startedListeners.forEach { it.invoke(initialSnapshot) }
             return handle
         }
+    }
+
+    override fun listActive(): List<JobSnapshot> {
+        return activeHandles.values.map { it.snapshot }.filter { !it.isTerminal }
+    }
+
+    override fun addStartedListener(listener: (JobSnapshot) -> Unit) {
+        startedListeners.add(listener)
     }
 
     override fun list(ownerSessionId: String): List<JobSnapshot> {
@@ -226,6 +236,14 @@ class DefaultJobRegistry(
         override fun updateRemotePid(pid: Long) {
             snapshot = snapshot.copy(remotePid = pid)
             jobStore?.update(snapshot)
+        }
+
+        @Synchronized
+        override fun heartbeat() {
+            if (settled.get()) return
+            val now = clockMillis()
+            snapshot = snapshot.copy(lastHeartbeatAtMillis = now)
+            jobStore?.updateHeartbeat(id, now)
         }
 
         fun updateSnapshot(newSnapshot: JobSnapshot) {

@@ -106,25 +106,27 @@ private fun runCommandTool(
                 ),
             )
             kotlin.concurrent.thread {
-                val params = TermuxCommandParams(
-                    command = command,
-                    workDir = workDir,
-                    background = true,
-                    timeoutMs = timeoutMs,
-                )
-                val execResult = plugin.bridge.executeCommand(params)
-                if (execResult.stdout.isNotBlank()) {
-                    handle.append(execResult.stdout)
-                }
-                if (execResult.stderr.isNotBlank()) {
-                    handle.append("\n[stderr]: ${execResult.stderr}")
-                }
-                if (execResult.isSuccess) {
-                    handle.settle(com.cordiact.core.jobs.JobState.SUCCEEDED, exitCode = execResult.exitCode)
-                } else if (execResult.timedOut) {
-                    handle.settle(com.cordiact.core.jobs.JobState.FAILED, exitCode = -1, diagnostic = "Command timed out after $timeoutMs ms")
-                } else {
-                    handle.settle(com.cordiact.core.jobs.JobState.FAILED, exitCode = execResult.exitCode, diagnostic = execResult.stderr)
+                com.cordiact.core.jobs.JobHeartbeats.start(handle).use {
+                    val params = TermuxCommandParams(
+                        command = command,
+                        workDir = workDir,
+                        background = true,
+                        timeoutMs = timeoutMs,
+                    )
+                    val execResult = plugin.bridge.executeCommand(params)
+                    if (execResult.stdout.isNotBlank()) {
+                        handle.append(execResult.stdout)
+                    }
+                    if (execResult.stderr.isNotBlank()) {
+                        handle.append("\n[stderr]: ${execResult.stderr}")
+                    }
+                    if (execResult.isSuccess) {
+                        handle.settle(com.cordiact.core.jobs.JobState.SUCCEEDED, exitCode = execResult.exitCode)
+                    } else if (execResult.timedOut) {
+                        handle.settle(com.cordiact.core.jobs.JobState.FAILED, exitCode = -1, diagnostic = "Command timed out after $timeoutMs ms")
+                    } else {
+                        handle.settle(com.cordiact.core.jobs.JobState.FAILED, exitCode = execResult.exitCode, diagnostic = execResult.stderr)
+                    }
                 }
             }
             return@ToolDefinition ToolResult(

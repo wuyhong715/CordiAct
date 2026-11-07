@@ -245,7 +245,7 @@ class BundledConversationPlugins private constructor(
     }
 
     val jobRegistry: JobRegistry by lazy {
-        DefaultJobRegistry(spillStore)
+        DefaultJobRegistry(spillStore = spillStore, jobStore = conversationStore)
     }
 
     fun create(stateLookup: ToolPluginStateLookup): List<ManagedPlugin> {
