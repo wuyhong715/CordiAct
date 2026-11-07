@@ -385,12 +385,6 @@ class CordiActApplication : Application() {
     }
 
     /**
-     * Starts a turn the runtime asked for, not the user.
-     *
-     * Refuses when no background model is configured rather than picking one: an automatic wake
-     * that quietly runs on an unexpected model would be a surprising bill.
-     */
-    /**
      * Prepares a compaction summary for [sessionId] while the app is idle.
      *
      * Called from [com.cordiact.app.context.ContextCompactionWorker], never from a turn: producing
@@ -404,6 +398,12 @@ class CordiActApplication : Application() {
             .onFailure { Log.e(TAG, "Preparing a compaction candidate for $sessionId failed", it) }
     }
 
+    /**
+     * Starts a turn the runtime asked for, not the user.
+     *
+     * Refuses when no background model is configured rather than picking one: an automatic wake
+     * that quietly runs on an unexpected model would be a surprising bill.
+     */
     private fun wakeSession(sessionId: String) {
         val model = runCatching {
             com.cordiact.app.memory.ExtractionModelSelectionStore(this).selectedModel()
@@ -461,11 +461,6 @@ class CordiActApplication : Application() {
         val executionManager = com.cordiact.app.service.AgentExecutionManager(this, conversationCatalog.jobRegistry)
         executionManager.start()
 
-        // A finished turn is the cheapest moment to think about the next one: the summary can be
-        // prepared while nobody is waiting, and installed only if it still applies.
-        turnService.onTurnCompleted = { sessionId ->
-            com.cordiact.app.context.ContextCompactionWorker.enqueue(this, sessionId)
-        }
         conversationStore = conversationCatalog.conversationStore
         workspaceManager = conversationCatalog.workspacePlugin
         val needsRepair = pluginLifecycle.recoverBeforeDispatch()
@@ -483,6 +478,11 @@ class CordiActApplication : Application() {
             compactionStore = conversationCatalog.conversationStore,
             inbox = asyncTurnInbox,
         )
+        // A finished turn is the cheapest moment to think about the next one: the summary can be
+        // prepared while nobody is waiting, and installed only if it still applies.
+        turnService.onTurnCompleted = { sessionId ->
+            com.cordiact.app.context.ContextCompactionWorker.enqueue(this, sessionId)
+        }
         // Registered here because the tool list is built from the shared registry, and the
         // delegation tools must be in it before the first turn assembles its specs.
         // Always published: the preview window is a session surface, not an integration.
