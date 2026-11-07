@@ -135,6 +135,7 @@ interface ToolLoopService {
  */
 class ToolLoopPlugin(
     private val limits: ToolLoopLimits = ToolLoopLimits(),
+    private val gate: com.cordiact.core.context.ToolOutputGate? = null,
 ) : ManagedPlugin, ToolLoopService {
 
     override val spec: PluginSpec = toolLoopPluginSpec()
@@ -200,7 +201,15 @@ class ToolLoopPlugin(
                 calls++
                 val result = dispatcher.dispatch(context, call)
                 result.metadataJson?.let { evidence += ToolEvidence(call.name, it) }
-                messages += result
+                val targetSessionId = context.sessionId ?: "ephemeral"
+                val gatedResult = gate?.gate(targetSessionId, result, limits.maxResultChars)
+                    ?: if (result.content.length > limits.maxResultChars) {
+                        result.copy(
+                            content = result.content.substring(0, limits.maxResultChars) +
+                                "\n...[truncated ${result.content.length - limits.maxResultChars} chars]"
+                        )
+                    } else result
+                messages += gatedResult
             }
 
             if (calls >= limits.maxToolCalls) {

@@ -32,10 +32,11 @@ class ExecutionContractsTest {
         assertEquals("abc", s1)
         assertFalse(trunc1)
 
-        val longText = "a".repeat(100)
-        val (s2, trunc2) = ExecutionResult.truncateOutput(longText, limit = 50)
+        val longText = "a".repeat(30) + "MIDDLE" + "b".repeat(20)
+        val (s2, trunc2) = ExecutionResult.truncateOutput(longText, limit = 20, headRatio = 0.5)
         assertTrue(trunc2)
-        assertTrue(s2.startsWith("a".repeat(50)))
-        assertTrue(s2.contains("truncated 50 chars"))
+        assertTrue(s2.startsWith("a".repeat(10)))
+        assertTrue(s2.endsWith("b".repeat(10)))
+        assertTrue(s2.contains("truncated 36 chars"))
     }
 }

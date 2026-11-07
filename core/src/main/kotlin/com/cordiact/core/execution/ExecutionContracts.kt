@@ -31,12 +31,26 @@ data class ExecutionResult(
             truncated = false,
         )
 
-        fun truncateOutput(text: String, limit: Int = MAX_OUTPUT_CHARS): Pair<String, Boolean> {
-            return if (text.length > limit) {
-                text.substring(0, limit) + "\n...[truncated ${text.length - limit} chars]" to true
-            } else {
-                text to false
-            }
+        /**
+         * Truncate output by keeping both head and tail, omitting the middle.
+         *
+         * Command failures usually put stack traces or exit errors at the tail, while setup
+         * details reside at the head. Preserving both allows the model to diagnose issues
+         * accurately.
+         */
+        fun truncateOutput(
+            text: String,
+            limit: Int = MAX_OUTPUT_CHARS,
+            headRatio: Double = 0.6,
+        ): Pair<String, Boolean> {
+            if (text.length <= limit) return text to false
+            val headLen = ((limit * headRatio).toInt()).coerceIn(0, limit)
+            val tailLen = (limit - headLen).coerceAtLeast(0)
+            val omitted = text.length - headLen - tailLen
+            val headPart = if (headLen > 0) text.substring(0, headLen) else ""
+            val tailPart = if (tailLen > 0) text.substring(text.length - tailLen) else ""
+            val separator = "\n...[truncated $omitted chars]...\n"
+            return (headPart + separator + tailPart) to true
         }
     }
 }
