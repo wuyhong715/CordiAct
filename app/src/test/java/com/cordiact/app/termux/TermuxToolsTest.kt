@@ -24,6 +24,8 @@ class TermuxToolsTest {
         var fakeInstalled = true
         var fakeHasPermission = true
         var commandsRun = mutableListOf<String>()
+        /** Termux session type of the last call: true means a background session. */
+        var lastBackground: Boolean? = null
 
         override fun inspectStatus(): TermuxStatus {
             return TermuxStatus(
@@ -36,6 +38,7 @@ class TermuxToolsTest {
 
         override fun executeCommand(params: TermuxCommandParams): ExecutionResult {
             commandsRun.add(params.command)
+            lastBackground = params.background
             return when {
                 params.command.contains("has-session") -> ExecutionResult(exitCode = 1, stdout = "")
                 params.command.contains("new-session") -> ExecutionResult(exitCode = 0, stdout = "")
@@ -134,5 +137,65 @@ class TermuxToolsTest {
         )
         assertTrue((killRes.values["ok"] as ToolValue.BooleanValue).value)
         assertFalse((killRes.values["active"] as ToolValue.BooleanValue).value)
+    }
+
+    // --- Termux session type vs. CordiAct job: two different questions ------------------------
+
+    @Test
+    fun `background selects the Termux session type and defaults to a background session`() {
+        val context: Context = RuntimeEnvironment.getApplication()
+        val fakeBridge = FakeTermuxBridge(context)
+        val tool = termuxTools(TermuxPlugin(fakeBridge)).associateBy { it.descriptor.id }
+            .getValue("termux_run_command")
+
+        // Default: a background session. A foreground one would open the Termux UI and hand back
+        // a transcript with prompt noise instead of the command's own output.
+        tool.executor.invoke(dummyContext, ToolArguments(mapOf("command" to ToolValue.StringValue("echo hi"))))
+        assertEquals(true, fakeBridge.lastBackground)
+
+        tool.executor.invoke(
+            dummyContext,
+            ToolArguments(
+                mapOf(
+                    "command" to ToolValue.StringValue("echo hi"),
+                    "background" to ToolValue.BooleanValue(false),
+                ),
+            ),
+        )
+        assertEquals(false, fakeBridge.lastBackground)
+    }
+
+    @Test
+    fun `detach returns a job id immediately and runs the command as a background session`() {
+        val context: Context = RuntimeEnvironment.getApplication()
+        val fakeBridge = FakeTermuxBridge(context)
+        val jobRegistry = com.cordiact.core.jobs.DefaultJobRegistry(
+            spillStore = com.cordiact.core.context.StandardSpillStore(context.cacheDir.resolve("spills")),
+            jobStore = com.cordiact.core.jobs.InMemoryJobStore(),
+        )
+        val tool = termuxTools(TermuxPlugin(fakeBridge), jobRegistry).associateBy { it.descriptor.id }
+            .getValue("termux_run_command")
+
+        val res = tool.executor.invoke(
+            dummyContext.copy(sessionId = "s1"),
+            ToolArguments(
+                mapOf(
+                    "command" to ToolValue.StringValue("sleep 90"),
+                    "detach" to ToolValue.BooleanValue(true),
+                ),
+            ),
+        )
+
+        val jobId = (res.values["job_id"] as ToolValue.StringValue).value
+        assertTrue(jobId.isNotBlank())
+        assertEquals(ToolValue.StringValue("running"), res.values["state"])
+        // The job exists and is registered even before the bridge answers.
+        assertEquals(com.cordiact.core.jobs.JobKind.TERMUX, jobRegistry.get(jobId)!!.kind)
+
+        // The detached worker must still ask Termux for a background session: a foreground one
+        // would pop the terminal UI in the user's face while the agent works.
+        val deadline = System.currentTimeMillis() + 5_000
+        while (fakeBridge.commandsRun.isEmpty() && System.currentTimeMillis() < deadline) Thread.sleep(20)
+        assertEquals(true, fakeBridge.lastBackground)
     }
 }

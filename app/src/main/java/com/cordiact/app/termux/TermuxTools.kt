@@ -74,12 +74,29 @@ private fun runCommandTool(
     descriptor = ToolDescriptor(
         id = "termux_run_command",
         name = "termux_run_command",
-        description = "Run a shell command or script inside Termux using the official RUN_COMMAND service. Pass background=true for async detached execution.",
+        description = "Run a shell command or script inside Termux using the official RUN_COMMAND service. " +
+            "Pass detach=true to run it as a background job and get a job_id back immediately.",
         inputSchema = ToolInputSchema(
             parameters = listOf(
                 param("command", ToolValueType.STRING, "Shell command or script to execute.", required = true, maxLength = 8_192),
                 param("work_dir", ToolValueType.STRING, "Working directory inside Termux (default: /data/data/com.termux/files/home)."),
-                param("background", ToolValueType.BOOLEAN, "Run command in background. When job runtime is present, returns job_id immediately without blocking (default: false)."),
+                // Two different questions, deliberately two parameters: which Termux session type the
+                // command runs in, and whether this call waits for it.
+                param(
+                    "background",
+                    ToolValueType.BOOLEAN,
+                    "Run in a Termux background session instead of a foreground terminal session. " +
+                        "A background session shows no terminal UI and returns clean stdout/stderr; " +
+                        "a foreground one opens Termux and returns a transcript with prompt noise " +
+                        "(default: true).",
+                ),
+                param(
+                    "detach",
+                    ToolValueType.BOOLEAN,
+                    "Return a job_id immediately and run the command as a CordiAct background job. " +
+                        "Termux reports a command's result only once it finishes, so job_output stays " +
+                        "empty until then; redirect to a file if you need incremental progress (default: false).",
+                ),
                 param("timeout_ms", ToolValueType.INTEGER, "Timeout in milliseconds, max 300000 (default: 30000).", minimum = 1_000.0, maximum = 300_000.0),
             ),
         ),
@@ -92,11 +109,14 @@ private fun runCommandTool(
     executor = { context, args ->
         val command = args.string("command") ?: return@ToolDefinition error("missing_arg", "command is required")
         val workDir = args.string("work_dir")
-        val background = args.boolean("background") ?: false
+        // Default true: a foreground session opens the Termux UI, which is rarely what a caller wants
+        // from an automated agent, and its stdout is a transcript rather than the command's output.
+        val backgroundSession = args.boolean("background") ?: true
+        val detach = args.boolean("detach") ?: false
         val timeoutMs = (args.int("timeout_ms")?.toLong() ?: 30_000L).coerceIn(1000L, 300_000L)
 
         val targetSessionId = context.sessionId ?: "ephemeral"
-        if (background && jobRegistry != null) {
+        if (detach && jobRegistry != null) {
             val handle = jobRegistry.start(
                 com.cordiact.core.jobs.JobSpec(
                     kind = com.cordiact.core.jobs.JobKind.TERMUX,
@@ -142,7 +162,7 @@ private fun runCommandTool(
         val params = TermuxCommandParams(
             command = command,
             workDir = workDir,
-            background = background,
+            background = backgroundSession,
             timeoutMs = timeoutMs,
         )
 

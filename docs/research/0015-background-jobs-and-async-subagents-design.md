@@ -18,7 +18,7 @@
 
 五条结论：
 
-1. **后台任务的正确形状是"一个 seam + 三个动作"，不是给每个后端加一个 `background` 布尔参数。** CordiAct 今天恰好是后者：`ssh_exec(background=true)` 包一层 `nohup … > /dev/null 2>&1 & echo $!`，把输出直接丢进 `/dev/null`，只回一个 PID 字符串（`JSchSshService.kt:129–131`）；`termux_run_command(background=true)` 只是**不让 Termux 的窗口抢焦点**（`TermuxTools.kt:69`、`TermuxBridge.kt:181–184`），而调用本身仍然 `latch.await(timeoutMs)` 阻塞到超时。同一个参数名，三种互不兼容的语义——模型学不会，代码也统一不了。DSH 的答案是把它们收进 `ctx.jobs`，模型只看见 `job_list / job_output / job_kill`。
+1. **后台任务的正确形状是"一个 seam + 三个动作"，不是给每个后端加一个 `background` 布尔参数。** CordiAct 今天恰好是后者：`ssh_exec(background=true)` 包一层 `nohup … > /dev/null 2>&1 & echo $!`，把输出直接丢进 `/dev/null`，只回一个 PID 字符串（`JSchSshService.kt:129–131`）；`termux_run_command(background=true)` 选择的是 **Termux 的「后台会话」而非「前台终端会话」**（官方 wiki：`EXTRA_BACKGROUND` 是 "whether to run command in background or foreground terminal session"），而调用本身仍然 `latch.await(timeoutMs)` 阻塞——**两种会话类型的结果都只在命令结束时通过一次性 pending intent 回传**。同一个参数名，三种互不兼容的语义——模型学不会，代码也统一不了。DSH 的答案是把它们收进 `ctx.jobs`，模型只看见 `job_list / job_output / job_kill`。
 2. **"异步回合"不是"多开线程"，而是"父级有一个可被投递的收件箱 + 一个唤醒策略"。** CordiAct 现在已经有后台子 Agent 线程（`BackgroundSubagentRuntime`），但它对父级的影响**只发生在下一轮的开头**：`TurnNoticeSource.pending()` 在 `ConversationTurnService` 第 66 行与第 258 行被读一次，拼成一条 SYSTEM 块。父级正在跑一个 5 分钟的工具调用时，子 Agent 的任何发现都进不来。真正的异步化是**让投递发生在回合内部**。
 3. **唤醒必须限额，否则子 Agent 会互相烧钱。** Codex 把"这条消息要不要触发新回合"压缩成一个布尔 `trigger_turn`（`agent/control/delivery.rs:18`），并且靠它决定线程能不能被卸载（`residency.rs` 的 `has_trigger_turn_mailbox_items`）。DSH 则用 `sendWaking` + `wake_generation` 只在父级**空闲**时拉起新一轮。两者都指向同一件事：**唤醒是一个有配额的策略，不是一个默认行为**。
 4. **Android 上"后台"不是权限问题，是存活问题。** CordiAct 的 `AndroidManifest.xml` 里没有任何前台服务、没有 `POST_NOTIFICATIONS`、没有 `SYSTEM_ALERT_WINDOW`。后台子 Agent 跑在进程内线程池里，用户一锁屏，LMK 随时可以把这个进程连同 4 个正在推理的子 Agent 一起收走。`recoverAbandonedRuns()`（`CordiActApplication.kt:424`）能事后把记录改成 ABORTED，但**它救不回已经跑掉的 20 分钟**。
@@ -182,7 +182,7 @@ CordiAct 是 `minSdk 26 / targetSdk 35 / compileSdk 35`（`app/build.gradle.kts:
 
 ### 2.4 必须顺手修的三个缺陷
 
-1. **`termux_run_command` 的 `background` 名不副实**（`TermuxBridge.kt:182–184`）。P0 让它真的异步：`background=true` 时不再 `latch.await`，而是登记一个 `TERMUX` job 并立即返回 `jobId`；要输出就 `job_output`。
+1. **`termux_run_command` 的 `background` 名不副实**（`TermuxBridge.kt:182–184`）。已核实（见 §11.2）：`background` 选的是 Termux 的会话类型，不是"不等待"。P0 的修法因此是**拆成两个参数**——`background` 保留会话类型语义（默认 `true`：不弹终端、stdout/stderr 干净），`detach=true` 才登记 `TERMUX` job 并立即返回 `jobId`。
 2. **`ssh_exec(background=true)` 返回的 PID 没有归宿**（`JSchSshService.kt:129`）。P0 把 PID 记进 job 记录，并提供 `job_probe` 重新探活（`kill -0 <pid>`）。这是唯一能正确处理"App 重启但远端进程还活着"的路径。
 3. **`noticeBlock` 是纯散文**（`ConversationTurnService.kt:373–384`）。模型无法可靠区分"子 Agent 说的话"与"运行时对结局的陈述"。P2 改成结构化片段（见 4.2），并给 `TurnNotice` 加 `kind`。
 
@@ -301,6 +301,8 @@ interface JobRegistry {
 
 这样做的好处是"上下文控制"与"后台任务"天然对齐：一个跑了 10 分钟、输出 40MB 的构建，进模型时永远只是"最后 N 字节 + 一句 progress"。这正是 0014 里 G1（工具结果溢出）想达到的效果，只是数据源从"一次工具调用的返回值"变成了"一个持续写入的文件"。
 
+**一个必须说清的限制**：Termux 的 `RUN_COMMAND` **不提供增量输出**——它只在命令结束时回传一次结果（已核实，见 §11.2）。所以 `TERMUX` 类型的 job 在结束前，`job_output` 只会是空的，`progressLine` 也不会有内容。需要中间进度时，命令必须自行重定向到文件（`… > run.log 2>&1`），由模型轮询该文件。这是 Termux 侧的能力边界，不是本设计的缺陷；`SHELL` / `SSH` 类型不受影响。
+
 ### 3.5 存活语义：`PROCESS_LOCAL` 与 `REMOTE_DETACHED`
 
 这是本设计与 DSH 最实质的差异——**DSH 跑在桌面/服务端，进程模型单一；CordiAct 同时管本地进程和远端进程**。
@@ -359,7 +361,9 @@ CREATE INDEX IF NOT EXISTS jobs_state ON jobs(state);
 | `job_kill` | `job_id`, `reason` | 结算后的 snapshot |
 | `job_probe` | `job_id` | 仅 `REMOTE_DETACHED`：探活后的 snapshot |
 
-`ssh_exec` / `termux_run_command` 保留现有的 `background` 参数名，但**统一它的语义**：`background=true` 时不再阻塞、不再返回 PID 或超时，而是登记一个 job 并立即返回 `{job_id, state:"running"}`。名字不变是因为模型与既有 prompt 已经认识它；变的是它终于名副其实（见 2.4 的三条缺陷）。
+`ssh_exec` / `ssh_exec_saved` 沿用现有 `background` 参数名（它本来就表示"脱离"），改为登记 job 并立即返回 `{job_id, state:"running"}`，不再只回一个没有归宿的 PID。
+
+`termux_run_command` **不能**这样统一：已核实 `background` 在那里选的是 Termux 的会话类型（见 §11.2），改它的语义会让每条命令都弹出终端 UI、并拿回带提示符噪音的 transcript。所以它有两个参数：`background` 保持会话类型语义（默认 `true`），新增 `detach=true` 表示"作为 CordiAct 后台任务运行并立即返回 `job_id`"。两个不同的问题，两个参数。
 
 ## 4. 设计：子 Agent 异步回合
 
@@ -632,7 +636,7 @@ peakRunningJobs, admissionRejects, wakeCount, wakeRejects
 - `job_list` / `job_output` / `job_kill` / `job_probe`；
 - `termux_run_command`、`ssh_exec` 的 `background` 参数改为真正异步（返回 `job_id`）。
 
-**验收**：一个跑 90 秒的 Termux 命令在 `background=true` 时**立即**返回 `job_id`（改前会阻塞 30 秒后返回 `timedOut`）；`job_output(wait=true, timeout=5s)` 在任务未完成时返回 `state=running` 且**不是** tool error；准入上限生效（第 5 个任务被拒绝且错误信息可读）；杀掉 App 后重启，本地任务全为 `ABORTED`、SSH 后台任务全为 `DETACHED_UNKNOWN` 且 `job_probe` 能正确报告远端进程是否还活着。
+**验收**：一个跑 90 秒的 Termux 命令在 `detach=true` 时**立即**返回 `job_id`（改前会阻塞 30 秒后返回 `timedOut`）；`background` 仍按 Termux 会话类型生效（`false` 时打开终端 UI，`true` 时 stdout/stderr 干净）；`job_output(wait=true, timeout=5s)` 在任务未完成时返回 `state=running` 且**不是** tool error；准入上限生效（第 5 个任务被拒绝且错误信息可读）；杀掉 App 后重启，本地任务全为 `ABORTED`、SSH 后台任务全为 `DETACHED_UNKNOWN` 且 `job_probe` 能正确报告远端进程是否还活着。
 
 ### P1 — 执行窗口（前台服务）（约 1.5 天）✅ 已实现（2026-11-07，PR #41）
 
@@ -671,7 +675,12 @@ peakRunningJobs, admissionRejects, wakeCount, wakeRejects
 ## 11. 未验证 / 待核实
 
 1. **`dataSync` 类型是否被应用商店接受**：`foregroundServiceType="dataSync"` 对"用户发起的长时间数据传输"是合规的，但 CordiAct 的场景是"AI 任务执行"，可能被认定为需要 `specialUse`。需在真机上验证启动是否抛异常，并准备两套清单配置。
-2. **Termux `RUN_COMMAND` 的异步语义**：`EXTRA_RUN_COMMAND_BACKGROUND` 在 Termux 侧的准确行为（是"后台运行"还是"不弹窗"）需以 Termux 源码为准。本文按 `TermuxTools.kt:69` 的描述（"without popping up the Termux window"）理解为后者，但 P0 改动前必须核实，否则会做出一个"看起来异步、实际仍阻塞"的假修复。
+2. **Termux `RUN_COMMAND` 的异步语义 —— 已核实（2026-11-07）**：官方 wiki（`termux-app/wiki/RUN_COMMAND-Intent`）明确 `RUN_COMMAND_SERVICE.EXTRA_BACKGROUND` 是"whether to run command in **background or foreground terminal session**"，默认 `false`。两种会话的结果都通过**一次性（`FLAG_ONE_SHOT`）pending intent 在命令结束时**回传，因此 **`EXTRA_BACKGROUND` 不会让调用变成异步**——这一点本文 P0 的判断成立。
+   但本文原先的理由是错的：它不是"不弹窗"，而是**选择会话类型**。两者的差别有实际后果：
+   - **前台会话**会打开 Termux 的终端 UI，且 `EXTRA_PLUGIN_RESULT_BUNDLE_STDOUT` 是**会话 transcript**（含 PS1 前缀、stderr 混入），`STDERR` 为 null；
+   - **后台会话**不创建终端 UI，stdout / stderr 分开且干净，退出码是命令本身的。
+   所以 `background` 必须保留"会话类型"语义并默认 `true`（否则每条命令都会弹终端、拿回一堆提示符噪音），"作为 CordiAct 后台任务"必须是**另一个参数**（现为 `detach`）。P0 曾把两者合并成一个开关，本次已按证据拆开。
+   附带发现：RUN_COMMAND **没有增量输出**，`job_output` 在命令结束前只会是空的。需要中间进度时，命令必须自行重定向到文件，由模型轮询该文件。
 3. **SSH `nohup` 在断连后的存活率**：取决于远端 sshd 的 `ClientAliveInterval`、`nohup` 是否真的脱离了会话组、以及是否有 `setsid`。`job_probe` 的可靠性依赖这一点，需要在至少两种远端环境（Linux 服务器 / 路由器）实测。
 4. **唤醒配额的实际手感**：`maxAutoWakesPerHour = 4` 是拍的。需要用真实多子任务会话跑一轮，看用户是否觉得"它自己动得太频繁"或"该动的时候不动"。
 5. **`ToolLoopPlugin` 的轮次边界是否足够**：CordiAct 的"轮"包含"模型请求 + 全部工具执行"，如果一次工具执行就要 5 分钟（P0 之后应该不会，因为长任务都退到后台了），边界粒度仍然偏粗。需要在 P2 实测。
@@ -696,7 +705,8 @@ peakRunningJobs, admissionRejects, wakeCount, wakeRejects
 | CordiAct 启动对账入口 | `CordiAct/app/src/main/java/com/cordiact/app/CordiActApplication.kt:424` |
 | CordiAct 通知只在回合开头读取 | `CordiAct/model-providers/.../ConversationTurnService.kt:66, 258` |
 | CordiAct `noticeBlock` 纯散文 | `.../ConversationTurnService.kt:373–384` |
-| CordiAct Termux `background` 仍阻塞 | `CordiAct/app/src/main/java/com/cordiact/app/termux/TermuxBridge.kt:182–184` |
+| CordiAct Termux `background` 仍阻塞（两种会话都只在结束时回传结果） | `CordiAct/app/src/main/java/com/cordiact/app/termux/TermuxBridge.kt:182–184` |
+| Termux `EXTRA_BACKGROUND` 是"会话类型"选择、结果在命令结束时经一次性 pending intent 回传 | `termux-app/wiki/RUN_COMMAND-Intent`（2026-11-07 核实） |
 | CordiAct SSH `nohup` 丢弃输出、只返回 PID | `CordiAct/core/src/main/kotlin/com/cordiact/core/execution/JSchSshService.kt:129–131` |
 | CordiAct 无前台服务 / 无通知权限 | `CordiAct/app/src/main/AndroidManifest.xml` |
 | CordiAct SDK 版本 | `CordiAct/app/build.gradle.kts:6,20,21` |
