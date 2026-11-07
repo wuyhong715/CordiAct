@@ -1,7 +1,6 @@
 package com.cordiact.app.termux
 
 import android.content.Context
-import androidx.test.core.app.ApplicationProvider
 import com.cordiact.core.execution.ExecutionResult
 import com.cordiact.core.execution.TermuxCommandParams
 import com.cordiact.core.execution.TermuxStatus
@@ -14,6 +13,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
@@ -52,7 +52,7 @@ class TermuxToolsTest {
 
     @Test
     fun `test termux status inspection`() {
-        val context = ApplicationProvider.getApplicationContext<Context>()
+        val context: Context = RuntimeEnvironment.getApplication()
         val fakeBridge = FakeTermuxBridge(context)
         val plugin = TermuxPlugin(fakeBridge)
         val toolMap = termuxTools(plugin).associateBy { it.descriptor.id }
@@ -66,7 +66,7 @@ class TermuxToolsTest {
 
     @Test
     fun `test termux run command execution`() {
-        val context = ApplicationProvider.getApplicationContext<Context>()
+        val context: Context = RuntimeEnvironment.getApplication()
         val fakeBridge = FakeTermuxBridge(context)
         val plugin = TermuxPlugin(fakeBridge)
         val toolMap = termuxTools(plugin).associateBy { it.descriptor.id }
@@ -87,7 +87,7 @@ class TermuxToolsTest {
 
     @Test
     fun `test termux session full lifecycle`() {
-        val context = ApplicationProvider.getApplicationContext<Context>()
+        val context: Context = RuntimeEnvironment.getApplication()
         val fakeBridge = FakeTermuxBridge(context)
         val plugin = TermuxPlugin(fakeBridge)
         val toolMap = termuxTools(plugin).associateBy { it.descriptor.id }
