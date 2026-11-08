@@ -187,7 +187,7 @@ class ChatViewModel(
             val streamedContent = StringBuilder()
 
             try {
-                val turnResult = app.turns.submitUserMessage(
+                val turnResult = app.turnService.submitWithTools(
                     sessionId = sessionId,
                     model = resolvedModel,
                     userContent = trimmed,
@@ -344,19 +344,20 @@ class ChatViewModel(
     }
 
     fun onToolStart(toolName: String, target: String = "") {
-        val label = if (target.isNotEmpty()) "$toolName ($target)" else toolName
+        val summary = if (target.isNotEmpty()) "$toolName: $target" else toolName
         _currentSteps.value = _currentSteps.value + ToolStep(
-            label = label,
-            status = StepStatus.RUNNING
+            toolName = toolName,
+            summary = summary,
+            status = ToolStatus.RUNNING
         )
     }
 
     fun onToolComplete(success: Boolean = true, durationMs: Long? = null) {
         val steps = _currentSteps.value.toMutableList()
-        val lastRunningIndex = steps.indexOfLast { it.status == StepStatus.RUNNING }
+        val lastRunningIndex = steps.indexOfLast { it.status == ToolStatus.RUNNING }
         if (lastRunningIndex >= 0) {
             steps[lastRunningIndex] = steps[lastRunningIndex].copy(
-                status = if (success) StepStatus.COMPLETED else StepStatus.FAILED,
+                status = if (success) ToolStatus.SUCCESS else ToolStatus.FAILED,
                 durationMs = durationMs
             )
             _currentSteps.value = steps
@@ -524,14 +525,15 @@ data class RecordedToolEvent(
  * 单个工具执行步骤
  */
 data class ToolStep(
-    val label: String,
-    val status: StepStatus,
+    val toolName: String,
+    val summary: String,
+    val status: ToolStatus,
     val durationMs: Long? = null
 )
 
-enum class StepStatus {
+enum class ToolStatus {
     RUNNING,
-    COMPLETED,
+    SUCCESS,
     FAILED
 }
 
