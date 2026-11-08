@@ -182,15 +182,22 @@ class ChatViewModel(
             }
             currentSessionId = sessionId
 
+            val workspaceId = runCatching {
+                app.sessions.getSession(sessionId)?.workspaceId
+                    ?: app.workspaceManager.activeWorkspace().id
+            }.getOrDefault("")
             val resolvedModel = resolveModelId(app, modelIdString)
             val streamingMsgId = "stream-${System.currentTimeMillis()}"
             val streamedContent = StringBuilder()
 
             try {
-                val turnResult = app.turnService.submitWithTools(
-                    sessionId = sessionId,
+                app.interaction.submit(
+                    context = com.cordiact.interaction.InteractionContext(
+                        workspaceId = workspaceId,
+                        sessionId = sessionId
+                    ),
                     model = resolvedModel,
-                    userContent = trimmed,
+                    rawInput = trimmed,
                     onEvent = { event: ModelEvent ->
                         handleModelEvent(event)
                         when (event) {
@@ -230,7 +237,7 @@ class ChatViewModel(
                 }
 
                 // 最终回复文本与产物提取
-                val finalReply = turnResult.content
+                val finalReply = streamedContent.toString()
                 if (finalReply.isNotBlank()) {
                     upsertStreamingAssistantMessage(streamingMsgId, finalReply)
                     extractArtifactsFromText(finalReply)
