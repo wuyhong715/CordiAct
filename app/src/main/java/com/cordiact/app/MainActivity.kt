@@ -43,6 +43,7 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import com.cordiact.app.render.PreviewInbox
 import com.cordiact.app.render.PreviewWindow
+import com.cordiact.app.ui.MainScreen
 import com.cordiact.app.search.SearchSettingsDialog
 import com.cordiact.core.conversation.ConversationMessage
 import com.cordiact.core.conversation.MessageRole

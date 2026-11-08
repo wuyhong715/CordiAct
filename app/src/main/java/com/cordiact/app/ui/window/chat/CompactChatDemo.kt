@@ -37,7 +37,8 @@ import kotlinx.coroutines.launch
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CompactChatDemo(
-    viewModel: ChatViewModel = androidx.lifecycle.viewmodel.compose.viewModel()
+    viewModel: ChatViewModel = androidx.lifecycle.viewmodel.compose.viewModel(),
+    modifier: Modifier = Modifier
 ) {
     val currentSteps by viewModel.currentSteps.collectAsState()
     val isStreaming by viewModel.isStreaming.collectAsState()
@@ -46,6 +47,7 @@ fun CompactChatDemo(
     var streamingText by remember { mutableStateOf("") }
     
     Scaffold(
+        modifier = modifier,
         topBar = {
             TopAppBar(
                 title = { Text("紧凑 UI 演示") }
