@@ -33,7 +33,7 @@ fun TrajectoryView(state: ExperienceState, onInspect: (ToolActivity) -> Unit, mo
     var zoom by rememberSaveable(state.sessionId) { mutableFloatStateOf(1f) }
     var pan by rememberSaveable(state.sessionId) { mutableFloatStateOf(0f) }
     var selected by rememberSaveable(state.sessionId) { mutableStateOf<String?>(null) }
-    LazyColumn(modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+    LazyColumn(modifier.fillMaxSize(), contentPadding = PaddingValues(horizontal = 16.dp, vertical = 18.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
         item {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
@@ -45,7 +45,7 @@ fun TrajectoryView(state: ExperienceState, onInspect: (ToolActivity) -> Unit, mo
         }
         item {
             Surface(shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surface, border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Column(Modifier.fillMaxWidth().heightIn(min = 250.dp).padding(18.dp), verticalArrangement = Arrangement.spacedBy(15.dp)) {
                     Row {
                         Text("时间线", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
                         Text("${"%.1f".format(java.util.Locale.ROOT, zoom)}×", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
@@ -57,12 +57,12 @@ fun TrajectoryView(state: ExperienceState, onInspect: (ToolActivity) -> Unit, mo
                     val secondary = Color(0xFF5D9D88)
                     val grid = MaterialTheme.colorScheme.outlineVariant
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.width(42.dp), verticalArrangement = Arrangement.spacedBy(25.dp)) {
+                        Column(Modifier.width(50.dp), verticalArrangement = Arrangement.spacedBy(38.dp)) {
                             Text("主会话", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             Text("工具", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         Canvas(
-                            Modifier.weight(1f).height(92.dp)
+                            Modifier.weight(1f).height(132.dp)
                                 .semantics { contentDescription = "会话与工具调用时间线；双指缩放、拖动平移。下方活动列表提供相同信息。" }
                                 .pointerInput(span) { detectTransformGestures { _, delta, factor, _ -> zoom = (zoom * factor).coerceIn(0.25f, 12f); pan = (pan + delta.x).coerceIn(-size.width * zoom, size.width.toFloat()) } },
                         ) {
@@ -70,11 +70,11 @@ fun TrajectoryView(state: ExperienceState, onInspect: (ToolActivity) -> Unit, mo
                             fun bar(from: Long, to: Long, y: Float, color: Color) {
                                 val left = ((from - start).toFloat() / span * size.width * zoom + pan).coerceIn(0f, size.width)
                                 val right = ((to - start).toFloat() / span * size.width * zoom + pan).coerceIn(0f, size.width)
-                                if (right > left) drawRoundRect(color, Offset(left,y), Size((right-left).coerceAtLeast(3f),15.dp.toPx()), CornerRadius(4.dp.toPx()))
+                                if (right > left) drawRoundRect(color, Offset(left,y), Size((right-left).coerceAtLeast(3f),23.dp.toPx()), CornerRadius(4.dp.toPx()))
                             }
                             measured.forEach { turn ->
-                                bar(turn.startedAt, turn.finishedAt ?: now, 16.dp.toPx(), primary.copy(alpha = if (selected == null || selected == turn.id) .8f else .25f))
-                                turn.tools.forEach { tool -> bar(tool.startedAt, tool.finishedAt ?: now, 53.dp.toPx(), if (tool.phase == ToolPhase.FAILED) Color(0xFFB45C57) else secondary) }
+                                bar(turn.startedAt, turn.finishedAt ?: now, 25.dp.toPx(), primary.copy(alpha = if (selected == null || selected == turn.id) .8f else .25f))
+                                turn.tools.forEach { tool -> bar(tool.startedAt, tool.finishedAt ?: now, 78.dp.toPx(), if (tool.phase == ToolPhase.FAILED) Color(0xFFB45C57) else secondary) }
                             }
                         }
                     }
@@ -97,14 +97,16 @@ fun TrajectoryView(state: ExperienceState, onInspect: (ToolActivity) -> Unit, mo
                 border = BorderStroke(1.dp, if (selected == turn.id) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant),
                 color = MaterialTheme.colorScheme.surface,
             ) {
-                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(Modifier.fillMaxWidth().heightIn(min = 136.dp).padding(18.dp), verticalArrangement = Arrangement.spacedBy(13.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(Modifier.width(3.dp).height(24.dp).background(MaterialTheme.colorScheme.primary, RoundedCornerShape(2.dp)))
-                        Text(turn.prompt.ifBlank { "会话输出" }, Modifier.weight(1f).padding(horizontal = 10.dp), style = MaterialTheme.typography.titleSmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        Box(Modifier.width(3.dp).height(34.dp).background(MaterialTheme.colorScheme.primary, RoundedCornerShape(2.dp)))
+                        Text(turn.prompt.ifBlank { "会话输出" }, Modifier.weight(1f).padding(horizontal = 10.dp), style = MaterialTheme.typography.titleMedium, maxLines = 3, overflow = TextOverflow.Ellipsis)
                         Text(when (turn.phase) { RunPhase.RUNNING -> "运行中"; RunPhase.CANCELLED -> "已停止"; RunPhase.FAILED -> "中断"; else -> "完成" }, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     if (turn.tools.isEmpty()) Text(if (turn.isRunning) "正在等待模型响应" else "无可用的工具时序记录", Modifier.padding(start = 13.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    turn.tools.forEach { ToolRow(it) { onInspect(it) } }
+                    turn.tools.forEach { tool ->
+                        ToolRow(tool, large = true) { onInspect(tool) }
+                    }
                     turn.finishedAt?.let { Text(durationLabel(it - turn.startedAt), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                 }
             }

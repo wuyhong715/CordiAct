@@ -216,13 +216,13 @@ private fun TurnView(turn: TranscriptTurn, onInspect: (ToolActivity) -> Unit) {
 }
 
 @Composable
-fun ToolRow(step: ToolActivity, onClick: () -> Unit) {
-    Row(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 14.dp, vertical = 11.dp), verticalAlignment = Alignment.CenterVertically) {
+fun ToolRow(step: ToolActivity, large: Boolean = false, onClick: () -> Unit) {
+    Row(Modifier.fillMaxWidth().clickable(onClick = onClick).heightIn(min = if (large) 64.dp else 48.dp).padding(horizontal = 14.dp, vertical = if (large) 14.dp else 11.dp), verticalAlignment = Alignment.CenterVertically) {
         val color = when (step.phase) { ToolPhase.SUCCEEDED -> Color(0xFF3F866C); ToolPhase.FAILED -> MaterialTheme.colorScheme.error; ToolPhase.RUNNING -> MaterialTheme.colorScheme.primary; else -> MaterialTheme.colorScheme.onSurfaceVariant }
         if (step.phase == ToolPhase.RUNNING) CircularProgressIndicator(Modifier.size(12.dp), color = color, strokeWidth = 1.5.dp)
         else AppGlyph(if (step.phase == ToolPhase.SUCCEEDED) GlyphName.Check else GlyphName.Warning, modifier = Modifier.size(13.dp), tint = color)
         Column(Modifier.weight(1f).padding(horizontal = 11.dp)) {
-            Text(step.name, fontFamily = FontFamily.Monospace, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(step.name, fontFamily = FontFamily.Monospace, fontSize = if (large) 13.sp else 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             step.summary?.takeIf { it.isNotBlank() }?.let { Text(it.lineSequence().lastOrNull { line -> line.isNotBlank() }.orEmpty(), style = MaterialTheme.typography.labelSmall, maxLines = 1, color = MaterialTheme.colorScheme.onSurfaceVariant, overflow = TextOverflow.Ellipsis) }
         }
         Text(step.durationMillis?.let(::durationLabel) ?: "…", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)

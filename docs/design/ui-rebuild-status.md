@@ -73,3 +73,25 @@ results will be appended below. APK packaging remains CI-only.
 - Added guarded basic provider creation (HTTPS full endpoint, explicit protocol/model IDs,
   Android Keystore credential save, no implicit connection), cancellation-pending gating,
   coroutine cancellation before model dispatch, and dedicated CI quality workflow.
+
+## Revision 2 — user feedback, 2026-11-08 21:15
+
+Acceptance is user-run; do not install/drive the phone for this revision.
+
+- Keyboard: explicit Activity + manifest `adjustResize`; `ExperienceFrame` owns
+  `systemBars.union(ime)` once. Removed composer container `animateContentSize` so IME
+  relayout is not animated a second time. Hypothesis based on source + user's screenshot;
+  actual vivo keyboard behavior remains for the user's acceptance, not claimed reproduced.
+- Browser-style 40dp tab rail: 104dp maximum per tab, one pager-position underline;
+  cached vector glyphs replace Canvas drawing, selected glyphs no longer animate.
+- Removed / @ # shortcut buttons. Tokens are literal IME input within the composer.
+- Preview was semantically wrong. Replaced reply-reader with the existing session-scoped
+  `PreviewInbox` and `RenderSurfaceHost` pipeline. Queue items stay inert until explicit
+  selection; opening preview never renders the latest answer. Visible stage is disposed
+  when leaving the pager, can switch 360/390/768dp and 3-up comparison. Network disabled.
+- Enlarged timeline to 132dp within a 250dp-minimum surface, 23dp bars, 136dp-minimum
+  execution cards and 64dp tool rows with clearer title/body hierarchy.
+- Component suite expanded to 13 tests: inline token entry, queue session isolation and
+  explicit rendering, renderer disposal, one-inset IME geometry, compact stable tabs,
+  all original vector glyphs. Local main+test Kotlin compilation and 725 JVM tests pass.
+- Next deliverable is CI APK only, no installation. No main merge.

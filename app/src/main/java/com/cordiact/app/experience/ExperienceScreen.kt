@@ -42,8 +42,8 @@ import com.cordiact.app.experience.model.ToolActivity
 import com.cordiact.app.experience.model.ToolPhase
 import kotlinx.coroutines.launch
 
-private data class WindowSpec(val id: String, val title: String, val glyph: GlyphName)
-private val windows = listOf(WindowSpec("chat", "对话", GlyphName.Chat), WindowSpec("trace", "轨迹", GlyphName.Trace), WindowSpec("preview", "预览", GlyphName.Preview))
+private data class WindowSpec(val id: String)
+private val windows = listOf(WindowSpec("chat"), WindowSpec("trace"), WindowSpec("preview"))
 
 @OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
@@ -101,7 +101,8 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
     ) {
         Surface(color = MaterialTheme.colorScheme.background, modifier = Modifier.fillMaxSize()) {
             Box(Modifier.fillMaxSize()) {
-                Column(Modifier.fillMaxSize().statusBarsPadding().imePadding().navigationBarsPadding()) {
+                ExperienceFrame(
+                    top = {
                     Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
                         IconButton(onClick = { scope.launch { drawer.open() } }, modifier = Modifier.testTag("open-navigation")) { AppGlyph(GlyphName.Menu, "打开工作区和会话") }
                         Column(Modifier.weight(1f).padding(horizontal = 4.dp)) {
@@ -113,31 +114,27 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
                             Text(if (state.running) "运行中" else "就绪", style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(start = 6.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
-                    Row(Modifier.padding(horizontal = 18.dp, vertical = 10.dp).fillMaxWidth().height(38.dp).clip(RoundedCornerShape(13.dp)).background(MaterialTheme.colorScheme.surfaceContainer), horizontalArrangement = Arrangement.spacedBy(3.dp)) {
-                        windows.forEachIndexed { index, spec ->
-                            val selected = pager.currentPage == index
-                            val background by animateColorAsState(if (selected) MaterialTheme.colorScheme.surface else Color.Transparent, spring(), label = "tab-surface")
-                            Surface(
-                                onClick = { scope.launch { pager.animateScrollToPage(index) } },
-                                color = background, shape = RoundedCornerShape(10.dp),
-                                modifier = Modifier.weight(1f).padding(3.dp).fillMaxHeight().semantics { this.selected = selected; role = Role.Tab }.testTag("window-${spec.id}"),
-                            ) {
-                                Row(horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
-                                    AppGlyph(spec.glyph, modifier = Modifier.size(15.dp), tint = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
-                                    Text(spec.title, Modifier.padding(start = 6.dp), style = MaterialTheme.typography.labelLarge, color = if (selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant)
-                                    if (index == 1 && state.activeTools > 0) Text(" ${state.activeTools}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
-                                }
-                            }
-                        }
-                    }
+                    WindowTabs(
+                        selected = pager.settledPage,
+                        position = pager.currentPage + pager.currentPageOffsetFraction,
+                        tools = state.activeTools,
+                        previews = com.cordiact.app.render.PreviewInbox.unseenCount(state.sessionId),
+                        onSelect = { scope.launch { pager.animateScrollToPage(it) } },
+                    )
+                    },
+                    content = { viewportModifier ->
+                    Column(viewportModifier) {
                     if (state.error != null) Box(Modifier.padding(horizontal = 18.dp, vertical = 5.dp)) { ErrorStrip(state.error!!, viewModel::dismissError) }
                     HorizontalPager(state = pager, beyondViewportPageCount = 2, key = { windows[it].id }, modifier = Modifier.weight(1f).fillMaxWidth()) { page ->
                         when (windows[page].id) {
                             "chat" -> TranscriptView(state, onPrompt = { promptToInsert = it }, onInspect = { inspected = it })
                             "trace" -> TrajectoryView(state, onInspect = { inspected = it })
-                            "preview" -> PreviewView(state, onInspect = { inspected = it })
+                            "preview" -> PreviewView(state, visible = pager.settledPage == 2)
                         }
                     }
+                    }
+                    },
+                    bottom = {
                     state.approvals.firstOrNull()?.let { request ->
                         Surface(Modifier.padding(horizontal = 16.dp, vertical = 5.dp).fillMaxWidth(), shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.tertiaryContainer) {
                             Column(Modifier.padding(13.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -178,15 +175,16 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
                             onModelMenu = { modelMenu = true },
                         )
                     }
-                }
+                    },
+                )
                 inspected?.let { step ->
-                    CompactInspector(step = step, onClose = { inspected = null }, modifier = Modifier.align(Alignment.BottomCenter).imePadding().navigationBarsPadding())
+                    CompactInspector(step = step, onClose = { inspected = null }, modifier = Modifier.align(Alignment.BottomCenter).windowInsetsPadding(WindowInsets.systemBars.union(WindowInsets.ime)))
                 }
                 if (providerForm) {
-                    ProviderForm(onClose = { providerForm = false }, onSave = viewModel::addProvider, modifier = Modifier.align(Alignment.BottomCenter).imePadding().navigationBarsPadding())
+                    ProviderForm(onClose = { providerForm = false }, onSave = viewModel::addProvider, modifier = Modifier.align(Alignment.BottomCenter).windowInsetsPadding(WindowInsets.systemBars.union(WindowInsets.ime)))
                 }
                 if (modelMenu) {
-                    CompactModelPicker(state, onClose = { modelMenu = false }, onSelect = { viewModel.selectModel(it.id); modelMenu = false }, onAdd = { modelMenu = false; providerForm = true }, modifier = Modifier.align(Alignment.BottomCenter).imePadding().navigationBarsPadding())
+                    CompactModelPicker(state, onClose = { modelMenu = false }, onSelect = { viewModel.selectModel(it.id); modelMenu = false }, onAdd = { modelMenu = false; providerForm = true }, modifier = Modifier.align(Alignment.BottomCenter).windowInsetsPadding(WindowInsets.systemBars.union(WindowInsets.ime)))
                 }
             }
         }
@@ -200,25 +198,20 @@ internal fun Composer(state: ExperienceState, insert: String, onInserted: () -> 
     Surface(
         shape = RoundedCornerShape(24.dp), color = MaterialTheme.colorScheme.surface,
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant), shadowElevation = 3.dp,
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 7.dp).animateContentSize(spring(stiffness = Spring.StiffnessMedium)),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
     ) {
-        Column(Modifier.padding(top = 12.dp, bottom = 6.dp, start = 15.dp, end = 6.dp)) {
+        Column(Modifier.padding(top = 12.dp, bottom = 3.dp, start = 15.dp, end = 5.dp)) {
             BasicTextField(
                 value = text, onValueChange = { text = it },
-                modifier = Modifier.fillMaxWidth().heightIn(min = 36.dp, max = 144.dp).padding(end = 10.dp).semantics { contentDescription = "消息输入" }.testTag("composer-input"),
+                modifier = Modifier.fillMaxWidth().heightIn(min = 30.dp, max = 132.dp).padding(end = 10.dp).semantics { contentDescription = "消息输入" }.testTag("composer-input"),
                 textStyle = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurface),
                 cursorBrush = SolidColor(MaterialTheme.colorScheme.primary), maxLines = 6,
-                decorationBox = { field -> Box { if (text.isEmpty()) Text("告诉我，你想完成什么？", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium); field() } },
+                decorationBox = { field -> Box { if (text.isEmpty()) Text("发送消息 · / 指令 · @ 上下文 · # 私密", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium); field() } },
             )
             Row(verticalAlignment = Alignment.CenterVertically) {
-                TextButton(onClick = onModelMenu, contentPadding = PaddingValues(end = 6.dp), modifier = Modifier.heightIn(min = 48.dp).weight(1f)) {
+                TextButton(onClick = onModelMenu, contentPadding = PaddingValues(end = 6.dp), modifier = Modifier.heightIn(min = 44.dp).weight(1f)) {
                     Text(state.models.find { it.id == state.model }?.displayName ?: "选择模型", Modifier.weight(1f), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     AppGlyph(GlyphName.ChevronDown, modifier = Modifier.size(13.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-                listOf("@", "#", "/").forEach { token ->
-                    TextButton(onClick = { text += if (text.isNotEmpty() && !text.endsWith(" ")) " $token" else token }, modifier = Modifier.size(44.dp,48.dp), contentPadding = PaddingValues(0.dp)) {
-                        Text(token, fontFamily = FontFamily.Monospace, fontSize = 17.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
                 }
                 FilledIconButton(
                     onClick = { if (state.running) onStop() else if (onSend(text)) text = "" },
