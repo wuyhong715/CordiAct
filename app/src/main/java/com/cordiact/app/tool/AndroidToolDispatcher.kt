@@ -27,11 +27,39 @@ import org.json.JSONObject
  */
 class AndroidToolDispatcher(
     private val tools: ToolManagerService,
+    private val approvalGateway: com.cordiact.core.action.ApprovalGateway? = null,
 ) : ToolDispatcher {
 
     override fun dispatch(context: ToolInvocationContext, call: ModelToolCall): ModelMessage {
+        val args = try {
+            parseArguments(call.argumentsJson)
+        } catch (e: JSONException) {
+            return failure(call, "INVALID_ARGUMENT", "Arguments were not a JSON object")
+        }
+
+        // Human-in-the-loop approval gate for potentially destructive shell commands
+        if (approvalGateway != null && isShellCommandTool(call.name)) {
+            val cmd = (args.values["command"] as? ToolValue.StringValue)?.value
+            if (!cmd.isNullOrBlank()) {
+                val classification = com.cordiact.core.automation.ShellCommandPolicy.classify(cmd)
+                if (classification == com.cordiact.core.automation.ShellCommandClass.DESTRUCTIVE) {
+                    val request = com.cordiact.core.action.ApprovalRequest(
+                        id = java.util.UUID.randomUUID().toString(),
+                        toolName = call.name,
+                        summary = "高危操作需人工确认: $cmd",
+                        details = mapOf("tool" to call.name, "command" to cmd),
+                        riskLevel = com.cordiact.core.action.ApprovalRequest.RiskLevel.CRITICAL,
+                    )
+                    val decision = approvalGateway.requestApproval(request)
+                    if (!decision.approved) {
+                        return failure(call, "PERMISSION_DENIED", "Operation was rejected by user: ${decision.reason ?: "Confirmation denied"}")
+                    }
+                }
+            }
+        }
+
         val result = try {
-            tools.invoke(context, call.name, parseArguments(call.argumentsJson))
+            tools.invoke(context, call.name, args)
         } catch (e: ToolManagerException) {
             // Reported back to the model rather than thrown: a refused or unknown tool is
             // something the model can react to, and aborting would lose the turn's context.
@@ -166,5 +194,8 @@ class AndroidToolDispatcher(
             ToolValueType.ARRAY -> "array"
             ToolValueType.OBJECT -> "object"
         }
+
+        private fun isShellCommandTool(toolName: String): Boolean =
+            toolName in setOf("priv_exec", "ssh_exec", "ssh_exec_saved", "termux_exec", "termux_session_run")
     }
 }

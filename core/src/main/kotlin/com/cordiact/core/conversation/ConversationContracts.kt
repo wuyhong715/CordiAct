@@ -135,6 +135,31 @@ sealed interface ModelEvent {
     data class ToolCallsRequested(val calls: List<ModelToolCall>) : ModelEvent
     data class Completed(val inputTokens: Long? = null, val outputTokens: Long? = null) : ModelEvent
     data class Failed(val code: String, val message: String, val retryable: Boolean = false) : ModelEvent
+
+    /** DeepSeek-R1 / reasoning model chain-of-thought streaming chunk. */
+    data class Thinking(val text: String) : ModelEvent
+
+    /** Emitted before a tool begins executing so UI can render a progress card immediately. */
+    data class ToolCallStarted(
+        val callId: String,
+        val toolName: String,
+        val argumentsJson: String,
+    ) : ModelEvent
+
+    /** Emitted after a tool finishes execution. */
+    data class ToolCallCompleted(
+        val callId: String,
+        val toolName: String,
+        val success: Boolean,
+        val durationMillis: Long,
+        val summary: String? = null,
+    ) : ModelEvent
+
+    /** Emitted when context compaction triggers, notifying UI of memory reduction. */
+    data class ContextCompacted(
+        val savedTokens: Long,
+        val summary: String,
+    ) : ModelEvent
 }
 
 fun interface ModelCall { fun cancel() }

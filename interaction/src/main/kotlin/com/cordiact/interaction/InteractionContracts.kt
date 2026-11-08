@@ -354,6 +354,7 @@ class InteractionService(
                         taskTracker.finish(task.id, InteractionTaskState.FAILED, event.message)
                     }
                     is ModelEvent.Delta -> Unit
+                    else -> Unit
                 }
                 onEvent(event)
             }
@@ -430,6 +431,7 @@ class InteractionService(
                 }
                 is ModelEvent.Delta -> Unit
                 is ModelEvent.ToolCallsRequested -> Unit
+                else -> Unit
             }
             onEvent(event)
         }

@@ -197,6 +197,7 @@ private fun InteractionScreen(app: CordiActApplication) {
                         activeCall = null
                         error = event.message
                     }
+                    else -> Unit
                 }
             }
         }

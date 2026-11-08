@@ -61,6 +61,7 @@ class ModelSummarizer(
                     }
                     is ModelEvent.Completed -> settled.countDown()
                     is ModelEvent.ToolCallsRequested -> Unit
+                    else -> Unit
                 }
             }
         } catch (_: Exception) {

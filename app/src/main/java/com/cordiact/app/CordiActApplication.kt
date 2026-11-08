@@ -280,8 +280,10 @@ class CordiActApplication : Application() {
         JGitWorkspaceGitService()
     }
 
+    val approvalGateway: com.cordiact.core.action.ApprovalGateway = com.cordiact.core.action.DefaultApprovalGateway()
+
     private val toolDispatcher by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
-        AndroidToolDispatcher(tools)
+        AndroidToolDispatcher(tools, approvalGateway)
     }
 
     /**
@@ -417,6 +419,10 @@ class CordiActApplication : Application() {
      * that quietly runs on an unexpected model would be a surprising bill.
      */
     private fun wakeSession(sessionId: String) {
+        if (turnService.isTurnActive(sessionId)) {
+            Log.d(TAG, "Session $sessionId is already active; report stays queued for in-flight/subsequent round")
+            return
+        }
         val model = runCatching {
             com.cordiact.app.memory.ExtractionModelSelectionStore(this).selectedModel()
         }.getOrNull()
