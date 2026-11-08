@@ -15,6 +15,10 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
+import com.cordiact.model.providers.ModelProtocol
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -52,7 +56,8 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
     var inspected by remember { mutableStateOf<ToolActivity?>(null) }
     var promptToInsert by remember { mutableStateOf("") }
     var modelMenu by remember { mutableStateOf(false) }
-    BackHandler(inspected != null || modelMenu) { inspected = null; modelMenu = false }
+    var providerForm by remember { mutableStateOf(false) }
+    BackHandler(inspected != null || modelMenu || providerForm) { inspected = null; modelMenu = false; providerForm = false }
     ModalNavigationDrawer(
         drawerState = drawer,
         gesturesEnabled = drawer.isOpen || pager.currentPage == 0,
@@ -177,8 +182,11 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
                 inspected?.let { step ->
                     CompactInspector(step = step, onClose = { inspected = null }, modifier = Modifier.align(Alignment.BottomCenter).imePadding().navigationBarsPadding())
                 }
+                if (providerForm) {
+                    ProviderForm(onClose = { providerForm = false }, onSave = viewModel::addProvider, modifier = Modifier.align(Alignment.BottomCenter).imePadding().navigationBarsPadding())
+                }
                 if (modelMenu) {
-                    CompactModelPicker(state, onClose = { modelMenu = false }, onSelect = { viewModel.selectModel(it.id); modelMenu = false }, modifier = Modifier.align(Alignment.BottomCenter).imePadding().navigationBarsPadding())
+                    CompactModelPicker(state, onClose = { modelMenu = false }, onSelect = { viewModel.selectModel(it.id); modelMenu = false }, onAdd = { modelMenu = false; providerForm = true }, modifier = Modifier.align(Alignment.BottomCenter).imePadding().navigationBarsPadding())
                 }
             }
         }
@@ -249,12 +257,13 @@ internal fun CompactInspector(step: ToolActivity, onClose: () -> Unit, modifier:
 }
 
 @Composable
-internal fun CompactModelPicker(state: ExperienceState, onClose: () -> Unit, onSelect: (com.cordiact.core.conversation.ModelDescriptor) -> Unit, modifier: Modifier = Modifier) {
+internal fun CompactModelPicker(state: ExperienceState, onClose: () -> Unit, onSelect: (com.cordiact.core.conversation.ModelDescriptor) -> Unit, onAdd: () -> Unit = {}, modifier: Modifier = Modifier) {
     BoxWithConstraints(modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
         Surface(Modifier.fillMaxWidth().heightIn(max = maxHeight * .45f).padding(8.dp), color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(23.dp), shadowElevation = 12.dp, border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
             Column {
                 PeekHandle(onClose)
                 Row(Modifier.padding(start = 18.dp, end = 5.dp), verticalAlignment = Alignment.CenterVertically) { Text("选择模型", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium); IconButton(onClick = onClose) { AppGlyph(GlyphName.Close, "关闭模型选择") } }
+                TextButton(onClick = onAdd, modifier = Modifier.padding(horizontal = 10.dp)) { AppGlyph(GlyphName.Plus, modifier = Modifier.size(16.dp)); Text("添加模型来源", Modifier.padding(start = 8.dp)) }
                 LazyColumn(Modifier.weight(1f, fill = false)) {
                     if (state.models.isEmpty()) item { Text("尚未配置可用模型。", Modifier.padding(20.dp), style = MaterialTheme.typography.bodyMedium) }
                     items(state.models, key = { "${it.id.providerId}:${it.id.modelId}" }) { model ->
@@ -286,4 +295,56 @@ private fun PeekHandle(onDismiss: () -> Unit) {
             .semantics { contentDescription = "下滑关闭面板" },
         contentAlignment = Alignment.Center,
     ) { Box(Modifier.width(28.dp).height(3.dp).background(MaterialTheme.colorScheme.outlineVariant, CircleShape)) }
+}
+
+
+/** Compact local configuration: save never probes an endpoint or sends the user's key. */
+@Composable
+private fun ProviderForm(
+    onClose: () -> Unit,
+    onSave: (String, String, List<String>, ModelProtocol, String, (String?) -> Unit) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    var name by remember { mutableStateOf("") }
+    var url by remember { mutableStateOf("") }
+    var models by remember { mutableStateOf("") }
+    var key by remember { mutableStateOf("") } // Intentionally not Saveable: never bundle a secret.
+    var protocol by remember { mutableStateOf(ModelProtocol.OPENAI_CHAT_COMPLETIONS) }
+    var saving by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    BoxWithConstraints(modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
+        Surface(Modifier.fillMaxWidth().heightIn(max = maxHeight * .45f).padding(8.dp), color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(23.dp), shadowElevation = 12.dp, border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
+            Column {
+                PeekHandle { if (!saving) { key = ""; onClose() } }
+                Row(Modifier.padding(start = 17.dp, end = 5.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("添加模型来源", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
+                    IconButton(enabled = !saving, onClick = { key = ""; onClose() }) { AppGlyph(GlyphName.Close, "关闭来源设置") }
+                }
+                Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("只保存本地配置，不发起连接；密钥由 Android Keystore 加密。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    OutlinedTextField(name, { name = it }, label = { Text("来源名称") }, singleLine = true, enabled = !saving, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(url, { url = it }, label = { Text("HTTPS 完整请求地址") }, placeholder = { Text("https://api.example.com/v1/chat/completions") }, singleLine = true, enabled = !saving, modifier = Modifier.fillMaxWidth(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri))
+                    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                        listOf(ModelProtocol.OPENAI_CHAT_COMPLETIONS to "Chat Completions", ModelProtocol.OPENAI_RESPONSES to "Responses", ModelProtocol.ANTHROPIC_MESSAGES to "Anthropic").forEach { (value, label) ->
+                            FilterChip(selected = protocol == value, onClick = { protocol = value }, label = { Text(label) }, enabled = !saving)
+                        }
+                    }
+                    OutlinedTextField(models, { models = it }, label = { Text("模型 ID（逗号分隔）") }, singleLine = true, enabled = !saving, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(key, { key = it }, label = { Text("API Key") }, visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), singleLine = true, enabled = !saving, modifier = Modifier.fillMaxWidth())
+                    error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+                    Spacer(Modifier.height(4.dp))
+                }
+                FilledTonalButton(
+                    enabled = !saving && name.isNotBlank() && url.isNotBlank() && models.isNotBlank() && key.isNotBlank(),
+                    onClick = {
+                        saving = true; error = null
+                        onSave(name, url, models.split(',', '，', '\n').map(String::trim).filter(String::isNotBlank), protocol, key) { result ->
+                            saving = false
+                            if (result == null) { key = ""; onClose() } else error = result
+                        }
+                    }, modifier = Modifier.fillMaxWidth().padding(12.dp),
+                ) { Text(if (saving) "正在保存…" else "保存来源") }
+            }
+        }
+    }
 }

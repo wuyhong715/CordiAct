@@ -1,0 +1,37 @@
+name: UI rebuild quality gate
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify-and-package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+      - name: JVM business regression and UI component tests
+        run: ./gradlew :core:test :model-providers:test :interaction:test :subagent:test :mcp-client:test :app:testDebugUnitTest --stacktrace
+      - name: Package APK (CI only)
+        run: ./gradlew :app:assembleDebug --stacktrace
+      - name: Verification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-rebuild-test-reports
+          path: |
+            **/build/reports/tests/**
+            **/build/test-results/**
+          retention-days: 14
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ui-rebuild-debug-apk
+          path: app/build/outputs/apk/debug/*.apk
+          retention-days: 14

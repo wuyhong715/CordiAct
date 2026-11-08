@@ -10,6 +10,8 @@ import com.cordiact.core.action.ApprovalRequest
 import com.cordiact.core.conversation.*
 import com.cordiact.core.workspace.Workspace
 import com.cordiact.interaction.InteractionContext
+import com.cordiact.model.providers.ModelProtocol
+import com.cordiact.model.providers.ModelProviderConfig
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -149,6 +151,31 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
         mutable.update { it.copy(model = model) }
         app.getSharedPreferences("experience", 0).edit().putString("provider", model.providerId).putString("model", model.modelId).apply()
     }
+    /** Explicit user save only. Credentials go to Keystore storage, never config/state/drafts. */
+    fun addProvider(name: String, baseUrl: String, modelIds: List<String>, protocol: ModelProtocol, apiKey: String, done: (String?) -> Unit) {
+        viewModelScope.launch {
+            try {
+                val models = withContext(Dispatchers.IO) {
+                    require(name.isNotBlank()) { "请输入来源名称" }
+                    require(baseUrl.startsWith("https://")) { "模型地址必须使用 HTTPS" }
+                    require(modelIds.isNotEmpty() && modelIds.none { it.isBlank() }) { "至少填写一个模型 ID" }
+                    require(apiKey.isNotBlank()) { "请输入 API Key" }
+                    val id = "custom-${UUID.randomUUID().toString().take(12)}"
+                    app.providerApiKeyStore.set(id, apiKey.trim())
+                    try {
+                        app.modelProviders.addProvider(ModelProviderConfig(id, name.trim(), protocol, baseUrl.trim(), modelIds.distinct()))
+                    } catch (error: Exception) {
+                        app.providerApiKeyStore.clear(id)
+                        throw error
+                    }
+                    app.modelAdapter.models()
+                }
+                mutable.update { it.copy(models = models) }
+                done(null)
+            } catch (cancel: CancellationException) { throw cancel }
+            catch (error: Exception) { done(error.message ?: "保存来源失败") }
+        }
+    }
     fun dismissError() { mutable.update { it.copy(error = null) } }
 
     /** Returns false when not accepted; the composer then keeps its draft. */
@@ -166,7 +193,9 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
         mutable.update { it.copy(turns = cache[session].orEmpty(), error = null) }
         val requestJob = viewModelScope.launch(start = CoroutineStart.LAZY) {
             try {
+                val requestContext = currentCoroutineContext()
                 runInterruptible(Dispatchers.IO) {
+                requestContext.ensureActive()
                 val prepared = app.interactionService.prepare(text.trim(), InteractionContext(session, workspace.id))
                 require(prepared.diagnostics.isEmpty()) { prepared.diagnostics.joinToString("\n") { it.toString() } }
                 val callback: (ModelEvent) -> Unit = { event ->
@@ -182,6 +211,7 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
                     }
                     if (rendered != null) events.trySend(OwnedEvent(session, turnId, rendered))
                 }
+                requestContext.ensureActive()
                 if (prepared.envelope?.command == null) owner.attach(app.interactionService.submitOrdinary(prepared, model, onEvent = callback))
                 else {
                     val result = app.interactionService.dispatch(prepared, model, onEvent = callback)

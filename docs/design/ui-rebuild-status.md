@@ -63,3 +63,13 @@ results will be appended below. APK packaging remains CI-only.
 - Local Android resource execution failed at x86 AAPT2; no runtime/visual claim is made.
 - Sheets now close with Android Back or downward drag on their handles.
 - Safe Markdown also restricts explicitly tapped links to http/https (no intent/file/javascript actions).
+
+## First CI result and follow-up
+
+- Run 42481748459: API 29 and API 35 isolated-service instrumentation green.
+- App JVM suite: 76 tests, one failure in new tool expansion visibility test. Reproduced in
+  CI, not hidden: restricted footer-follow to actual running streams and test waits for
+  expansion animation then scrolls to the row, mirroring user interaction.
+- Added guarded basic provider creation (HTTPS full endpoint, explicit protocol/model IDs,
+  Android Keystore credential save, no implicit connection), cancellation-pending gating,
+  coroutine cancellation before model dispatch, and dedicated CI quality workflow.

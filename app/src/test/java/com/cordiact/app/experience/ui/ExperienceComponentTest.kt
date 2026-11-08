@@ -71,7 +71,9 @@ class ExperienceComponentTest {
         content { TranscriptView(ready(listOf(TranscriptTurn("t", "prompt", tools = listOf(step)))), {}, { inspect = it }) }
         compose.onNodeWithText("found config").assertDoesNotExist()
         compose.onNodeWithText("完成 1 / 1 个步骤").performClick()
-        compose.onNodeWithText("found config").assertIsDisplayed().performClick()
+        compose.mainClock.advanceTimeBy(1000)
+        compose.waitForIdle()
+        compose.onNodeWithText("found config").performScrollTo().assertIsDisplayed().performClick()
         assertEquals("c", inspect?.id)
     }
     @Test fun reasoning_isOptInInlineContent() {

@@ -42,6 +42,7 @@ fun TranscriptView(state: ExperienceState, onPrompt: (String) -> Unit, onInspect
     val pinPolicy = remember(state.sessionId) { PinnedScrollPolicy() }
     val latestPinned by rememberUpdatedState(pinned)
     val latestCount by rememberUpdatedState(state.turns.size)
+    val latestRunning by rememberUpdatedState(state.running)
     val connection = remember(pinPolicy) {
         object : NestedScrollConnection {
             override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
@@ -64,7 +65,7 @@ fun TranscriptView(state: ExperienceState, onPrompt: (String) -> Unit, onInspect
         snapshotFlow {
             val layout = list.layoutInfo
             val footer = layout.visibleItemsInfo.lastOrNull { it.key == "transcript-end" }
-            latestPinned && latestCount > 0 && (footer == null || footer.offset + footer.size > layout.viewportEndOffset)
+            latestPinned && latestRunning && latestCount > 0 && (footer == null || footer.offset + footer.size > layout.viewportEndOffset)
         }.collect { shouldFollow -> if (shouldFollow) list.scrollToItem(latestCount) }
     }
     Box(modifier.fillMaxSize()) {
