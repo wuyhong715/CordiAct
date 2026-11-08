@@ -163,6 +163,8 @@ data class ToolInvocationContext(
     val modelId: String? = null,
     /** The user text that triggered this turn, when known. */
     val requestText: String? = null,
+    /** Optional event callback to emit real-time tool lifecycle events to the caller/UI. */
+    val onEvent: ((com.cordiact.core.conversation.ModelEvent) -> Unit)? = null,
 ) {
     /** The grant covering [targetWorkspaceId], or null when it is not readable this turn. */
     fun scopeFor(targetWorkspaceId: String): GrantedScope? =

@@ -253,7 +253,26 @@ class ToolLoopPlugin(
                     continue
                 }
                 calls++
+                context.onEvent?.invoke(
+                    com.cordiact.core.conversation.ModelEvent.ToolCallStarted(
+                        callId = call.id,
+                        toolName = call.name,
+                        argumentsJson = call.argumentsJson,
+                    )
+                )
+                val startMs = System.currentTimeMillis()
                 val result = dispatcher.dispatch(context, call)
+                val duration = System.currentTimeMillis() - startMs
+                val isSuccess = !result.content.startsWith("Error:") && !result.content.startsWith("{\"error\"")
+                context.onEvent?.invoke(
+                    com.cordiact.core.conversation.ModelEvent.ToolCallCompleted(
+                        callId = call.id,
+                        toolName = call.name,
+                        success = isSuccess,
+                        durationMillis = duration,
+                        summary = result.content.take(120),
+                    )
+                )
                 result.metadataJson?.let { evidence += ToolEvidence(call.name, it) }
                 val targetSessionId = context.sessionId ?: "ephemeral"
                 val gatedResult = gate?.gate(targetSessionId, result, limits.maxResultChars)

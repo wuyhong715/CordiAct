@@ -140,6 +140,7 @@ class MemoryExtractionRunner(
                         failure.set(event)
                         done.countDown()
                     }
+                    else -> Unit
                 }
             }
         } catch (e: Exception) {
