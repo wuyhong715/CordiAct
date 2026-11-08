@@ -66,12 +66,19 @@ class MainActivity : ComponentActivity() {
         
         // 临时演示开关
         val showCompactDemo = intent.getBooleanExtra("compact_demo", false)
-        val showDrawerDemo = intent.getBooleanExtra("drawer_demo", true)  // 默认新 UI
+        val showDrawerDemo = intent.getBooleanExtra("drawer_demo", false)
+        val showMultiWindowUI = intent.getBooleanExtra("multi_window", true)  // 默认三层多窗口 UI
         
         setContent {
             when {
+                showMultiWindowUI -> {
+                    // 三层布局 + 多窗口系统
+                    com.cordiact.app.ui.theme.CordiActTheme {
+                        com.cordiact.app.ui.CordiActMainScreen(application as CordiActApplication)
+                    }
+                }
                 showDrawerDemo -> {
-                    // 新 UI：侧边抽屉 + 设置
+                    // 旧版 UI：侧边抽屉 + 设置
                     com.cordiact.app.ui.theme.CordiActTheme {
                         MainScreen(application as CordiActApplication)
                     }
