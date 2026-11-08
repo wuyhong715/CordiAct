@@ -49,6 +49,7 @@ dependencies {
     implementation("androidx.webkit:webkit:1.14.0")
     implementation("androidx.compose.material3:material3:1.3.1")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
     
     // Markdown 渲染（代码高亮 + 表格）
     implementation("com.github.jeziellago:compose-markdown:0.5.4")
