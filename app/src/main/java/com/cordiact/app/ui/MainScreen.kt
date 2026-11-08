@@ -18,6 +18,8 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.cordiact.app.CordiActApplication
 import com.cordiact.app.ui.composer.ModelSelector
 import com.cordiact.app.ui.drawer.DrawerContent
 import com.cordiact.app.ui.settings.SettingsScreen
@@ -33,8 +35,11 @@ import kotlinx.coroutines.launch
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainScreen(
-    viewModel: MainViewModel = viewModel()
+    application: CordiActApplication
 ) {
+    val viewModel: MainViewModel = viewModel(
+        factory = MainViewModelFactory(application)
+    )
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     
