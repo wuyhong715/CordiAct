@@ -36,7 +36,8 @@ fun ChatTranscriptList(
     modifier: Modifier = Modifier
 ) {
     val listState = rememberLazyListState()
-    val scrollController = remember { SmartScrollController(listState) }
+    val scope = rememberCoroutineScope()
+    val scrollController = remember(listState, scope) { SmartScrollController(listState, scope) }
 
     // 监听消息数变化，触发自动贴底
     LaunchedEffect(messages.size) {
