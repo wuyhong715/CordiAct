@@ -73,7 +73,7 @@ class MainActivity : ComponentActivity() {
                 showDrawerDemo -> {
                     // 新 UI：侧边抽屉 + 设置
                     com.cordiact.app.ui.theme.CordiActTheme {
-                        MainScreen()
+                        MainScreen(application as CordiActApplication)
                     }
                 }
                 showCompactDemo -> {
