@@ -38,7 +38,7 @@ class ExperienceComponentTest {
         models = listOf(ModelDescriptor(model, "Test Model")), turns = turns,
     )
     private fun content(block: @Composable () -> Unit) = compose.setContent {
-        ExperienceTheme { Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) { block() } }
+        ExperienceTheme { Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) { Box(Modifier.fillMaxSize()) { block() } } }
     }
 
     @Test fun emptyState_hasActionsWithoutDemoTranscript() {

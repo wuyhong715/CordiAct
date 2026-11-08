@@ -95,3 +95,12 @@ Acceptance is user-run; do not install/drive the phone for this revision.
   explicit rendering, renderer disposal, one-inset IME geometry, compact stable tabs,
   all original vector glyphs. Local main+test Kotlin compilation and 725 JVM tests pass.
 - Next deliverable is CI APK only, no installation. No main merge.
+
+### Revision 2 CI iteration
+
+Run `42485148262` executed all 13 component tests: 12 passed, the compact-tab height
+assertion failed because the shared test `Surface(fillMaxSize)` propagated a full-height
+minimum constraint directly to the standalone rail. Wrapped test content in the same
+non-propagating Box used by the real screen (no production code weakened). Keyboard
+max-inset geometry, inline token entry, render-queue isolation/explicit selection,
+renderer disposal, and vector construction passed on the CI runner.
