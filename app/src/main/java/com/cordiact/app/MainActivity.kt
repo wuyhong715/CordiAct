@@ -62,10 +62,22 @@ private val DEFAULT_MODEL = ModelId("deepseek", "deepseek-flash")
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        
+        // 临时演示开关：true = 紧凑 UI 演示，false = 原交互界面
+        val showCompactDemo = intent.getBooleanExtra("compact_demo", false)
+        
         setContent {
-            MaterialTheme {
-                Surface(modifier = Modifier.fillMaxSize()) {
-                    InteractionScreen(application as CordiActApplication)
+            if (showCompactDemo) {
+                // 紧凑 UI 演示界面
+                com.cordiact.app.ui.theme.CordiActTheme {
+                    com.cordiact.app.ui.window.chat.CompactChatDemo()
+                }
+            } else {
+                // 原交互界面
+                MaterialTheme {
+                    Surface(modifier = Modifier.fillMaxSize()) {
+                        InteractionScreen(application as CordiActApplication)
+                    }
                 }
             }
         }
