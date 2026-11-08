@@ -191,30 +191,32 @@ class ChatViewModel(
             val streamedContent = StringBuilder()
 
             try {
-                app.interaction.submit(
-                    context = com.cordiact.interaction.InteractionContext(
-                        workspaceId = workspaceId,
-                        sessionId = sessionId
-                    ),
-                    model = resolvedModel,
-                    rawInput = trimmed,
-                    onEvent = { event: ModelEvent ->
-                        handleModelEvent(event)
-                        when (event) {
-                            is ModelEvent.Delta -> {
-                                streamedContent.append(event.text)
-                                upsertStreamingAssistantMessage(streamingMsgId, streamedContent.toString())
-                            }
-                            is ModelEvent.ToolCallStarted -> {
-                                onEventUpdate?.invoke("正在执行: ${event.toolName}")
-                            }
-                            is ModelEvent.Thinking -> {
-                                onEventUpdate?.invoke("正在深度思考...")
-                            }
-                            else -> {}
-                        }
-                    }
+                val context = com.cordiact.interaction.InteractionContext(
+                    workspaceId = workspaceId,
+                    sessionId = sessionId
                 )
+                val prepared = app.interactionService.prepare(trimmed, context)
+                val eventCallback: (ModelEvent) -> Unit = { event: ModelEvent ->
+                    handleModelEvent(event)
+                    when (event) {
+                        is ModelEvent.Delta -> {
+                            streamedContent.append(event.text)
+                            upsertStreamingAssistantMessage(streamingMsgId, streamedContent.toString())
+                        }
+                        is ModelEvent.ToolCallStarted -> {
+                            onEventUpdate?.invoke("正在执行: ${event.toolName}")
+                        }
+                        is ModelEvent.Thinking -> {
+                            onEventUpdate?.invoke("正在深度思考...")
+                        }
+                        else -> {}
+                    }
+                }
+                if (prepared.envelope?.command == null) {
+                    app.interactionService.submitOrdinary(prepared, resolvedModel, onEvent = eventCallback)
+                } else {
+                    app.interactionService.dispatch(prepared, resolvedModel, onEvent = eventCallback)
+                }
 
                 // 聚合本轮工具调用卡片
                 if (currentTurnActivities.isNotEmpty()) {
@@ -353,7 +355,6 @@ class ChatViewModel(
     fun onToolStart(toolName: String, target: String = "") {
         val summary = if (target.isNotEmpty()) "$toolName: $target" else toolName
         _currentSteps.value = _currentSteps.value + ToolStep(
-            toolName = toolName,
             summary = summary,
             status = ToolStatus.RUNNING
         )
@@ -364,8 +365,7 @@ class ChatViewModel(
         val lastRunningIndex = steps.indexOfLast { it.status == ToolStatus.RUNNING }
         if (lastRunningIndex >= 0) {
             steps[lastRunningIndex] = steps[lastRunningIndex].copy(
-                status = if (success) ToolStatus.SUCCESS else ToolStatus.FAILED,
-                durationMs = durationMs
+                status = if (success) ToolStatus.SUCCESS else ToolStatus.FAILED
             )
             _currentSteps.value = steps
         }
@@ -527,22 +527,6 @@ data class RecordedToolEvent(
     val isError: Boolean,
     val summary: String
 )
-
-/**
- * 单个工具执行步骤
- */
-data class ToolStep(
-    val toolName: String,
-    val summary: String,
-    val status: ToolStatus,
-    val durationMs: Long? = null
-)
-
-enum class ToolStatus {
-    RUNNING,
-    SUCCESS,
-    FAILED
-}
 
 /**
  * 从对话中提取的结构化内容（供预览窗口展示）
