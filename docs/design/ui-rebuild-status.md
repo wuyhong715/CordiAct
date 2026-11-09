@@ -1,106 +1,18 @@
-# CordiAct UI rebuild — foreground checkpoint
 
-## Isolation and scope
+### Batch 1 — sidebar (commit `22bcbb2`, on `feat/ui-rebuild-quality`)
 
-- Base: `77f8afe`, branch `feat/ui-rebuild-quality`, separate worktree `/workspace/CordiAct-ui-rebuild`.
-- Original `/workspace/CordiAct` and its untracked UI/drawables were not edited.
-- New `experience/` package is written from scratch. No old UI source or demo state is imported.
-- Theme defaults light, uses original Canvas glyphs, avoids content blur and full-height dialogs.
+Scope was restricted to the conversation drawer; the settings page is batch 2. A settings
+entry is present in the fixed footer with a batch-2 toast. Session rename/archive is
+intentionally not exposed because `SessionManagerService` has no such API.
 
-## Implemented first slice
-
-- Edge-to-edge lifecycle-owned Compose root, workspace/session drawer, persisted model selection.
-- Three keep-alive pager windows, per-session composer drafts, keyboard/inset handling.
-- Conversation turns, Markdown, selectable output, inline reasoning, grouped tool activity.
-- Raw 10px history-drag unlock, footer-follow scrolling and explicit jump-to-latest.
-- Actual InteractionService submission, serialized provider event channel, call-id tool reducer.
-- IO-owned store/plugin calls, per-session event routing and terminal-state rejection of late events.
-- One-shot inline approvals; no UI action silently enables workspace-wide trust.
-- Compact tool inspector and model picker, capped at 45% of available viewport.
-- Real main/tool timeline and causal turn list; latest response source/render preview.
-- Markwon 4.6.2 core + table/strike/task extensions; intentionally no remote image/HTML/network plugin.
-
-## Backend prerequisite corrected
-
-`submitWithTools` previously forwarded each provider round's Completed, so UI ended at the
-first tool round. It now emits one terminal only after the whole turn and persistence,
-sums usage, propagates round failures, and owns a cancellable active-round wait. Added
-regressions for multi-round completion, provider failure, and cancellation/late callback.
-This is an actual mechanism change, not a prompt workaround.
-
-## Verification commands
-
-- `sh scripts/verify-ui-jvm.sh :core:test :subagent:test :mcp-client:test --offline --console=plain`
-- `sh scripts/check-ui-kotlin-local.sh --offline --console=plain`
-- `sh scripts/check-ui-test-kotlin-local.sh --offline --console=plain` — TYPECHECK ONLY.
-- Android component suite: `./gradlew :app:testDebugUnitTest --tests 'com.cordiact.app.experience.ui.*'`
-  on GitHub Actions x86 runner; local execution blocked by x86 AAPT2 on ARM.
-
-The local compile helper temporarily moves AIDL sources and injects Java-only compile stubs,
-restoring AIDL on exit. It does not produce an APK or prove Android resources, packaging,
-layout, touch, visual fidelity, font-scale behavior, or real-device startup.
-
-## Not yet delivered / do not claim finished
-
-- GitHub Actions APK build, runtime component execution, install/start and screenshot visual review.
-- Sub-agent and background job lifecycle lanes, selection-to-tree Gantt hit-testing, telemetry cost.
-- Real artifact registry, screenshot/Diff/WebView display and screen-control mapping.
-- Full @/#// candidate providers, secret-token editing behavior, slash-command approval routing.
-- Provider configuration/editor and complete service/permission settings; model picker uses already
-  configured providers and keys, never invented settings.
-- Full message Fork/retry menu, history paging and drawer edge-vs-pager gesture tuning. Sheet handles support downward-drag dismissal.
-- Streaming tail fade, full spring stretch indicator, reduced-motion support and screenshots/goldens.
-- Persisting runtime trajectory metadata across process death (history doesn't fabricate tool spans).
-
-User authorized commit/push to `feat/ui-rebuild-quality` and GitHub Actions on 2026-11-08;
-no merge to main, publication, or provider inference call is authorized. Build and runtime
-results will be appended below. APK packaging remains CI-only.
-
-## Verified before first push
-
-- JVM: core 511 + model-providers 74 + interaction 16 + subagent 57 + mcp-client 54 + UI reducer 13 = **725 tests, zero failures**.
-- Main UI and 7 Robolectric Compose component test sources compiled successfully.
-- Local Android resource execution failed at x86 AAPT2; no runtime/visual claim is made.
-- Sheets now close with Android Back or downward drag on their handles.
-- Safe Markdown also restricts explicitly tapped links to http/https (no intent/file/javascript actions).
-
-## First CI result and follow-up
-
-- Run 42481748459: API 29 and API 35 isolated-service instrumentation green.
-- App JVM suite: 76 tests, one failure in new tool expansion visibility test. Reproduced in
-  CI, not hidden: restricted footer-follow to actual running streams and test waits for
-  expansion animation then scrolls to the row, mirroring user interaction.
-- Added guarded basic provider creation (HTTPS full endpoint, explicit protocol/model IDs,
-  Android Keystore credential save, no implicit connection), cancellation-pending gating,
-  coroutine cancellation before model dispatch, and dedicated CI quality workflow.
-
-## Revision 2 — user feedback, 2026-11-08 21:15
-
-Acceptance is user-run; do not install/drive the phone for this revision.
-
-- Keyboard: explicit Activity + manifest `adjustResize`; `ExperienceFrame` owns
-  `systemBars.union(ime)` once. Removed composer container `animateContentSize` so IME
-  relayout is not animated a second time. Hypothesis based on source + user's screenshot;
-  actual vivo keyboard behavior remains for the user's acceptance, not claimed reproduced.
-- Browser-style 40dp tab rail: 104dp maximum per tab, one pager-position underline;
-  cached vector glyphs replace Canvas drawing, selected glyphs no longer animate.
-- Removed / @ # shortcut buttons. Tokens are literal IME input within the composer.
-- Preview was semantically wrong. Replaced reply-reader with the existing session-scoped
-  `PreviewInbox` and `RenderSurfaceHost` pipeline. Queue items stay inert until explicit
-  selection; opening preview never renders the latest answer. Visible stage is disposed
-  when leaving the pager, can switch 360/390/768dp and 3-up comparison. Network disabled.
-- Enlarged timeline to 132dp within a 250dp-minimum surface, 23dp bars, 136dp-minimum
-  execution cards and 64dp tool rows with clearer title/body hierarchy.
-- Component suite expanded to 13 tests: inline token entry, queue session isolation and
-  explicit rendering, renderer disposal, one-inset IME geometry, compact stable tabs,
-  all original vector glyphs. Local main+test Kotlin compilation and 725 JVM tests pass.
-- Next deliverable is CI APK only, no installation. No main merge.
-
-### Revision 2 CI iteration
-
-Run `42485148262` executed all 13 component tests: 12 passed, the compact-tab height
-assertion failed because the shared test `Surface(fillMaxSize)` propagated a full-height
-minimum constraint directly to the standalone rail. Wrapped test content in the same
-non-propagating Box used by the real screen (no production code weakened). Keyboard
-max-inset geometry, inline token entry, render-queue isolation/explicit selection,
-renderer disposal, and vector construction passed on the CI runner.
+- New `ConversationSidebar` + `WorkspaceNameEditor` (standalone, no ViewModel dependency),
+  `model/SidebarModels.kt` (pure search/sort/name validation).
+- ViewModel builds the sidebar from real workspace/session services, keeps only
+  `SessionKind.USER`, serialises navigation, and calls the caller's close callback only
+  after the selection is committed. Failed create/rename keeps the dialog and its input.
+- CI run `42546966606` (build job): 786 unit tests, 0 failures, 0 skipped, including 12
+  `ConversationSidebarTest` cases; `cordiact-debug-apk` produced (24,463,044 bytes,
+  SHA256 `4170a1b8…f99c4d8a`). Copy for manual testing:
+  `/sdcard/Download/Moxw/CordiAct-ui-batch1-sidebar-22bcbb2.apk`.
+- Not installed and not exercised on a device by the assistant; device acceptance is the
+  user's. No main merge, no release.
