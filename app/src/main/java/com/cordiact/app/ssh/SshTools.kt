@@ -357,6 +357,7 @@ private fun execTool(
                 "timed_out" to ToolValue.BooleanValue(result.timedOut),
                 "truncated" to ToolValue.BooleanValue(result.truncated),
                 "safety_class" to ToolValue.StringValue(ShellCommandPolicy.classify(command).name),
+                "untrusted" to ToolValue.BooleanValue(true),
             ),
         )
     },
@@ -478,6 +479,7 @@ private fun execSavedTool(
                 "timed_out" to ToolValue.BooleanValue(result.timedOut),
                 "truncated" to ToolValue.BooleanValue(result.truncated),
                 "safety_class" to ToolValue.StringValue(ShellCommandPolicy.classify(command).name),
+                "untrusted" to ToolValue.BooleanValue(true),
             ),
         )
     },
@@ -594,6 +596,7 @@ private fun downloadTool(plugin: SshPlugin) = ToolDefinition(
                 "bytes_read" to ToolValue.NumberValue(bytes.size.toDouble()),
                 "content" to if (asText) ToolValue.StringValue(String(bytes, Charsets.UTF_8)) else ToolValue.StringValue(Base64.encodeToString(bytes, Base64.NO_WRAP)),
                 "is_binary" to ToolValue.BooleanValue(!asText),
+                "untrusted" to ToolValue.BooleanValue(true),
             ),
         )
     },

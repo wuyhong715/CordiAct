@@ -232,6 +232,7 @@ fun registerJobTools(registry: InMemoryToolDefinitionRegistry, jobRegistry: JobR
                         "text" to ToolValue.StringValue(readResult.text),
                         "next_offset" to ToolValue.NumberValue(readResult.nextOffset.toDouble()),
                         "eof" to ToolValue.BooleanValue(readResult.eof),
+                        "untrusted" to ToolValue.BooleanValue(true),
                     ),
                 )
             },

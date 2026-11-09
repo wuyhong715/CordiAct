@@ -195,6 +195,7 @@ private fun runCommandTool(
                 "timed_out" to ToolValue.BooleanValue(result.timedOut),
                 "truncated" to ToolValue.BooleanValue(result.truncated),
                 "safety_class" to ToolValue.StringValue(ShellCommandPolicy.classify(command).name),
+                "untrusted" to ToolValue.BooleanValue(true),
             ),
         )
     },
@@ -279,6 +280,7 @@ private fun sessionTool(plugin: TermuxPlugin) = ToolDefinition(
                 "matched" to ToolValue.BooleanValue(result.matched),
                 "reason" to ToolValue.StringValue(result.reason),
                 "error" to (result.error?.let { ToolValue.StringValue(it) } ?: ToolValue.NullValue),
+                "untrusted" to ToolValue.BooleanValue(true),
             ),
         )
     },

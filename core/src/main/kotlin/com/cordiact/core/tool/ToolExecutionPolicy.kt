@@ -254,6 +254,8 @@ class ToolExecutionAuthorizationPolicy(
             ?: action.savedHostParameter?.let { name ->
                 arguments.string(name)?.let { "saved:$it" }
             }
+        val cwd = action.cwdParameter?.let { arguments.string(it) }
+        val session = action.sessionParameter?.let { arguments.string(it) }
         return ToolExecutionRequest(
             toolId = descriptor.id,
             action = action.action,
@@ -264,12 +266,12 @@ class ToolExecutionAuthorizationPolicy(
             showInputInApproval = action.showInputInApproval,
             supplementalInputs = supplemental,
             target = target,
-            cwd = action.cwdParameter?.let { arguments.string(it) },
-            session = action.sessionParameter?.let { arguments.string(it) },
+            cwd = cwd,
+            session = session,
             privilege = action.privilege,
             dataClasses = action.dataClasses,
             autoApprovable = action.autoApprovable,
-            argumentsDigest = argumentsDigest(descriptor.id, action, arguments),
+            argumentsDigest = argumentsDigest(descriptor.id, action, arguments, target, cwd, session),
         )
     }
 
@@ -317,10 +319,18 @@ class ToolExecutionAuthorizationPolicy(
         toolId: String,
         action: ToolExecutionAction,
         arguments: ToolArguments,
+        target: String?,
+        cwd: String?,
+        session: String?,
     ): String {
         val canonical = buildString {
             append(toolId).append('\u0000')
             append(action.action).append('\u0000')
+            append(action.backend.name).append('\u0000')
+            append(action.privilege.name).append('\u0000')
+            append(target ?: "").append('\u0000')
+            append(cwd ?: "").append('\u0000')
+            append(session ?: "").append('\u0000')
             arguments.values.toSortedMap().forEach { (name, value) ->
                 append(name).append('=').append(renderValue(value)).append('\u0000')
             }
