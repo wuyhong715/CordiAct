@@ -249,8 +249,8 @@ class BundledConversationPlugins private constructor(
     }
 
     fun create(
-        stateLookup: ToolPluginStateLookup,
         approvalGateway: com.cordiact.core.action.ApprovalGateway? = null,
+        stateLookup: ToolPluginStateLookup,
     ): List<ManagedPlugin> {
         registerContextTools(registry, spillStore)
         registerJobTools(registry, jobRegistry)
