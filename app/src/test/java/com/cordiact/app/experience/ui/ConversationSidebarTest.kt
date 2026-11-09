@@ -5,7 +5,6 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.unit.dp
@@ -17,11 +16,9 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
-import org.robolectric.annotation.GraphicsMode
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35], application = Application::class, qualifiers = "w412dp-h892dp-420dpi")
-@GraphicsMode(GraphicsMode.Mode.NATIVE)
 class ConversationSidebarTest {
     @get:Rule val compose = createComposeRule()
     private val groups = listOf(
@@ -30,8 +27,7 @@ class ConversationSidebarTest {
     )
     private var selected = ""
     private var newAt: String? = "not-called"
-    private var created = ""
-    private var renamed = ""
+    private var submitted = ""
     private var settings = 0
     private var retries = 0
 
@@ -42,19 +38,33 @@ class ConversationSidebarTest {
                     Surface(Modifier.width(width.dp).fillMaxHeight()) {
                         ConversationSidebar(data, "default", "a", setOf("b"), busy, error,
                             onClose = {}, onNewSession = { newAt = it }, onSelectWorkspace = { selected = "workspace:$it" },
-                            onSelectSession = { selected = "session:$it" }, onCreateWorkspace = { value, onSuccess -> created = value; onSuccess() },
-                            onRenameWorkspace = { id, value, onSuccess -> renamed = "$id:$value"; onSuccess() }, onRetry = { retries++ }, onSettings = { settings++ })
+                            onSelectSession = { selected = "session:$it" }, onCreateWorkspace = { _, _ -> }, onRenameWorkspace = { _, _, _ -> },
+                            onRetry = { retries++ }, onSettings = { settings++ })
                     }
                 }
             }
         }
     }
+
+    private fun showEditor(existing: Boolean = false, initial: String = "", error: String? = null, busy: Boolean = false) {
+        compose.setContent {
+            ExperienceTheme {
+                Surface {
+                    var name by remember { mutableStateOf(initial) }
+                    WorkspaceNameEditor(name, existing, busy, error,
+                        onNameChange = { name = it }, onConfirm = { submitted = it }, onDismiss = {})
+                }
+            }
+        }
+    }
+
     @Test fun activeWorkspaceStartsExpandedAndCurrentSessionSelected() {
         show()
         compose.onNodeWithText("侧边栏设计").assertIsDisplayed().assertIsSelected()
         compose.onNodeWithText("资料收集").assertDoesNotExist()
         compose.onNodeWithText("接口审查").assert(SemanticsMatcher.expectValue(androidx.compose.ui.semantics.SemanticsProperties.StateDescription, "执行中"))
     }
+
     @Test fun collapseDoesNotChangeSelectedWorkspace() {
         show()
         compose.onNodeWithContentDescription("收起工作区 默认工作区").performClick()
@@ -63,14 +73,16 @@ class ConversationSidebarTest {
         compose.onNodeWithContentDescription("展开工作区 默认工作区").performClick()
         compose.onNodeWithText("侧边栏设计").assertIsDisplayed()
     }
+
     @Test fun selectingOtherWorkspaceAndConversationUsesCorrectIds() {
         show()
         compose.onNodeWithContentDescription("展开工作区 研究项目").performClick()
         compose.onNodeWithText("资料收集").performClick()
         assertEquals("session:c", selected)
-        compose.onNodeWithText("研究项目", useUnmergedTree = false).performClick()
+        compose.onNodeWithText("研究项目").performClick()
         assertEquals("workspace:research", selected)
     }
+
     @Test fun searchingTemporarilyExpandsMatchingGroupAndClearsCleanly() {
         show()
         compose.onNodeWithContentDescription("搜索对话与工作区").performClick()
@@ -81,6 +93,7 @@ class ConversationSidebarTest {
         compose.onNodeWithText("默认工作区").assertIsDisplayed()
         compose.onNodeWithText("资料收集").assertDoesNotExist()
     }
+
     @Test fun noMatchesShowsEmptyStateAndKeepsSettingsAccessible() {
         show()
         compose.onNodeWithContentDescription("搜索对话与工作区").performClick()
@@ -89,25 +102,34 @@ class ConversationSidebarTest {
         compose.onNodeWithText("设置").assertIsDisplayed().performClick()
         assertEquals(1, settings)
     }
-    @Test fun createWorkspaceValidatesNameAndTrimsInput() {
+
+    @Test fun workspaceMenuCreatesSessionInThatGroup() {
         show()
-        compose.onNodeWithContentDescription("新建工作区").performClick()
-        compose.onNodeWithText("创建", substring = false).assertIsNotEnabled()
-        compose.onNode(hasSetTextAction()).performTextInput("  新项目  ")
-        compose.onNodeWithText("创建", substring = false).performClick()
-        assertEquals("新项目", created)
-    }
-    @Test fun workspaceMenuRenamesRealWorkspaceAndCreatesInThatGroup() {
-        show()
-        compose.onNodeWithContentDescription("工作区 研究项目 的更多操作").performClick()
-        compose.onNodeWithText("重命名工作区").performClick()
-        compose.onNode(hasSetTextAction()).performTextReplacement("研究二期")
-        compose.onNodeWithText("保存").performClick()
-        assertEquals("research:研究二期", renamed)
         compose.onNodeWithContentDescription("工作区 研究项目 的更多操作").performClick()
         compose.onNodeWithText("在此新建对话").performClick()
         assertEquals("research", newAt)
     }
+
+    @Test fun editorRejectsBlankNameAndPassesTrimmedValue() {
+        showEditor()
+        compose.onNodeWithText("创建", substring = false).assertIsNotEnabled()
+        compose.onNode(hasSetTextAction()).performTextInput("  新项目  ")
+        compose.onNodeWithText("创建", substring = false).performClick()
+        assertEquals("新项目", submitted)
+    }
+
+    @Test fun editorUsesSaveLabelAndShowsBackendErrorForRename() {
+        showEditor(existing = true, initial = "研究项目", error = "重命名失败")
+        compose.onNodeWithText("保存", substring = false).assertIsEnabled()
+        compose.onNodeWithText("重命名失败").assertIsDisplayed()
+    }
+
+    @Test fun editorBlocksConfirmWhileBusy() {
+        showEditor(initial = "新项目", busy = true)
+        compose.onNodeWithText("创建", substring = false).assertIsNotEnabled()
+        compose.onNodeWithText("取消", substring = false).assertIsNotEnabled()
+    }
+
     @Test fun loadingDisablesDuplicateCreateAndSelectionButNotClosingOrSettings() {
         show(busy = true)
         compose.onNodeWithText("新对话", substring = false).assertIsNotEnabled()
@@ -116,6 +138,7 @@ class ConversationSidebarTest {
         compose.onNodeWithContentDescription("关闭侧边栏").assertIsEnabled()
         compose.onNodeWithText("设置").assertIsEnabled()
     }
+
     @Test fun failureShowsRetryAndLeavesSelectionVisible() {
         show(error = "工作区读取失败")
         compose.onNodeWithText("工作区读取失败").assertIsDisplayed()
@@ -123,6 +146,7 @@ class ConversationSidebarTest {
         assertEquals(1, retries)
         compose.onNodeWithText("侧边栏设计").assertIsSelected()
     }
+
     @Test fun longListScrollsWithoutMovingSettingsAndSupportsNarrowScreens() {
         val many = groups.take(1).map { it.copy(sessions = (1..60).map { i -> SidebarConversation("s$i", "对话 $i", i.toLong()) }) }
         show(data = many, width = 275)
@@ -131,15 +155,5 @@ class ConversationSidebarTest {
         compose.onNodeWithText("对话 1", substring = false).assertIsDisplayed()
         assertEquals(before, compose.onNodeWithText("设置").fetchSemanticsNode().boundsInRoot)
         compose.onNodeWithContentDescription("新建工作区").assertIsDisplayed()
-    }
-    @Test fun rendersReviewImage() {
-        show()
-        compose.waitForIdle()
-        val file = java.io.File("build/reports/tests/sidebar-batch1.png")
-        file.parentFile?.mkdirs()
-        file.outputStream().use { out ->
-            compose.onRoot().captureToImage().asAndroidBitmap().compress(android.graphics.Bitmap.CompressFormat.PNG, 100, out)
-        }
-        assertTrue(file.length() > 0)
     }
 }

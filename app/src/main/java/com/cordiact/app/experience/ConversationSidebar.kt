@@ -15,6 +15,7 @@ import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
 import com.cordiact.app.experience.model.*
 
 /** Standalone drawer content, without a ViewModel dependency. The owner controls navigation. */
@@ -173,29 +174,58 @@ fun ConversationSidebar(
         Text("各工作区的对话与上下文相互隔离", Modifier.padding(start = 12.dp, bottom = 12.dp), style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
     }
     if (editorOpen) {
-        val validation = sidebarNameError(name)
-        AlertDialog(onDismissRequest = { if (!busy) editorOpen = false },
-            title = { Text(if (editingId == null) "新建工作区" else "重命名工作区") },
-            text = {
-                Column {
-                    OutlinedTextField(value = name, onValueChange = { name = it }, singleLine = true, enabled = !busy,
-                        label = { Text("工作区名称") }, isError = name.isNotEmpty() && validation != null,
-                        supportingText = { Text(validation ?: "仅更改显示名称，不移动工作区文件") })
-                    if (!busy && validation == null && error != null) {
-                        Text(error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall,
-                            modifier = Modifier.padding(top = 4.dp))
-                    }
+        val id = editingId
+        Dialog(onDismissRequest = { if (!busy) editorOpen = false }) {
+            Surface(shape = RoundedCornerShape(24.dp), color = colors.surfaceContainerLow, tonalElevation = 6.dp) {
+                Column(Modifier.widthIn(max = 380.dp).padding(20.dp)) {
+                    Text(if (id == null) "新建工作区" else "重命名工作区", style = MaterialTheme.typography.titleMedium)
+                    Spacer(Modifier.height(12.dp))
+                    WorkspaceNameEditor(
+                        name = name, existing = id != null, busy = busy, error = error,
+                        onNameChange = { name = it },
+                        onConfirm = { trimmed ->
+                            val onSuccess = { editorOpen = false }
+                            if (id == null) onCreateWorkspace(trimmed, onSuccess) else onRenameWorkspace(id, trimmed, onSuccess)
+                        },
+                        onDismiss = { editorOpen = false },
+                    )
                 }
-            },
-            confirmButton = {
-                TextButton(enabled = !busy && validation == null, onClick = {
-                    val id = editingId
-                    val onSuccess = { editorOpen = false }
-                    if (id == null) onCreateWorkspace(name.trim(), onSuccess)
-                    else onRenameWorkspace(id, name.trim(), onSuccess)
-                }) { Text(if (editingId == null) "创建" else "保存") }
-            },
-            dismissButton = { TextButton(onClick = { editorOpen = false }, enabled = !busy) { Text("取消") } },
+            }
+        }
+    }
+}
+
+/**
+ * Self-contained editor panel. Production shows it inside [Dialog]; component tests render it
+ * inline so validation and trimming are exercised without a second window.
+ */
+@Composable
+fun WorkspaceNameEditor(
+    name: String,
+    existing: Boolean,
+    busy: Boolean,
+    error: String?,
+    onNameChange: (String) -> Unit,
+    onConfirm: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val validation = sidebarNameError(name)
+    Column(Modifier.fillMaxWidth()) {
+        OutlinedTextField(
+            value = name, onValueChange = onNameChange, singleLine = true, enabled = !busy,
+            label = { Text("工作区名称") }, isError = name.isNotEmpty() && validation != null,
+            supportingText = { Text(validation ?: "仅更改显示名称，不移动工作区文件") },
+            modifier = Modifier.fillMaxWidth(),
         )
+        if (!busy && validation == null && error != null) {
+            Text(error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(top = 4.dp))
+        }
+        Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.End) {
+            TextButton(onClick = onDismiss, enabled = !busy) { Text("取消") }
+            TextButton(onClick = { onConfirm(name.trim()) }, enabled = !busy && validation == null) {
+                Text(if (existing) "保存" else "创建")
+            }
+        }
     }
 }
