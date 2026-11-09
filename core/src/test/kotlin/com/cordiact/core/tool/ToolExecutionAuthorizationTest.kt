@@ -316,6 +316,21 @@ class ToolExecutionAuthorizationTest {
         assertEquals(commands.size, gateway.requests.size)
     }
 
+    @Test
+    fun defaultGatewayTimeoutIsDeniedBeforeExecutor() {
+        var invocations = 0
+        val plugin = plugin(
+            executionDescriptor(),
+            ToolExecutionAuthorizationPolicy(com.cordiact.core.action.DefaultApprovalGateway(), 30L),
+        ) { invocations++ }
+
+        val failure = assertFailsWith<ToolManagerException> {
+            plugin.invoke(context(), "priv_exec", commandArgs("id"))
+        }
+        assertEquals(ToolManagerException.Code.APPROVAL_DENIED, failure.code)
+        assertEquals(0, invocations)
+    }
+
     private fun executionDescriptor() = ToolDescriptor(
         id = "priv_exec",
         name = "Privileged exec",
