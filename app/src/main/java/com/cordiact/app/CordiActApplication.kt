@@ -579,6 +579,13 @@ class CordiActApplication : Application() {
     }
 
     /** Workspace of the session currently open in the UI; null before a session exists. */
+    /** Select the UI's foreground session only after resolving its workspace. */
+    fun selectForegroundSession(sessionId: String) {
+        val session = requireNotNull(sessions.getSession(sessionId)) { "Session does not exist" }
+        require(workspaceManager.activeWorkspace().id == session.workspaceId) { "Session is outside active workspace" }
+        activeSessionId = sessionId
+    }
+
     fun activeSessionWorkspaceId(): String? =
         activeSessionId?.let { id -> sessions.getSession(id)?.workspaceId }
 
