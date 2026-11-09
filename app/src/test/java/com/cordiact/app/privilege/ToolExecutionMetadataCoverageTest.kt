@@ -91,7 +91,8 @@ class ToolExecutionMetadataCoverageTest {
     private fun allExecutionToolDefinitions(): List<ToolDefinition> {
         val context = RuntimeEnvironment.getApplication()
         val privilege = PrivilegeService(
-            PrivilegeRouter(FakeChannel(PrivilegeLevel.SHELL), FakeChannel(PrivilegeLevel.ROOT)),
+            FakeChannel(PrivilegeLevel.SHELL),
+            FakeChannel(PrivilegeLevel.ROOT),
         )
         val ssh = SshPlugin(hostStore = SshHostStore(File(context.cacheDir, "ssh-hosts-test.json")))
         val termux = TermuxPlugin(TermuxBridge(context) { -1 to "unavailable in test" })

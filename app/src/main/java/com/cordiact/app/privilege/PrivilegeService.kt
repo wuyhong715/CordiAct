@@ -2,6 +2,7 @@ package com.cordiact.app.privilege
 
 import com.cordiact.core.automation.PrivilegeLevel
 import com.cordiact.core.automation.PrivilegeStatus
+import com.cordiact.core.automation.PrivilegedChannel
 import com.cordiact.core.automation.ShellCommandPolicy
 import com.cordiact.core.automation.ShellLimits
 import com.cordiact.core.automation.ShellResult
@@ -18,13 +19,16 @@ import com.cordiact.core.automation.ShellResult
  *  - every refusal happens before any backend call (zero side effects).
  */
 class PrivilegeService(
-    private val router: PrivilegeRouter,
+    shellChannel: PrivilegedChannel,
+    rootChannel: PrivilegedChannel? = null,
     private val settings: PrivilegeSettings = PrivilegeSettings(),
 ) {
     data class PrivilegeSettings(
         val advancedCommandsEnabled: Boolean = false,
         val rootEnabled: Boolean = false,
     )
+
+    private val router = PrivilegeRouter(shellChannel, rootChannel) { settings.rootEnabled }
 
     fun status(): PrivilegeStatus {
         if (settings.rootEnabled) {

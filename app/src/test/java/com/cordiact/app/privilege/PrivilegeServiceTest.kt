@@ -14,7 +14,7 @@ class PrivilegeServiceTest {
     @Test
     fun defaultSettingsNeverReachRootChannelForEitherAdvancedValue() {
         val fakeRoot = FakeChannel(PrivilegeLevel.ROOT)
-        val service = PrivilegeService(PrivilegeRouter(fakeRoot, fakeRoot))
+        val service = PrivilegeService(fakeRoot, fakeRoot)
         val first = service.exec("id", 10_000, advanced = false)
         val second = service.exec("id", 10_000, advanced = true)
         assertEquals(-1, first.exitCode)
@@ -26,7 +26,7 @@ class PrivilegeServiceTest {
     fun defaultSettingsNeverUseRootForOrdinaryExec() {
         val shell = FakeChannel(PrivilegeLevel.SHELL)
         val root = FakeChannel(PrivilegeLevel.ROOT)
-        val service = PrivilegeService(PrivilegeRouter(shell, root))
+        val service = PrivilegeService(shell, root)
 
         val result = service.exec("id", 10_000, advanced = false)
 
@@ -40,7 +40,7 @@ class PrivilegeServiceTest {
     fun rootRequestIsRefusedWhenRootSwitchIsOff() {
         val shell = FakeChannel(PrivilegeLevel.SHELL)
         val root = FakeChannel(PrivilegeLevel.ROOT)
-        val service = PrivilegeService(PrivilegeRouter(shell, root))
+        val service = PrivilegeService(shell, root)
 
         val result = service.exec("id", 10_000, advanced = false, requireRoot = true)
 
@@ -55,7 +55,7 @@ class PrivilegeServiceTest {
         val shell = FakeChannel(PrivilegeLevel.SHELL)
         val root = FakeChannel(PrivilegeLevel.ROOT)
         val service = PrivilegeService(
-            PrivilegeRouter(shell, root),
+            shell, root,
             PrivilegeService.PrivilegeSettings(advancedCommandsEnabled = false, rootEnabled = true),
         )
 
@@ -72,7 +72,7 @@ class PrivilegeServiceTest {
         val shell = FakeChannel(PrivilegeLevel.SHELL)
         val root = FakeChannel(PrivilegeLevel.ROOT)
         val service = PrivilegeService(
-            PrivilegeRouter(shell, root),
+            shell, root,
             PrivilegeService.PrivilegeSettings(advancedCommandsEnabled = true, rootEnabled = true),
         )
 
@@ -88,7 +88,7 @@ class PrivilegeServiceTest {
     fun shellChannelThatIsActuallyRootIsNotUsedImplicitly() {
         val shell = FakeChannel(PrivilegeLevel.ROOT)
         val root = FakeChannel(PrivilegeLevel.ROOT)
-        val service = PrivilegeService(PrivilegeRouter(shell, root))
+        val service = PrivilegeService(shell, root)
 
         val result = service.exec("id", 10_000, advanced = false)
 
@@ -103,7 +103,7 @@ class PrivilegeServiceTest {
         val shell = FakeChannel(PrivilegeLevel.SHELL)
         val root = FakeChannel(PrivilegeLevel.SHELL)
         val service = PrivilegeService(
-            PrivilegeRouter(shell, root),
+            shell, root,
             PrivilegeService.PrivilegeSettings(rootEnabled = true),
         )
 
@@ -120,7 +120,7 @@ class PrivilegeServiceTest {
         val shell = FakeChannel(PrivilegeLevel.NONE)
         val root = FakeChannel(PrivilegeLevel.ROOT)
         val service = PrivilegeService(
-            PrivilegeRouter(shell, root),
+            shell, root,
             PrivilegeService.PrivilegeSettings(rootEnabled = true),
         )
 

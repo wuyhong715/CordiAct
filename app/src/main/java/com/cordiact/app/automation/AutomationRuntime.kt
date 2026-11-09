@@ -47,8 +47,10 @@ class AutomationRuntime(context: Context) {
 
     val shizukuChannel = ShizukuChannel(appContext)
     val rootChannel = RootChannel()
-    val privilegeRouter = PrivilegeRouter(shizukuChannel, rootChannel)
-    val privilegeService = PrivilegeService(privilegeRouter)
+    // Termux bootstrap uses the ordinary shell channel only; root has its own
+    // explicitly gated path inside PrivilegeService.
+    val privilegeRouter = PrivilegeRouter(shizukuChannel)
+    val privilegeService = PrivilegeService(shizukuChannel, rootChannel)
     val privilegePlugin = PrivilegePlugin(privilegeService)
     val displayPlugin = DisplayPlugin()
 
