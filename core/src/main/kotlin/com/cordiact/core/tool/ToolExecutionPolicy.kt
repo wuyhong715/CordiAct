@@ -35,6 +35,13 @@ enum class ToolExecutionInputKind {
 
     /** File content sent to a remote destination (outbound data transfer). */
     FILE_CONTENT,
+
+    /**
+     * A structurally bounded read-only operation whose inputs are fully
+     * understood by the tool. Only this kind may opt into auto-approval; it is
+     * intentionally unused by the current shell/SSH/Termux tools.
+     */
+    STRUCTURED_READ_ONLY,
 }
 
 /** Data classes that leave the device or reach a shell. Shown verbatim in the approval card. */
@@ -124,8 +131,7 @@ data class ToolExecutionRequest(
     val argumentsDigest: String,
 ) {
     val requiresHumanApproval: Boolean
-        get() = !autoApprovable || inputKind == ToolExecutionInputKind.COMMAND ||
-            inputKind == ToolExecutionInputKind.INTERACTIVE_INPUT
+        get() = inputKind != ToolExecutionInputKind.STRUCTURED_READ_ONLY || !autoApprovable
 }
 
 sealed interface ToolExecutionAuthorization {
@@ -194,6 +200,7 @@ class ToolExecutionAuthorizationPolicy(
                 approvalTimeoutMillis,
             )
         } catch (t: Throwable) {
+            if (t is InterruptedException) Thread.currentThread().interrupt()
             return ToolExecutionAuthorization.Denied("Approval request failed: ${t.message ?: t::class.simpleName}")
         }
 

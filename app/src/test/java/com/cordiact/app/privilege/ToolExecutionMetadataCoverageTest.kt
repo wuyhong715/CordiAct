@@ -53,7 +53,8 @@ class ToolExecutionMetadataCoverageTest {
                     )
                 }
                 if (action.inputKind == ToolExecutionInputKind.COMMAND ||
-                    action.inputKind == ToolExecutionInputKind.INTERACTIVE_INPUT
+                    action.inputKind == ToolExecutionInputKind.INTERACTIVE_INPUT ||
+                    action.autoApprovable
                 ) {
                     assertFalse(
                         "${definition.descriptor.id}/${action.action} must not auto-approve arbitrary input",
