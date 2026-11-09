@@ -10,6 +10,12 @@ import com.cordiact.core.tool.ToolArguments
 import com.cordiact.core.tool.ToolDefinition
 import com.cordiact.core.tool.ToolDefinitionRegistry
 import com.cordiact.core.tool.ToolDescriptor
+import com.cordiact.core.tool.ToolExecutionAction
+import com.cordiact.core.tool.ToolExecutionBackend
+import com.cordiact.core.tool.ToolExecutionInputKind
+import com.cordiact.core.tool.ToolExecutionMetadata
+import com.cordiact.core.tool.ToolExecutionPrivilege
+import com.cordiact.core.tool.ToolDataClass
 import com.cordiact.core.tool.ToolInputSchema
 import com.cordiact.core.tool.ToolParameter
 import com.cordiact.core.tool.ToolResult
@@ -243,6 +249,21 @@ private fun execTool(
         requiredCapabilities = setOf(AutomationCapabilities.SSH_EXEC),
         timeoutMs = TIMEOUT_DEFAULT_EXEC,
         concurrencySafe = false,
+        execution = ToolExecutionMetadata(
+            listOf(
+                ToolExecutionAction(
+                    action = "exec",
+                    backend = ToolExecutionBackend.SSH,
+                    inputKind = ToolExecutionInputKind.COMMAND,
+                    inputParameter = "command",
+                    supplementalInputParameters = listOf("stdin"),
+                    hostParameter = "host",
+                    portParameter = "port",
+                    privilege = ToolExecutionPrivilege.STANDARD,
+                    dataClasses = setOf(ToolDataClass.SHELL_COMMAND, ToolDataClass.REMOTE_TARGET),
+                ),
+            ),
+        ),
     ),
     executor = { context, args ->
         val host = args.string("host") ?: return@ToolDefinition error("missing_arg", "host is required")
@@ -364,6 +385,25 @@ private fun execSavedTool(
         requiredCapabilities = setOf(AutomationCapabilities.SSH_EXEC),
         timeoutMs = TIMEOUT_DEFAULT_EXEC,
         concurrencySafe = false,
+        execution = ToolExecutionMetadata(
+            listOf(
+                ToolExecutionAction(
+                    action = "exec_saved",
+                    backend = ToolExecutionBackend.SSH,
+                    inputKind = ToolExecutionInputKind.COMMAND,
+                    inputParameter = "command",
+                    supplementalInputParameters = listOf("stdin"),
+                    savedHostParameter = "name",
+                    resolveTarget = { args ->
+                        args.string("name")?.let { name ->
+                            plugin.hostStore.get(name)?.let { "${it.host}:${it.port}" } ?: "saved:$name"
+                        }
+                    },
+                    privilege = ToolExecutionPrivilege.STANDARD,
+                    dataClasses = setOf(ToolDataClass.SHELL_COMMAND, ToolDataClass.REMOTE_TARGET),
+                ),
+            ),
+        ),
     ),
     executor = { context, args ->
         val name = args.string("name") ?: return@ToolDefinition error("missing_arg", "name is required")
@@ -461,6 +501,26 @@ private fun uploadTool(plugin: SshPlugin) = ToolDefinition(
         requiredCapabilities = setOf(AutomationCapabilities.SSH_SFTP),
         timeoutMs = TIMEOUT_SFTP,
         concurrencySafe = false,
+        execution = ToolExecutionMetadata(
+            listOf(
+                ToolExecutionAction(
+                    action = "upload",
+                    backend = ToolExecutionBackend.SSH,
+                    inputKind = ToolExecutionInputKind.FILE_CONTENT,
+                    inputParameter = "text",
+                    alternativeInputParameters = listOf("base64"),
+                    showInputInApproval = false,
+                    savedHostParameter = "name",
+                    resolveTarget = { args ->
+                        args.string("name")?.let { name ->
+                            plugin.hostStore.get(name)?.let { "${it.host}:${it.port}" } ?: "saved:$name"
+                        }
+                    },
+                    privilege = ToolExecutionPrivilege.STANDARD,
+                    dataClasses = setOf(ToolDataClass.FILE_CONTENT, ToolDataClass.REMOTE_TARGET),
+                ),
+            ),
+        ),
     ),
     executor = { _, args ->
         val name = args.string("name") ?: return@ToolDefinition error("missing_arg", "name is required")

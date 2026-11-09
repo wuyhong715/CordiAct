@@ -248,7 +248,10 @@ class BundledConversationPlugins private constructor(
         DefaultJobRegistry(spillStore = spillStore, jobStore = conversationStore)
     }
 
-    fun create(stateLookup: ToolPluginStateLookup): List<ManagedPlugin> {
+    fun create(
+        stateLookup: ToolPluginStateLookup,
+        approvalGateway: com.cordiact.core.action.ApprovalGateway? = null,
+    ): List<ManagedPlugin> {
         registerContextTools(registry, spillStore)
         registerJobTools(registry, jobRegistry)
         registerWorkspaceFileTools(registry, fileManager)
@@ -266,6 +269,7 @@ class BundledConversationPlugins private constructor(
             capabilities = com.cordiact.core.tool.ToolCapabilityGate { _, required ->
                 required.all { it in BundledConversationPluginCatalog.BUNDLED_GRANTED_CAPABILITIES }
             },
+            executionPolicy = com.cordiact.core.tool.ToolExecutionAuthorizationPolicy(approvalGateway),
         )
 
         val searchPolicies = AndroidSearchPolicyStore(conversationStore)

@@ -10,6 +10,12 @@ import com.cordiact.core.tool.ToolArguments
 import com.cordiact.core.tool.ToolDefinition
 import com.cordiact.core.tool.ToolDefinitionRegistry
 import com.cordiact.core.tool.ToolDescriptor
+import com.cordiact.core.tool.ToolExecutionAction
+import com.cordiact.core.tool.ToolExecutionBackend
+import com.cordiact.core.tool.ToolExecutionInputKind
+import com.cordiact.core.tool.ToolExecutionMetadata
+import com.cordiact.core.tool.ToolExecutionPrivilege
+import com.cordiact.core.tool.ToolDataClass
 import com.cordiact.core.tool.ToolInputSchema
 import com.cordiact.core.tool.ToolParameter
 import com.cordiact.core.tool.ToolResult
@@ -105,6 +111,19 @@ private fun runCommandTool(
         requiredCapabilities = setOf(AutomationCapabilities.TERMUX_EXEC),
         timeoutMs = TIMEOUT_DEFAULT_EXEC,
         concurrencySafe = false,
+        execution = ToolExecutionMetadata(
+            listOf(
+                ToolExecutionAction(
+                    action = "run",
+                    backend = ToolExecutionBackend.TERMUX,
+                    inputKind = ToolExecutionInputKind.COMMAND,
+                    inputParameter = "command",
+                    cwdParameter = "work_dir",
+                    privilege = ToolExecutionPrivilege.STANDARD,
+                    dataClasses = setOf(ToolDataClass.SHELL_COMMAND),
+                ),
+            ),
+        ),
     ),
     executor = { context, args ->
         val command = args.string("command") ?: return@ToolDefinition error("missing_arg", "command is required")
@@ -202,6 +221,21 @@ private fun sessionTool(plugin: TermuxPlugin) = ToolDefinition(
         requiredCapabilities = setOf(AutomationCapabilities.TERMUX_SESSION),
         timeoutMs = TIMEOUT_SESSION_OP,
         concurrencySafe = false,
+        execution = ToolExecutionMetadata(
+            listOf(
+                ToolExecutionAction(
+                    action = "send",
+                    backend = ToolExecutionBackend.TERMUX,
+                    inputKind = ToolExecutionInputKind.INTERACTIVE_INPUT,
+                    inputParameter = "input",
+                    actionParameter = "action",
+                    actionValue = "send",
+                    sessionParameter = "session_name",
+                    privilege = ToolExecutionPrivilege.STANDARD,
+                    dataClasses = setOf(ToolDataClass.INTERACTIVE_INPUT),
+                ),
+            ),
+        ),
     ),
     executor = { _, args ->
         val sessionName = args.string("session_name").orEmpty()
