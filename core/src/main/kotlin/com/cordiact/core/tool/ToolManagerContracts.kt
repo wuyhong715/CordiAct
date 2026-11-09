@@ -110,6 +110,14 @@ data class ToolDescriptor(
      * declaration uses this string and [inputSchema] is ignored for rendering.
      */
     val rawInputSchemaJson: String? = null,
+    /**
+     * Declares every executable action of this tool (shell, SSH, Termux,
+     * outbound file transfer). ToolManagerPlugin denies calls for tools that
+     * declare execution metadata without a matching action, and never lets a
+     * command-bearing tool bypass the human approval gate. Null means the tool
+     * cannot reach an execution backend.
+     */
+    val execution: ToolExecutionMetadata? = null,
 )
 
 data class ToolAvailability(
@@ -232,6 +240,7 @@ class InMemoryToolDefinitionRegistry : ToolDefinitionRegistry {
     override fun register(definition: ToolDefinition) {
         val descriptor = snapshotDescriptor(definition.descriptor)
         validateDescriptor(descriptor)
+        validateExecutionDeclaration(descriptor)
         require(definitions.putIfAbsent(descriptor.id, ToolDefinition(descriptor, definition.executor)) == null) {
             "Tool '${descriptor.id}' is already registered"
         }
@@ -257,6 +266,26 @@ class InMemoryToolDefinitionRegistry : ToolDefinitionRegistry {
 
     @Synchronized
     override fun visibility(toolId: String): ToolVisibilityGate? = visibilityGates[toolId]
+
+    private fun validateExecutionDeclaration(descriptor: ToolDescriptor) {
+        val parameterNames = descriptor.inputSchema.parameters.map { it.name }.toSet()
+        val hasExecutionPayloadParameter = parameterNames.any { it in TOOL_EXECUTION_PARAMETER_NAMES }
+        val hasExecutionCapability = descriptor.requiredCapabilities.any { it in TOOL_EXECUTION_CAPABILITIES }
+        require(descriptor.execution != null || (!hasExecutionPayloadParameter && !hasExecutionCapability)) {
+            "Tool ${descriptor.id} accepts an execution payload or declares an execution capability " +
+                "but has no ToolExecutionMetadata; register its actions so ToolManagerPlugin can authorize it"
+        }
+        descriptor.execution?.actions?.forEach { action ->
+            require(action.inputParameter in parameterNames) {
+                "Tool ${descriptor.id} action ${action.action} references unknown input parameter ${action.inputParameter}"
+            }
+            (action.alternativeInputParameters + action.supplementalInputParameters).forEach { name ->
+                require(name in parameterNames) {
+                    "Tool ${descriptor.id} action ${action.action} references unknown parameter $name"
+                }
+            }
+        }
+    }
 
     private fun snapshotDefinition(definition: ToolDefinition) = ToolDefinition(
         snapshotDescriptor(definition.descriptor),
@@ -370,6 +399,7 @@ class ToolManagerException(val code: Code, message: String) : RuntimeException(m
         CAPABILITY_DENIED,
         INVALID_ARGUMENT,
         TOOL_TIMEOUT,
+        APPROVAL_DENIED,
     }
 }
 
@@ -380,6 +410,7 @@ class ToolManagerPlugin(
     private val workspaces: WorkspaceManagerService,
     private val pluginStates: ToolPluginStateLookup,
     private val capabilities: ToolCapabilityGate = ToolCapabilityGate { _, required -> required.isEmpty() },
+    private val executionPolicy: ToolExecutionAuthorizationPolicy = ToolExecutionAuthorizationPolicy(null),
 ) : ManagedPlugin, ToolManagerService {
     override val spec: PluginSpec = toolManagerPluginSpec()
     @Volatile private var enabled = false
@@ -461,6 +492,25 @@ class ToolManagerPlugin(
             throw failure(ToolManagerException.Code.CAPABILITY_DENIED, "Required capability is not granted")
         }
         validateArguments(descriptor.inputSchema, arguments)
+
+        // Human authorization is enforced here, after schema/capability checks and
+        // before the real executor. Every caller (model, sub-agent, tool-to-tool,
+        // SSH/Termux background start) goes through this single path.
+        when (val authorization = executionPolicy.authorize(descriptor, arguments)) {
+            is ToolExecutionAuthorization.Denied -> throw failure(
+                ToolManagerException.Code.APPROVAL_DENIED,
+                authorization.reason,
+            )
+            is ToolExecutionAuthorization.Allowed, is ToolExecutionAuthorization.Approved -> Unit
+        }
+        // The tool may have been re-registered while the approval card was open;
+        // never execute a different definition than the one that was approved.
+        if (descriptor.execution != null && registry.get(toolId)?.descriptor != descriptor) {
+            throw failure(
+                ToolManagerException.Code.APPROVAL_DENIED,
+                "Tool definition changed during approval; execution refused",
+            )
+        }
 
         // Snapshot the authorization state, then execute OUTSIDE dispatchLock. Network tools
         // must never hold a lock shared by every Workspace; the generation check below discards

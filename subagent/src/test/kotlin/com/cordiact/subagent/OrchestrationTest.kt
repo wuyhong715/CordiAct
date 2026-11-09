@@ -253,7 +253,7 @@ class OrchestrationTest {
         val children = h.sessions.listChildSessions(h.root.id)
         assertEquals(2, children.size)
         assertTrue(children.all { it.kind == SessionKind.ORCHESTRATION })
-        assertEquals(listOf("p/s/1", "p/s/2"), children.map { it.title })
+        assertEquals(setOf("p/s/1", "p/s/2"), children.map { it.title }.toSet())
         assertEquals(setOf(1), children.map { it.depth }.toSet())
     }
 

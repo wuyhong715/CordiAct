@@ -6,39 +6,44 @@ import com.cordiact.core.automation.PrivilegedChannel
 import com.cordiact.core.automation.ShellResult
 
 /**
- * Picks the strongest available backend: root first, then Shizuku shell.
- * Both are probed lazily and cached for the lifetime of the process; a binder
- * death clears the cache on the next call.
+ * Routes an explicit privilege level to the matching backend.
+ *
+ * The router never picks the strongest channel implicitly: [status] and
+ * [exec] are the ordinary shell channel, and root is only reachable through
+ * [statusFor] / [execAs] with [PrivilegeLevel.ROOT]. The [rootEnabled] gate is
+ * evaluated here as a second line of defence, so even a direct router call
+ * cannot reach uid 0 while the user switch is off.
  */
 class PrivilegeRouter(
-    private val shizuku: ShizukuChannel,
-    private val root: RootChannel,
+    private val shell: PrivilegedChannel,
+    private val root: PrivilegedChannel? = null,
+    private val rootEnabled: () -> Boolean = { false },
 ) : PrivilegedChannel {
 
-    @Volatile
-    private var chosen: PrivilegedChannel? = null
+    override fun status(): PrivilegeStatus = shell.status()
 
-    override fun status(): PrivilegeStatus {
-        val rootStatus = root.status()
-        if (rootStatus.level == PrivilegeLevel.ROOT) {
-            chosen = root
-            return rootStatus
+    /** Ordinary shell execution. Never upgraded to root. */
+    override fun exec(command: String, timeoutMs: Long): ShellResult = shell.exec(command, timeoutMs)
+
+    fun statusFor(level: PrivilegeLevel): PrivilegeStatus = when (level) {
+        PrivilegeLevel.ROOT -> {
+            if (!rootEnabled()) {
+                PrivilegeStatus(PrivilegeLevel.NONE, reason = "root is disabled in settings")
+            } else {
+                root?.status() ?: PrivilegeStatus(PrivilegeLevel.NONE, reason = "root channel is not configured")
+            }
         }
-        val shellStatus = shizuku.status()
-        if (shellStatus.ready) {
-            chosen = shizuku
-            return shellStatus
-        }
-        chosen = null
-        return shellStatus.copy(recovery = shellStatus.recovery ?: rootStatus.recovery)
+        PrivilegeLevel.SHELL -> shell.status()
+        PrivilegeLevel.NONE -> PrivilegeStatus(PrivilegeLevel.NONE, reason = "no privileged channel requested")
     }
 
-    override fun exec(command: String, timeoutMs: Long): ShellResult {
-        val channel = chosen ?: run {
-            val status = status()
-            if (!status.ready) return ShellResult(-1, "", status.reason ?: "no privileged channel")
-            chosen
-        } ?: return ShellResult(-1, "", "no privileged channel")
-        return channel.exec(command, timeoutMs)
+    fun execAs(level: PrivilegeLevel, command: String, timeoutMs: Long): ShellResult = when (level) {
+        PrivilegeLevel.ROOT -> when {
+            !rootEnabled() -> ShellResult(-1, "", "root is disabled in settings")
+            root == null -> ShellResult(-1, "", "root channel is not configured")
+            else -> root.exec(command, timeoutMs)
+        }
+        PrivilegeLevel.SHELL -> shell.exec(command, timeoutMs)
+        PrivilegeLevel.NONE -> ShellResult(-1, "", "no privileged channel requested")
     }
 }

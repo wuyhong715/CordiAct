@@ -55,15 +55,7 @@ dependencies {
     implementation("io.noties.markwon:ext-tasklist:4.6.2")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
-    
-    // Markdown 渲染（代码高亮 + 表格）
-    implementation("com.github.jeziellago:compose-markdown:0.5.4")
-    
-    // 图片加载
-    implementation("io.coil-kt:coil-compose:2.7.0")
-    
-    // Material Icons Extended（补充图标）
-    implementation("androidx.compose.material:material-icons-extended:1.7.6")
+
     implementation("androidx.work:work-runtime-ktx:2.10.0")
     // Shizuku client: the privileged channel binds a user service running as the shell uid.
     implementation("dev.rikka.shizuku:api:13.1.5")

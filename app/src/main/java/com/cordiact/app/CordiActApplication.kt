@@ -283,7 +283,7 @@ class CordiActApplication : Application() {
     val approvalGateway: com.cordiact.core.action.ApprovalGateway = com.cordiact.core.action.DefaultApprovalGateway()
 
     private val toolDispatcher by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
-        AndroidToolDispatcher(tools, approvalGateway)
+        AndroidToolDispatcher(tools)
     }
 
     /**
@@ -486,7 +486,10 @@ class CordiActApplication : Application() {
             Log.e(TAG, "Plugin lifecycle recovery remains incomplete; blocked plugin ids: $needsRepair")
         }
 
-        val plugins = conversationCatalog.create { pluginId -> pluginLifecycle.manager.get(pluginId)?.state }
+        val plugins = conversationCatalog.create(
+            stateLookup = { pluginId -> pluginLifecycle.manager.get(pluginId)?.state },
+            approvalGateway = approvalGateway,
+        )
         modelAdapterPlugin = plugins.filterIsInstance<ModelAdapterPlugin>().single()
         sessionManagerPlugin = plugins.filterIsInstance<SessionManagerPlugin>().single()
         turnService = ConversationTurnService(

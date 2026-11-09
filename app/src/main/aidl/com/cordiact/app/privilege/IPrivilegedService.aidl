@@ -4,9 +4,11 @@ import android.graphics.Bitmap;
 import android.os.Bundle;
 
 /**
- * Runs in the Shizuku/ADB shell process. Only structured operations cross this
- * boundary: no file paths, no display ids and no command strings come from the
- * model — the host builds every command itself.
+ * Runs in the Shizuku/ADB shell process. Display operations are structured;
+ * [exec] intentionally carries a command string built from an approved tool
+ * invocation. The app-side PrivilegeService re-checks the root/advanced
+ * switches before calling it; this Binder contract is an execution primitive,
+ * not an authorization boundary.
  */
 interface IPrivilegedService {
     /** Returns a Bundle with exitCode/stdout/stderr/timedOut/truncated. */

@@ -7,6 +7,12 @@ import com.cordiact.core.tool.ToolArguments
 import com.cordiact.core.tool.ToolDefinition
 import com.cordiact.core.tool.ToolDefinitionRegistry
 import com.cordiact.core.tool.ToolDescriptor
+import com.cordiact.core.tool.ToolExecutionAction
+import com.cordiact.core.tool.ToolExecutionBackend
+import com.cordiact.core.tool.ToolExecutionInputKind
+import com.cordiact.core.tool.ToolExecutionMetadata
+import com.cordiact.core.tool.ToolExecutionPrivilege
+import com.cordiact.core.tool.ToolDataClass
 import com.cordiact.core.tool.ToolInputSchema
 import com.cordiact.core.tool.ToolParameter
 import com.cordiact.core.tool.ToolResult
@@ -74,6 +80,18 @@ private fun execTool(service: PrivilegeService) = ToolDefinition(
         requiredCapabilities = setOf(AutomationCapabilities.PRIV_SHELL),
         timeoutMs = TIMEOUT_EXEC,
         concurrencySafe = false,
+        execution = ToolExecutionMetadata(
+            listOf(
+                ToolExecutionAction(
+                    action = "exec",
+                    backend = ToolExecutionBackend.PRIVILEGED_SHELL,
+                    inputKind = ToolExecutionInputKind.COMMAND,
+                    inputParameter = "command",
+                    privilege = ToolExecutionPrivilege.SHELL,
+                    dataClasses = setOf(ToolDataClass.SHELL_COMMAND),
+                ),
+            ),
+        ),
     ),
     executor = { _, arguments -> runPrivileged(service, arguments, advanced = false) },
 )
@@ -94,6 +112,18 @@ private fun shellTool(service: PrivilegeService) = ToolDefinition(
         requiredCapabilities = setOf(AutomationCapabilities.PRIV_SHELL_ADVANCED),
         timeoutMs = TIMEOUT_SHELL,
         concurrencySafe = false,
+        execution = ToolExecutionMetadata(
+            listOf(
+                ToolExecutionAction(
+                    action = "shell",
+                    backend = ToolExecutionBackend.PRIVILEGED_SHELL,
+                    inputKind = ToolExecutionInputKind.COMMAND,
+                    inputParameter = "command",
+                    privilege = ToolExecutionPrivilege.SHELL,
+                    dataClasses = setOf(ToolDataClass.SHELL_COMMAND),
+                ),
+            ),
+        ),
     ),
     executor = { _, arguments -> runPrivileged(service, arguments, advanced = true) },
 )
@@ -102,7 +132,7 @@ private fun rootTool(service: PrivilegeService) = ToolDefinition(
     descriptor = ToolDescriptor(
         id = "priv_root",
         name = "priv_root",
-        description = "Advanced: run a command as uid 0. Requires root and the root switch; separate from the shell channel.",
+        description = "Advanced: run a command as uid 0. Requires the root switch and the advanced-commands switch; separate from the shell channel.",
         inputSchema = ToolInputSchema(
             parameters = listOf(
                 param("command", ToolValueType.STRING, "Command to run as root.", required = true, maxLength = 8_192),
@@ -114,12 +144,24 @@ private fun rootTool(service: PrivilegeService) = ToolDefinition(
         requiredCapabilities = setOf(AutomationCapabilities.PRIV_ROOT),
         timeoutMs = TIMEOUT_SHELL,
         concurrencySafe = false,
+        execution = ToolExecutionMetadata(
+            listOf(
+                ToolExecutionAction(
+                    action = "root",
+                    backend = ToolExecutionBackend.PRIVILEGED_ROOT,
+                    inputKind = ToolExecutionInputKind.COMMAND,
+                    inputParameter = "command",
+                    privilege = ToolExecutionPrivilege.ROOT,
+                    dataClasses = setOf(ToolDataClass.SHELL_COMMAND),
+                ),
+            ),
+        ),
     ),
     executor = { _, arguments ->
         if (!service.hasRoot()) {
             error("root_unavailable", "Root is not enabled or the root channel is not available")
         } else {
-            runPrivileged(service, arguments, advanced = true)
+            runPrivileged(service, arguments, advanced = true, requireRoot = true)
         }
     },
 )
@@ -128,6 +170,7 @@ private fun runPrivileged(
     service: PrivilegeService,
     arguments: ToolArguments,
     advanced: Boolean,
+    requireRoot: Boolean = false,
 ): ToolResult {
     val command = arguments.string("command")
         ?: return error("invalid_arguments", "Missing required argument: command")
@@ -136,7 +179,7 @@ private fun runPrivileged(
     if (status.level == PrivilegeLevel.NONE) {
         return error(status.reason ?: "privileged_channel_unavailable", status.recovery ?: "Enable Shizuku or root first")
     }
-    val result = service.exec(command, timeout.toLong(), advanced)
+    val result = service.exec(command, timeout.toLong(), advanced, requireRoot)
     if (result.exitCode == -1 && result.stderr.isNotBlank()) {
         return error("exec_refused", result.stderr)
     }
