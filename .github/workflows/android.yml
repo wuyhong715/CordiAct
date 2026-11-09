@@ -67,6 +67,10 @@ jobs:
             echo "release APK manifest still contains AutomationProbeReceiver" >&2
             exit 1
           fi
+          if unzip -p "$APK" 'classes*.dex' | strings | grep -q "AutomationProbeReceiver"; then
+            echo "release APK dex still contains AutomationProbeReceiver" >&2
+            exit 1
+          fi
       - name: Upload verification reports
         if: always()
         uses: actions/upload-artifact@v4
