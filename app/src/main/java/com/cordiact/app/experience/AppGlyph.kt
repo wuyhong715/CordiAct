@@ -13,11 +13,13 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.addPathNodes
 import androidx.compose.ui.unit.dp
 
-enum class GlyphName { Menu, Chat, Trace, Preview, Plus, Send, Stop, Close, ChevronDown, Check, Copy, ArrowDown, Expand, Terminal, Code, Globe, Back, Search, Settings, Link, Warning }
+enum class GlyphName { Menu, Chat, Trace, Preview, Plus, Send, Stop, Close, ChevronDown, Check, Copy, ArrowDown, Expand, Terminal, Code, Globe, Back, Search, Settings, Link, Warning, Folder, More }
 
 /** Cached original vectors: constant 24-unit viewport, no mutable Canvas scaling or per-frame paths. */
 private val glyphs: Map<GlyphName, ImageVector> by lazy {
     val paths = mapOf(
+        GlyphName.Folder to "M3,6 Q3,4 5,4 H9 L12,7 H19 Q21,7 21,9 V18 Q21,20 19,20 H5 Q3,20 3,18 Z",
+        GlyphName.More to "M5,12 H5.7 M12,12 H12.7 M19,12 H19.7",
         GlyphName.Menu to "M4,7 H20 M4,12 H16 M4,17 H20",
         GlyphName.Chat to "M7,4 H17 Q21,4 21,8 V14 Q21,18 17,18 H8 L5,21 V18 Q3,18 3,14 V8 Q3,4 7,4 M8,9 H16 M8,13 H13",
         GlyphName.Trace to "M5,4 V20 H21 M8,8 H13 M11,12 H19 M14,16 H21",
@@ -36,7 +38,7 @@ private val glyphs: Map<GlyphName, ImageVector> by lazy {
         GlyphName.Globe to "M21,12 A9,9 0,1 1,3 12 A9,9 0,1 1,21 12 M3,12 H21 M16,12 A4,9 0,1 1,8 12 A4,9 0,1 1,16 12",
         GlyphName.Back to "M15,5 L8,12 L15,19",
         GlyphName.Search to "M16.5,10 A6.5,6.5 0,1 1,3.5 10 A6.5,6.5 0,1 1,16.5 10 M15,15 L21,21",
-        GlyphName.Settings to "M20,12 A8,8 0,1 1,4 12 A8,8 0,1 1,20 12 M15,12 A3,3 0,1 1,9 12 A3,3 0,1 1,15 12",
+        GlyphName.Settings to "M4,7 H20 M7,5 V9 M4,12 H20 M15,10 V14 M4,17 H20 M10,15 V19",
         GlyphName.Link to "M10,15 L14,9 M10,8 L12,6 Q16,2 20,6 Q23,10 19,13 L17,15 M7,9 L5,11 Q1,15 5,19 Q9,22 13,18 L15,16",
         GlyphName.Warning to "M12,3 L22,20 H2 Z M12,9 V13 M12,16.5 V16.6",
     )

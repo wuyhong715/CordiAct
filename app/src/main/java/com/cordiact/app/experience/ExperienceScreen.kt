@@ -27,6 +27,8 @@ import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
@@ -62,40 +64,22 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
         drawerState = drawer,
         gesturesEnabled = drawer.isOpen || pager.currentPage == 0,
         drawerContent = {
-            ModalDrawerSheet(modifier = Modifier.fillMaxWidth(.87f), drawerContainerColor = MaterialTheme.colorScheme.background) {
-                Column(Modifier.fillMaxSize().statusBarsPadding().padding(horizontal = 16.dp)) {
-                    Row(Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 18.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Text("CordiAct", Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
-                        IconButton(onClick = { scope.launch { drawer.close() } }) { AppGlyph(GlyphName.Close, "关闭导航") }
-                    }
-                    FilledTonalButton(onClick = { viewModel.newSession(); scope.launch { drawer.close() } }, modifier = Modifier.fillMaxWidth(), contentPadding = PaddingValues(13.dp)) {
-                        AppGlyph(GlyphName.Plus, modifier = Modifier.size(18.dp)); Spacer(Modifier.width(9.dp)); Text("新对话")
-                    }
-                    Text("工作区", Modifier.padding(top = 26.dp, bottom = 10.dp), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    state.workspaces.forEach { workspace ->
-                        NavigationDrawerItem(
-                            label = { Text(workspace.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                            selected = state.workspace?.id == workspace.id,
-                            onClick = { viewModel.selectWorkspace(workspace.id) },
-                            icon = { AppGlyph(GlyphName.Terminal, modifier = Modifier.size(18.dp)) },
-                            modifier = Modifier.padding(vertical = 2.dp),
-                            colors = NavigationDrawerItemDefaults.colors(selectedContainerColor = MaterialTheme.colorScheme.primaryContainer),
-                        )
-                    }
-                    Text("会话", Modifier.padding(top = 24.dp, bottom = 10.dp), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                        items(state.sessions, key = { it.id }) { session ->
-                            NavigationDrawerItem(
-                                label = { Text(session.title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                                selected = session.id == state.sessionId,
-                                onClick = { viewModel.selectSession(session.id); scope.launch { drawer.close() } },
-                                icon = { AppGlyph(GlyphName.Chat, modifier = Modifier.size(17.dp)) },
-                                colors = NavigationDrawerItemDefaults.colors(selectedContainerColor = MaterialTheme.colorScheme.surfaceContainer),
-                            )
-                        }
-                    }
-                    Text("工作区隔离 · 会话持久保存", Modifier.padding(vertical = 19.dp).navigationBarsPadding(), color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall)
-                }
+            val drawerWidth = minOf(LocalConfiguration.current.screenWidthDp.dp * .86f, 360.dp)
+            val context = LocalContext.current
+            val closeAfterSelection: () -> Unit = { scope.launch { drawer.close() } }
+            ModalDrawerSheet(modifier = Modifier.width(drawerWidth), drawerContainerColor = MaterialTheme.colorScheme.surfaceContainerLowest) {
+                ConversationSidebar(
+                    groups = state.sidebar, activeWorkspaceId = state.workspace?.id, activeSessionId = state.sessionId,
+                    runningSessionIds = state.runningSessionIds, busy = state.loading, error = state.error,
+                    onClose = { scope.launch { drawer.close() } },
+                    onNewSession = { workspace -> viewModel.newSession(workspace ?: state.workspace?.id, closeAfterSelection) },
+                    onSelectWorkspace = { viewModel.selectWorkspace(it, closeAfterSelection) },
+                    onSelectSession = { viewModel.selectSession(it, closeAfterSelection) },
+                    onCreateWorkspace = { name, onSuccess -> viewModel.createWorkspace(name) { closeAfterSelection(); onSuccess() } },
+                    onRenameWorkspace = { id, name, onSuccess -> viewModel.renameWorkspace(id, name, onSuccess) },
+                    onRetry = viewModel::refresh,
+                    onSettings = { android.widget.Toast.makeText(context, "设置将在批二开放", android.widget.Toast.LENGTH_SHORT).show() },
+                )
             }
         },
     ) {

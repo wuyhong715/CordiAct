@@ -28,6 +28,8 @@ data class ExperienceState(
     val workspace: Workspace? = null,
     val workspaces: List<Workspace> = emptyList(),
     val sessions: List<ConversationSession> = emptyList(),
+    val sidebar: List<SidebarWorkspace> = emptyList(),
+    val runningSessionIds: Set<String> = emptySet(),
     val sessionId: String? = null,
     val models: List<ModelDescriptor> = emptyList(),
     val model: ModelId? = null,
@@ -70,7 +72,7 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
                 val owned = calls[entry.session]?.turnId == entry.turn
                 if (entry.event is TranscriptEvent.Finished && owned) {
                     calls.remove(entry.session)
-                    mutable.update { it.copy(stoppingSessions = it.stoppingSessions - entry.session) }
+                    mutable.update { it.copy(stoppingSessions = it.stoppingSessions - entry.session, runningSessionIds = it.runningSessionIds - entry.session) }
                 }
                 if (mutable.value.sessionId == entry.session) mutable.update { it.copy(turns = cache[entry.session].orEmpty()) }
             }
@@ -90,48 +92,98 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
         loadSession(null, null)
     }
 
-    fun selectSession(id: String) = loadSession(id, null)
-    fun selectWorkspace(id: String) = loadSession(null, id)
-    fun newSession() = loadSession(null, mutable.value.workspace?.id, create = true)
+    fun selectSession(id: String, onSelected: () -> Unit = {}) = loadSession(id, null, onSelected = onSelected)
+    fun selectWorkspace(id: String, onSelected: () -> Unit = {}) = loadSession(null, id, onSelected = onSelected)
+    fun newSession(workspaceId: String? = mutable.value.workspace?.id, onSelected: () -> Unit = {}) =
+        loadSession(null, workspaceId, create = true, onSelected = onSelected)
+    fun createWorkspace(name: String, onSelected: () -> Unit = {}) =
+        loadSession(null, null, create = true, newWorkspaceName = name, onSelected = onSelected)
+    fun renameWorkspace(id: String, name: String, onSuccess: () -> Unit = {}) {
+        if (loadingSession) return
+        val error = sidebarNameError(name)
+        if (error != null) { mutable.update { it.copy(error = error) }; return }
+        loadingSession = true
+        mutable.update { it.copy(loading = true, error = null) }
+        viewModelScope.launch {
+            try {
+                val renamed = withContext(Dispatchers.IO) { app.workspaceManager.rename(id, name.trim()) }
+                mutable.update { state -> state.copy(loading = false,
+                    workspace = if (state.workspace?.id == id) renamed else state.workspace,
+                    workspaces = state.workspaces.map { if (it.id == id) renamed else it },
+                    sidebar = state.sidebar.map { if (it.id == id) it.copy(name = renamed.name, updatedAtMillis = renamed.updatedAtMillis) else it },
+                ) }
+                onSuccess()
+            } catch (cancel: CancellationException) { throw cancel }
+            catch (failure: Exception) { mutable.update { it.copy(loading = false, error = failure.message ?: "重命名失败") } }
+            finally { loadingSession = false }
+        }
+    }
 
-    private fun loadSession(sessionId: String?, workspaceId: String?, create: Boolean = false) {
+    private fun loadSession(
+        sessionId: String?, workspaceId: String?, create: Boolean = false,
+        newWorkspaceName: String? = null, onSelected: () -> Unit = {},
+    ) {
+        // Serialize user navigation and mutations: a rapid double tap must not create two sessions.
+        if (loadingSession) return
+        if (newWorkspaceName != null) {
+            val error = sidebarNameError(newWorkspaceName)
+            if (error != null) { mutable.update { it.copy(error = error) }; return }
+        }
         val version = ++selectionVersion
         loadingSession = true
         mutable.update { it.copy(loading = true, error = null) }
         viewModelScope.launch {
             try {
                 val snapshot = withContext(Dispatchers.IO) {
-                    val workspace = workspaceId?.let { app.workspaceManager.get(it) }
-                        ?: sessionId?.let { app.sessions.getSession(it)?.workspaceId }?.let(app.workspaceManager::get)
-                        ?: app.workspaceManager.activeWorkspace()
-                    val sessions = app.sessions.listSessions(workspace.id)
+                    val requested = sessionId?.let { requireNotNull(app.sessions.getSession(it)) { "会话不存在" } }
+                    val workspace = when {
+                        newWorkspaceName != null -> app.workspaceManager.create(newWorkspaceName.trim())
+                        workspaceId != null -> requireNotNull(app.workspaceManager.get(workspaceId)) { "工作区不存在" }
+                        requested != null -> requireNotNull(app.workspaceManager.get(requested.workspaceId)) { "工作区不存在" }
+                        else -> app.workspaceManager.activeWorkspace()
+                    }
+                    require(workspace.archivedAtMillis == null) { "工作区已归档" }
+                    val sessions = app.sessions.listSessions(workspace.id).filter { it.kind == SessionKind.USER }
+                        .sortedWith(compareByDescending<ConversationSession> { it.updatedAtMillis }.thenBy { it.id })
                     val selected = when {
                         create -> app.sessions.createSession(workspace.id, "新对话")
-                        sessionId != null -> requireNotNull(app.sessions.getSession(sessionId)) { "会话不存在" }
+                        requested != null -> requested.also { require(it.kind == SessionKind.USER) { "无法选择内部执行会话" } }
                         workspaceId != null -> sessions.firstOrNull() ?: app.sessions.createSession(workspace.id, "新对话")
-                        else -> app.activeSessionId?.let(app.sessions::getSession)?.takeIf { it.workspaceId == workspace.id }
+                        else -> app.activeSessionId?.let(app.sessions::getSession)?.takeIf { it.workspaceId == workspace.id && it.kind == SessionKind.USER }
                             ?: sessions.firstOrNull() ?: app.sessions.createSession(workspace.id, "新对话")
                     }
                     require(selected.workspaceId == workspace.id)
-                    Loaded(workspace, app.workspaceManager.list(), app.sessions.listSessions(workspace.id), selected,
-                        app.modelAdapter.models(), app.sessions.messages(selected.id).map { StoredMessage(it.id, it.role.name, it.content, it.createdAtMillis) })
+                    val workspaces = app.workspaceManager.list()
+                    val sidebar = workspaces.map { item ->
+                        SidebarWorkspace(item.id, item.name, item.updatedAtMillis,
+                            app.sessions.listSessions(item.id).filter { it.kind == SessionKind.USER }.map {
+                                SidebarConversation(it.id, it.title, it.updatedAtMillis)
+                            })
+                    }
+                    Loaded(workspace, workspaces, app.sessions.listSessions(workspace.id).filter { it.kind == SessionKind.USER }, selected,
+                        app.modelAdapter.models(), app.sessions.messages(selected.id).map { StoredMessage(it.id, it.role.name, it.content, it.createdAtMillis) }, sidebar)
                 }
                 if (version != selectionVersion) return@launch
                 selectionMutex.withLock {
-                    if (version != selectionVersion) return@launch
                     withContext(Dispatchers.IO) {
-                        app.workspaceManager.select(snapshot.workspace.id)
-                        app.selectForegroundSession(snapshot.selected.id)
+                        val previous = app.workspaceManager.activeWorkspace().id
+                        try {
+                            app.workspaceManager.select(snapshot.workspace.id)
+                            app.selectForegroundSession(snapshot.selected.id)
+                        } catch (failure: Exception) {
+                            runCatching { app.workspaceManager.select(previous) }
+                            throw failure
+                        }
                     }
                 }
-                if (version != selectionVersion) return@launch
                 cache.getOrPut(snapshot.selected.id) { restoreTranscript(snapshot.messages) }
                 val preferred = mutable.value.model ?: readModel()
                 val model = snapshot.models.find { it.id == preferred }?.id
                     ?: snapshot.models.firstOrNull { it.id.modelId == "deepseek-flash" }?.id ?: snapshot.models.firstOrNull()?.id
                 mutable.update { it.copy(loading = false, workspace = snapshot.workspace, workspaces = snapshot.workspaces,
-                    sessions = snapshot.sessions, sessionId = snapshot.selected.id, models = snapshot.models, model = model,
+                    sessions = snapshot.sessions, sidebar = snapshot.sidebar, sessionId = snapshot.selected.id, models = snapshot.models, model = model,
                     turns = cache[snapshot.selected.id].orEmpty(), error = null) }
+                onSelected()
             } catch (cancel: CancellationException) { throw cancel }
             catch (error: Exception) { if (version == selectionVersion) mutable.update { it.copy(loading = false, error = error.message ?: "读取会话失败") } }
             finally { if (version == selectionVersion) loadingSession = false }
@@ -139,7 +191,7 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
     }
 
     private data class Loaded(val workspace: Workspace, val workspaces: List<Workspace>, val sessions: List<ConversationSession>,
-        val selected: ConversationSession, val models: List<ModelDescriptor>, val messages: List<StoredMessage>)
+        val selected: ConversationSession, val models: List<ModelDescriptor>, val messages: List<StoredMessage>, val sidebar: List<SidebarWorkspace>)
 
     private fun readModel(): ModelId? {
         val prefs = app.getSharedPreferences("experience", 0)
@@ -190,7 +242,7 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
         calls[session] = owner
         val turn = TranscriptTurn(turnId, text.trim(), phase = RunPhase.RUNNING, startedAt = System.currentTimeMillis())
         cache[session] = cache[session].orEmpty() + turn
-        mutable.update { it.copy(turns = cache[session].orEmpty(), error = null) }
+        mutable.update { it.copy(turns = cache[session].orEmpty(), error = null, runningSessionIds = it.runningSessionIds + session) }
         val requestJob = viewModelScope.launch(start = CoroutineStart.LAZY) {
             try {
                 val requestContext = currentCoroutineContext()
