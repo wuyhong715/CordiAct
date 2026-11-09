@@ -52,6 +52,21 @@ jobs:
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platform-tools" "platforms;android-35" "build-tools;35.0.0" "ndk;27.2.12479018" "cmake;3.22.1"
       - name: Build and test
         run: ./gradlew test assembleDebug --no-daemon
+      - name: Assemble release and verify debug probe is absent
+        run: |
+          ./gradlew :app:assembleRelease --no-daemon
+          MANIFEST=$(find app/build/intermediates/merged_manifests/release -name AndroidManifest.xml | head -1)
+          test -n "$MANIFEST"
+          if grep -q "AutomationProbeReceiver" "$MANIFEST"; then
+            echo "release merged manifest still contains AutomationProbeReceiver" >&2
+            exit 1
+          fi
+          APK=$(find app/build/outputs/apk/release -name '*.apk' | head -1)
+          test -n "$APK"
+          if unzip -p "$APK" AndroidManifest.xml | strings | grep -q "AutomationProbeReceiver"; then
+            echo "release APK manifest still contains AutomationProbeReceiver" >&2
+            exit 1
+          fi
       - name: Upload verification reports
         if: always()
         uses: actions/upload-artifact@v4
