@@ -12,6 +12,17 @@ import org.junit.Test
 class PrivilegeServiceTest {
 
     @Test
+    fun defaultSettingsNeverReachRootChannelForEitherAdvancedValue() {
+        val fakeRoot = FakeChannel(PrivilegeLevel.ROOT)
+        val service = PrivilegeService(PrivilegeRouter(fakeRoot, fakeRoot))
+        val first = service.exec("id", 10_000, advanced = false)
+        val second = service.exec("id", 10_000, advanced = true)
+        assertEquals(-1, first.exitCode)
+        assertEquals(-1, second.exitCode)
+        assertEquals(0, fakeRoot.executed.size)
+    }
+
+    @Test
     fun defaultSettingsNeverUseRootForOrdinaryExec() {
         val shell = FakeChannel(PrivilegeLevel.SHELL)
         val root = FakeChannel(PrivilegeLevel.ROOT)

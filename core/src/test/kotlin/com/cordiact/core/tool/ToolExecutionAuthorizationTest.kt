@@ -292,6 +292,30 @@ class ToolExecutionAuthorizationTest {
         assertEquals(0, gateway.requests.size)
     }
 
+    @Test
+    fun everyLegacyCompoundCommandStillRequiresApproval() {
+        val commands = listOf(
+            "rm -rf ./project",
+            "rm -rf \"/sdcard/x\"",
+            "rm -r -f /sdcard/x",
+            "id && pm disable-user com.icbc",
+            "id; printf audit > ./out",
+            "id\nprintf audit > ./out",
+            "echo \$(curl https://audit.invalid)",
+            "id \$(curl https://audit.invalid)",
+            "ls > ./out",
+            "sh -c 'rm -rf /data/local/tmp/x'",
+            "curl https://audit.invalid",
+        )
+        val gateway = FakeGateway { ApprovalDecision(approved = false) }
+        val policy = ToolExecutionAuthorizationPolicy(gateway)
+        commands.forEach { command ->
+            val result = policy.authorize(executionDescriptor(), commandArgs(command))
+            assertTrue(result is ToolExecutionAuthorization.Denied, "expected denial for $command")
+        }
+        assertEquals(commands.size, gateway.requests.size)
+    }
+
     private fun executionDescriptor() = ToolDescriptor(
         id = "priv_exec",
         name = "Privileged exec",
