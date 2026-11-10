@@ -27,6 +27,7 @@ import org.json.JSONObject
  */
 class AndroidToolDispatcher(
     private val tools: ToolManagerService,
+    private val sensitivePayloads: com.cordiact.core.security.SensitivePayloadRegistry? = null,
 ) : ToolDispatcher {
 
     override fun dispatch(context: ToolInvocationContext, call: ModelToolCall): ModelMessage {
@@ -46,6 +47,19 @@ class AndroidToolDispatcher(
             return failure(call, "INVALID_ARGUMENT", "Arguments were not a JSON object")
         } catch (e: Exception) {
             return failure(call, "TOOL_FAILED", e.message ?: "Tool call failed")
+        }
+        val sensitive = result.sensitivePayload
+        if (sensitive != null) {
+            if (sensitivePayloads == null) {
+                sensitive.close()
+                return failure(call, "SENSITIVE_TRANSPORT_UNAVAILABLE", "Sensitive result transport is not configured")
+            }
+            sensitivePayloads.register(
+                toolCallId = call.id,
+                payload = sensitive,
+                providerId = context.modelProviderId,
+                modelId = context.modelId,
+            )
         }
         return ModelMessage(
             role = MessageRole.TOOL,

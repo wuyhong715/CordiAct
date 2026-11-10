@@ -58,4 +58,21 @@ class ActionContractsTest {
         assertEquals(0, gateway.pendingRequests().size)
         executor.shutdown()
     }
+
+    @Test
+    fun defaultApprovalGatewayAcceptsOnlyOneAnswer() {
+        val gateway = DefaultApprovalGateway()
+        val request = ApprovalRequest(id = "req-2", toolName = "credential_read", summary = "read")
+        val executor = java.util.concurrent.Executors.newSingleThreadExecutor()
+        val future = executor.submit<ApprovalDecision> { gateway.requestApproval(request, 5000L) }
+        var retries = 50
+        while (gateway.pendingRequests().isEmpty() && retries > 0) {
+            Thread.sleep(10)
+            retries--
+        }
+        assertTrue(gateway.respond("req-2", ApprovalDecision(approved = true)))
+        assertTrue(!gateway.respond("req-2", ApprovalDecision(approved = false)))
+        assertTrue(future.get(2, java.util.concurrent.TimeUnit.SECONDS).approved)
+        executor.shutdown()
+    }
 }

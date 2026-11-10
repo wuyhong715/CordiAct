@@ -282,8 +282,13 @@ class CordiActApplication : Application() {
 
     val approvalGateway: com.cordiact.core.action.ApprovalGateway = com.cordiact.core.action.DefaultApprovalGateway()
 
+    /** Credential vault + mandatory security gate; lazily opens its private no-backup database. */
+    val credentialVaultRuntime: com.cordiact.app.security.CredentialVaultRuntime by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+        com.cordiact.app.security.CredentialVaultRuntime.get(this, approvalGateway)
+    }
+
     private val toolDispatcher by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
-        AndroidToolDispatcher(tools)
+        AndroidToolDispatcher(tools, credentialVaultRuntime.sensitivePayloads)
     }
 
     /**
@@ -486,11 +491,17 @@ class CordiActApplication : Application() {
             Log.e(TAG, "Plugin lifecycle recovery remains incomplete; blocked plugin ids: $needsRepair")
         }
 
+        val credentialRuntime = credentialVaultRuntime
         val plugins = conversationCatalog.create(
             stateLookup = { pluginId -> pluginLifecycle.manager.get(pluginId)?.state },
             approvalGateway = approvalGateway,
+            extraPlugins = listOf(credentialRuntime.credentialPlugin, credentialRuntime.auditPlugin),
+            autoReview = credentialRuntime::reviewTool,
         )
         modelAdapterPlugin = plugins.filterIsInstance<ModelAdapterPlugin>().single()
+        credentialRuntime.attachReviewerClient(
+            com.cordiact.model.providers.ModelReviewerClient { modelAdapter },
+        )
         sessionManagerPlugin = plugins.filterIsInstance<SessionManagerPlugin>().single()
         turnService = ConversationTurnService(
             sessions = sessionManagerPlugin,
@@ -499,6 +510,7 @@ class CordiActApplication : Application() {
             compactionStore = conversationCatalog.conversationStore,
             inbox = asyncTurnInbox,
             summaryModelProvider = { summaryModelStore.selectedModel() },
+            sensitivePayloads = credentialRuntime.sensitivePayloads,
         )
         // A finished turn is the cheapest moment to think about the next one: the summary can be
         // prepared while nobody is waiting, and installed only if it still applies.
@@ -512,6 +524,7 @@ class CordiActApplication : Application() {
         registerSubagentTools(conversationCatalog.toolRegistry, subagentRuntime)
         registerOrchestrationTools(conversationCatalog.toolRegistry, orchestrationPlugin)
         registerBackgroundSubagentTools(conversationCatalog.toolRegistry, backgroundSubagents)
+        credentialVaultRuntime.registerTools(conversationCatalog.toolRegistry)
         interactionPlugin = conversationCatalog.interactionPlugin
         interactionPlugin.service.attachModelSubmitter(InteractionModelSubmitter { envelope, modelId, parameters, onEvent ->
             // `@` is an authorization, not an attachment. Nothing is read here: the reference
@@ -546,6 +559,12 @@ class CordiActApplication : Application() {
                 modelProviderId = modelId.providerId,
                 modelId = modelId.modelId,
                 requestText = prompt,
+                securityContext = credentialVaultRuntime.newSecurityContext(
+                    workspaceId = envelope.context.workspaceId,
+                    sessionId = envelope.context.sessionId,
+                    modelProviderId = modelId.providerId,
+                    modelId = modelId.modelId,
+                ),
             )
             turnService.submitWithTools(
                 sessionId = envelope.context.sessionId,
