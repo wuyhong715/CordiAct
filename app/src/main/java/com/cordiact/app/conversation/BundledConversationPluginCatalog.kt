@@ -252,9 +252,9 @@ class BundledConversationPlugins private constructor(
 
     fun create(
         approvalGateway: com.cordiact.core.action.ApprovalGateway? = null,
+        autoReview: ((com.cordiact.core.security.SecurityContext, String, com.cordiact.core.tool.ToolArguments, () -> com.cordiact.core.tool.ToolResult) -> com.cordiact.core.tool.ToolResult)? = null,
         stateLookup: ToolPluginStateLookup,
         extraPlugins: List<ManagedPlugin> = emptyList(),
-        autoReview: ((com.cordiact.core.security.SecurityContext, String, com.cordiact.core.tool.ToolArguments, () -> com.cordiact.core.tool.ToolResult) -> com.cordiact.core.tool.ToolResult)? = null,
     ): List<ManagedPlugin> {
         registerContextTools(registry, spillStore)
         registerJobTools(registry, jobRegistry)
