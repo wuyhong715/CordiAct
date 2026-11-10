@@ -93,9 +93,11 @@ class BundledConversationPluginCatalogTest {
     @Test
     fun firstConversationPluginsRegisterEnableAndRemainProtected() {
         val catalog = BundledConversationPlugins.create(conversationStore, context.noBackupFilesDir)
-        val plugins = catalog.create { pluginId ->
-            if (pluginId == "core.workspace-manager") PluginState.ENABLED else null
-        }
+        val plugins = catalog.create(
+            stateLookup = { pluginId ->
+                if (pluginId == "core.workspace-manager") PluginState.ENABLED else null
+            },
+        )
         assertEquals(
             listOf("core.workspace-manager", "core.file-manager", "core.skill", "core.tool-manager", "core.search", "core.model-adapter", "core.session-manager", "model.deepseek", "model.providers", "core.interaction"),
             plugins.map { it.spec.id },
