@@ -69,6 +69,8 @@ class ConversationTurnService(
      * means "do not run at all" — compaction is not optional, its quality is.
      */
     private val summaryModelProvider: () -> ModelId? = { null },
+    /** Host-only one-shot transport for an approved plaintext credential result. */
+    private val sensitivePayloads: com.cordiact.core.security.SensitivePayloadRegistry? = null,
 ) {
     /** Owns "should I compact, and how", so this service only decides *when* to ask. */
     private val compactor = DefaultContextCompactor(
@@ -305,12 +307,17 @@ class ConversationTurnService(
         }
         activeToolRounds[sessionId] = roundController
         var failure: ModelEvent.Failed? = null
+        val wireMessages = sensitivePayloads?.wireMessages(
+            messages = messages,
+            providerId = model.providerId,
+            modelId = model.modelId,
+        ) ?: messages
 
         val call = try { models.generate(
             ModelGenerationRequest(
                 sessionId = sessionId,
                 model = model,
-                messages = messages,
+                messages = wireMessages,
                 parameters = parameters,
                 tools = tools,
             ),

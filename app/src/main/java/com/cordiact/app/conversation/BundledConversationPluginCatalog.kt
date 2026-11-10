@@ -159,6 +159,8 @@ object BundledConversationPluginCatalog {
         browserPluginSpec(),
         privilegePluginSpec(),
         displayPluginSpec(),
+        com.cordiact.core.security.credentialVaultPluginSpec(),
+        com.cordiact.core.security.securityAuditPluginSpec(),
     )
 
     val verifier = BundledPluginVerifier { candidate -> candidate in trustedSpecs }
@@ -251,6 +253,8 @@ class BundledConversationPlugins private constructor(
     fun create(
         approvalGateway: com.cordiact.core.action.ApprovalGateway? = null,
         stateLookup: ToolPluginStateLookup,
+        extraPlugins: List<ManagedPlugin> = emptyList(),
+        autoReview: ((com.cordiact.core.security.SecurityContext, String, com.cordiact.core.tool.ToolArguments, () -> com.cordiact.core.tool.ToolResult) -> com.cordiact.core.tool.ToolResult)? = null,
     ): List<ManagedPlugin> {
         registerContextTools(registry, spillStore)
         registerJobTools(registry, jobRegistry)
@@ -270,6 +274,10 @@ class BundledConversationPlugins private constructor(
                 required.all { it in BundledConversationPluginCatalog.BUNDLED_GRANTED_CAPABILITIES }
             },
             executionPolicy = com.cordiact.core.tool.ToolExecutionAuthorizationPolicy(approvalGateway),
+            autoReview = autoReview,
+            accessPolicy = com.cordiact.core.security.EnvelopeToolAccessPolicy(
+                com.cordiact.app.security.BuiltInToolEffectClassifier(),
+            ),
         )
 
         val searchPolicies = AndroidSearchPolicyStore(conversationStore)
@@ -443,7 +451,7 @@ class BundledConversationPlugins private constructor(
             DeepSeekBackendPlugin(modelAdapter, ConfigurableModelBackend(DeepSeekPreset.config(), apiKeyProvider)),
             modelProviderRegistryPlugin,
             interactionPlugin,
-        )
+        ) + extraPlugins
     }
 
     companion object {

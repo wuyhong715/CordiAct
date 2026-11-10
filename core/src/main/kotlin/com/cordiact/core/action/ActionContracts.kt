@@ -95,7 +95,12 @@ class DefaultApprovalGateway : ApprovalGateway {
 
     override fun respond(requestId: String, decision: ApprovalDecision): Boolean {
         val slot = pending[requestId] ?: return false
-        slot.decision = decision
+        // Sensitive requests must not accept two answers. The first responder wins; every later
+        // response (double click, second window, late timer) is rejected.
+        synchronized(slot) {
+            if (slot.decision != null) return false
+            slot.decision = decision
+        }
         slot.latch.countDown()
         return true
     }

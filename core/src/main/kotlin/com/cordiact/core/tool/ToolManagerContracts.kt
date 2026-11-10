@@ -4,6 +4,7 @@ import com.cordiact.core.plugin.ManagedPlugin
 import com.cordiact.core.plugin.PluginSpec
 import com.cordiact.core.plugin.PluginState
 import com.cordiact.core.plugin.PluginTarget
+import com.cordiact.core.security.SensitivePayload
 import com.cordiact.core.workspace.WorkspaceManagerService
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.ExecutorService
@@ -47,6 +48,12 @@ data class ToolArguments(val values: Map<String, ToolValue> = emptyMap())
 data class ToolResult(
     val values: Map<String, ToolValue> = emptyMap(),
     val metadata: Map<String, ToolValue> = emptyMap(),
+    /**
+     * Host-only sensitive result for an explicitly approved raw read. Normal tool serializers must
+     * never render this field into the prompt, history, trace or audit. A model adapter that has no
+     * approved sensitive transport must refuse to consume it instead of falling back to String.
+     */
+    val sensitivePayload: SensitivePayload? = null,
 )
 
 /**
@@ -68,6 +75,8 @@ data class ToolParameter(
     val minItems: Int? = null,
     val maxItems: Int? = null,
     val maxLength: Int? = null,
+    /** True for a value that must be scrubbed from traces before execution and never audited. */
+    val sensitive: Boolean = false,
 )
 
 /**
@@ -171,6 +180,8 @@ data class ToolInvocationContext(
     val modelId: String? = null,
     /** The user text that triggered this turn, when known. */
     val requestText: String? = null,
+    /** Host-issued security context for sensitive tools; never populated from tool JSON. */
+    val securityContext: com.cordiact.core.security.SecurityContext? = null,
     /** Optional event callback to emit real-time tool lifecycle events to the caller/UI. */
     val onEvent: ((com.cordiact.core.conversation.ModelEvent) -> Unit)? = null,
 ) {
@@ -411,6 +422,8 @@ class ToolManagerPlugin(
     private val pluginStates: ToolPluginStateLookup,
     private val capabilities: ToolCapabilityGate = ToolCapabilityGate { _, required -> required.isEmpty() },
     private val executionPolicy: ToolExecutionAuthorizationPolicy = ToolExecutionAuthorizationPolicy(null),
+    private val accessPolicy: com.cordiact.core.security.EnvelopeToolAccessPolicy? = null,
+    private val autoReview: ((com.cordiact.core.security.SecurityContext, String, ToolArguments, () -> ToolResult) -> ToolResult)? = null,
 ) : ManagedPlugin, ToolManagerService {
     override val spec: PluginSpec = toolManagerPluginSpec()
     @Volatile private var enabled = false
@@ -472,7 +485,16 @@ class ToolManagerPlugin(
             activation == null || registry.visibility(descriptor.id)?.visible(activation) != false
         }
 
-    override fun invoke(context: ToolInvocationContext, toolId: String, arguments: ToolArguments): ToolResult {
+    override fun invoke(context: ToolInvocationContext, toolId: String, arguments: ToolArguments): ToolResult =
+        invokeFrozen(context, toolId, ToolArguments(arguments.values.mapValues { freezeValue(it.value) }))
+
+    private fun freezeValue(value: ToolValue): ToolValue = when (value) {
+        is ToolValue.ObjectValue -> ToolValue.ObjectValue(value.values.mapValues { freezeValue(it.value) })
+        is ToolValue.ArrayValue -> ToolValue.ArrayValue(value.values.map(::freezeValue))
+        else -> value
+    }
+
+    private fun invokeFrozen(context: ToolInvocationContext, toolId: String, arguments: ToolArguments): ToolResult {
         validateWorkspace(context.workspaceId)
         // Every granted scope must still be a live Workspace. A grant captured when the turn
         // started must not survive the Workspace being archived mid-turn.
@@ -492,6 +514,25 @@ class ToolManagerPlugin(
             throw failure(ToolManagerException.Code.CAPABILITY_DENIED, "Required capability is not granted")
         }
         validateArguments(descriptor.inputSchema, arguments)
+
+        // Envelope check for non-credential tools. Credential tools still run their own
+        // SensitiveOperationGate inside the executor; this check prevents a read-only or
+        // workspace-only profile from reaching device/command effects through another tool.
+        val securityContext = context.securityContext
+        if (accessPolicy != null && securityContext == null) {
+            throw failure(ToolManagerException.Code.APPROVAL_DENIED, "SECURITY_CONTEXT_REQUIRED")
+        }
+        var requiresReview = false
+        if (accessPolicy != null && securityContext != null) {
+            when (val access = accessPolicy.evaluate(securityContext, descriptor.id, descriptor.ownerPluginId)) {
+                is com.cordiact.core.security.ToolAccessDecision.Deny -> throw failure(
+                    ToolManagerException.Code.APPROVAL_DENIED,
+                    access.reasonCode,
+                )
+                com.cordiact.core.security.ToolAccessDecision.Allow -> Unit
+                com.cordiact.core.security.ToolAccessDecision.RequireReview -> requiresReview = true
+            }
+        }
 
         // Human authorization is enforced here, after schema/capability checks and
         // before the real executor. Every caller (model, sub-agent, tool-to-tool,
@@ -523,13 +564,29 @@ class ToolManagerPlugin(
             generation
         }
 
-        val result = if (descriptor.concurrencySafe) {
+        val execute = {
+            synchronized(dispatchLock) {
+                checkManagerLocallyEnabled()
+                if (generation != generationAtStart || !isEnabled(context.workspaceId, descriptor)) {
+                    throw failure(ToolManagerException.Code.TOOL_DISABLED, "Tool authorization changed during approval")
+                }
+            }
+            if (registry.get(toolId).let { it == null || it.descriptor != definition.descriptor || it.executor !== definition.executor }) {
+                throw failure(ToolManagerException.Code.APPROVAL_DENIED, "Tool definition changed during approval")
+            }
+            if (descriptor.concurrencySafe) {
             executeWithTimeout(descriptor.timeoutMs) { definition.executor.invoke(context, arguments) }
         } else {
             synchronized(serializedExecution) {
                 executeWithTimeout(descriptor.timeoutMs) { definition.executor.invoke(context, arguments) }
             }
         }
+
+        }
+        val result = if (requiresReview) {
+            val reviewer = autoReview ?: throw failure(ToolManagerException.Code.APPROVAL_DENIED, "AUTO_REVIEW_UNAVAILABLE")
+            reviewer(requireNotNull(securityContext), descriptor.id, arguments, execute)
+        } else execute()
 
         // Revalidate after execution: a disabled manager, revoked preference, unloaded owner
         // plugin or archived Workspace makes the result stale, so it is discarded fail-closed.
