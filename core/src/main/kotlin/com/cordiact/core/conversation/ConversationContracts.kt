@@ -81,11 +81,32 @@ data class ModelMessage(
     }
 }
 
-/** Provider-neutral sampling parameters. Null means "not specified at this layer". */
+/** OpenAI-compatible reasoning effort. AUTO explicitly delegates to the model/server. */
+enum class ReasoningEffort {
+    NONE,
+    AUTO,
+    MINIMAL,
+    LOW,
+    MEDIUM,
+    HIGH,
+    XHIGH,
+    MAX,
+}
+
+/** Processing-speed request, independent of reasoning effort. */
+enum class ResponseSpeed {
+    AUTO,
+    FAST,
+    ULTRAFAST,
+}
+
+/** Provider-neutral generation parameters. Null means "not specified at this layer". */
 data class GenerationParameters(
     val temperature: Double? = null,
     val maxOutputTokens: Int? = null,
     val topP: Double? = null,
+    val reasoningEffort: ReasoningEffort? = null,
+    val responseSpeed: ResponseSpeed? = null,
 ) {
     init {
         require(temperature == null || temperature in 0.0..MAX_TEMPERATURE) {
@@ -103,6 +124,8 @@ data class GenerationParameters(
             temperature = overrides.temperature ?: temperature,
             maxOutputTokens = overrides.maxOutputTokens ?: maxOutputTokens,
             topP = overrides.topP ?: topP,
+            reasoningEffort = overrides.reasoningEffort ?: reasoningEffort,
+            responseSpeed = overrides.responseSpeed ?: responseSpeed,
         )
 
     companion object {

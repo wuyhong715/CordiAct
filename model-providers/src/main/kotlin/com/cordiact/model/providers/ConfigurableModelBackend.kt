@@ -9,6 +9,8 @@ import com.cordiact.core.conversation.ModelEvent
 import com.cordiact.core.conversation.ModelToolCall
 import com.cordiact.core.conversation.ModelGenerationRequest
 import com.cordiact.core.conversation.ModelId
+import com.cordiact.core.conversation.ReasoningEffort
+import com.cordiact.core.conversation.ResponseSpeed
 import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
@@ -91,6 +93,8 @@ class ModelProviderConfig private constructor(
     internal val allowInsecureLoopbackForTests: Boolean,
     /** Sampling defaults for this provider; per-request values override them field by field. */
     val defaults: GenerationParameters,
+    /** Explicit per-model wire mappings. Missing model/parameter entries are unsupported. */
+    val parameterCapabilities: Map<String, ModelParameterCapabilities>,
 ) {
     constructor(
         providerId: String,
@@ -101,24 +105,49 @@ class ModelProviderConfig private constructor(
         connectTimeoutMillis: Int = 15_000,
         readTimeoutMillis: Int = 120_000,
         defaults: GenerationParameters = GenerationParameters.NONE,
-    ) : this(providerId, displayName, protocol, endpoint, models, connectTimeoutMillis, readTimeoutMillis, false, defaults)
+        parameterCapabilities: Map<String, ModelParameterCapabilities> = emptyMap(),
+    ) : this(
+        providerId,
+        displayName,
+        protocol,
+        endpoint,
+        models.toList(),
+        connectTimeoutMillis,
+        readTimeoutMillis,
+        false,
+        defaults.copy(),
+        parameterCapabilities.mapValues { (_, capabilities) ->
+            capabilities.copy(
+                reasoningEffortValues = capabilities.reasoningEffortValues.toMap(),
+                responseSpeedValues = capabilities.responseSpeedValues.toMap(),
+            )
+        },
+    )
 
     internal fun duplicate(
         providerId: String = this.providerId,
         models: List<String> = this.models,
         allowInsecureLoopbackForTests: Boolean = false,
+        parameterCapabilities: Map<String, ModelParameterCapabilities> = this.parameterCapabilities,
     ) = ModelProviderConfig(
-        providerId, displayName, protocol, endpoint, models, connectTimeoutMillis, readTimeoutMillis, allowInsecureLoopbackForTests, defaults,
+        providerId, displayName, protocol, endpoint, models.toList(), connectTimeoutMillis, readTimeoutMillis, allowInsecureLoopbackForTests, defaults.copy(),
+        parameterCapabilities.mapValues { (_, capabilities) ->
+            capabilities.copy(
+                reasoningEffortValues = capabilities.reasoningEffortValues.toMap(),
+                responseSpeedValues = capabilities.responseSpeedValues.toMap(),
+            )
+        },
     )
 
     override fun equals(other: Any?): Boolean = other is ModelProviderConfig &&
         providerId == other.providerId && displayName == other.displayName && protocol == other.protocol &&
         endpoint == other.endpoint && models == other.models && connectTimeoutMillis == other.connectTimeoutMillis &&
         readTimeoutMillis == other.readTimeoutMillis && allowInsecureLoopbackForTests == other.allowInsecureLoopbackForTests &&
-        defaults == other.defaults
+        defaults == other.defaults && parameterCapabilities == other.parameterCapabilities
 
     override fun hashCode(): Int = listOf(
-        providerId, displayName, protocol, endpoint, models, connectTimeoutMillis, readTimeoutMillis, allowInsecureLoopbackForTests, defaults,
+        providerId, displayName, protocol, endpoint, models, connectTimeoutMillis, readTimeoutMillis,
+        allowInsecureLoopbackForTests, defaults, parameterCapabilities,
     ).hashCode()
 
     companion object {
@@ -131,8 +160,10 @@ class ModelProviderConfig private constructor(
             connectTimeoutMillis: Int = 15_000,
             readTimeoutMillis: Int = 120_000,
             defaults: GenerationParameters = GenerationParameters.NONE,
+            parameterCapabilities: Map<String, ModelParameterCapabilities> = emptyMap(),
         ) = ModelProviderConfig(
             providerId, displayName, protocol, endpoint, models, connectTimeoutMillis, readTimeoutMillis, true, defaults,
+            parameterCapabilities.toMap(),
         )
     }
     init {
@@ -155,6 +186,9 @@ class ModelProviderConfig private constructor(
         }
         require(models.isNotEmpty() && models.all { it.isNotBlank() && it.length <= 256 }) { "At least one model is required" }
         require(models.distinct().size == models.size) { "Model ids must be unique" }
+        require(parameterCapabilities.keys.all { it in models }) {
+            "Parameter capabilities may only be declared for configured models"
+        }
         require(connectTimeoutMillis > 0 && readTimeoutMillis > 0)
         if (protocol == ModelProtocol.GEMINI_GENERATE_CONTENT) {
             require(endpoint.contains("{model}")) { "Gemini endpoint must include a {model} placeholder" }
@@ -552,8 +586,30 @@ class ConfigurableModelBackend(
         }
     }
 
-    private fun requestBody(request: ModelGenerationRequest): JsonObject {
+    private fun mappedValue(value: ReasoningEffort?, mappings: Map<ReasoningEffort, String>?, label: String): String? {
+        if (value == null || value == ReasoningEffort.AUTO) return null
+        return mappings?.get(value) ?: throw IllegalArgumentException(
+            "${config.providerId}/${label}: ${value.name.lowercase()} is not declared for this model",
+        )
+    }
+
+    private fun mappedValue(value: ResponseSpeed?, mappings: Map<ResponseSpeed, String>?, label: String): String? {
+        if (value == null || value == ResponseSpeed.AUTO) return null
+        return mappings?.get(value) ?: throw IllegalArgumentException(
+            "${config.providerId}/${label}: ${value.name.lowercase()} is not declared for this model",
+        )
+    }
+
+    internal fun requestBody(request: ModelGenerationRequest): JsonObject {
         val parameters = config.defaults.mergedWith(request.parameters)
+        if (config.protocol !in setOf(ModelProtocol.OPENAI_CHAT_COMPLETIONS, ModelProtocol.OPENAI_RESPONSES)) {
+            require(parameters.reasoningEffort == null || parameters.reasoningEffort == ReasoningEffort.AUTO) {
+                "${config.providerId} does not support reasoning effort parameters"
+            }
+            require(parameters.responseSpeed == null || parameters.responseSpeed == ResponseSpeed.AUTO) {
+                "${config.providerId} does not support response speed parameters"
+            }
+        }
         return when (config.protocol) {
         ModelProtocol.OPENAI_CHAT_COMPLETIONS -> JsonObject().apply {
             addProperty("model", request.model.modelId)
@@ -561,6 +617,11 @@ class ConfigurableModelBackend(
             parameters.temperature?.let { addProperty("temperature", it) }
             parameters.maxOutputTokens?.let { addProperty("max_tokens", it) }
             parameters.topP?.let { addProperty("top_p", it) }
+            val capabilities = config.parameterCapabilities[request.model.modelId]
+            mappedValue(parameters.reasoningEffort, capabilities?.reasoningEffortValues, "reasoning effort")
+                ?.let { addProperty("reasoning_effort", it) }
+            mappedValue(parameters.responseSpeed, capabilities?.responseSpeedValues, "response speed")
+                ?.let { addProperty("service_tier", it) }
             if (request.tools.isNotEmpty()) {
                 add("tools", JsonArray().apply {
                     request.tools.forEach { tool -> add(JsonObject().apply {
@@ -718,6 +779,11 @@ class ConfigurableModelBackend(
             parameters.maxOutputTokens?.let { addProperty("max_output_tokens", it) }
             parameters.temperature?.let { addProperty("temperature", it) }
             parameters.topP?.let { addProperty("top_p", it) }
+            val capabilities = config.parameterCapabilities[request.model.modelId]
+            mappedValue(parameters.reasoningEffort, capabilities?.reasoningEffortValues, "reasoning effort")
+                ?.let { add("reasoning", JsonObject().apply { addProperty("effort", it) }) }
+            mappedValue(parameters.responseSpeed, capabilities?.responseSpeedValues, "response speed")
+                ?.let { addProperty("service_tier", it) }
             if (request.tools.isNotEmpty()) {
                 add("tools", JsonArray().apply {
                     request.tools.forEach { tool -> add(JsonObject().apply {
