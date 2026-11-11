@@ -513,6 +513,7 @@ class BundledConversationPlugins private constructor(
                 AndroidSearchProviderSettings(context),
                 AndroidSearchApiKeyStore(context),
                 attachmentAudit = attachmentAudit,
+                context = context,
             )
         }
 
@@ -529,6 +530,7 @@ class BundledConversationPlugins private constructor(
             spillStoreDir: File? = File(privateRoot, "spills"),
             attachmentAudit: com.cordiact.core.attachment.AttachmentAuditSink =
                 com.cordiact.core.attachment.NoopAttachmentAuditSink,
+            context: android.content.Context? = null,
         ): BundledConversationPlugins {
             val workspace = WorkspaceManagerPlugin(store, privateRoot)
             val fileManager = FileManagerPlugin(workspace, AndroidWorkspaceFileBackend())

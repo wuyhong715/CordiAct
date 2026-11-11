@@ -42,7 +42,8 @@ data class ImportedAttachmentResult(
  * Every method performs blocking I/O and must be called off the main thread.
  */
 class AndroidAttachmentImportService(
-    private val context: Context,
+    /** Null in configurations built without an Android Context; [importUri] then refuses. */
+    private val context: Context?,
     private val blobs: AttachmentBlobStore,
     private val catalog: AttachmentCatalog,
     private val limits: AttachmentLimits = AttachmentLimits(),
@@ -51,7 +52,12 @@ class AndroidAttachmentImportService(
 ) {
     private val coordinator = AttachmentImportCoordinator(blobs, catalog, limits, audit)
     private val renditionWriter = AttachmentRenditionWriter(blobs, catalog, audit)
-    private val resolver: ContentResolver get() = context.contentResolver
+
+    private fun resolver(): ContentResolver = (context
+        ?: throw AttachmentException(
+            AttachmentErrorCode.STORAGE_FAILURE,
+            "Attachment import needs an Android Context; this build has none",
+        )).contentResolver
 
     fun importUri(
         workspaceId: String,
@@ -77,7 +83,7 @@ class AndroidAttachmentImportService(
         return importSource(
             workspaceId = workspaceId,
             source = AttachmentSource {
-                resolver.openInputStream(uri) ?: throw AttachmentException(
+                resolver().openInputStream(uri) ?: throw AttachmentException(
                     AttachmentErrorCode.STORAGE_FAILURE,
                     "The picked item could not be opened; it may have moved or the grant was revoked",
                 )
@@ -153,11 +159,11 @@ class AndroidAttachmentImportService(
     private fun readMetadata(uri: Uri): PickedMetadata {
         var displayName: String? = null
         runCatching {
-            resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+            resolver().query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
                 if (cursor.moveToFirst()) displayName = cursor.getString(0)
             }
         }
-        val mimeType = runCatching { resolver.getType(uri) }.getOrNull()
+        val mimeType = runCatching { resolver().getType(uri) }.getOrNull()
         return PickedMetadata(displayName, mimeType)
     }
 
