@@ -202,7 +202,7 @@ class ModelProviderConfig private constructor(
         require(providerId.matches(Regex("[a-z0-9][a-z0-9._-]{1,127}"))) { "Invalid provider id" }
         require(displayName.isNotBlank() && displayName.length <= 160) { "Provider name is required" }
         require(endpoint.length <= 2048) { "Provider endpoint is too long" }
-        require(models.size <= 64) { "At most 64 models may be configured per provider" }
+        require(models.size <= HttpModelDiscoveryService.MAX_MODELS) { "Too many models configured per provider" }
         val uri = runCatching { URI(endpoint.replace("{model}", "model")) }.getOrNull()
         val host = uri?.host?.removePrefix("[")?.removeSuffix("]")
         require(uri != null && host != null && uri.rawUserInfo == null && uri.rawFragment == null && (uri.scheme == "https" ||

@@ -11,7 +11,6 @@ import com.cordiact.core.conversation.*
 import com.cordiact.core.workspace.Workspace
 import com.cordiact.interaction.InteractionContext
 import com.cordiact.model.providers.ModelProtocol
-import com.cordiact.model.providers.ModelProviderConfig
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -32,6 +31,7 @@ data class ExperienceState(
     val runningSessionIds: Set<String> = emptySet(),
     val sessionId: String? = null,
     val models: List<ModelDescriptor> = emptyList(),
+    val providerNames: Map<String, String> = emptyMap(),
     val model: ModelId? = null,
     val turns: List<TranscriptTurn> = emptyList(),
     val approvals: List<ApprovalRequest> = emptyList(),
@@ -179,9 +179,9 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
                 cache.getOrPut(snapshot.selected.id) { restoreTranscript(snapshot.messages) }
                 val preferred = mutable.value.model ?: readModel()
                 val model = snapshot.models.find { it.id == preferred }?.id
-                    ?: snapshot.models.firstOrNull { it.id.modelId == "deepseek-flash" }?.id ?: snapshot.models.firstOrNull()?.id
+                    ?: snapshot.models.firstOrNull()?.id
                 mutable.update { it.copy(loading = false, workspace = snapshot.workspace, workspaces = snapshot.workspaces,
-                    sessions = snapshot.sessions, sidebar = snapshot.sidebar, sessionId = snapshot.selected.id, models = snapshot.models, model = model,
+                    sessions = snapshot.sessions, sidebar = snapshot.sidebar, sessionId = snapshot.selected.id, models = snapshot.models, providerNames = app.modelProviders.providers().associate { it.providerId to it.displayName }, model = model,
                     turns = cache[snapshot.selected.id].orEmpty(), error = null) }
                 onSelected()
             } catch (cancel: CancellationException) { throw cancel }
@@ -203,31 +203,40 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
         mutable.update { it.copy(model = model) }
         app.getSharedPreferences("experience", 0).edit().putString("provider", model.providerId).putString("model", model.modelId).apply()
     }
-    /** Explicit user save only. Credentials go to Keystore storage, never config/state/drafts. */
-    fun addProvider(name: String, baseUrl: String, modelIds: List<String>, protocol: ModelProtocol, apiKey: String, done: (String?) -> Unit) {
+    /** Explicit user connection: credentials never enter UI state, config or drafts. */
+    fun addProvider(name: String, baseUrl: String, protocol: ModelProtocol, apiKey: String, done: (String?) -> Unit) {
         viewModelScope.launch {
             try {
                 val models = withContext(Dispatchers.IO) {
-                    require(name.isNotBlank()) { "请输入来源名称" }
-                    require(baseUrl.startsWith("https://")) { "模型地址必须使用 HTTPS" }
-                    require(modelIds.isNotEmpty() && modelIds.none { it.isBlank() }) { "至少填写一个模型 ID" }
-                    require(apiKey.isNotBlank()) { "请输入 API Key" }
-                    val id = "custom-${UUID.randomUUID().toString().take(12)}"
-                    app.providerApiKeyStore.set(id, apiKey.trim())
-                    try {
-                        app.modelProviders.addProvider(ModelProviderConfig(id, name.trim(), protocol, baseUrl.trim(), modelIds.distinct()))
-                    } catch (error: Exception) {
-                        app.providerApiKeyStore.clear(id)
-                        throw error
-                    }
+                    val id = "provider-${UUID.randomUUID()}"
+                    val displayName = name.trim().ifBlank { runCatching { java.net.URI(baseUrl.trim().replace("{model}", "model")).host }.getOrNull() ?: "API Provider" }
+                    val connection = com.cordiact.model.providers.ModelProviderConnection(id, displayName, protocol, baseUrl)
+                    app.modelProviders.discoverAndAddProvider(connection, apiKey.trim())
                     app.modelAdapter.models()
                 }
-                mutable.update { it.copy(models = models) }
+                mutable.update { current -> current.copy(models = models,
+                    providerNames = app.modelProviders.providers().associate { config -> config.providerId to config.displayName },
+                    model = current.model?.takeIf { selected -> models.any { it.id == selected } } ?: models.firstOrNull()?.id) }
                 done(null)
             } catch (cancel: CancellationException) { throw cancel }
-            catch (error: Exception) { done(error.message ?: "保存来源失败") }
+            catch (failure: Exception) { done(failure.message ?: "拉取模型失败") }
         }
     }
+
+    fun refreshProvider(providerId: String) {
+        viewModelScope.launch {
+            try {
+                val models = withContext(Dispatchers.IO) {
+                    app.modelProviders.refreshModels(providerId)
+                    app.modelAdapter.models()
+                }
+                mutable.update { current -> current.copy(models = models,
+                    model = current.model?.takeIf { selected -> models.any { it.id == selected } } ?: models.firstOrNull()?.id) }
+            } catch (cancel: CancellationException) { throw cancel }
+            catch (failure: Exception) { mutable.update { it.copy(error = failure.message ?: "刷新模型失败") } }
+        }
+    }
+
     fun dismissError() { mutable.update { it.copy(error = null) } }
 
     /** Returns false when not accepted; the composer then keeps its draft. */

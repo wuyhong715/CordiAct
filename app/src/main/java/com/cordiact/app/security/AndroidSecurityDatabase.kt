@@ -47,6 +47,7 @@ class AndroidSecurityDatabase private constructor(
     private val clock: SecurityClock,
 ) : SQLiteOpenHelper(context.applicationContext, databaseName, null, DATABASE_VERSION),
     CredentialRepository,
+    com.cordiact.core.vault.SystemCredentialRepository,
     TransactionalAuditLog {
 
     constructor(
@@ -68,6 +69,7 @@ class AndroidSecurityDatabase private constructor(
     }
 
     override fun onCreate(db: SQLiteDatabase) {
+        createSystemCredentials(db)
         db.execSQL(
             """
             CREATE TABLE $TABLE_CREDENTIALS (
@@ -115,8 +117,32 @@ class AndroidSecurityDatabase private constructor(
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        // Version 1 is the first security schema. Never drop a vault on a failed upgrade: a
-        // future migration must copy and re-encrypt in a transaction with key-version checks.
+        if (oldVersion < 2) createSystemCredentials(db)
+    }
+
+    private fun createSystemCredentials(db: SQLiteDatabase) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS system_credentials (id TEXT PRIMARY KEY NOT NULL, nonce BLOB NOT NULL, ciphertext BLOB NOT NULL, key_version INTEGER NOT NULL)")
+    }
+
+    override fun readSystemCredential(id: String): com.cordiact.core.vault.SystemCredentialRecord? =
+        readableDatabase.query("system_credentials", null, "id = ?", arrayOf(id), null, null, null).use { cursor ->
+            if (!cursor.moveToFirst()) null else com.cordiact.core.vault.SystemCredentialRecord(
+                id,
+                com.cordiact.core.vault.EncryptedValue(cursor.getBlob(cursor.getColumnIndexOrThrow("nonce")), cursor.getBlob(cursor.getColumnIndexOrThrow("ciphertext"))),
+                cursor.getInt(cursor.getColumnIndexOrThrow("key_version")),
+            )
+        }
+
+    override fun writeSystemCredential(record: com.cordiact.core.vault.SystemCredentialRecord) {
+        val values = ContentValues().apply {
+            put("id", record.id); put("nonce", record.encrypted.nonce)
+            put("ciphertext", record.encrypted.ciphertext); put("key_version", record.keyVersion)
+        }
+        check(writableDatabase.insertWithOnConflict("system_credentials", null, values, SQLiteDatabase.CONFLICT_REPLACE) != -1L) { "SYSTEM_CREDENTIAL_WRITE_FAILED" }
+    }
+
+    override fun deleteSystemCredential(id: String) {
+        writableDatabase.delete("system_credentials", "id = ?", arrayOf(id))
     }
 
     // ---------------------------------------------------------------- credentials
@@ -437,7 +463,7 @@ class AndroidSecurityDatabase private constructor(
     private var bootInstance: String? = null
 
     private companion object {
-        const val DATABASE_VERSION = 1
+        const val DATABASE_VERSION = 2
         const val TABLE_CREDENTIALS = "credentials"
         const val TABLE_AUDIT = "audit_events"
 

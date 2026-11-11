@@ -168,7 +168,7 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
                     ProviderForm(onClose = { providerForm = false }, onSave = viewModel::addProvider, modifier = Modifier.align(Alignment.BottomCenter).windowInsetsPadding(WindowInsets.systemBars.union(WindowInsets.ime)))
                 }
                 if (modelMenu) {
-                    CompactModelPicker(state, onClose = { modelMenu = false }, onSelect = { viewModel.selectModel(it.id); modelMenu = false }, onAdd = { modelMenu = false; providerForm = true }, modifier = Modifier.align(Alignment.BottomCenter).windowInsetsPadding(WindowInsets.systemBars.union(WindowInsets.ime)))
+                    CompactModelPicker(state, onClose = { modelMenu = false }, onSelect = { viewModel.selectModel(it.id); modelMenu = false }, onAdd = { modelMenu = false; providerForm = true }, onRefresh = viewModel::refreshProvider, modifier = Modifier.align(Alignment.BottomCenter).windowInsetsPadding(WindowInsets.systemBars.union(WindowInsets.ime)))
                 }
             }
         }
@@ -234,22 +234,30 @@ internal fun CompactInspector(step: ToolActivity, onClose: () -> Unit, modifier:
 }
 
 @Composable
-internal fun CompactModelPicker(state: ExperienceState, onClose: () -> Unit, onSelect: (com.cordiact.core.conversation.ModelDescriptor) -> Unit, onAdd: () -> Unit = {}, modifier: Modifier = Modifier) {
+internal fun CompactModelPicker(state: ExperienceState, onClose: () -> Unit, onSelect: (com.cordiact.core.conversation.ModelDescriptor) -> Unit, onAdd: () -> Unit = {}, onRefresh: (String) -> Unit = {}, modifier: Modifier = Modifier) {
     BoxWithConstraints(modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
         Surface(Modifier.fillMaxWidth().heightIn(max = maxHeight * .45f).padding(8.dp), color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(23.dp), shadowElevation = 12.dp, border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
             Column {
                 PeekHandle(onClose)
                 Row(Modifier.padding(start = 18.dp, end = 5.dp), verticalAlignment = Alignment.CenterVertically) { Text("选择模型", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium); IconButton(onClick = onClose) { AppGlyph(GlyphName.Close, "关闭模型选择") } }
-                TextButton(onClick = onAdd, modifier = Modifier.padding(horizontal = 10.dp)) { AppGlyph(GlyphName.Plus, modifier = Modifier.size(16.dp)); Text("添加模型来源", Modifier.padding(start = 8.dp)) }
+                TextButton(onClick = onAdd, modifier = Modifier.padding(horizontal = 10.dp)) { AppGlyph(GlyphName.Plus, modifier = Modifier.size(16.dp)); Text("连接提供商", Modifier.padding(start = 8.dp)) }
                 LazyColumn(Modifier.weight(1f, fill = false)) {
                     if (state.models.isEmpty()) item { Text("尚未配置可用模型。", Modifier.padding(20.dp), style = MaterialTheme.typography.bodyMedium) }
-                    items(state.models, key = { "${it.id.providerId}:${it.id.modelId}" }) { model ->
-                        ListItem(
-                            headlineContent = { Text(model.displayName, style = MaterialTheme.typography.bodyMedium) },
-                            supportingContent = { Text(model.id.providerId, style = MaterialTheme.typography.labelSmall) },
-                            trailingContent = { if (model.id == state.model) AppGlyph(GlyphName.Check, "已选择", tint = MaterialTheme.colorScheme.primary) },
-                            modifier = Modifier.clickable { onSelect(model) },
-                        )
+                    state.models.groupBy { it.id.providerId }.forEach { (providerId, providerModels) ->
+                        item(key = "provider:$providerId") {
+                            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Text(state.providerNames[providerId] ?: providerId, Modifier.weight(1f), color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.titleSmall)
+                                if (providerId in state.providerNames) TextButton(onClick = { onRefresh(providerId) }) { Text("刷新模型") }
+                            }
+                        }
+                        items(providerModels, key = { "${it.id.providerId}:${it.id.modelId}" }) { model ->
+                            ListItem(
+                                headlineContent = { Text(model.displayName, style = MaterialTheme.typography.bodyMedium) },
+                                supportingContent = { Text(model.id.modelId, style = MaterialTheme.typography.labelSmall) },
+                                trailingContent = { if (model.id == state.model) AppGlyph(GlyphName.Check, "已选择", tint = MaterialTheme.colorScheme.primary) },
+                                modifier = Modifier.clickable { onSelect(model) },
+                            )
+                        }
                     }
                 }
             }
@@ -275,16 +283,15 @@ private fun PeekHandle(onDismiss: () -> Unit) {
 }
 
 
-/** Compact local configuration: save never probes an endpoint or sends the user's key. */
+/** Provider connection: explicit connect sends the key only to the entered HTTPS endpoint. */
 @Composable
 private fun ProviderForm(
     onClose: () -> Unit,
-    onSave: (String, String, List<String>, ModelProtocol, String, (String?) -> Unit) -> Unit,
+    onSave: (String, String, ModelProtocol, String, (String?) -> Unit) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var name by remember { mutableStateOf("") }
     var url by remember { mutableStateOf("") }
-    var models by remember { mutableStateOf("") }
     var key by remember { mutableStateOf("") } // Intentionally not Saveable: never bundle a secret.
     var protocol by remember { mutableStateOf(ModelProtocol.OPENAI_CHAT_COMPLETIONS) }
     var saving by remember { mutableStateOf(false) }
@@ -294,33 +301,32 @@ private fun ProviderForm(
             Column {
                 PeekHandle { if (!saving) { key = ""; onClose() } }
                 Row(Modifier.padding(start = 17.dp, end = 5.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text("添加模型来源", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
+                    Text("连接提供商", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
                     IconButton(enabled = !saving, onClick = { key = ""; onClose() }) { AppGlyph(GlyphName.Close, "关闭来源设置") }
                 }
                 Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text("只保存本地配置，不发起连接；密钥由 Android Keystore 加密。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    OutlinedTextField(name, { name = it }, label = { Text("来源名称") }, singleLine = true, enabled = !saving, modifier = Modifier.fillMaxWidth())
-                    OutlinedTextField(url, { url = it }, label = { Text("HTTPS 完整请求地址") }, placeholder = { Text("https://api.example.com/v1/chat/completions") }, singleLine = true, enabled = !saving, modifier = Modifier.fillMaxWidth(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri))
+                    Text("连接提供商并拉取全部模型；密钥加密保存在本地凭据库，不写入对话或配置。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    OutlinedTextField(name, { name = it }, label = { Text("提供商名称（选填，默认使用域名）") }, singleLine = true, enabled = !saving, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(url, { url = it }, label = { Text("API URL（基础地址或完整端点）") }, placeholder = { Text("https://api.example.com/v1") }, singleLine = true, enabled = !saving, modifier = Modifier.fillMaxWidth(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri))
                     Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(7.dp)) {
-                        listOf(ModelProtocol.OPENAI_CHAT_COMPLETIONS to "Chat Completions", ModelProtocol.OPENAI_RESPONSES to "Responses", ModelProtocol.ANTHROPIC_MESSAGES to "Anthropic").forEach { (value, label) ->
+                        listOf(ModelProtocol.OPENAI_CHAT_COMPLETIONS to "Chat Completions", ModelProtocol.OPENAI_RESPONSES to "Responses", ModelProtocol.ANTHROPIC_MESSAGES to "Anthropic", ModelProtocol.GEMINI_GENERATE_CONTENT to "Gemini").forEach { (value, label) ->
                             FilterChip(selected = protocol == value, onClick = { protocol = value }, label = { Text(label) }, enabled = !saving)
                         }
                     }
-                    OutlinedTextField(models, { models = it }, label = { Text("模型 ID（逗号分隔）") }, singleLine = true, enabled = !saving, modifier = Modifier.fillMaxWidth())
                     OutlinedTextField(key, { key = it }, label = { Text("API Key") }, visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), singleLine = true, enabled = !saving, modifier = Modifier.fillMaxWidth())
                     error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
                     Spacer(Modifier.height(4.dp))
                 }
                 FilledTonalButton(
-                    enabled = !saving && name.isNotBlank() && url.isNotBlank() && models.isNotBlank() && key.isNotBlank(),
+                    enabled = !saving && url.isNotBlank() && key.isNotBlank(),
                     onClick = {
                         saving = true; error = null
-                        onSave(name, url, models.split(',', '，', '\n').map(String::trim).filter(String::isNotBlank), protocol, key) { result ->
+                        onSave(name, url, protocol, key) { result ->
                             saving = false
                             if (result == null) { key = ""; onClose() } else error = result
                         }
                     }, modifier = Modifier.fillMaxWidth().padding(12.dp),
-                ) { Text(if (saving) "正在保存…" else "保存来源") }
+                ) { Text(if (saving) "正在拉取…" else "拉取模型并连接") }
             }
         }
     }

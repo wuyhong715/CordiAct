@@ -8,7 +8,6 @@ import com.cordiact.app.conversation.AndroidConversationSessionStore
 import com.cordiact.app.conversation.BundledConversationPluginCatalog
 import com.cordiact.app.conversation.BundledConversationPlugins
 import com.cordiact.app.plugin.AndroidPluginLifecycle
-import com.cordiact.app.model.AndroidDeepSeekApiKeyStore
 import com.cordiact.app.model.AndroidProviderApiKeyStore
 import com.cordiact.core.conversation.ModelAdapterPlugin
 import com.cordiact.core.conversation.ModelCall
@@ -92,8 +91,6 @@ class CordiActApplication : Application() {
     lateinit var workspaceManager: WorkspaceManagerService
         private set
     lateinit var modelAdapterPlugin: ModelAdapterPlugin
-        private set
-    lateinit var deepSeekApiKeyStore: AndroidDeepSeekApiKeyStore
         private set
     lateinit var providerApiKeyStore: AndroidProviderApiKeyStore
         private set
@@ -472,11 +469,9 @@ class CordiActApplication : Application() {
             return
         }
         pluginLifecycle = AndroidPluginLifecycle(this, BundledConversationPluginCatalog.verifier)
-        deepSeekApiKeyStore = AndroidDeepSeekApiKeyStore(this)
         providerApiKeyStore = AndroidProviderApiKeyStore(this)
         conversationCatalog = BundledConversationPlugins.create(
             this,
-            deepSeekApiKeyStore,
             // Attachment access is audited in the same tamper-evident log as other security
             // events. The vault is resolved lazily, on the first attachment event.
             attachmentAudit = { event ->

@@ -5,17 +5,13 @@ import com.cordiact.app.skill.AndroidSkillFileSource
 import com.cordiact.app.skill.registerSkillTools
 import com.cordiact.core.skill.SkillPlugin
 import com.cordiact.core.skill.skillPluginSpec
-import com.cordiact.app.model.AndroidDeepSeekApiKeyStore
 import com.cordiact.app.model.AndroidModelProviderConfigStore
 import com.cordiact.app.model.AndroidProviderApiKeyStore
 import com.cordiact.core.conversation.ModelAdapterPlugin
 import com.cordiact.core.conversation.SessionManagerPlugin
 import com.cordiact.core.conversation.modelAdapterPluginSpec
 import com.cordiact.model.providers.ApiKeyProvider
-import com.cordiact.model.providers.ConfigurableModelBackend
-import com.cordiact.model.providers.DeepSeekBackendPlugin
 import com.cordiact.model.providers.DeepSeekPreset
-import com.cordiact.model.providers.deepSeekBackendPluginSpec
 import com.cordiact.model.providers.ModelProviderConfigStore
 import com.cordiact.model.providers.InMemoryModelProviderConfigStore
 import com.cordiact.model.providers.ModelProviderRegistryPlugin
@@ -150,7 +146,6 @@ object BundledConversationPluginCatalog {
         skillPluginSpec(),
         modelAdapterPluginSpec(),
         sessionManagerPluginSpec(),
-        deepSeekBackendPluginSpec(),
         modelProviderRegistryPluginSpec(),
         sandboxManagerPluginSpec(),
         interactionPluginSpec(),
@@ -183,10 +178,10 @@ class BundledConversationPlugins private constructor(
     val workspacePlugin: WorkspaceManagerPlugin,
     val fileManagerPlugin: FileManagerPlugin,
     private val registry: InMemoryToolDefinitionRegistry,
-    val apiKeyProvider: ApiKeyProvider,
     private val providerConfigStore: ModelProviderConfigStore,
     private val providerCredentialFor: (String) -> ApiKeyProvider,
     private val forgetProviderCredential: (String) -> Unit,
+    private val saveProviderCredential: ((String, String) -> Unit)?,
     private val fillValues: MutableFillValueStore,
     private val configuredSearchProviderSettings: AndroidSearchProviderSettings? = null,
     private val configuredSearchApiKeys: AndroidSearchApiKeyStore? = null,
@@ -258,6 +253,9 @@ class BundledConversationPlugins private constructor(
     /** Persists an MCP auth header without putting it in the plugin config. */
     var mcpCredentialWriter: ((serverName: String, headerName: String, headerValue: String) -> Unit)? = null
     val searchApiKeyStore: AndroidSearchApiKeyStore? get() = configuredSearchApiKeys
+    fun hasSearchApiKey(providerId: String): Boolean = if (providerId.startsWith("deepseek")) {
+        configuredSearchApiKeys?.has("deepseek") == true || !providerCredentialFor("deepseek").apiKey().isNullOrBlank()
+    } else configuredSearchApiKeys?.has(providerId) == true
     val searchProviderSettings: AndroidSearchProviderSettings? get() = configuredSearchProviderSettings
     lateinit var modelProviderRegistryPlugin: ModelProviderRegistryPlugin
 
@@ -318,7 +316,7 @@ class BundledConversationPlugins private constructor(
         fun key(providerId: String): () -> String? = {
             when (providerId) {
                 // The bundled DeepSeek route reuses the model key so one credential covers both.
-                "deepseek" -> apiKeyProvider.apiKey()
+                "deepseek" -> searchKeys?.get(providerId) ?: providerCredentialFor(providerId).apiKey()
                 else -> searchKeys?.get(providerId)
             }
         }
@@ -425,6 +423,7 @@ class BundledConversationPlugins private constructor(
             forgetProviderCredential,
             attachmentReader = attachmentCatalog,
             attachmentAudit = attachmentAudit,
+            saveCredential = saveProviderCredential,
         )
         val commandRegistry = InteractionCommandRegistry()
         val sessionManager = SessionManagerPlugin(conversationStore, workspaceManager)
@@ -486,7 +485,6 @@ class BundledConversationPlugins private constructor(
             searchPlugin,
             modelAdapter,
             sessionManager,
-            DeepSeekBackendPlugin(modelAdapter, ConfigurableModelBackend(DeepSeekPreset.config(), apiKeyProvider)),
             modelProviderRegistryPlugin,
             interactionPlugin,
         ) + extraPlugins
@@ -495,32 +493,36 @@ class BundledConversationPlugins private constructor(
     companion object {
         fun create(
             context: Context,
-            apiKeyProvider: ApiKeyProvider = AndroidDeepSeekApiKeyStore(context),
             attachmentAudit: com.cordiact.core.attachment.AttachmentAuditSink =
                 com.cordiact.core.attachment.NoopAttachmentAuditSink,
         ): BundledConversationPlugins {
             val store = AndroidConversationSessionStore(context)
             val privateRoot = File(context.noBackupFilesDir, "cordiact")
             val providerKeys = AndroidProviderApiKeyStore(context)
+            val providerConfigs = AndroidModelProviderConfigStore(context)
+            // Preserve an existing installation; a fresh install has no phantom model provider.
+            if (com.cordiact.app.security.AndroidSystemCredentials.get(context).has("model", "deepseek") &&
+                providerConfigs.load().none { it.providerId == "deepseek" }) {
+                providerConfigs.save(DeepSeekPreset.config())
+            }
             return create(
                 store,
                 privateRoot,
-                apiKeyProvider,
-                AndroidModelProviderConfigStore(context),
-                { providerId -> if (providerId == "deepseek") apiKeyProvider else providerKeys.provider(providerId) },
+                providerConfigs,
+                providerKeys::provider,
                 providerKeys::clear,
                 AndroidFillValueStore(context),
                 AndroidSearchProviderSettings(context),
                 AndroidSearchApiKeyStore(context),
                 attachmentAudit = attachmentAudit,
                 context = context,
+                saveProviderCredential = providerKeys::set,
             )
         }
 
         fun create(
             store: AndroidConversationSessionStore,
             privateRoot: File,
-            apiKeyProvider: ApiKeyProvider = ApiKeyProvider { null },
             providerConfigStore: ModelProviderConfigStore = InMemoryModelProviderConfigStore(),
             providerCredentialFor: ((String) -> ApiKeyProvider)? = null,
             forgetProviderCredential: (String) -> Unit = {},
@@ -531,6 +533,7 @@ class BundledConversationPlugins private constructor(
             attachmentAudit: com.cordiact.core.attachment.AttachmentAuditSink =
                 com.cordiact.core.attachment.NoopAttachmentAuditSink,
             context: android.content.Context? = null,
+            saveProviderCredential: ((String, String) -> Unit)? = null,
         ): BundledConversationPlugins {
             val workspace = WorkspaceManagerPlugin(store, privateRoot)
             val fileManager = FileManagerPlugin(workspace, AndroidWorkspaceFileBackend())
@@ -548,12 +551,10 @@ class BundledConversationPlugins private constructor(
                 workspace,
                 fileManager,
                 InMemoryToolDefinitionRegistry(),
-                apiKeyProvider,
                 providerConfigStore,
-                providerCredentialFor ?: { providerId ->
-                    if (providerId == "deepseek") apiKeyProvider else ApiKeyProvider { null }
-                },
+                providerCredentialFor ?: { ApiKeyProvider { null } },
                 forgetProviderCredential,
+                saveProviderCredential,
                 fillValues,
                 searchProviderSettings,
                 searchApiKeys,

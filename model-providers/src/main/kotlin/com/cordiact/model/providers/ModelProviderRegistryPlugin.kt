@@ -22,6 +22,8 @@ fun modelProviderRegistryPluginSpec() = PluginSpec(
 interface ModelProviderRegistryService {
     fun providers(): List<ModelProviderConfig>
     fun addProvider(config: ModelProviderConfig)
+    fun discoverAndAddProvider(connection: ModelProviderConnection, apiKey: String): ModelProviderConfig
+    fun refreshModels(providerId: String): ModelProviderConfig
     fun removeProvider(providerId: String)
 
     /**
@@ -58,6 +60,8 @@ class ModelProviderRegistryPlugin(
     private val attachmentReader: AttachmentReader? = null,
     /** Audit trail for attachment sends and refusals; see ConfigurableModelBackend. */
     private val attachmentAudit: AttachmentAuditSink = NoopAttachmentAuditSink,
+    private val discovery: ModelDiscoveryService = HttpModelDiscoveryService(),
+    private val saveCredential: ((String, String) -> Unit)? = null,
 ) : ManagedPlugin, ModelProviderRegistryService {
     override val spec = modelProviderRegistryPluginSpec()
     private val configs = linkedMapOf<String, ModelProviderConfig>().apply {
@@ -65,7 +69,6 @@ class ModelProviderRegistryPlugin(
         require(stored.size <= MAX_PROVIDERS) { "Too many stored model providers" }
         stored.forEach { config ->
             require(!config.allowInsecureLoopbackForTests) { "Test-only loopback endpoints cannot be loaded by the app registry" }
-            require(config.providerId != "deepseek") { "Provider id 'deepseek' is reserved for the bundled DeepSeek backend" }
             require(!containsKey(config.providerId)) { "Duplicate stored provider '${config.providerId}'" }
             put(config.providerId, config.duplicate(models = config.models.toList()))
         }
@@ -108,11 +111,49 @@ class ModelProviderRegistryPlugin(
     @Synchronized
     override fun providers(): List<ModelProviderConfig> = configs.values.map { it.duplicate(models = it.models.toList()) }
 
+    override fun discoverAndAddProvider(connection: ModelProviderConnection, apiKey: String): ModelProviderConfig {
+        // Network work must not hold the registry monitor or freeze generation/provider settings.
+        val persistKey = saveCredential ?: error("Provider credential writer is not configured")
+        val modelIds = discovery.discover(connection, apiKey)
+        val config = connection.config(modelIds)
+        synchronized(this) {
+            check(enabled) { "Model Provider Registry is not enabled" }
+            require(config.providerId !in configs) { "Provider is already configured" }
+            require(configs.size < MAX_PROVIDERS) { "Too many providers" }
+            try {
+                persistKey(config.providerId, apiKey)
+                addProvider(config)
+            } catch (failure: Exception) {
+                runCatching { forgetCredential(config.providerId) }
+                throw failure
+            }
+        }
+        return config
+    }
+
+    override fun refreshModels(providerId: String): ModelProviderConfig {
+        val original = synchronized(this) {
+            check(enabled) { "Model Provider Registry is not enabled" }
+            configs[providerId] ?: error("Provider is not configured")
+        }
+        val key = credentialFor(providerId).apiKey() ?: error("Provider API key is missing")
+        val ids = discovery.discover(ModelProviderConnection(original.providerId, original.displayName, original.protocol, original.endpoint), key)
+        val refreshed = original.duplicate(
+            models = ids,
+            parameterCapabilities = original.parameterCapabilities.filterKeys { it in ids },
+            attachmentCapabilities = original.attachmentCapabilities.filterKeys { it in ids },
+        )
+        synchronized(this) {
+            check(enabled && configs[providerId] === original) { "Provider changed during discovery; retry" }
+            updateProvider(refreshed)
+        }
+        return refreshed
+    }
+
     @Synchronized
     override fun addProvider(config: ModelProviderConfig) {
         check(enabled) { "Model Provider Registry is not enabled" }
         require(!config.allowInsecureLoopbackForTests) { "Test-only loopback endpoints cannot be registered by the app" }
-        require(config.providerId != "deepseek") { "Provider id 'deepseek' is reserved for the bundled DeepSeek backend" }
         require(configs.size < MAX_PROVIDERS) { "At most $MAX_PROVIDERS providers may be configured" }
         require(!configs.containsKey(config.providerId)) { "Provider '${config.providerId}' is already configured" }
         val safeConfig = config.duplicate(models = config.models.toList())
@@ -131,7 +172,6 @@ class ModelProviderRegistryPlugin(
     override fun updateProvider(config: ModelProviderConfig) {
         check(enabled) { "Model Provider Registry is not enabled" }
         require(!config.allowInsecureLoopbackForTests) { "Test-only loopback endpoints cannot be registered by the app" }
-        require(config.providerId != "deepseek") { "Provider id 'deepseek' is reserved for the bundled DeepSeek backend" }
         val existing = configs[config.providerId]
             ?: throw IllegalArgumentException("Provider '${config.providerId}' is not configured")
         // A protocol, endpoint or model change invalidates the live backend, so rebuild it.
