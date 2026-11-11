@@ -90,7 +90,7 @@ class SystemCredentialMigrationTest {
             db.writeSystemCredential(SystemCredentialRecord("model:test", EncryptedValue(ByteArray(12), byteArrayOf(1, 2, 3)), 1))
             assertTrue(db.list(CredentialScope.UserGlobal).isEmpty())
             assertTrue(db.list(CredentialScope.Workspace("test-workspace")).isEmpty())
-        } finally { database.close() } { isolated.noBackupFilesDir.deleteRecursively() }
+        } finally { database.close(); isolated.noBackupFilesDir.deleteRecursively() }
     }
 
     private fun seedLegacy(preferences: android.content.SharedPreferences, name: String, alias: String, value: String) {
