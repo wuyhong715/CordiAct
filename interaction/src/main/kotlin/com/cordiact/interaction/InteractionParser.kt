@@ -13,13 +13,13 @@ class InteractionParser(
     private val directory: MentionDirectory,
     private val fills: FillValueStore,
 ) {
-    fun parse(text: String, context: InteractionContext): PreparedInteraction {
+    fun parse(text: String, context: InteractionContext, allowEmptyWithAttachments: Boolean = false): PreparedInteraction {
         val tokens = mutableListOf<InteractionToken>()
         val diagnostics = mutableListOf<InteractionDiagnostic>()
         val header = parseHeader(text)
         header.token?.let(tokens::add)
         header.error?.let(diagnostics::add)
-        if (text.isBlank()) {
+        if (text.isBlank() && !allowEmptyWithAttachments) {
             diagnostics += InteractionDiagnostic("message_empty", "Message must not be empty", 0, text.length)
         }
 

@@ -150,6 +150,27 @@ class InteractionServiceTest {
         assertNull(seen.get())
     }
 
+    @Test
+    fun attachmentOnlySubmissionForwardsPartsAndTuning() {
+        val tracker = InMemoryInteractionTaskTracker()
+        val seen = java.util.concurrent.atomic.AtomicReference<InteractionEnvelope>()
+        val seenParameters = java.util.concurrent.atomic.AtomicReference<com.cordiact.core.conversation.GenerationParameters?>()
+        val submitter = InteractionModelSubmitter { envelope, _, overrides, _ ->
+            seen.set(envelope); seenParameters.set(overrides); ModelCall { }
+        }
+        val service = service(tracker, submitter) { _, _, _, _ -> error("command path not used") }
+        service.setEnabled(true)
+        val attachment = com.cordiact.core.attachment.MessagePart.Attachment(
+            com.cordiact.core.attachment.AttachmentId("att-test"), com.cordiact.core.attachment.Interpretation.VISION)
+        val prepared = service.prepare("", context, listOf(attachment))
+        assertTrue(prepared.valid)
+        val overrides = com.cordiact.core.conversation.GenerationParameters(reasoningEffort = com.cordiact.core.conversation.ReasoningEffort.MAX)
+        service.submitOrdinary(prepared, modelId, overrides, attachments = listOf(attachment)) { }
+        assertEquals(listOf(attachment), seen.get().attachments)
+        assertEquals(overrides, seenParameters.get())
+        assertTrue(service.prepare("", context).diagnostics.any { it.code == "message_empty" })
+    }
+
     private fun service(
         tracker: InMemoryInteractionTaskTracker,
         submitter: InteractionModelSubmitter? = null,

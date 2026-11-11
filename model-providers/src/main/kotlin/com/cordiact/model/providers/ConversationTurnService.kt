@@ -142,10 +142,11 @@ class ConversationTurnService(
         parameters: GenerationParameters? = null,
         systemContext: String? = null,
         parts: List<MessagePart> = emptyList(),
+        onUserMessagePersisted: (() -> Unit)? = null,
         onEvent: (ModelEvent) -> Unit,
     ): ModelCall {
         if (tools.isEmpty()) {
-            return submit(sessionId, model, text, emptyList(), parameters, systemContext, parts, onEvent)
+            return submit(sessionId, model, text, emptyList(), parameters, systemContext, parts, onUserMessagePersisted, onEvent)
         }
         require(text.isNotBlank() || parts.isNotEmpty()) { "Message must not be blank" }
         requireNotNull(sessions.getSession(sessionId)) { "Session does not exist" }
@@ -173,6 +174,7 @@ class ConversationTurnService(
         try {
             val pending = notices?.pending(sessionId).orEmpty()
             appendUserMessage(sessionId, text, parts)
+            onUserMessagePersisted?.invoke()
             val initial = buildProjectedHistory(sessionId, model, systemContext, pending, onEvent)
             if (pending.isNotEmpty()) runCatching { notices?.acknowledge(sessionId, pending.map { it.id }) }
             val effectiveContext = if (toolContext.onEvent == null) toolContext.copy(onEvent = roundEvents) else toolContext
@@ -377,10 +379,11 @@ class ConversationTurnService(
          */
         systemContext: String? = null,
         parts: List<MessagePart> = emptyList(),
+        onUserMessagePersisted: (() -> Unit)? = null,
         onEvent: (ModelEvent) -> Unit,
     ): ModelCall {
         require(text.isNotBlank() || parts.isNotEmpty()) { "Message must not be blank" }
-        return runTurn(sessionId, model, text.trim(), transientContext, parameters, systemContext, onEvent, parts)
+        return runTurn(sessionId, model, text.trim(), transientContext, parameters, systemContext, onEvent, parts, onUserMessagePersisted)
     }
 
     /**
@@ -434,6 +437,7 @@ class ConversationTurnService(
         systemContext: String?,
         onEvent: (ModelEvent) -> Unit,
         userParts: List<MessagePart> = emptyList(),
+        onUserMessagePersisted: (() -> Unit)? = null,
     ): ModelCall {
         val session = requireNotNull(sessions.getSession(sessionId)) { "Session does not exist" }
         check(activeSessions.add(sessionId)) { "A model turn is already active for this Session" }
@@ -448,7 +452,10 @@ class ConversationTurnService(
         val history = try {
             // A woken turn has no user message to persist: the report block is its trigger, and
             // storing one would put words in the user's mouth on the next replay.
-            if (userText != null) appendUserMessage(sessionId, userText, userParts)
+            if (userText != null) {
+                appendUserMessage(sessionId, userText, userParts)
+                onUserMessagePersisted?.invoke()
+            }
             val projected = buildProjectedHistory(sessionId, model, systemContext, pending, onEvent)
             if (transientContext.isEmpty()) projected else projected + ModelMessage(
                 MessageRole.USER,

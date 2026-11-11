@@ -23,6 +23,29 @@ import org.junit.jupiter.api.Test
 
 class ConfigurableModelBackendTest {
     @Test
+    fun modelDescriptorPublishesOnlyDeclaredCapabilitiesAndMaxLabelDoesNotChangeWire() {
+        val cap = ModelParameterCapabilities.openAi(setOf(ReasoningEffort.NONE, ReasoningEffort.MINIMAL, ReasoningEffort.MAX), supportsFast = true)
+        val config = ModelProviderConfig.forLoopbackTest(
+            providerId = "capabilities", displayName = "Capabilities", protocol = ModelProtocol.OPENAI_CHAT_COMPLETIONS,
+            endpoint = "http://127.0.0.1:12345/v1/chat/completions", models = listOf("gpt-test", "plain"),
+            parameterCapabilities = mapOf("gpt-test" to cap),
+            defaults = GenerationParameters(reasoningEffort = ReasoningEffort.MAX, responseSpeed = ResponseSpeed.FAST))
+        ConfigurableModelBackend(config, ApiKeyProvider { "test" }).use { backend ->
+            val model = backend.models().first()
+            assertEquals(listOf("none", "auto", "minimal", "Max"),
+                com.cordiact.core.composer.ComposerRules.effortStops(model.capabilities).map(com.cordiact.core.composer.ComposerRules::effortLabel))
+            assertTrue(backend.models().last().capabilities.reasoningEfforts.isEmpty())
+            val auto = backend.requestBody(requestWithParameters("capabilities", "gpt-test",
+                com.cordiact.core.composer.ComposerRules.parameters(com.cordiact.core.composer.ComposerRules.Tuning(ReasoningEffort.AUTO, ResponseSpeed.AUTO))))
+            assertFalse(auto.has("reasoning_effort"))
+            assertFalse(auto.has("service_tier"))
+            val max = backend.requestBody(requestWithParameters("capabilities", "gpt-test",
+                com.cordiact.core.composer.ComposerRules.parameters(com.cordiact.core.composer.ComposerRules.Tuning(ReasoningEffort.MAX, ResponseSpeed.AUTO))))
+            assertEquals("max", max.get("reasoning_effort").asString)
+        }
+    }
+
+    @Test
     fun mapsOpenAiEffortAndSpeedPerModelAndOmitsAuto() {
         val capabilities = mapOf(
             "gpt-test" to ModelParameterCapabilities.openAi(

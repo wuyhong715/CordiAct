@@ -293,10 +293,25 @@ class ConfigurableModelBackend(
     override val providerId: String get() = config.providerId
 
     override fun models(): List<ModelDescriptor> = config.models.map {
-        ModelDescriptor(ModelId(providerId, it), "${config.displayName} - $it", supportsStreaming = true)
+        val parameters = config.parameterCapabilities[it]
+        ModelDescriptor(
+            ModelId(providerId, it), "${config.displayName} - $it", supportsStreaming = true,
+            capabilities = com.cordiact.core.conversation.ModelCapabilities(
+                reasoningEfforts = parameters?.reasoningEffortValues?.keys.orEmpty() - ReasoningEffort.AUTO,
+                responseSpeeds = parameters?.responseSpeedValues?.keys.orEmpty() - ResponseSpeed.AUTO,
+                attachments = config.attachmentCapabilities[it] ?: AttachmentInputCapability.UNSUPPORTED,
+            ),
+        )
     }
 
-    override fun generate(request: ModelGenerationRequest, onEvent: (ModelEvent) -> Unit): ModelCall {
+    override fun generate(original: ModelGenerationRequest, onEvent: (ModelEvent) -> Unit): ModelCall {
+        // LOCAL_ONLY carries explicit consent to store without transmitting bytes. All other
+        // attachments (including prior turns) retain full preflight validation.
+        val request = original.copy(
+            messages = com.cordiact.core.attachment.AttachmentHistoryPolicy.normalize(
+                original.messages,
+            ),
+        )
         val running = RunningCall()
         fun emitEvent(event: ModelEvent) = running.emit(onEvent, event)
         val key = try {
