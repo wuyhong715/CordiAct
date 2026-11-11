@@ -264,7 +264,6 @@ class BundledConversationPlugins private constructor(
     /** Reference-aware retention for attachments that no message and no draft use. */
     lateinit var attachmentGc: com.cordiact.core.attachment.AttachmentGarbageCollector
         private set
-        private set
 
     /**
      * The registry user-installed plugins publish into.
@@ -513,6 +512,7 @@ class BundledConversationPlugins private constructor(
                 AndroidFillValueStore(context),
                 AndroidSearchProviderSettings(context),
                 AndroidSearchApiKeyStore(context),
+                attachmentAudit = attachmentAudit,
             )
         }
 
@@ -527,6 +527,8 @@ class BundledConversationPlugins private constructor(
             searchProviderSettings: AndroidSearchProviderSettings? = null,
             searchApiKeys: AndroidSearchApiKeyStore? = null,
             spillStoreDir: File? = File(privateRoot, "spills"),
+            attachmentAudit: com.cordiact.core.attachment.AttachmentAuditSink =
+                com.cordiact.core.attachment.NoopAttachmentAuditSink,
         ): BundledConversationPlugins {
             val workspace = WorkspaceManagerPlugin(store, privateRoot)
             val fileManager = FileManagerPlugin(workspace, AndroidWorkspaceFileBackend())
