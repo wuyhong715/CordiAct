@@ -21,14 +21,22 @@ object ModelProviderPresets {
         providerId: String = "openai",
         displayName: String = "OpenAI",
         endpoint: String = OPENAI_RESPONSES_ENDPOINT,
-    ) = ModelProviderConfig(providerId, displayName, ModelProtocol.OPENAI_RESPONSES, endpoint, models)
+        parameterCapabilities: Map<String, ModelParameterCapabilities> = emptyMap(),
+    ) = ModelProviderConfig(
+        providerId, displayName, ModelProtocol.OPENAI_RESPONSES, endpoint, models,
+        parameterCapabilities = parameterCapabilities,
+    )
 
     fun openAiChatCompletions(
         models: List<String>,
         providerId: String,
         displayName: String,
         endpoint: String,
-    ) = ModelProviderConfig(providerId, displayName, ModelProtocol.OPENAI_CHAT_COMPLETIONS, endpoint, models)
+        parameterCapabilities: Map<String, ModelParameterCapabilities> = emptyMap(),
+    ) = ModelProviderConfig(
+        providerId, displayName, ModelProtocol.OPENAI_CHAT_COMPLETIONS, endpoint, models,
+        parameterCapabilities = parameterCapabilities,
+    )
 
     const val ANTHROPIC_MESSAGES_ENDPOINT = "https://api.anthropic.com/v1/messages"
     const val GEMINI_STREAM_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:streamGenerateContent?alt=sse"

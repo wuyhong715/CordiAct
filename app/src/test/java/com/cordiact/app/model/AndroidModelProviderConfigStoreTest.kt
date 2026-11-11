@@ -2,6 +2,9 @@ package com.cordiact.app.model
 
 import android.content.Context
 import com.cordiact.core.conversation.GenerationParameters
+import com.cordiact.core.conversation.ReasoningEffort
+import com.cordiact.core.conversation.ResponseSpeed
+import com.cordiact.model.providers.ModelParameterCapabilities
 import com.cordiact.model.providers.ModelProviderConfig
 import com.cordiact.model.providers.ModelProtocol
 import org.junit.Assert.assertEquals
@@ -33,17 +36,31 @@ class AndroidModelProviderConfigStoreTest {
         val config = ModelProviderConfig(
             providerId = "custom",
             displayName = "Custom",
-            protocol = ModelProtocol.ANTHROPIC_MESSAGES,
-            endpoint = "https://api.example.test/v1/messages",
+            protocol = ModelProtocol.OPENAI_RESPONSES,
+            endpoint = "https://api.example.test/v1/responses",
             models = listOf("model-a", "model-b"),
-            defaults = GenerationParameters(temperature = 0.4, maxOutputTokens = 2048, topP = 0.8),
+            defaults = GenerationParameters(
+                temperature = 0.4,
+                maxOutputTokens = 2048,
+                topP = 0.8,
+                reasoningEffort = ReasoningEffort.AUTO,
+                responseSpeed = ResponseSpeed.FAST,
+            ),
+            parameterCapabilities = mapOf(
+                "model-a" to ModelParameterCapabilities.openAi(
+                    reasoningEfforts = setOf(ReasoningEffort.NONE, ReasoningEffort.LOW, ReasoningEffort.MAX),
+                    supportsFast = true,
+                    ultrafastWireValue = "ultrafast",
+                ),
+            ),
         )
 
         store.save(config)
 
         val reloaded = AndroidModelProviderConfigStore(RuntimeEnvironment.getApplication()).load()
         assertEquals(listOf(config), reloaded)
-        assertEquals(GenerationParameters(temperature = 0.4, maxOutputTokens = 2048, topP = 0.8), reloaded.single().defaults)
+        assertEquals(config.defaults, reloaded.single().defaults)
+        assertEquals(config.parameterCapabilities, reloaded.single().parameterCapabilities)
     }
 
     @Test

@@ -6,6 +6,8 @@ import com.cordiact.core.conversation.ModelAdapterPlugin
 import com.cordiact.core.conversation.ModelEvent
 import com.cordiact.core.conversation.ModelGenerationRequest
 import com.cordiact.core.conversation.ModelId
+import com.cordiact.core.conversation.ReasoningEffort
+import com.cordiact.core.conversation.ResponseSpeed
 import com.google.gson.JsonParser
 import com.sun.net.httpserver.HttpServer
 import java.net.InetSocketAddress
@@ -20,6 +22,64 @@ import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Test
 
 class ConfigurableModelBackendTest {
+    @Test
+    fun mapsOpenAiEffortAndSpeedPerModelAndOmitsAuto() {
+        val capabilities = mapOf(
+            "gpt-test" to ModelParameterCapabilities.openAi(
+                reasoningEfforts = setOf(ReasoningEffort.NONE, ReasoningEffort.LOW, ReasoningEffort.MAX),
+                supportsFast = true,
+                ultrafastWireValue = "ultrafast",
+            ),
+        )
+        val config = ModelProviderConfig.forLoopbackTest(
+            providerId = "openai-test",
+            displayName = "OpenAI test",
+            protocol = ModelProtocol.OPENAI_RESPONSES,
+            endpoint = "http://127.0.0.1:12345/v1/responses",
+            models = listOf("gpt-test"),
+            parameterCapabilities = capabilities,
+        )
+        val backend = ConfigurableModelBackend(config, ApiKeyProvider { "test" })
+        val request = requestWithParameters(
+            "openai-test", "gpt-test",
+            GenerationParameters(reasoningEffort = ReasoningEffort.MAX, responseSpeed = ResponseSpeed.FAST),
+        )
+        val body = backend.requestBody(request)
+        assertEquals("max", body.getAsJsonObject("reasoning").get("effort").asString)
+        assertEquals("fast", body.get("service_tier").asString)
+
+        val autoBody = backend.requestBody(requestWithParameters(
+            "openai-test", "gpt-test",
+            GenerationParameters(reasoningEffort = ReasoningEffort.AUTO, responseSpeed = ResponseSpeed.AUTO),
+        ))
+        assertFalse(autoBody.has("reasoning"))
+        assertFalse(autoBody.has("service_tier"))
+
+        val chatConfig = ModelProviderConfig.forLoopbackTest(
+            providerId = "openai-chat-test",
+            displayName = "OpenAI Chat test",
+            protocol = ModelProtocol.OPENAI_CHAT_COMPLETIONS,
+            endpoint = "http://127.0.0.1:12345/v1/chat/completions",
+            models = listOf("gpt-test"),
+            parameterCapabilities = capabilities,
+        )
+        val chatBody = ConfigurableModelBackend(chatConfig, ApiKeyProvider { "test" }).use { chatBackend ->
+            chatBackend.requestBody(requestWithParameters(
+                "openai-chat-test", "gpt-test",
+                GenerationParameters(reasoningEffort = ReasoningEffort.MAX, responseSpeed = ResponseSpeed.FAST),
+            ))
+        }
+        assertEquals("max", chatBody.get("reasoning_effort").asString)
+        assertEquals("fast", chatBody.get("service_tier").asString)
+
+        assertThrows(IllegalArgumentException::class.java) {
+            backend.requestBody(requestWithParameters(
+                "openai-test", "gpt-test", GenerationParameters(reasoningEffort = ReasoningEffort.XHIGH),
+            ))
+        }
+        backend.close()
+    }
+
     @Test
     fun streamsEveryProtocolAndUsesItsExpectedRequestAndAuthentication() {
         val cases = listOf(
