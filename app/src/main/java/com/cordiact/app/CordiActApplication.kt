@@ -474,7 +474,20 @@ class CordiActApplication : Application() {
         pluginLifecycle = AndroidPluginLifecycle(this, BundledConversationPluginCatalog.verifier)
         deepSeekApiKeyStore = AndroidDeepSeekApiKeyStore(this)
         providerApiKeyStore = AndroidProviderApiKeyStore(this)
-        conversationCatalog = BundledConversationPlugins.create(this, deepSeekApiKeyStore)
+        conversationCatalog = BundledConversationPlugins.create(
+            this,
+            deepSeekApiKeyStore,
+            // Attachment access is audited in the same tamper-evident log as other security
+            // events. The vault is resolved lazily, on the first attachment event.
+            attachmentAudit = { event ->
+                com.cordiact.core.security.SecurityAuditAttachmentSink(credentialVaultRuntime.database).record(event)
+            },
+        )
+        // Reference-aware attachment retention runs off the startup path; it only removes objects
+        // that no message and no draft reference and that are at least a day old.
+        kotlin.concurrent.thread(name = "attachment-gc", isDaemon = true) {
+            runCatching { conversationCatalog.runAttachmentGc() }
+        }
         automationRuntime = AutomationRuntime(this)
         automationRuntime.registerTools(conversationCatalog.toolRegistry, conversationCatalog.jobRegistry)
         // Jobs left RUNNING by the previous process must be classified before anything reads them:

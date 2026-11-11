@@ -23,7 +23,7 @@ class DefaultContextProjector : ContextProjector {
             .sortedBy { it.createdAt }
 
         if (activeRecords.isEmpty()) {
-            return history.map { ModelMessage(it.role, it.content) }
+            return history.map { it.toModelMessage() }
         }
 
         val result = mutableListOf<ModelMessage>()
@@ -38,13 +38,12 @@ class DefaultContextProjector : ContextProjector {
 
         if (startIndex == null || endIndex == null || startIndex > endIndex) {
             // Cannot cleanly map bounds; fallback to verbatim projection
-            return history.map { ModelMessage(it.role, it.content) }
+            return history.map { it.toModelMessage() }
         }
 
         // 1. Head (all messages before startIndex)
         for (i in 0 until startIndex) {
-            val msg = history[i]
-            result.add(ModelMessage(msg.role, msg.content))
+            result.add(history[i].toModelMessage())
         }
 
         // 2. Summary node (injected as SYSTEM context block)
@@ -61,10 +60,18 @@ ${latestRecord.summary}
 
         // 3. Tail (all messages after endIndex)
         for (i in (endIndex + 1) until history.size) {
-            val msg = history[i]
-            result.add(ModelMessage(msg.role, msg.content))
+            result.add(history[i].toModelMessage())
         }
 
         return result
     }
+
+    /**
+     * Keeps the ordered parts of a message.
+     *
+     * Dropping them here would turn an attachment message into a text-only one between the store
+     * and the provider — the exact silent downgrade the attachment design forbids.
+     */
+    private fun ConversationMessage.toModelMessage(): ModelMessage =
+        ModelMessage(role = role, content = content, parts = parts)
 }

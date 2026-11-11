@@ -18,6 +18,8 @@ import com.cordiact.core.context.WeightedTokenEstimator
 import com.cordiact.core.context.createBudget
 import com.cordiact.core.conversation.ConversationMessage
 import com.cordiact.core.conversation.GenerationParameters
+import com.cordiact.core.attachment.MessagePart
+import com.cordiact.core.attachment.MessageParts
 import com.cordiact.core.conversation.MessageRole
 import com.cordiact.core.conversation.ModelAdapterService
 import com.cordiact.core.conversation.ModelCall
@@ -139,12 +141,13 @@ class ConversationTurnService(
         toolContext: ToolInvocationContext,
         parameters: GenerationParameters? = null,
         systemContext: String? = null,
+        parts: List<MessagePart> = emptyList(),
         onEvent: (ModelEvent) -> Unit,
     ): ModelCall {
         if (tools.isEmpty()) {
-            return submit(sessionId, model, text, emptyList(), parameters, systemContext, onEvent)
+            return submit(sessionId, model, text, emptyList(), parameters, systemContext, parts, onEvent)
         }
-        require(text.isNotBlank()) { "Message must not be blank" }
+        require(text.isNotBlank() || parts.isNotEmpty()) { "Message must not be blank" }
         requireNotNull(sessions.getSession(sessionId)) { "Session does not exist" }
         check(activeSessions.add(sessionId)) { "A model turn is already active for this Session" }
 
@@ -169,7 +172,7 @@ class ConversationTurnService(
         }
         try {
             val pending = notices?.pending(sessionId).orEmpty()
-            sessions.appendMessage(sessionId, MessageRole.USER, text.trim())
+            appendUserMessage(sessionId, text, parts)
             val initial = buildProjectedHistory(sessionId, model, systemContext, pending, onEvent)
             if (pending.isNotEmpty()) runCatching { notices?.acknowledge(sessionId, pending.map { it.id }) }
             val effectiveContext = if (toolContext.onEvent == null) toolContext.copy(onEvent = roundEvents) else toolContext
@@ -320,6 +323,7 @@ class ConversationTurnService(
                 messages = wireMessages,
                 parameters = parameters,
                 tools = tools,
+                workspaceId = sessions.getSession(sessionId)?.workspaceId,
             ),
         ) { event ->
             if (terminal.get() || finished.get()) return@generate
@@ -372,10 +376,11 @@ class ConversationTurnService(
          * or removed between turns takes effect immediately rather than at the next session.
          */
         systemContext: String? = null,
+        parts: List<MessagePart> = emptyList(),
         onEvent: (ModelEvent) -> Unit,
     ): ModelCall {
-        require(text.isNotBlank()) { "Message must not be blank" }
-        return runTurn(sessionId, model, text.trim(), transientContext, parameters, systemContext, onEvent)
+        require(text.isNotBlank() || parts.isNotEmpty()) { "Message must not be blank" }
+        return runTurn(sessionId, model, text.trim(), transientContext, parameters, systemContext, onEvent, parts)
     }
 
     /**
@@ -399,6 +404,27 @@ class ConversationTurnService(
         return runTurn(sessionId, model, userText = null, emptyList(), parameters, systemContext, onEvent)
     }
 
+    /**
+     * Persists the user turn, with parts when the message carries attachments.
+     *
+     * A message may consist only of attachments: the stored `content` is then a text projection so
+     * search and notifications keep working, while [parts] remains the semantic source.
+     */
+    private fun appendUserMessage(sessionId: String, text: String, parts: List<MessagePart>) {
+        if (parts.isEmpty()) {
+            sessions.appendMessage(sessionId, MessageRole.USER, text.trim())
+            return
+        }
+        // The text the caller passed must also exist as a part; otherwise it would live only in
+        // the compatibility projection and the provider would never see it.
+        val normalized = if (text.isNotBlank() && parts.none { it is MessagePart.Text }) {
+            listOf(MessagePart.Text(text.trim())) + parts
+        } else {
+            parts
+        }
+        sessions.appendMessageWithParts(sessionId, MessageRole.USER, MessageParts.plainText(normalized), normalized)
+    }
+
     private fun runTurn(
         sessionId: String,
         model: ModelId,
@@ -407,8 +433,9 @@ class ConversationTurnService(
         parameters: GenerationParameters?,
         systemContext: String?,
         onEvent: (ModelEvent) -> Unit,
+        userParts: List<MessagePart> = emptyList(),
     ): ModelCall {
-        requireNotNull(sessions.getSession(sessionId)) { "Session does not exist" }
+        val session = requireNotNull(sessions.getSession(sessionId)) { "Session does not exist" }
         check(activeSessions.add(sessionId)) { "A model turn is already active for this Session" }
         val terminal = AtomicBoolean(false)
         val callbackLock = Any()
@@ -421,7 +448,7 @@ class ConversationTurnService(
         val history = try {
             // A woken turn has no user message to persist: the report block is its trigger, and
             // storing one would put words in the user's mouth on the next replay.
-            if (userText != null) sessions.appendMessage(sessionId, MessageRole.USER, userText)
+            if (userText != null) appendUserMessage(sessionId, userText, userParts)
             val projected = buildProjectedHistory(sessionId, model, systemContext, pending, onEvent)
             if (transientContext.isEmpty()) projected else projected + ModelMessage(
                 MessageRole.USER,
@@ -446,6 +473,7 @@ class ConversationTurnService(
                         model = model,
                         messages = historyToSend,
                         parameters = parameters,
+                        workspaceId = session.workspaceId,
                     ),
                 ) { event ->
                     synchronized(callbackLock) {

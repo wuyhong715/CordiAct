@@ -1,6 +1,9 @@
 package com.cordiact.app.model
 
 import android.content.Context
+import com.cordiact.core.attachment.AttachmentInputCapability
+import com.cordiact.core.attachment.FilesApiCapability
+import com.cordiact.core.attachment.Interpretation
 import com.cordiact.core.conversation.GenerationParameters
 import com.cordiact.core.conversation.ReasoningEffort
 import com.cordiact.core.conversation.ResponseSpeed
@@ -50,6 +53,28 @@ class AndroidModelProviderConfigStore(context: Context) : ModelProviderConfigSto
                                     .toParameterMap().mapKeys { ReasoningEffort.valueOf(it.key) },
                                 responseSpeedValues = modelCapabilities.optJSONObject("responseSpeedValues")
                                     .toParameterMap().mapKeys { ResponseSpeed.valueOf(it.key) },
+                            )
+                        }
+                    }.orEmpty(),
+                    attachmentCapabilities = item.optJSONObject("attachmentCapabilities")?.let { capabilities ->
+                        capabilities.keys().asSequence().associateWith { modelId ->
+                            val capability = capabilities.getJSONObject(modelId)
+                            AttachmentInputCapability(
+                                interpretations = capability.optJSONArray("interpretations").toStringSet()
+                                    .map { Interpretation.valueOf(it) }
+                                    .toSet(),
+                                mimeTypes = capability.optJSONArray("mimeTypes").toStringSet(),
+                                maxFileBytes = capability.optLong("maxFileBytes"),
+                                maxRequestBytes = capability.optLong("maxRequestBytes"),
+                                maxCount = capability.optInt("maxCount"),
+                                filesApi = capability.optJSONObject("filesApi")?.let { files ->
+                                    FilesApiCapability(
+                                        uploadEndpoint = files.getString("uploadEndpoint"),
+                                        maxFileBytes = files.optLong("maxFileBytes"),
+                                        retentionMillis = files.optLong("retentionMillis")
+                                            .takeIf { files.has("retentionMillis") },
+                                    )
+                                },
                             )
                         }
                     }.orEmpty(),
@@ -105,6 +130,30 @@ class AndroidModelProviderConfigStore(context: Context) : ModelProviderConfigSto
                         }
                     })
                 }
+                if (config.attachmentCapabilities.isNotEmpty()) {
+                    put("attachmentCapabilities", JSONObject().apply {
+                        config.attachmentCapabilities.toSortedMap().forEach { (modelId, capability) ->
+                            put(modelId, JSONObject().apply {
+                                put("interpretations", JSONArray().apply {
+                                    capability.interpretations.sortedBy { it.name }.forEach { put(it.name) }
+                                })
+                                put("mimeTypes", JSONArray().apply {
+                                    capability.mimeTypes.sorted().forEach { put(it) }
+                                })
+                                put("maxFileBytes", capability.maxFileBytes)
+                                put("maxRequestBytes", capability.maxRequestBytes)
+                                put("maxCount", capability.maxCount)
+                                capability.filesApi?.let { files ->
+                                    put("filesApi", JSONObject().apply {
+                                        put("uploadEndpoint", files.uploadEndpoint)
+                                        put("maxFileBytes", files.maxFileBytes)
+                                        files.retentionMillis?.let { put("retentionMillis", it) }
+                                    })
+                                }
+                            })
+                        }
+                    })
+                }
             })
         }
         check(preferences.edit().putString(CONFIGS, array.toString()).commit()) {
@@ -117,6 +166,11 @@ class AndroidModelProviderConfigStore(context: Context) : ModelProviderConfigSto
         const val PREFERENCES = "model_provider_config"
         const val CONFIGS = "providers_json"
     }
+}
+
+private fun JSONArray?.toStringSet(): Set<String> {
+    if (this == null) return emptySet()
+    return (0 until length()).map { getString(it) }.toSet()
 }
 
 private fun JSONObject?.toParameterMap(): Map<String, String> {

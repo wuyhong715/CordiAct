@@ -54,6 +54,10 @@ import com.cordiact.core.tool.ToolValue
 import com.cordiact.core.tool.ToolValueType
 import com.cordiact.core.tool.ToolExecutor
 import com.cordiact.core.tool.toolManagerPluginSpec
+import com.cordiact.app.attachment.AndroidAttachmentCatalog
+import com.cordiact.app.attachment.AndroidAttachmentImportService
+import com.cordiact.app.attachment.AndroidImageNormalizer
+import com.cordiact.core.attachment.LocalAttachmentBlobStore
 import com.cordiact.app.file.AndroidWorkspaceFileBackend
 import com.cordiact.app.file.registerWorkspaceFileTools
 import com.cordiact.core.context.SpillStore
@@ -187,8 +191,32 @@ class BundledConversationPlugins private constructor(
     private val configuredSearchProviderSettings: AndroidSearchProviderSettings? = null,
     private val configuredSearchApiKeys: AndroidSearchApiKeyStore? = null,
     private val spillStoreDir: File? = null,
+    /** Workspace-scoped attachment metadata over private blob storage. */
+    val attachmentCatalog: AndroidAttachmentCatalog,
+    /** Copies picked `content://` items into the attachment store. */
+    val attachmentImportService: AndroidAttachmentImportService,
+    /** Audit trail for attachment import/read/send decisions. */
+    private val attachmentAudit: com.cordiact.core.attachment.AttachmentAuditSink =
+        com.cordiact.core.attachment.NoopAttachmentAuditSink,
 ) {
     val workspaceManager: WorkspaceManagerService get() = workspacePlugin
+
+    /**
+     * Best-effort retention sweep across every Workspace.
+     *
+     * Each Workspace is independent: a failure in one (for example a locked database) must not stop
+     * the sweep for the others. Returns the number of attachments removed.
+     */
+    fun runAttachmentGc(
+        minAgeMillis: Long = com.cordiact.core.attachment.AttachmentGarbageCollector.DEFAULT_MIN_AGE_MILLIS,
+    ): Int {
+        var removed = 0
+        val workspaces = runCatching { workspaceManager.list(includeArchived = true) }.getOrDefault(emptyList())
+        for (workspace in workspaces) {
+            removed += runCatching { attachmentGc.collect(workspace.id, minAgeMillis) }.getOrDefault(0)
+        }
+        return removed
+    }
     val fillValueStore: MutableFillValueStore get() = fillValues
     lateinit var interactionPlugin: InteractionPlugin
         private set
@@ -232,6 +260,10 @@ class BundledConversationPlugins private constructor(
     val searchApiKeyStore: AndroidSearchApiKeyStore? get() = configuredSearchApiKeys
     val searchProviderSettings: AndroidSearchProviderSettings? get() = configuredSearchProviderSettings
     lateinit var modelProviderRegistryPlugin: ModelProviderRegistryPlugin
+
+    /** Reference-aware retention for attachments that no message and no draft use. */
+    lateinit var attachmentGc: com.cordiact.core.attachment.AttachmentGarbageCollector
+        private set
         private set
 
     /**
@@ -381,12 +413,19 @@ class BundledConversationPlugins private constructor(
             })
         }
 
+        attachmentGc = com.cordiact.core.attachment.AttachmentGarbageCollector(
+            catalog = attachmentCatalog,
+            references = attachmentCatalog,
+            audit = attachmentAudit,
+        )
         val modelAdapter = ModelAdapterPlugin()
         modelProviderRegistryPlugin = ModelProviderRegistryPlugin(
             modelAdapter,
             providerCredentialFor,
             providerConfigStore,
             forgetProviderCredential,
+            attachmentReader = attachmentCatalog,
+            attachmentAudit = attachmentAudit,
         )
         val commandRegistry = InteractionCommandRegistry()
         val sessionManager = SessionManagerPlugin(conversationStore, workspaceManager)
@@ -458,6 +497,8 @@ class BundledConversationPlugins private constructor(
         fun create(
             context: Context,
             apiKeyProvider: ApiKeyProvider = AndroidDeepSeekApiKeyStore(context),
+            attachmentAudit: com.cordiact.core.attachment.AttachmentAuditSink =
+                com.cordiact.core.attachment.NoopAttachmentAuditSink,
         ): BundledConversationPlugins {
             val store = AndroidConversationSessionStore(context)
             val privateRoot = File(context.noBackupFilesDir, "cordiact")
@@ -489,6 +530,15 @@ class BundledConversationPlugins private constructor(
         ): BundledConversationPlugins {
             val workspace = WorkspaceManagerPlugin(store, privateRoot)
             val fileManager = FileManagerPlugin(workspace, AndroidWorkspaceFileBackend())
+            val attachmentBlobs = LocalAttachmentBlobStore(File(privateRoot, "attachments"))
+            val attachmentCatalog = AndroidAttachmentCatalog(store, attachmentBlobs, audit = attachmentAudit)
+            val attachmentImportService = AndroidAttachmentImportService(
+                context = context,
+                blobs = attachmentBlobs,
+                catalog = attachmentCatalog,
+                audit = attachmentAudit,
+                imageNormalizer = AndroidImageNormalizer(),
+            )
             return BundledConversationPlugins(
                 store,
                 workspace,
@@ -504,6 +554,9 @@ class BundledConversationPlugins private constructor(
                 searchProviderSettings,
                 searchApiKeys,
                 spillStoreDir,
+                attachmentCatalog,
+                attachmentImportService,
+                attachmentAudit,
             )
         }
     }
