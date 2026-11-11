@@ -1,6 +1,6 @@
 # Provider-first model discovery and unified credentials
 
-Implemented in the working tree on 2026-11-11. No APK packaging, commit, push or PR is implied.
+Implemented 2026-11-11, merged to main via PR #61 (squash 6caa5ae).
 
 ## User flow
 
@@ -44,4 +44,6 @@ sh /workspace/spike/local_compile.sh -I /workspace/.provider-isolated-compile.in
 
 The temporary init script excludes only `com/cordiact/app/ui/**`, the pre-existing untracked UI directory. No project build file or user UI/icon file is changed by that exclusion. The unfiltered build is blocked by existing DynamicActivityPill.kt animation type errors and ScreenshotView.kt unresolved coil/AsyncImage dependencies. Full app unit/instrumentation compilation is additionally blocked by the existing generated-Java/AIDL output layout (`app/build/generated/aidl_source_output_dir/debug/compileDebugAidl/out` missing); this is not represented as a test pass.
 
-Added `app/src/androidTest/java/com/cordiact/app/security/SystemCredentialMigrationTest.kt`: database v1 preservation, actual legacy Keystore model/search ciphertext migration, persistence/replacement/deletion, and host namespace exclusion from Agent listings. These Android tests are WRITTEN, NOT EXECUTED/validated on a device. No production endpoint/key was used for discovery and no APK was built locally. End-to-end UI/Keystore acceptance and CI APK validation remain pending.
+`SystemCredentialMigrationTest` (database v1 preservation, real legacy Keystore model/search ciphertext migration, persistence/replacement/deletion, host namespace exclusion from Agent listings) was executed by CI with the `emulator` label on API 29 and API 35 through `connectedDebugAndroidTest`; all three cases passed and are listed in the uploaded instrumentation report.
+
+CI evidence for PR #61: run `42994956795` green (build + test, API 29 proof, API 35 proof); the earlier run `42993974515` failed to compile the test (a local finally-expression typo in the test itself) and was fixed in `213a560` before merging. APK artifacts were produced by CI, not locally. No production endpoint/key was used for model discovery, so live provider round trips and manual UI acceptance remain unverified.
