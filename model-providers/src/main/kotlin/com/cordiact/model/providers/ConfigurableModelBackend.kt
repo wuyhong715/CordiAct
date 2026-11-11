@@ -1,6 +1,22 @@
 package com.cordiact.model.providers
 
+import com.cordiact.core.attachment.AttachmentAuditAction
+import com.cordiact.core.attachment.AttachmentAuditDecision
+import com.cordiact.core.attachment.AttachmentAuditEvent
+import com.cordiact.core.attachment.AttachmentAuditSink
+import com.cordiact.core.attachment.AttachmentErrorCode
+import com.cordiact.core.attachment.AttachmentException
+import com.cordiact.core.attachment.AttachmentInputCapability
+import com.cordiact.core.attachment.AttachmentLimits
+import com.cordiact.core.attachment.AttachmentPlanner
+import com.cordiact.core.attachment.AttachmentReader
+import com.cordiact.core.attachment.MessagePart
+import com.cordiact.core.attachment.MessageParts
+import com.cordiact.core.attachment.NoopAttachmentAuditSink
+import com.cordiact.core.attachment.TransmissionPlan
+import com.cordiact.core.attachment.TransmissionRequest
 import com.cordiact.core.conversation.MessageRole
+import com.cordiact.core.conversation.ModelMessage
 import com.cordiact.core.conversation.GenerationParameters
 import com.cordiact.core.conversation.ModelBackend
 import com.cordiact.core.conversation.ModelCall
@@ -11,6 +27,7 @@ import com.cordiact.core.conversation.ModelGenerationRequest
 import com.cordiact.core.conversation.ModelId
 import com.cordiact.core.conversation.ReasoningEffort
 import com.cordiact.core.conversation.ResponseSpeed
+import com.cordiact.model.providers.attachment.AttachmentWireEncoder
 import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
@@ -18,6 +35,7 @@ import java.net.HttpURLConnection
 import java.net.URI
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -95,6 +113,13 @@ class ModelProviderConfig private constructor(
     val defaults: GenerationParameters,
     /** Explicit per-model wire mappings. Missing model/parameter entries are unsupported. */
     val parameterCapabilities: Map<String, ModelParameterCapabilities>,
+    /**
+     * Explicit per-model media input capability.
+     *
+     * A model that is absent here accepts no attachments at all: nothing is inferred from the model
+     * name, the protocol name or the endpoint shape.
+     */
+    val attachmentCapabilities: Map<String, AttachmentInputCapability>,
 ) {
     constructor(
         providerId: String,
@@ -106,6 +131,7 @@ class ModelProviderConfig private constructor(
         readTimeoutMillis: Int = 120_000,
         defaults: GenerationParameters = GenerationParameters.NONE,
         parameterCapabilities: Map<String, ModelParameterCapabilities> = emptyMap(),
+        attachmentCapabilities: Map<String, AttachmentInputCapability> = emptyMap(),
     ) : this(
         providerId,
         displayName,
@@ -122,6 +148,7 @@ class ModelProviderConfig private constructor(
                 responseSpeedValues = capabilities.responseSpeedValues.toMap(),
             )
         },
+        attachmentCapabilities.toMap(),
     )
 
     internal fun duplicate(
@@ -129,6 +156,7 @@ class ModelProviderConfig private constructor(
         models: List<String> = this.models,
         allowInsecureLoopbackForTests: Boolean = false,
         parameterCapabilities: Map<String, ModelParameterCapabilities> = this.parameterCapabilities,
+        attachmentCapabilities: Map<String, AttachmentInputCapability>? = null,
     ) = ModelProviderConfig(
         providerId, displayName, protocol, endpoint, models.toList(), connectTimeoutMillis, readTimeoutMillis, allowInsecureLoopbackForTests, defaults.copy(),
         parameterCapabilities.mapValues { (_, capabilities) ->
@@ -137,17 +165,20 @@ class ModelProviderConfig private constructor(
                 responseSpeedValues = capabilities.responseSpeedValues.toMap(),
             )
         },
+        // A duplicate keeps the same endpoint and protocol, so its media declaration still holds.
+        (attachmentCapabilities ?: this.attachmentCapabilities).toMap(),
     )
 
     override fun equals(other: Any?): Boolean = other is ModelProviderConfig &&
         providerId == other.providerId && displayName == other.displayName && protocol == other.protocol &&
         endpoint == other.endpoint && models == other.models && connectTimeoutMillis == other.connectTimeoutMillis &&
         readTimeoutMillis == other.readTimeoutMillis && allowInsecureLoopbackForTests == other.allowInsecureLoopbackForTests &&
-        defaults == other.defaults && parameterCapabilities == other.parameterCapabilities
+        defaults == other.defaults && parameterCapabilities == other.parameterCapabilities &&
+        attachmentCapabilities == other.attachmentCapabilities
 
     override fun hashCode(): Int = listOf(
         providerId, displayName, protocol, endpoint, models, connectTimeoutMillis, readTimeoutMillis,
-        allowInsecureLoopbackForTests, defaults, parameterCapabilities,
+        allowInsecureLoopbackForTests, defaults, parameterCapabilities, attachmentCapabilities,
     ).hashCode()
 
     companion object {
@@ -161,9 +192,10 @@ class ModelProviderConfig private constructor(
             readTimeoutMillis: Int = 120_000,
             defaults: GenerationParameters = GenerationParameters.NONE,
             parameterCapabilities: Map<String, ModelParameterCapabilities> = emptyMap(),
+            attachmentCapabilities: Map<String, AttachmentInputCapability> = emptyMap(),
         ) = ModelProviderConfig(
             providerId, displayName, protocol, endpoint, models, connectTimeoutMillis, readTimeoutMillis, true, defaults,
-            parameterCapabilities.toMap(),
+            parameterCapabilities.toMap(), attachmentCapabilities.toMap(),
         )
     }
     init {
@@ -189,6 +221,9 @@ class ModelProviderConfig private constructor(
         require(parameterCapabilities.keys.all { it in models }) {
             "Parameter capabilities may only be declared for configured models"
         }
+        require(attachmentCapabilities.keys.all { it in models }) {
+            "Attachment capabilities may only be declared for configured models"
+        }
         require(connectTimeoutMillis > 0 && readTimeoutMillis > 0)
         if (protocol == ModelProtocol.GEMINI_GENERATE_CONTENT) {
             require(endpoint.contains("{model}")) { "Gemini endpoint must include a {model} placeholder" }
@@ -203,6 +238,17 @@ class ConfigurableModelBackend(
     private val config: ModelProviderConfig,
     private val credentials: ApiKeyProvider,
     private val executor: ExecutorService = Executors.newCachedThreadPool(),
+    /**
+     * Attachment storage. When null, a message carrying attachment parts is refused instead of
+     * being sent without its media.
+     */
+    private val attachmentReader: AttachmentReader? = null,
+    private val attachmentLimits: AttachmentLimits = AttachmentLimits(),
+    /**
+     * Audit trail for attachment decisions. An allowed send is recorded before the body is built;
+     * a refused plan is recorded as DENIED; an unavailable audit log aborts the send.
+     */
+    private val attachmentAudit: AttachmentAuditSink = NoopAttachmentAuditSink,
 ) : ModelBackend, AutoCloseable {
     private class RunningCall {
         val cancelled = AtomicBoolean(false)
@@ -290,6 +336,21 @@ class ConfigurableModelBackend(
             return ModelCall {}
         }
 
+        // Attachment checks happen before the connection is opened: an unsupported model, a
+        // missing object or an over-budget request must never reach the network, and must never be
+        // silently downgraded to "text only".
+        val attachmentPlans = try {
+            preflightAttachments(request)
+        } catch (failure: AttachmentException) {
+            emitEvent(
+                ModelEvent.Failed(
+                    "attachment_rejected",
+                    failure.message ?: "The attachments cannot be sent to ${config.displayName}",
+                ),
+            )
+            return ModelCall {}
+        }
+
         activeCalls.add(running)
         try {
             val future = executor.submit {
@@ -306,7 +367,7 @@ class ConfigurableModelBackend(
                     connection.setRequestProperty("Content-Type", "application/json")
                     connection.setRequestProperty("Accept", "text/event-stream")
                     setAuthHeaders(connection, key)
-                    connection.outputStream.use { it.write(requestBody(request).toString().toByteArray(StandardCharsets.UTF_8)) }
+                    connection.outputStream.use { it.write(requestBody(request, attachmentPlans).toString().toByteArray(StandardCharsets.UTF_8)) }
                     if (running.cancelled.get()) return@submit
                     val status = connection.responseCode
                     if (status !in 200..299) {
@@ -600,7 +661,173 @@ class ConfigurableModelBackend(
         )
     }
 
-    internal fun requestBody(request: ModelGenerationRequest): JsonObject {
+    /**
+     * Validates every message that carries attachment parts, before any network work.
+     *
+     * Returns one immutable plan per attachment message, keyed by the message itself so the body
+     * builder can attach the exact plan that was approved.
+     */
+    internal fun preflightAttachments(request: ModelGenerationRequest): Map<ModelMessage, TransmissionPlan> {
+        val withAttachments = request.messages.filter { hasAttachmentParts(it) }
+        if (withAttachments.isEmpty()) return emptyMap()
+
+        val workspaceId = request.workspaceId ?: throw AttachmentException(
+            AttachmentErrorCode.CROSS_WORKSPACE,
+            "Attachment messages need a Workspace context",
+        )
+        val reader = attachmentReader ?: throw AttachmentException(
+            AttachmentErrorCode.STORAGE_FAILURE,
+            "No attachment store is wired into ${config.providerId}",
+        )
+        val capability = config.attachmentCapabilities[request.model.modelId]
+            ?: AttachmentInputCapability.UNSUPPORTED
+        val planner = AttachmentPlanner(reader, attachmentLimits)
+        val plans = LinkedHashMap<ModelMessage, TransmissionPlan>(withAttachments.size)
+        for (message in withAttachments) {
+            val plan = try {
+                if (message.role != MessageRole.USER) {
+                    throw AttachmentException(
+                        AttachmentErrorCode.UNSUPPORTED_INTERPRETATION,
+                        "Only user messages may carry attachments",
+                    )
+                }
+                // `content` is only a projection of the parts. If it says something the parts do
+                // not, sending the parts would silently drop the user's words.
+                val projection = MessageParts.plainText(message.parts)
+                if (message.content.isNotBlank() && message.content != projection) {
+                    throw AttachmentException(
+                        AttachmentErrorCode.EMPTY_MESSAGE,
+                        "The message text is not represented in its parts; rebuild the message before sending",
+                    )
+                }
+                planner.plan(
+                    TransmissionRequest(
+                        workspaceId = workspaceId,
+                        sessionId = request.sessionId,
+                        providerId = config.providerId,
+                        modelId = request.model.modelId,
+                        protocol = config.protocol.name,
+                        endpointRevision = endpointRevision(),
+                        policyRevision = ATTACHMENT_POLICY_REVISION,
+                        capability = capability,
+                        parts = message.parts,
+                    ),
+                )
+            } catch (failure: AttachmentException) {
+                recordDenied(
+                    workspaceId = workspaceId,
+                    request = request,
+                    attachmentId = message.parts.filterIsInstance<MessagePart.Attachment>().firstOrNull()?.id?.value,
+                    reasonCode = failure.code.name,
+                )
+                throw failure
+            }
+
+            for (attachment in plan.attachments) {
+                try {
+                    attachmentAudit.record(
+                        AttachmentAuditEvent(
+                            action = AttachmentAuditAction.SEND,
+                            decision = AttachmentAuditDecision.ALLOWED,
+                            workspaceId = workspaceId,
+                            sessionId = request.sessionId,
+                            attachmentId = attachment.attachmentId.value,
+                            renditionId = attachment.renditionId,
+                            mimeType = attachment.mimeType,
+                            byteSize = attachment.byteSize,
+                            sha256 = attachment.sha256,
+                            endpointFingerprint = plan.fingerprint.take(16),
+                            interpretation = attachment.interpretation,
+                            policyRevision = plan.policyRevision,
+                        ),
+                    )
+                } catch (failure: Exception) {
+                    throw AttachmentException(
+                        AttachmentErrorCode.STORAGE_FAILURE,
+                        "The attachment audit log is unavailable; the request was not sent",
+                        failure,
+                    )
+                }
+            }
+            plans[message] = plan
+        }
+        return plans
+    }
+
+    /** A denied send is refused regardless of whether the audit sink itself is healthy. */
+    private fun recordDenied(
+        workspaceId: String,
+        request: ModelGenerationRequest,
+        attachmentId: String?,
+        reasonCode: String,
+    ) {
+        runCatching {
+            attachmentAudit.record(
+                AttachmentAuditEvent(
+                    action = AttachmentAuditAction.SEND,
+                    decision = AttachmentAuditDecision.DENIED,
+                    workspaceId = workspaceId,
+                    sessionId = request.sessionId,
+                    attachmentId = attachmentId,
+                    reasonCode = reasonCode,
+                    policyRevision = ATTACHMENT_POLICY_REVISION,
+                ),
+            )
+        }
+    }
+
+    private fun hasAttachmentParts(message: ModelMessage): Boolean =
+        message.parts.any { part -> part is MessagePart.Attachment }
+
+    /**
+     * Returns the approved plan for [message], or null for a text-only message.
+     *
+     * A message that carries attachment parts but has no plan is a bug in the caller, and is
+     * refused here rather than encoded as text: dropping media silently is the one outcome this
+     * feature must never produce.
+     */
+    private fun planFor(
+        plans: Map<ModelMessage, TransmissionPlan>,
+        message: ModelMessage,
+    ): TransmissionPlan? {
+        val plan = plans[message]
+        if (plan == null && hasAttachmentParts(message)) {
+            throw AttachmentException(
+                AttachmentErrorCode.UNSUPPORTED_CAPABILITY,
+                "An attachment message reached the request body without an approved plan",
+            )
+        }
+        return plan
+    }
+
+    /** Content blocks for one planned message, in the order the user selected them. */
+    private fun attachmentBlocks(request: ModelGenerationRequest, plan: TransmissionPlan): JsonArray {
+        val workspaceId = request.workspaceId ?: throw AttachmentException(
+            AttachmentErrorCode.CROSS_WORKSPACE,
+            "Attachment messages need a Workspace context",
+        )
+        val reader = attachmentReader ?: throw AttachmentException(
+            AttachmentErrorCode.STORAGE_FAILURE,
+            "No attachment store is wired into ${config.providerId}",
+        )
+        val encoder = AttachmentWireEncoder { planned ->
+            reader.open(workspaceId, planned.attachmentId, planned.renditionId).use { it.readBytes() }
+        }
+        return JsonArray().apply {
+            encoder.encodeOrdered(config.protocol, plan).forEach(::add)
+        }
+    }
+
+    /** Stable identifier for the endpoint, so a plan cannot be reused after the URL changes. */
+    private fun endpointRevision(): String = MessageDigest.getInstance("SHA-256")
+        .digest(config.endpoint.toByteArray(StandardCharsets.UTF_8))
+        .joinToString("") { "%02x".format(it) }
+        .take(16)
+
+    internal fun requestBody(
+        request: ModelGenerationRequest,
+        attachmentPlans: Map<ModelMessage, TransmissionPlan> = emptyMap(),
+    ): JsonObject {
         val parameters = config.defaults.mergedWith(request.parameters)
         if (config.protocol !in setOf(ModelProtocol.OPENAI_CHAT_COMPLETIONS, ModelProtocol.OPENAI_RESPONSES)) {
             require(parameters.reasoningEffort == null || parameters.reasoningEffort == ReasoningEffort.AUTO) {
@@ -644,7 +871,12 @@ class ConfigurableModelBackend(
                             addProperty("tool_call_id", message.toolCallId)
                         }
                         else -> {
-                            addProperty("content", message.content)
+                            val plan = planFor(attachmentPlans, message)
+                            if (plan != null) {
+                                add("content", attachmentBlocks(request, plan))
+                            } else {
+                                addProperty("content", message.content)
+                            }
                             if (message.toolCalls.isNotEmpty()) {
                                 add("tool_calls", JsonArray().apply {
                                     message.toolCalls.forEach { call -> add(JsonObject().apply {
@@ -693,11 +925,14 @@ class ConfigurableModelBackend(
                                 addProperty("content", message.content)
                             })
                         })
-                        else -> if (message.toolCalls.isEmpty()) {
+                        else -> if (message.toolCalls.isEmpty() && !hasAttachmentParts(message)) {
                             addProperty("content", message.content)
                         } else {
                             add("content", JsonArray().apply {
-                                if (message.content.isNotBlank()) {
+                                val plan = planFor(attachmentPlans, message)
+                                if (plan != null) {
+                                    attachmentBlocks(request, plan).forEach(::add)
+                                } else if (message.content.isNotBlank()) {
                                     add(JsonObject().apply {
                                         addProperty("type", "text")
                                         addProperty("text", message.content)
@@ -752,7 +987,10 @@ class ConfigurableModelBackend(
                             })
                         })
                         else -> add("parts", JsonArray().apply {
-                            if (message.content.isNotBlank() || message.toolCalls.isEmpty()) {
+                            val plan = planFor(attachmentPlans, message)
+                            if (plan != null) {
+                                attachmentBlocks(request, plan).forEach(::add)
+                            } else if (message.content.isNotBlank() || message.toolCalls.isEmpty()) {
                                 add(JsonObject().apply { addProperty("text", message.content) })
                             }
                             message.toolCalls.forEach { call -> add(JsonObject().apply {
@@ -812,7 +1050,12 @@ class ConfigurableModelBackend(
                                 MessageRole.ASSISTANT -> "assistant"
                                 MessageRole.TOOL -> "user"
                             })
-                            addProperty("content", message.content)
+                            val plan = planFor(attachmentPlans, message)
+                            if (plan != null) {
+                                add("content", attachmentBlocks(request, plan))
+                            } else {
+                                addProperty("content", message.content)
+                            }
                         })
                         // An assistant tool request is also a top-level item, keyed by call_id.
                         message.toolCalls.forEach { call -> add(JsonObject().apply {
@@ -878,6 +1121,8 @@ class ConfigurableModelBackend(
     }
 
     companion object {
+        /** Bumped when the attachment policy (limits, interpretations) changes materially. */
+        private const val ATTACHMENT_POLICY_REVISION = "p0-1"
         private const val DEFAULT_MAX_OUTPUT_TOKENS = 1024
         private const val MAX_SSE_EVENT_CHARS = 4 * 1024 * 1024
         private const val MAX_RESPONSE_CHARS = 4 * 1024 * 1024

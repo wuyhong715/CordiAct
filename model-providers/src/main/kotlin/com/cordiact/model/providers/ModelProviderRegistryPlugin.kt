@@ -1,5 +1,8 @@
 package com.cordiact.model.providers
 
+import com.cordiact.core.attachment.AttachmentAuditSink
+import com.cordiact.core.attachment.AttachmentReader
+import com.cordiact.core.attachment.NoopAttachmentAuditSink
 import com.cordiact.core.conversation.MODEL_ADAPTER_PLUGIN_ID
 import com.cordiact.core.conversation.ModelAdapterPlugin
 import com.cordiact.core.plugin.ManagedPlugin
@@ -46,6 +49,15 @@ class ModelProviderRegistryPlugin(
     private val credentialFor: (String) -> ApiKeyProvider,
     private val configStore: ModelProviderConfigStore = InMemoryModelProviderConfigStore(),
     private val forgetCredential: (String) -> Unit = {},
+    /**
+     * Attachment storage handed to every provider backend.
+     *
+     * Null until the app wires a Workspace-scoped attachment repository; a null store makes any
+     * attachment message fail closed instead of being sent without its media.
+     */
+    private val attachmentReader: AttachmentReader? = null,
+    /** Audit trail for attachment sends and refusals; see ConfigurableModelBackend. */
+    private val attachmentAudit: AttachmentAuditSink = NoopAttachmentAuditSink,
 ) : ManagedPlugin, ModelProviderRegistryService {
     override val spec = modelProviderRegistryPluginSpec()
     private val configs = linkedMapOf<String, ModelProviderConfig>().apply {
@@ -149,7 +161,12 @@ class ModelProviderRegistryPlugin(
 
     private fun attach(config: ModelProviderConfig) {
         check(config.providerId !in backends) { "Provider '${config.providerId}' is already attached" }
-        val backend = ConfigurableModelBackend(config, credentialFor(config.providerId))
+        val backend = ConfigurableModelBackend(
+            config,
+            credentialFor(config.providerId),
+            attachmentReader = attachmentReader,
+            attachmentAudit = attachmentAudit,
+        )
         try {
             adapter.attachBackend(spec.id, backend)
             backends[config.providerId] = backend

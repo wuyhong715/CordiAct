@@ -1,5 +1,8 @@
 package com.cordiact.core.conversation
 
+import com.cordiact.core.attachment.MessagePart
+import com.cordiact.core.attachment.MessageParts
+
 import com.cordiact.core.plugin.ManagedPlugin
 import com.cordiact.core.plugin.PluginSpec
 import com.cordiact.core.plugin.PluginTarget
@@ -73,6 +76,13 @@ data class ModelMessage(
      * sources) after a restart.
      */
     val metadataJson: String? = null,
+    /**
+     * Ordered parts for a multimodal message; empty for every text-only message.
+     *
+     * When non-empty this is the only semantic source: [content] is then a text projection kept
+     * for search, previews and old readers. Providers must encode [parts], never [content] alone.
+     */
+    val parts: List<MessagePart> = emptyList(),
 ) {
     init {
         require(role != MessageRole.TOOL || toolCallId != null) {
@@ -143,6 +153,13 @@ data class ModelGenerationRequest(
     val parameters: GenerationParameters? = null,
     /** Tools the model may call this turn. Empty means a plain text completion. */
     val tools: List<ModelToolSpec> = emptyList(),
+    /**
+     * Workspace the turn belongs to; required only when a message carries attachment parts.
+     *
+     * Attachment reads are scoped by Workspace, so a request without this context must fail closed
+     * instead of guessing a scope from the session id.
+     */
+    val workspaceId: String? = null,
 )
 
 sealed interface ModelEvent {
@@ -237,6 +254,13 @@ data class ConversationMessage(
     val createdAtMillis: Long,
     /** Host-only evidence for this message, as JSON; null for ordinary text turns. */
     val metadataJson: String? = null,
+    /**
+     * Ordered parts of the message. Empty means "text only", in which case [content] is complete.
+     *
+     * A message with attachment parts also carries a text projection in [content] so that search,
+     * notifications and pre-migration readers keep working.
+     */
+    val parts: List<MessagePart> = emptyList(),
 )
 
 /** Storage port; the app implementation is durable SQLite and scoped by session/workspace. */
@@ -273,6 +297,24 @@ interface ConversationSessionStore {
         nowMillis: Long,
         metadataJson: String? = null,
     ): ConversationMessage
+
+    /**
+     * Appends a message and its ordered parts in one transaction.
+     *
+     * The default refuses instead of silently dropping [parts]: a store that has not implemented
+     * structured parts must not pretend it saved an attachment message.
+     */
+    fun appendWithParts(
+        sessionId: String,
+        role: MessageRole,
+        content: String,
+        parts: List<MessagePart>,
+        nowMillis: Long,
+        metadataJson: String? = null,
+    ): ConversationMessage = throw UnsupportedOperationException(
+        "This ConversationSessionStore cannot persist message parts",
+    )
+
     fun messages(sessionId: String): List<ConversationMessage>
 }
 
@@ -306,6 +348,18 @@ interface SessionManagerService {
         content: String,
         metadataJson: String? = null,
     ): ConversationMessage
+
+    /** Appends a message with ordered parts; see [ConversationSessionStore.appendWithParts]. */
+    fun appendMessageWithParts(
+        sessionId: String,
+        role: MessageRole,
+        content: String,
+        parts: List<MessagePart>,
+        metadataJson: String? = null,
+    ): ConversationMessage = throw UnsupportedOperationException(
+        "This SessionManagerService cannot persist message parts",
+    )
+
     fun messages(sessionId: String): List<ConversationMessage>
 }
 
@@ -513,6 +567,24 @@ class SessionManagerPlugin(
         require(sessionId.isNotBlank())
         require(content.isNotBlank())
         return store.append(sessionId, role, content, clockMillis(), metadataJson)
+    }
+
+    override fun appendMessageWithParts(
+        sessionId: String,
+        role: MessageRole,
+        content: String,
+        parts: List<MessagePart>,
+        metadataJson: String?,
+    ): ConversationMessage {
+        requireEnabled()
+        require(sessionId.isNotBlank())
+        if (parts.isEmpty()) {
+            require(content.isNotBlank())
+            return store.append(sessionId, role, content, clockMillis(), metadataJson)
+        }
+        MessageParts.validate(parts)
+        require(role == MessageRole.USER) { "Only user messages may carry attachment parts" }
+        return store.appendWithParts(sessionId, role, content, parts, clockMillis(), metadataJson)
     }
 
     override fun messages(sessionId: String): List<ConversationMessage> {

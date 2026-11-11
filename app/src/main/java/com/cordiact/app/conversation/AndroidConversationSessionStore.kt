@@ -5,6 +5,14 @@ import android.content.Context
 import android.database.Cursor
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
+import com.cordiact.app.attachment.AttachmentDatabaseSchema
+import com.cordiact.core.attachment.AttachmentErrorCode
+import com.cordiact.core.attachment.AttachmentException
+import com.cordiact.core.attachment.AttachmentId
+import com.cordiact.core.attachment.Interpretation
+import com.cordiact.core.attachment.MessagePart
+import com.cordiact.core.attachment.MessageParts
+import com.cordiact.core.attachment.MessagePartsJson
 import com.cordiact.core.context.CompactionRecord
 import com.cordiact.core.context.ContextCompactionStore
 import com.cordiact.core.conversation.ConversationMessage
@@ -30,6 +38,10 @@ class AndroidConversationSessionStore(
     ConversationSessionStore, WorkspaceStore, MutableToolPreferenceStore, AgentRunStore, ContextCompactionStore,
     com.cordiact.core.jobs.JobStore {
 
+    /**
+     * Foreign keys are off by default in SQLite; the attachment tables rely on `RESTRICT` to stop a
+     * message from losing its attachment silently, so they must stay enforced.
+     */
     override fun onConfigure(db: SQLiteDatabase) {
         super.onConfigure(db)
         db.setForeignKeyConstraintsEnabled(true)
@@ -44,6 +56,7 @@ class AndroidConversationSessionStore(
         createAgentRunSchema(db)
         createContextCompactionSchema(db)
         createJobSchema(db)
+        AttachmentDatabaseSchema.create(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -55,6 +68,7 @@ class AndroidConversationSessionStore(
         if (oldVersion < 7 && newVersion >= 7) migrateV6ToV7(db)
         if (oldVersion < 8 && newVersion >= 8) migrateV7ToV8(db)
         if (oldVersion < 9 && newVersion >= 9) migrateV8ToV9(db)
+        if (oldVersion < 10 && newVersion >= 10) AttachmentDatabaseSchema.create(db)
         if (newVersion > DATABASE_VERSION) throw IllegalStateException("Unsupported conversation database version $newVersion")
     }
 
@@ -564,10 +578,201 @@ class AndroidConversationSessionStore(
         return ConversationMessage(id, sessionId, role, content, nowMillis, metadataJson)
     }
 
-    override fun messages(sessionId: String): List<ConversationMessage> = readableDatabase.query(
-        TABLE_MESSAGES, MESSAGE_COLUMNS, "$COL_MESSAGE_SESSION_ID = ?", arrayOf(sessionId), null, null,
-        "$COL_CREATED_AT ASC,$COL_MESSAGE_ID ASC",
-    ).use { c -> buildList { while (c.moveToNext()) add(c.toMessage()) } }
+    /**
+     * Appends a message and its ordered parts in one transaction.
+     *
+     * The message row and the part rows are all-or-nothing: a failed part insert must not leave a
+     * message that claims attachments it does not have. Attachment ids are checked against the
+     * Session's Workspace inside the same transaction, so a cross-Workspace id cannot be stored.
+     */
+    override fun appendWithParts(
+        sessionId: String,
+        role: MessageRole,
+        content: String,
+        parts: List<MessagePart>,
+        nowMillis: Long,
+        metadataJson: String?,
+    ): ConversationMessage {
+        MessageParts.validate(parts)
+        val id = UUID.randomUUID().toString()
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            val updated = ContentValues().apply { put(COL_UPDATED_AT, nowMillis) }
+            check(db.update(TABLE_SESSIONS, updated, "$COL_SESSION_ID = ?", arrayOf(sessionId)) == 1) {
+                "Conversation session does not exist"
+            }
+            val workspaceId = db.query(
+                TABLE_SESSIONS,
+                arrayOf(COL_WORKSPACE_ID),
+                "$COL_SESSION_ID = ?",
+                arrayOf(sessionId),
+                null,
+                null,
+                null,
+            ).use { cursor -> if (cursor.moveToFirst()) cursor.getString(0) else null }
+            checkNotNull(workspaceId) { "Conversation session does not exist" }
+
+            for (part in parts.filterIsInstance<MessagePart.Attachment>()) {
+                val owner = db.query(
+                    AttachmentDatabaseSchema.TABLE_ATTACHMENTS,
+                    arrayOf(AttachmentDatabaseSchema.COL_WORKSPACE_ID),
+                    "${AttachmentDatabaseSchema.COL_ATTACHMENT_ID} = ?",
+                    arrayOf(part.id.value),
+                    null,
+                    null,
+                    null,
+                ).use { cursor -> if (cursor.moveToFirst()) cursor.getString(0) else null }
+                if (owner == null) {
+                    throw AttachmentException(
+                        AttachmentErrorCode.UNKNOWN_ATTACHMENT,
+                        "Attachment ${part.id.value} was never imported",
+                    )
+                }
+                if (owner != workspaceId) {
+                    throw AttachmentException(
+                        AttachmentErrorCode.CROSS_WORKSPACE,
+                        "Attachment ${part.id.value} belongs to another Workspace",
+                    )
+                }
+                val renditionId = part.renditionId
+                if (renditionId != null) {
+                    val renditionExists = db.query(
+                        AttachmentDatabaseSchema.TABLE_RENDITIONS,
+                        arrayOf(AttachmentDatabaseSchema.COL_RENDITION_ID),
+                        "${AttachmentDatabaseSchema.COL_RENDITION_ID} = ? AND ${AttachmentDatabaseSchema.COL_ATTACHMENT_ID} = ?",
+                        arrayOf(renditionId, part.id.value),
+                        null,
+                        null,
+                        null,
+                    ).use { it.moveToFirst() }
+                    if (!renditionExists) {
+                        throw AttachmentException(
+                            AttachmentErrorCode.UNKNOWN_RENDITION,
+                            "Rendition $renditionId does not belong to ${part.id.value}",
+                        )
+                    }
+                }
+            }
+
+            val values = ContentValues().apply {
+                put(COL_MESSAGE_ID, id); put(COL_MESSAGE_SESSION_ID, sessionId); put(COL_ROLE, role.name)
+                put(COL_CONTENT, content); put(COL_CREATED_AT, nowMillis)
+                if (metadataJson != null) put(COL_MESSAGE_METADATA, metadataJson)
+            }
+            db.insertOrThrow(TABLE_MESSAGES, null, values)
+            parts.forEachIndexed { ordinal, part ->
+                val partValues = ContentValues().apply {
+                    put(AttachmentDatabaseSchema.COL_MESSAGE_ID, id)
+                    put(AttachmentDatabaseSchema.COL_ORDINAL, ordinal)
+                    when (part) {
+                        is MessagePart.Text -> {
+                            put(AttachmentDatabaseSchema.COL_KIND, PART_KIND_TEXT)
+                            put(AttachmentDatabaseSchema.COL_TEXT_VALUE, part.text)
+                        }
+
+                        is MessagePart.Attachment -> {
+                            put(AttachmentDatabaseSchema.COL_KIND, PART_KIND_ATTACHMENT)
+                            put(AttachmentDatabaseSchema.COL_ATTACHMENT_ID, part.id.value)
+                            put(AttachmentDatabaseSchema.COL_INTERPRETATION, part.interpretation.name)
+                            part.renditionId?.let { put(AttachmentDatabaseSchema.COL_RENDITION_ID, it) }
+                        }
+                    }
+                    put(AttachmentDatabaseSchema.COL_SCHEMA_VERSION, MessagePartsJson.SCHEMA_VERSION)
+                }
+                db.insertOrThrow(AttachmentDatabaseSchema.TABLE_MESSAGE_PARTS, null, partValues)
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+        return ConversationMessage(id, sessionId, role, content, nowMillis, metadataJson, parts)
+    }
+
+    override fun messages(sessionId: String): List<ConversationMessage> {
+        val parts = partsByMessage(sessionId)
+        return readableDatabase.query(
+            TABLE_MESSAGES, MESSAGE_COLUMNS, "$COL_MESSAGE_SESSION_ID = ?", arrayOf(sessionId), null, null,
+            "$COL_CREATED_AT ASC,$COL_MESSAGE_ID ASC",
+        ).use { c ->
+            buildList {
+                while (c.moveToNext()) {
+                    val message = c.toMessage()
+                    add(message.copy(parts = parts[message.id].orEmpty()))
+                }
+            }
+        }
+    }
+
+    /** All parts of one Session in a single query, grouped by message and kept in ordinal order. */
+    private fun partsByMessage(sessionId: String): Map<String, List<MessagePart>> {
+        val parts = LinkedHashMap<String, MutableList<MessagePart>>()
+        readableDatabase.query(
+            "${AttachmentDatabaseSchema.TABLE_MESSAGE_PARTS} p JOIN $TABLE_MESSAGES m " +
+                "ON m.$COL_MESSAGE_ID = p.${AttachmentDatabaseSchema.COL_MESSAGE_ID}",
+            arrayOf(
+                "p.${AttachmentDatabaseSchema.COL_MESSAGE_ID}",
+                "p.${AttachmentDatabaseSchema.COL_ORDINAL}",
+                "p.${AttachmentDatabaseSchema.COL_KIND}",
+                "p.${AttachmentDatabaseSchema.COL_TEXT_VALUE}",
+                "p.${AttachmentDatabaseSchema.COL_ATTACHMENT_ID}",
+                "p.${AttachmentDatabaseSchema.COL_RENDITION_ID}",
+                "p.${AttachmentDatabaseSchema.COL_INTERPRETATION}",
+                "p.${AttachmentDatabaseSchema.COL_SCHEMA_VERSION}",
+            ),
+            "m.$COL_MESSAGE_SESSION_ID = ?",
+            arrayOf(sessionId),
+            null,
+            null,
+            "p.${AttachmentDatabaseSchema.COL_MESSAGE_ID}, p.${AttachmentDatabaseSchema.COL_ORDINAL}",
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                val messageId = cursor.getString(0)
+                val schemaVersion = cursor.getInt(7)
+                if (schemaVersion > MessagePartsJson.SCHEMA_VERSION) {
+                    throw AttachmentException(
+                        AttachmentErrorCode.INVALID_MEDIA_TYPE,
+                        "Message parts use schema $schemaVersion, newer than this app understands",
+                    )
+                }
+                val kind = cursor.getString(2)
+                val part = when (kind) {
+                    PART_KIND_TEXT -> MessagePart.Text(cursor.getString(3).orEmpty())
+                    PART_KIND_ATTACHMENT -> {
+                        val attachmentId = cursor.getString(4)
+                            ?: throw AttachmentException(
+                                AttachmentErrorCode.UNKNOWN_ATTACHMENT,
+                                "A stored attachment part has no attachment id",
+                            )
+                        val interpretationName = cursor.getString(6)
+                            ?: throw AttachmentException(
+                                AttachmentErrorCode.UNSUPPORTED_INTERPRETATION,
+                                "A stored attachment part has no interpretation",
+                            )
+                        val interpretation = runCatching { Interpretation.valueOf(interpretationName) }
+                            .getOrElse {
+                                throw AttachmentException(
+                                    AttachmentErrorCode.UNSUPPORTED_INTERPRETATION,
+                                    "Unknown interpretation $interpretationName",
+                                )
+                            }
+                        MessagePart.Attachment(
+                            id = AttachmentId(attachmentId),
+                            interpretation = interpretation,
+                            renditionId = if (cursor.isNull(5)) null else cursor.getString(5),
+                        )
+                    }
+
+                    else -> throw AttachmentException(
+                        AttachmentErrorCode.INVALID_MEDIA_TYPE,
+                        "Unknown stored message part kind $kind",
+                    )
+                }
+                parts.getOrPut(messageId) { mutableListOf() }.add(part)
+            }
+        }
+        return parts
+    }
 
     private fun Cursor.toWorkspace() = Workspace(
         id = getString(getColumnIndexOrThrow(COL_WORKSPACE_ID)),
@@ -947,7 +1152,7 @@ class AndroidConversationSessionStore(
 
     private companion object {
         const val DATABASE_NAME = "cordiact-conversations.db"
-        const val DATABASE_VERSION = 9
+        const val DATABASE_VERSION = 10
         const val TABLE_WORKSPACES = "workspaces"
         const val TABLE_TOOL_PREFERENCES = "workspace_tool_preferences"
         const val TABLE_PLUGIN_SETTINGS = "workspace_plugin_settings"
@@ -1038,6 +1243,8 @@ class AndroidConversationSessionStore(
         const val COL_RUN_STARTED_AT = "started_at"
         const val COL_RUN_DIAGNOSTIC = "diagnostic"
         val MESSAGE_COLUMNS = arrayOf(COL_MESSAGE_ID,COL_MESSAGE_SESSION_ID,COL_ROLE,COL_CONTENT,COL_CREATED_AT,COL_MESSAGE_METADATA)
+        const val PART_KIND_TEXT = "text"
+        const val PART_KIND_ATTACHMENT = "attachment"
         val RUN_COLUMNS = arrayOf(
             COL_RUN_SESSION_ID,COL_RUN_PARENT_SESSION_ID,COL_RUN_LABEL,
             COL_RUN_STATE,COL_RUN_STARTED_AT,COL_RUN_DIAGNOSTIC,
