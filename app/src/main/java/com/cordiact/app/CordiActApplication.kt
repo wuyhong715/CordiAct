@@ -202,6 +202,11 @@ class CordiActApplication : Application() {
         get() = conversationCatalog.interactionService
     val fillValues: MutableFillValueStore
         get() = conversationCatalog.fillValueStore
+    /** Attachment catalogue (drafts included) and the import pipeline, for the composer. */
+    val attachments: com.cordiact.app.attachment.AndroidAttachmentCatalog get() = conversationCatalog.attachmentCatalog
+    val attachmentImporter: com.cordiact.app.attachment.AndroidAttachmentImportService
+        get() = conversationCatalog.attachmentImportService
+
     val modelAdapter: ModelAdapterService get() = modelAdapterPlugin
     val modelProviders: ModelProviderRegistryService get() = conversationCatalog.modelProviderRegistryPlugin
     val sessions: SessionManagerService get() = sessionManagerPlugin
@@ -584,6 +589,8 @@ class CordiActApplication : Application() {
                 toolContext = toolContext,
                 parameters = parameters,
                 systemContext = skillIndexFor(envelope.context.workspaceId),
+                parts = envelope.attachments,
+                onUserMessagePersisted = envelope.onUserMessagePersisted,
                 onEvent = onEvent,
             )
         })

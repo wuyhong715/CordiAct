@@ -13,6 +13,7 @@ data class TranscriptTurn(
     val error: String? = null,
     val inputTokens: Long? = null,
     val outputTokens: Long? = null,
+    val attachments: List<TranscriptAttachment> = emptyList(),
 ) {
     val isRunning: Boolean get() = phase == RunPhase.RUNNING
 }
@@ -69,7 +70,7 @@ fun restoreTranscript(messages: List<StoredMessage>): List<TranscriptTurn> {
     val result = mutableListOf<TranscriptTurn>()
     messages.forEach { message ->
         when (message.role) {
-            "USER" -> result += TranscriptTurn(message.id, message.content, startedAt = message.at)
+            "USER" -> result += TranscriptTurn(message.id, message.content, startedAt = message.at, attachments = message.attachments)
             "ASSISTANT" -> {
                 if (result.isEmpty()) result += TranscriptTurn(message.id, "", answer = message.content, startedAt = message.at)
                 else result[result.lastIndex] = result.last().let { it.copy(answer = listOf(it.answer, message.content).filter(String::isNotBlank).joinToString("\n\n")) }
@@ -79,7 +80,13 @@ fun restoreTranscript(messages: List<StoredMessage>): List<TranscriptTurn> {
     }
     return result
 }
-data class StoredMessage(val id: String, val role: String, val content: String, val at: Long)
+data class TranscriptAttachment(
+    val descriptor: com.cordiact.core.attachment.AttachmentDescriptor,
+    val interpretation: com.cordiact.core.attachment.Interpretation,
+    val renditionId: String? = null,
+)
+data class StoredMessage(val id: String, val role: String, val content: String, val at: Long,
+    val attachments: List<TranscriptAttachment> = emptyList())
 
 fun durationLabel(millis: Long): String = when {
     millis < 1000 -> "${millis.coerceAtLeast(0)} ms"

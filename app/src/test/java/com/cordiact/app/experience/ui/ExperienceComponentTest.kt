@@ -101,7 +101,13 @@ class ExperienceComponentTest {
     @After fun clearPreviewQueue() { PreviewInbox.clear("revision2-artifacts"); PreviewInbox.clear("other-artifacts") }
 
     @Test fun tokens_areTypedInlineAndNeverOccupyShortcutButtons() {
-        content { Composer(ready(), "", {}, { true }, {}, {}) }
+        content {
+            val app = org.robolectric.RuntimeEnvironment.getApplication<Application>()
+            val scope = rememberCoroutineScope()
+            val controller = remember { com.cordiact.app.experience.composer.ComposerController(app, scope, { error("No catalogue needed for input test") }, { error("No import needed for input test") }) }
+            val state by controller.state.collectAsState()
+            com.cordiact.app.experience.composer.ComposerBar(ready(), state.copy(model = model), controller, "", {}, { true }, {}, {}, {})
+        }
         listOf("/", "@", "#").forEach { compose.onNodeWithText(it).assertDoesNotExist() }
         compose.onNodeWithTag("composer-input").performTextInput("/inspect @config #api-key")
         compose.onNodeWithTag("composer-input").assertTextContains("/inspect @config #api-key")

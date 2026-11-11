@@ -205,6 +205,7 @@ class BundledConversationPlugins private constructor(
     fun runAttachmentGc(
         minAgeMillis: Long = com.cordiact.core.attachment.AttachmentGarbageCollector.DEFAULT_MIN_AGE_MILLIS,
     ): Int {
+        attachmentCatalog.pruneDeletedSessionDrafts()
         var removed = 0
         val workspaces = runCatching { workspaceManager.list(includeArchived = true) }.getOrDefault(emptyList())
         for (workspace in workspaces) {

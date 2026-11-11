@@ -57,9 +57,13 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
     val saveable = rememberSaveableStateHolder()
     var inspected by remember { mutableStateOf<ToolActivity?>(null) }
     var promptToInsert by remember { mutableStateOf("") }
-    var modelMenu by remember { mutableStateOf(false) }
-    var providerForm by remember { mutableStateOf(false) }
-    BackHandler(inspected != null || modelMenu || providerForm) { inspected = null; modelMenu = false; providerForm = false }
+    var manageModels by remember { mutableStateOf(false) }
+    val composer by viewModel.composer.collectAsStateWithLifecycle()
+    BackHandler(inspected != null) { inspected = null }
+    if (manageModels) {
+        com.cordiact.app.experience.composer.ModelManagementScreen(state, viewModel::addProvider, { manageModels = false })
+        return
+    }
     ModalNavigationDrawer(
         drawerState = drawer,
         gesturesEnabled = drawer.isOpen || pager.currentPage == 0,
@@ -78,7 +82,7 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
                     onCreateWorkspace = { name, onSuccess -> viewModel.createWorkspace(name) { closeAfterSelection(); onSuccess() } },
                     onRenameWorkspace = { id, name, onSuccess -> viewModel.renameWorkspace(id, name, onSuccess) },
                     onRetry = viewModel::refresh,
-                    onSettings = { android.widget.Toast.makeText(context, "设置将在批二开放", android.widget.Toast.LENGTH_SHORT).show() },
+                    onSettings = { manageModels = true },
                 )
             }
         },
@@ -151,57 +155,17 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
                             }
                         }
                     }
-                    saveable.SaveableStateProvider(state.sessionId ?: "loading") {
-                        Composer(
-                            state = state, insert = promptToInsert,
-                            onInserted = { promptToInsert = "" },
-                            onSend = viewModel::send, onStop = viewModel::stop,
-                            onModelMenu = { modelMenu = true },
-                        )
-                    }
+                    com.cordiact.app.experience.composer.ComposerBar(
+                        state, composer, viewModel.composerController, promptToInsert,
+                        { promptToInsert = "" }, viewModel::send, viewModel::stop,
+                        viewModel::selectModel, { manageModels = true },
+                    )
                     },
                 )
                 inspected?.let { step ->
                     CompactInspector(step = step, onClose = { inspected = null }, modifier = Modifier.align(Alignment.BottomCenter).windowInsetsPadding(WindowInsets.systemBars.union(WindowInsets.ime)))
                 }
-                if (providerForm) {
-                    ProviderForm(onClose = { providerForm = false }, onSave = viewModel::addProvider, modifier = Modifier.align(Alignment.BottomCenter).windowInsetsPadding(WindowInsets.systemBars.union(WindowInsets.ime)))
-                }
-                if (modelMenu) {
-                    CompactModelPicker(state, onClose = { modelMenu = false }, onSelect = { viewModel.selectModel(it.id); modelMenu = false }, onAdd = { modelMenu = false; providerForm = true }, onRefresh = viewModel::refreshProvider, modifier = Modifier.align(Alignment.BottomCenter).windowInsetsPadding(WindowInsets.systemBars.union(WindowInsets.ime)))
-                }
-            }
-        }
-    }
-}
 
-@Composable
-internal fun Composer(state: ExperienceState, insert: String, onInserted: () -> Unit, onSend: (String) -> Boolean, onStop: () -> Unit, onModelMenu: () -> Unit) {
-    var text by rememberSaveable { mutableStateOf("") }
-    LaunchedEffect(insert) { if (insert.isNotEmpty()) { text = insert; onInserted() } }
-    Surface(
-        shape = RoundedCornerShape(24.dp), color = MaterialTheme.colorScheme.surface,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant), shadowElevation = 3.dp,
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
-    ) {
-        Column(Modifier.padding(top = 12.dp, bottom = 3.dp, start = 15.dp, end = 5.dp)) {
-            BasicTextField(
-                value = text, onValueChange = { text = it },
-                modifier = Modifier.fillMaxWidth().heightIn(min = 30.dp, max = 132.dp).padding(end = 10.dp).semantics { contentDescription = "消息输入" }.testTag("composer-input"),
-                textStyle = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurface),
-                cursorBrush = SolidColor(MaterialTheme.colorScheme.primary), maxLines = 6,
-                decorationBox = { field -> Box { if (text.isEmpty()) Text("发送消息 · / 指令 · @ 上下文 · # 私密", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium); field() } },
-            )
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                TextButton(onClick = onModelMenu, contentPadding = PaddingValues(end = 6.dp), modifier = Modifier.heightIn(min = 44.dp).weight(1f)) {
-                    Text(state.models.find { it.id == state.model }?.displayName ?: "选择模型", Modifier.weight(1f), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    AppGlyph(GlyphName.ChevronDown, modifier = Modifier.size(13.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-                FilledIconButton(
-                    onClick = { if (state.running) onStop() else if (onSend(text)) text = "" },
-                    enabled = !state.stopping && (state.running || (!state.loading && text.isNotBlank() && state.model != null)),
-                    shape = CircleShape, modifier = Modifier.size(48.dp).testTag(if (state.running) "stop-generation" else "send-message"),
-                ) { AppGlyph(if (state.running) GlyphName.Stop else GlyphName.Send, if (state.running) "停止当前回合" else "发送消息", modifier = Modifier.size(20.dp)) }
             }
         }
     }
@@ -234,38 +198,6 @@ internal fun CompactInspector(step: ToolActivity, onClose: () -> Unit, modifier:
 }
 
 @Composable
-internal fun CompactModelPicker(state: ExperienceState, onClose: () -> Unit, onSelect: (com.cordiact.core.conversation.ModelDescriptor) -> Unit, onAdd: () -> Unit = {}, onRefresh: (String) -> Unit = {}, modifier: Modifier = Modifier) {
-    BoxWithConstraints(modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
-        Surface(Modifier.fillMaxWidth().heightIn(max = maxHeight * .45f).padding(8.dp), color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(23.dp), shadowElevation = 12.dp, border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
-            Column {
-                PeekHandle(onClose)
-                Row(Modifier.padding(start = 18.dp, end = 5.dp), verticalAlignment = Alignment.CenterVertically) { Text("选择模型", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium); IconButton(onClick = onClose) { AppGlyph(GlyphName.Close, "关闭模型选择") } }
-                TextButton(onClick = onAdd, modifier = Modifier.padding(horizontal = 10.dp)) { AppGlyph(GlyphName.Plus, modifier = Modifier.size(16.dp)); Text("连接提供商", Modifier.padding(start = 8.dp)) }
-                LazyColumn(Modifier.weight(1f, fill = false)) {
-                    if (state.models.isEmpty()) item { Text("尚未配置可用模型。", Modifier.padding(20.dp), style = MaterialTheme.typography.bodyMedium) }
-                    state.models.groupBy { it.id.providerId }.forEach { (providerId, providerModels) ->
-                        item(key = "provider:$providerId") {
-                            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Text(state.providerNames[providerId] ?: providerId, Modifier.weight(1f), color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.titleSmall)
-                                if (providerId in state.providerNames) TextButton(onClick = { onRefresh(providerId) }) { Text("刷新模型") }
-                            }
-                        }
-                        items(providerModels, key = { "${it.id.providerId}:${it.id.modelId}" }) { model ->
-                            ListItem(
-                                headlineContent = { Text(model.displayName, style = MaterialTheme.typography.bodyMedium) },
-                                supportingContent = { Text(model.id.modelId, style = MaterialTheme.typography.labelSmall) },
-                                trailingContent = { if (model.id == state.model) AppGlyph(GlyphName.Check, "已选择", tint = MaterialTheme.colorScheme.primary) },
-                                modifier = Modifier.clickable { onSelect(model) },
-                            )
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
 private fun PeekHandle(onDismiss: () -> Unit) {
     var distance by remember { mutableFloatStateOf(0f) }
     Box(
@@ -280,54 +212,4 @@ private fun PeekHandle(onDismiss: () -> Unit) {
             .semantics { contentDescription = "下滑关闭面板" },
         contentAlignment = Alignment.Center,
     ) { Box(Modifier.width(28.dp).height(3.dp).background(MaterialTheme.colorScheme.outlineVariant, CircleShape)) }
-}
-
-
-/** Provider connection: explicit connect sends the key only to the entered HTTPS endpoint. */
-@Composable
-private fun ProviderForm(
-    onClose: () -> Unit,
-    onSave: (String, String, ModelProtocol, String, (String?) -> Unit) -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    var name by remember { mutableStateOf("") }
-    var url by remember { mutableStateOf("") }
-    var key by remember { mutableStateOf("") } // Intentionally not Saveable: never bundle a secret.
-    var protocol by remember { mutableStateOf(ModelProtocol.OPENAI_CHAT_COMPLETIONS) }
-    var saving by remember { mutableStateOf(false) }
-    var error by remember { mutableStateOf<String?>(null) }
-    BoxWithConstraints(modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
-        Surface(Modifier.fillMaxWidth().heightIn(max = maxHeight * .45f).padding(8.dp), color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(23.dp), shadowElevation = 12.dp, border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
-            Column {
-                PeekHandle { if (!saving) { key = ""; onClose() } }
-                Row(Modifier.padding(start = 17.dp, end = 5.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text("连接提供商", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
-                    IconButton(enabled = !saving, onClick = { key = ""; onClose() }) { AppGlyph(GlyphName.Close, "关闭来源设置") }
-                }
-                Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text("连接提供商并拉取全部模型；密钥加密保存在本地凭据库，不写入对话或配置。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    OutlinedTextField(name, { name = it }, label = { Text("提供商名称（选填，默认使用域名）") }, singleLine = true, enabled = !saving, modifier = Modifier.fillMaxWidth())
-                    OutlinedTextField(url, { url = it }, label = { Text("API URL（基础地址或完整端点）") }, placeholder = { Text("https://api.example.com/v1") }, singleLine = true, enabled = !saving, modifier = Modifier.fillMaxWidth(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri))
-                    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(7.dp)) {
-                        listOf(ModelProtocol.OPENAI_CHAT_COMPLETIONS to "Chat Completions", ModelProtocol.OPENAI_RESPONSES to "Responses", ModelProtocol.ANTHROPIC_MESSAGES to "Anthropic", ModelProtocol.GEMINI_GENERATE_CONTENT to "Gemini").forEach { (value, label) ->
-                            FilterChip(selected = protocol == value, onClick = { protocol = value }, label = { Text(label) }, enabled = !saving)
-                        }
-                    }
-                    OutlinedTextField(key, { key = it }, label = { Text("API Key") }, visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), singleLine = true, enabled = !saving, modifier = Modifier.fillMaxWidth())
-                    error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
-                    Spacer(Modifier.height(4.dp))
-                }
-                FilledTonalButton(
-                    enabled = !saving && url.isNotBlank() && key.isNotBlank(),
-                    onClick = {
-                        saving = true; error = null
-                        onSave(name, url, protocol, key) { result ->
-                            saving = false
-                            if (result == null) { key = ""; onClose() } else error = result
-                        }
-                    }, modifier = Modifier.fillMaxWidth().padding(12.dp),
-                ) { Text(if (saving) "正在拉取…" else "拉取模型并连接") }
-            }
-        }
-    }
 }
