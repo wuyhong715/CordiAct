@@ -22,3 +22,11 @@
 - 未做真机视觉验收：动效、IME 锚点、TalkBack、大字体、相机返回与旋转需 APK 实测。
 - 设计非完整兑现项：没有全局8% scrim、模型分组为行内标签而非独立分区、未提供模型不兼容附件计数预览；PDF 只预览首页，未整合全量文档预览窗口；CompactInspector 保持原行为。
 - 本 PR 不包含完整设置中心、剪贴板/分享导入、插件菜单；只注册已有可用动作，不放假按钮。
+
+## CI 最终结果（代码 HEAD 02e41b5，PR #63）
+- PR Android run `43046685228`：Build and test / Release 校验成功（完整 app 单元/Compose 测试与 APK 构建）。CI repository-check `43046685275` 成功。
+- 手动 Android run `43048968556`：build、API29、API35 三个 job 全部 success。
+- API35：30 tests，0 failures。
+- API29：23 项通过，7 项 RenderSurfaceHostTest 由于 `AssumptionViolatedException: WebView lacks WEB_MESSAGE_LISTENER` 条件跳过。Gradle XML 将 assumption 写在 failure 下，但不能当作产品缺陷或当作已通过。未虚报 30/30。
+- APK 来自 Actions（非本地构建）：`/sdcard/Download/Moxw/CordiAct-composer-02e41b5.apk`，16,217,220 bytes；SHA256 `f57889b0e5a1c2384d57100bd931dd35aebed227417406ec0a1f261df67135bd`。
+- PR https://github.com/wuyhong715/CordiAct/pull/63 未合并，等待用户确认。真机视觉/交互验收尚未执行。
