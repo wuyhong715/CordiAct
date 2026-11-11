@@ -43,7 +43,7 @@ class AndroidVaultCrypto(
             val cipher = Cipher.getInstance(TRANSFORMATION)
             cipher.init(
                 Cipher.DECRYPT_MODE,
-                secretKey(keyVersion),
+                secretKey(keyVersion, create = false),
                 GCMParameterSpec(TAG_BITS, value.nonce),
             )
             cipher.updateAAD(aad)
@@ -62,10 +62,11 @@ class AndroidVaultCrypto(
         if (store.containsAlias(alias)) store.deleteEntry(alias)
     }
 
-    private fun secretKey(keyVersion: Int): SecretKey {
+    private fun secretKey(keyVersion: Int, create: Boolean = true): SecretKey = synchronized(KEY_LOCK) {
         val alias = aliasForVersion(keyVersion)
         val store = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
-        (store.getKey(alias, null) as? SecretKey)?.let { return it }
+        (store.getKey(alias, null) as? SecretKey)?.let { return@synchronized it }
+        check(create) { "VAULT_KEY_MISSING" }
         val generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEYSTORE)
         generator.init(
             KeyGenParameterSpec.Builder(
@@ -78,7 +79,7 @@ class AndroidVaultCrypto(
                 .setRandomizedEncryptionRequired(true)
                 .build(),
         )
-        return generator.generateKey()
+        generator.generateKey()
     }
 
     private fun aliasForVersion(version: Int): String {
@@ -88,6 +89,7 @@ class AndroidVaultCrypto(
     }
 
     private companion object {
+        val KEY_LOCK = Any()
         const val ANDROID_KEYSTORE = "AndroidKeyStore"
         const val TRANSFORMATION = "AES/GCM/NoPadding"
         const val TAG_BITS = 128

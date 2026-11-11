@@ -59,11 +59,7 @@ fun SearchSettingsDialog(
                 registry = registry,
                 usedThisMonth = usageStore.usedThisMonth(workspaceId),
                 providerHasKey = { providerId ->
-                    if (providerId.startsWith("deepseek")) {
-                        plugins.apiKeyProvider.apiKey() != null
-                    } else {
-                        keyStore?.has(providerId) == true
-                    }
+                    plugins.hasSearchApiKey(providerId)
                 },
             )
         }

@@ -7,7 +7,6 @@ import com.cordiact.app.plugin.AndroidPluginResourceLedger
 import com.cordiact.app.plugin.AndroidPluginRuntimeResources
 import com.cordiact.app.plugin.AndroidPluginStorage
 import com.cordiact.core.conversation.modelAdapterPluginSpec
-import com.cordiact.model.providers.deepSeekBackendPluginSpec
 import com.cordiact.model.providers.modelProviderRegistryPluginSpec
 import com.cordiact.app.model.AndroidModelProviderConfigStore
 import com.cordiact.model.providers.ModelProviderPresets
@@ -99,7 +98,7 @@ class BundledConversationPluginCatalogTest {
             },
         )
         assertEquals(
-            listOf("core.workspace-manager", "core.file-manager", "core.skill", "core.tool-manager", "core.search", "core.model-adapter", "core.session-manager", "model.deepseek", "model.providers", "core.interaction"),
+            listOf("core.workspace-manager", "core.file-manager", "core.skill", "core.tool-manager", "core.search", "core.model-adapter", "core.session-manager", "model.providers", "core.interaction"),
             plugins.map { it.spec.id },
         )
 

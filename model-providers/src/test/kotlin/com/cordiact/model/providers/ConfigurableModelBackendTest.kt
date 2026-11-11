@@ -189,9 +189,6 @@ class ConfigurableModelBackendTest {
         registry.onEnable()
         val provider = config(ModelProtocol.OPENAI_RESPONSES, "custom", "https://api.example.test/v1/responses")
         try {
-            assertThrows(IllegalArgumentException::class.java) {
-                registry.addProvider(provider.duplicate(providerId = "deepseek"))
-            }
             registry.addProvider(provider)
             assertEquals(listOf(provider), registry.providers())
             assertTrue(adapter.models().any { it.id == ModelId("custom", "model") })
@@ -229,16 +226,17 @@ class ConfigurableModelBackendTest {
     }
 
     @Test
-    fun registryRejectsStoredProviderThatClaimsTheBundledDeepSeekId() {
+    fun registryRestoresLegacyDeepSeekAsAnOrdinaryProvider() {
         val store = InMemoryModelProviderConfigStore()
         store.save(config(ModelProtocol.OPENAI_CHAT_COMPLETIONS, DeepSeekPreset.PROVIDER_ID, DeepSeekPreset.DEFAULT_ENDPOINT))
         val adapter = ModelAdapterPlugin()
         adapter.onEnable()
         try {
-            val failure = assertThrows(IllegalArgumentException::class.java) {
-                ModelProviderRegistryPlugin(adapter, { ApiKeyProvider { "test-key" } }, store)
-            }
-            assertTrue(failure.message.orEmpty().contains("reserved"))
+            val registry = ModelProviderRegistryPlugin(adapter, { ApiKeyProvider { "test-key" } }, store)
+            registry.onEnable()
+            assertTrue(registry.providers().any { it.providerId == "deepseek" })
+            assertTrue(adapter.models().any { it.id.providerId == "deepseek" })
+            registry.onDisable()
         } finally {
             adapter.onDisable()
         }
