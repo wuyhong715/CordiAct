@@ -37,27 +37,34 @@ internal fun ComposerBar(state: ExperienceState, composer: ComposerState, contro
     var confirmLocal by remember { mutableStateOf(false) }
     val context = LocalContext.current
     var cameraPath by rememberSaveable { mutableStateOf<String?>(null) }
+    var pickSession by rememberSaveable { mutableStateOf<String?>(null) }
+    var pickWorkspace by rememberSaveable { mutableStateOf<String?>(null) }
+    fun captureTarget() { pickSession = state.sessionId; pickWorkspace = state.workspace?.id }
+    fun importResult(uris: List<android.net.Uri>) {
+        controller.import(uris, pickSession, pickWorkspace)
+        pickSession = null; pickWorkspace = null
+    }
     val camera = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { success ->
         val file = cameraPath?.let { java.io.File(it) }
         if (success && file != null) {
             val uri = androidx.core.content.FileProvider.getUriForFile(context, "${context.packageName}.attachments", file)
-            controller.import(listOf(uri))
+            importResult(listOf(uri))
         } else file?.delete()
         cameraPath = null
     }
-    val photo = rememberLauncherForActivityResult(AttachmentPickerRequests.imagePicker()) { controller.import(it) }
-    val files = rememberLauncherForActivityResult(AttachmentPickerRequests.documentPicker()) { controller.import(it) }
-    val registry = remember(photo, files, camera) { ComposerActionRegistry().apply {
+    val photo = rememberLauncherForActivityResult(AttachmentPickerRequests.imagePicker()) { importResult(it) }
+    val files = rememberLauncherForActivityResult(AttachmentPickerRequests.documentPicker()) { importResult(it) }
+    val registry = remember(photo, files, camera, state.sessionId, state.workspace?.id) { ComposerActionRegistry().apply {
         val intent = android.content.Intent(android.provider.MediaStore.ACTION_IMAGE_CAPTURE)
         if (intent.resolveActivity(context.packageManager) != null) register(ComposerAction("camera", "拍照", GlyphName.Camera) {
             val directory = java.io.File(context.cacheDir, "composer_camera").apply { mkdirs() }
             val output = java.io.File.createTempFile("capture-", ".jpg", directory)
-            cameraPath = output.absolutePath
+            captureTarget(); cameraPath = output.absolutePath
             camera.launch(androidx.core.content.FileProvider.getUriForFile(context, "${context.packageName}.attachments", output))
         })
     }
-        .register(ComposerAction("photo", "照片", GlyphName.Image) { photo.launch(AttachmentPickerRequests.imageRequest()) })
-        .register(ComposerAction("file", "文件", GlyphName.File) { files.launch(arrayOf("*/*")) }) }
+        .register(ComposerAction("photo", "照片", GlyphName.Image) { captureTarget(); photo.launch(AttachmentPickerRequests.imageRequest()) })
+        .register(ComposerAction("file", "文件", GlyphName.File) { captureTarget(); files.launch(arrayOf("*/*")) }) }
     LaunchedEffect(insert) { if (insert.isNotEmpty()) { controller.text(insert); onInserted() } }
     fun submit() {
         if (composer.localOnlyCount > 0) confirmLocal = true
@@ -83,11 +90,11 @@ internal fun ComposerBar(state: ExperienceState, composer: ComposerState, contro
             shadowElevation = 2.dp, modifier = Modifier.fillMaxWidth().animateContentSize(tween(duration))) {
             Column(Modifier.padding(horizontal = 6.dp, vertical = 4.dp)) {
                 AnimatedVisibility(composer.attachments.isNotEmpty(), enter = expandVertically(tween(duration)) + fadeIn(), exit = shrinkVertically(tween(duration)) + fadeOut()) {
-                    AttachmentTray(composer.attachments, controller::remove, controller::retry)
+                    AttachmentTray(composer.attachments, if (state.running) null else controller::remove, if (state.running) null else controller::retry)
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Box {
-                        IconButton(onClick = { controller.popover(ComposerPopover.Attach) }, enabled = !state.loading) { AppGlyph(GlyphName.Plus, "添加附件", tint = if (composer.popover == ComposerPopover.Attach) MaterialTheme.colorScheme.primary else LocalContentColor.current) }
+                        IconButton(onClick = { controller.popover(ComposerPopover.Attach) }, enabled = !state.loading && !state.running && !waiting) { AppGlyph(GlyphName.Plus, "添加附件", tint = if (composer.popover == ComposerPopover.Attach) MaterialTheme.colorScheme.primary else LocalContentColor.current) }
                         AnchoredPopover(composer.popover == ComposerPopover.Attach, { controller.popover(null) }) {
                             registry.actions().forEach { action ->
                                 Row(Modifier.fillMaxWidth().clickable { controller.popover(null); action.invoke() }.heightIn(min = 56.dp).padding(horizontal = 8.dp),

@@ -124,11 +124,12 @@ class ComposerController(
         writes.trySend { drafts.save(session, draft); drafts.saveLastUsed(draft) }
     }
 
-    fun import(uris: List<Uri>) {
-        val session = active ?: return
-        val ws = workspace ?: return
-        val room = mutable.value.maxAttachments - mutable.value.attachments.size
-        if (uris.size > room) banner("最多 ${mutable.value.maxAttachments} 个附件，超出的未添加")
+    fun import(uris: List<Uri>, sessionId: String? = active, workspaceId: String? = workspace) {
+        val session = sessionId ?: return
+        val ws = workspaceId ?: return
+        val draft = if (active == session) mutable.value else snapshots[session] ?: return
+        val room = draft.maxAttachments - draft.attachments.size
+        if (uris.size > room) update(session) { it.copy(banner = ComposerBanner("最多 ${draft.maxAttachments} 个附件，超出的未添加", BannerTone.ERROR)) }
         uris.take(room.coerceAtLeast(0)).forEach { uri -> startImport(session, ws, uri) }
     }
 

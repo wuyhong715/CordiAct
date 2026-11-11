@@ -39,7 +39,14 @@ internal fun AttachmentPreview(chip: AttachmentChip, onClose: () -> Unit) {
                         bitmap?.let(PreviewData::Picture) ?: PreviewData.Failure("图片无法解码")
                     }
                     AttachmentMediaKind.TEXT -> app.attachments.open(chip.descriptor.workspaceId, chip.id).use {
-                        PreviewData.Text(it.readNBytes(262144).toString(Charsets.UTF_8))
+                        val bytes = java.io.ByteArrayOutputStream()
+                        val buffer = ByteArray(8192)
+                        while (bytes.size() < 262144) {
+                            val count = it.read(buffer, 0, minOf(buffer.size, 262144 - bytes.size()))
+                            if (count < 0) break
+                            bytes.write(buffer, 0, count)
+                        }
+                        PreviewData.Text(bytes.toString("UTF-8"))
                     }
                     AttachmentMediaKind.PDF -> {
                         val temp = java.io.File.createTempFile("attachment-preview-", ".pdf", app.cacheDir)
