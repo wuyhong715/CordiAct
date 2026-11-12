@@ -493,11 +493,7 @@ class CordiActApplication : Application() {
         automationRuntime.registerTools(conversationCatalog.toolRegistry, conversationCatalog.jobRegistry)
         val capabilitySettings = com.cordiact.app.settings.CapabilitySettingsStore(this)
         val automationReadiness = com.cordiact.app.settings.AutomationReadiness(this, automationRuntime)
-        conversationCatalog.toolManagerPlugin.setWorkspaceVisibilityPolicy { workspaceId, descriptor ->
-            com.cordiact.core.settings.WorkspaceCapabilityPolicy.visible(descriptor.ownerPluginId,
-                { capabilitySettings.enabled(workspaceId, it) },
-                { id -> if (id.startsWith("mcp.")) pluginLifecycle.manager.get("core.$id")?.state == PluginState.ENABLED else id == "search" || id == "privilege" && automationRuntime.privilegeSettings.read().root && automationRuntime.rootChannel.peekReady() || automationReadiness.probe(id).state == com.cordiact.core.settings.ReadinessState.READY })
-        }
+
 
         // Jobs left RUNNING by the previous process must be classified before anything reads them:
         // a local job is provably dead, a detached remote one is merely unknown.
@@ -509,6 +505,11 @@ class CordiActApplication : Application() {
         conversationStore = conversationCatalog.conversationStore
         workspaceManager = conversationCatalog.workspacePlugin
         val needsRepair = pluginLifecycle.recoverBeforeDispatch()
+        conversationCatalog.toolManagerPlugin.setWorkspaceVisibilityPolicy { workspaceId, descriptor ->
+            com.cordiact.core.settings.WorkspaceCapabilityPolicy.visible(descriptor.ownerPluginId,
+                { capabilitySettings.enabled(workspaceId, it) },
+                { id -> if (id.startsWith("mcp.")) pluginLifecycle.manager.get("core.$id")?.state == PluginState.ENABLED else id == "search" || id == "privilege" && automationRuntime.privilegeSettings.read().root && automationRuntime.rootChannel.peekReady() || automationReadiness.probe(id).state == com.cordiact.core.settings.ReadinessState.READY })
+        }
         if (needsRepair.isNotEmpty()) {
             Log.e(TAG, "Plugin lifecycle recovery remains incomplete; blocked plugin ids: $needsRepair")
         }
