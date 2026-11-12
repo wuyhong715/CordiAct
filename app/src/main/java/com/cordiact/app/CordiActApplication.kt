@@ -505,11 +505,7 @@ class CordiActApplication : Application() {
         conversationStore = conversationCatalog.conversationStore
         workspaceManager = conversationCatalog.workspacePlugin
         val needsRepair = pluginLifecycle.recoverBeforeDispatch()
-        conversationCatalog.toolManagerPlugin.setWorkspaceVisibilityPolicy { workspaceId, descriptor ->
-            com.cordiact.core.settings.WorkspaceCapabilityPolicy.visible(descriptor.ownerPluginId,
-                { capabilitySettings.enabled(workspaceId, it) },
-                { id -> if (id.startsWith("mcp.")) pluginLifecycle.manager.get("core.$id")?.state == PluginState.ENABLED else id == "search" || id == "privilege" && automationRuntime.privilegeSettings.read().root && automationRuntime.rootChannel.peekReady() || automationReadiness.probe(id).state == com.cordiact.core.settings.ReadinessState.READY })
-        }
+
         if (needsRepair.isNotEmpty()) {
             Log.e(TAG, "Plugin lifecycle recovery remains incomplete; blocked plugin ids: $needsRepair")
         }
@@ -521,6 +517,11 @@ class CordiActApplication : Application() {
             extraPlugins = listOf(credentialRuntime.credentialPlugin, credentialRuntime.auditPlugin),
             autoReview = credentialRuntime::reviewTool,
         )
+        conversationCatalog.toolManagerPlugin.setWorkspaceVisibilityPolicy { workspaceId, descriptor ->
+            com.cordiact.core.settings.WorkspaceCapabilityPolicy.visible(descriptor.ownerPluginId,
+                { capabilitySettings.enabled(workspaceId, it) },
+                { id -> if (id.startsWith("mcp.")) pluginLifecycle.manager.get("core.$id")?.state == PluginState.ENABLED else id == "search" || id == "privilege" && automationRuntime.privilegeSettings.read().root && automationRuntime.rootChannel.peekReady() || automationReadiness.probe(id).state == com.cordiact.core.settings.ReadinessState.READY })
+        }
         modelAdapterPlugin = plugins.filterIsInstance<ModelAdapterPlugin>().single()
         credentialRuntime.attachReviewerClient(
             com.cordiact.model.providers.ModelReviewerClient { modelAdapter },
