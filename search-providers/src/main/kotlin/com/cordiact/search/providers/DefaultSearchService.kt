@@ -15,6 +15,7 @@ import com.cordiact.core.search.SearchResult
 import com.cordiact.core.search.SearchService
 import com.cordiact.core.search.SearchSource
 import com.cordiact.core.search.SearchUsageStore
+import com.cordiact.core.search.WorkspaceSearchPolicy
 import com.cordiact.core.search.NoSearchUsage
 import java.net.URI
 import java.util.concurrent.Callable
@@ -28,9 +29,12 @@ import java.util.concurrent.TimeoutException
 /**
  * Provider selection plus multi-query orchestration.
  *
- * Selection is deliberately strict: an explicit provider wins; otherwise a
- * single usable provider is auto-selected. More than one usable provider is an
- * error, never an arbitrary pick, and there is no cross-provider fallback chain.
+ * Selection is deliberately strict: an explicit provider wins (unless it is disabled);
+ * otherwise a native provider bound to the route wins in NATIVE/AUTO, then a single
+ * third-party provider chosen by [com.cordiact.core.search.WorkspaceSearchPolicy.providerOrder]
+ * or, without an order, by the legacy exactly-one rule. More than one usable provider is
+ * an error, never an arbitrary pick. The only fallback is the single AUTO native-failure
+ * retry in [autoFallback]; there is no general cross-provider chain.
  */
 class DefaultSearchService(
     private val registry: SearchProviderRegistry,
@@ -56,7 +60,27 @@ class DefaultSearchService(
     ): SearchResult {
         val normalized = normalizeQueries(queries)
         val cap = maxResults.coerceIn(1, this.maxResults)
+        val policy = policies.policy(workspaceId)
         val provider = resolveSearch(workspaceId, route)
+        val budget = timeoutMs.takeIf { it > 0 } ?: searchTimeoutMs
+        return try {
+            runSearch(workspaceId, route, provider, normalized, cap, oriQuestion, budget)
+        } catch (failure: SearchException) {
+            val fallback = autoFallback(policy, route, provider, failure) ?: throw failure
+            runSearch(workspaceId, route, fallback, normalized, cap, oriQuestion, budget)
+        }
+    }
+
+    /** One dispatch plus merge for [provider]; the budget is reserved before anything goes out. */
+    private fun runSearch(
+        workspaceId: String,
+        route: ModelRoute?,
+        provider: SearchProvider,
+        normalized: List<String>,
+        cap: Int,
+        oriQuestion: String?,
+        budget: Long,
+    ): SearchResult {
         // Fan-out means one tool call can spend several billable calls; reserve them all up front.
         enforceBudget(workspaceId, provider, normalized.size)
         val tasks = normalized.map { query ->
@@ -67,7 +91,6 @@ class DefaultSearchService(
                 )
             }
         }
-        val budget = timeoutMs.takeIf { it > 0 } ?: searchTimeoutMs
         val futures: List<Future<SearchResult>> = try {
             executor.invokeAll(tasks, budget, TimeUnit.MILLISECONDS)
         } catch (interrupted: InterruptedException) {
@@ -156,15 +179,20 @@ class DefaultSearchService(
     override fun shouldExposeSearch(workspaceId: String, route: ModelRoute?): Boolean {
         val policy = policies.policy(workspaceId)
         if (policy.mode == SearchMode.OFF) return false
-        val pinned = policy.searchProviderId ?: run {
-            val providers = registry.searchProviders()
-            // No provider at all: keep the tool visible so the call returns a setup error.
-            // Providers exist but none can authenticate: hide the tool for this request.
-            return providers.isEmpty() || providers.any { it.ready(route) }
+        policy.searchProviderId?.let { pinned ->
+            // A configured provider that is registered but cannot authenticate is hidden; a
+            // configured-but-missing provider stays visible so the call returns a setup error.
+            val provider = registry.searchProvider(pinned) ?: return true
+            if (!isEnabled(policy, provider)) return false
+            if (provider.native && (policy.mode == SearchMode.TOOL || provider.routeProviderId != route?.providerId)) return false
+            return provider.ready(route)
         }
-        val provider = registry.searchProvider(pinned) ?: return true
-        if (provider.native && provider.routeProviderId != route?.providerId) return false
-        return provider.ready(route)
+        val usable = readyNatives(policy, route).isNotEmpty() ||
+            registry.searchProviders().any { !it.native && isEnabled(policy, it) && it.ready(route) }
+        if (usable) return true
+        // Nothing usable at all: stay visible only when no provider is configured, so the call
+        // can report the setup problem instead of the tool silently disappearing.
+        return registry.searchProviders().none { isEnabled(policy, it) }
     }
 
     override fun shouldExposeFetch(workspaceId: String, route: ModelRoute?): Boolean {
@@ -178,6 +206,63 @@ class DefaultSearchService(
         return provider.ready(route)
     }
 
+    /**
+     * Third-party providers are the only ones an allowlist can close; native search is
+     * driven by [WorkspaceSearchPolicy.mode] so an external-id allowlist never removes it.
+     */
+    private fun isEnabled(policy: WorkspaceSearchPolicy, provider: SearchProvider): Boolean =
+        provider.native || (policy.enabledProviders?.contains(provider.id) ?: true)
+
+    /** Native providers bound to [route]; empty outside NATIVE/AUTO, so TOOL never uses them. */
+    private fun readyNatives(policy: WorkspaceSearchPolicy, route: ModelRoute?): List<SearchProvider> {
+        if (policy.mode != SearchMode.NATIVE && policy.mode != SearchMode.AUTO) return emptyList()
+        return registry.searchProviders().filter {
+            it.native && it.routeProviderId == route?.providerId && it.ready(route)
+        }
+    }
+
+    /**
+     * Single third-party pick. A declared [WorkspaceSearchPolicy.providerOrder] takes the first
+     * registered, enabled and ready id in order; without one the legacy rule stands (exactly one
+     * usable provider, ambiguity otherwise). Disabled providers are never a candidate.
+     */
+    private fun resolveExternal(policy: WorkspaceSearchPolicy, route: ModelRoute?): SearchProvider {
+        val order = policy.providerOrder
+        if (order.isNotEmpty()) {
+            val ordered = order.mapNotNull { id ->
+                registry.searchProvider(id)?.takeIf { !it.native && isEnabled(policy, it) && it.ready(route) }
+            }
+            return ordered.firstOrNull() ?: throw SearchException(
+                SearchException.Code.PROVIDER_UNAVAILABLE,
+                "None of the ordered search providers is available: " + order.joinToString(", "),
+            )
+        }
+        val usable = registry.searchProviders().filter { !it.native && isEnabled(policy, it) && it.ready(route) }
+        return when (usable.size) {
+            1 -> usable.first()
+            0 -> throw SearchException(SearchException.Code.PROVIDER_UNAVAILABLE, "No search provider is configured")
+            else -> throw SearchException(SearchException.Code.PROVIDER_AMBIGUOUS, "Multiple search providers are configured")
+        }
+    }
+
+    /**
+     * One safe fallback for AUTO: only when the model's own native search was picked, only on a
+     * provider failure or timeout, and only when that native call was not billable — so the
+     * retry can never bill twice. Cancellation, budget, credentials and unsupported errors are
+     * never retried, and there is no second fallback after this one.
+     */
+    private fun autoFallback(
+        policy: WorkspaceSearchPolicy,
+        route: ModelRoute?,
+        failed: SearchProvider,
+        failure: SearchException,
+    ): SearchProvider? {
+        if (policy.mode != SearchMode.AUTO || policy.searchProviderId != null) return null
+        if (!failed.native || failed.billable) return null
+        if (failure.code != SearchException.Code.PROVIDER_ERROR && failure.code != SearchException.Code.TIMED_OUT) return null
+        return runCatching { resolveExternal(policy, route) }.getOrNull()?.takeIf { it.id != failed.id }
+    }
+
     private fun resolveSearch(workspaceId: String, route: ModelRoute?): SearchProvider {
         val policy = policies.policy(workspaceId)
         if (policy.mode == SearchMode.OFF) {
@@ -186,6 +271,13 @@ class DefaultSearchService(
         policy.searchProviderId?.let { pinned ->
             val provider = registry.searchProvider(pinned)
                 ?: throw SearchException(SearchException.Code.PROVIDER_UNAVAILABLE, "Search provider '$pinned' is not available")
+            // A disabled provider stays rejected even when pinned: no path bypasses the allowlist.
+            if (!isEnabled(policy, provider)) {
+                throw SearchException(SearchException.Code.UNSUPPORTED, "Search provider '$pinned' is disabled for this workspace")
+            }
+            if (provider.native && policy.mode == SearchMode.TOOL) {
+                throw SearchException(SearchException.Code.UNSUPPORTED, "Tool mode does not use native web search")
+            }
             if (provider.native && provider.routeProviderId != route?.providerId) {
                 throw SearchException(SearchException.Code.UNSUPPORTED, "Native search provider does not match the current model")
             }
@@ -195,26 +287,16 @@ class DefaultSearchService(
             return provider
         }
 
-        if (policy.mode == SearchMode.NATIVE || policy.mode == SearchMode.AUTO) {
-            val natives = registry.searchProviders().filter {
-                it.native && it.routeProviderId == route?.providerId
-            }
-            val ready = natives.filter { it.ready(route) }
-            if (ready.size > 1) {
-                throw SearchException(SearchException.Code.PROVIDER_AMBIGUOUS, "Multiple native search providers are configured")
-            }
-            if (ready.size == 1) return ready.first()
-            if (policy.mode == SearchMode.NATIVE) {
-                throw SearchException(SearchException.Code.UNSUPPORTED, "The current model has no native web search")
-            }
+        val natives = readyNatives(policy, route)
+        if (natives.size > 1) {
+            throw SearchException(SearchException.Code.PROVIDER_AMBIGUOUS, "Multiple native search providers are configured")
+        }
+        if (natives.size == 1) return natives.first()
+        if (policy.mode == SearchMode.NATIVE) {
+            throw SearchException(SearchException.Code.UNSUPPORTED, "The current model has no native web search")
         }
 
-        val external = registry.searchProviders().filter { !it.native && it.ready(route) }
-        return when (external.size) {
-            1 -> external.first()
-            0 -> throw SearchException(SearchException.Code.PROVIDER_UNAVAILABLE, "No search provider is configured")
-            else -> throw SearchException(SearchException.Code.PROVIDER_AMBIGUOUS, "Multiple search providers are configured")
-        }
+        return resolveExternal(policy, route)
     }
 
     private fun resolveFetch(workspaceId: String, route: ModelRoute?): FetchProvider {

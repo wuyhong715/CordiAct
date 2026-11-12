@@ -144,6 +144,9 @@ data class AuditFilter(
     val category: AuditCategory? = null,
     val phase: AuditPhase? = null,
     val limit: Int = 200,
+    val outcome: AuditOutcome? = null,
+    val since: Instant? = null,
+    val newestFirst: Boolean = false,
 ) {
     init {
         require(limit in 1..10_000) { "limit out of range" }
@@ -229,8 +232,11 @@ class InMemoryAuditLog(
             .filter { filter.correlationId == null || it.draft.correlationId == filter.correlationId }
             .filter { filter.category == null || it.draft.category == filter.category }
             .filter { filter.phase == null || it.draft.phase == filter.phase }
+            .filter { filter.outcome == null || it.draft.outcome == filter.outcome }
+            .filter { filter.since == null || !it.occurredAt.isBefore(filter.since) }
+            .let { if (filter.newestFirst) it.sortedByDescending { event -> event.sequence } else it }
             .toList()
-            .takeLast(filter.limit)
+            .let { if (filter.newestFirst) it.take(filter.limit) else it.takeLast(filter.limit) }
     }
 
     override fun verify(): AuditVerification = synchronized(lock) {

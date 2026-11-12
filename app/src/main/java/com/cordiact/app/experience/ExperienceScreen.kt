@@ -57,11 +57,17 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
     val saveable = rememberSaveableStateHolder()
     var inspected by remember { mutableStateOf<ToolActivity?>(null) }
     var promptToInsert by remember { mutableStateOf("") }
+    var settingsLink by remember { mutableStateOf<String?>(null) }
     var manageModels by remember { mutableStateOf(false) }
     val composer by viewModel.composer.collectAsStateWithLifecycle()
     BackHandler(inspected != null) { inspected = null }
+    val settingsApp = LocalContext.current.applicationContext as com.cordiact.app.CordiActApplication
+    val settingsVm: com.cordiact.app.experience.settings.SettingsViewModel = androidx.lifecycle.viewmodel.compose.viewModel(
+        factory = com.cordiact.app.experience.settings.SettingsViewModel.factory(
+            remember(settingsApp) { com.cordiact.app.experience.settings.AndroidSettingsFacade(settingsApp) }))
+    fun openSettings(link: String? = null) { settingsLink = link; inspected = null; manageModels = true }
     if (manageModels) {
-        com.cordiact.app.experience.composer.ModelManagementScreen(state, viewModel::addProvider, { manageModels = false })
+        com.cordiact.app.experience.settings.SettingsHost(settingsVm, initialLink = settingsLink) { manageModels = false; settingsLink = null; viewModel.refreshSettingsModels() }
         return
     }
     ModalNavigationDrawer(
@@ -82,7 +88,7 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
                     onCreateWorkspace = { name, onSuccess -> viewModel.createWorkspace(name) { closeAfterSelection(); onSuccess() } },
                     onRenameWorkspace = { id, name, onSuccess -> viewModel.renameWorkspace(id, name, onSuccess) },
                     onRetry = viewModel::refresh,
-                    onSettings = { manageModels = true },
+                    onSettings = { scope.launch { drawer.close() }; settingsVm.reload(); openSettings() },
                 )
             }
         },
@@ -112,7 +118,7 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
                     },
                     content = { viewportModifier ->
                     Column(viewportModifier) {
-                    if (state.error != null) Box(Modifier.padding(horizontal = 18.dp, vertical = 5.dp)) { ErrorStrip(state.error!!, viewModel::dismissError) }
+                    if (state.error != null) Box(Modifier.padding(horizontal = 18.dp, vertical = 5.dp)) { ErrorStrip(state.error!!, viewModel::dismissError, { openSettings() }) }
                     HorizontalPager(state = pager, beyondViewportPageCount = 2, key = { windows[it].id }, modifier = Modifier.weight(1f).fillMaxWidth()) { page ->
                         when (windows[page].id) {
                             "chat" -> TranscriptView(state, onPrompt = { promptToInsert = it }, onInspect = { inspected = it })
@@ -158,12 +164,12 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
                     com.cordiact.app.experience.composer.ComposerBar(
                         state, composer, viewModel.composerController, promptToInsert,
                         { promptToInsert = "" }, viewModel::send, viewModel::stop,
-                        viewModel::selectModel, { manageModels = true },
+                        viewModel::selectModel, { openSettings("settings://models/providers") },
                     )
                     },
                 )
                 inspected?.let { step ->
-                    CompactInspector(step = step, onClose = { inspected = null }, modifier = Modifier.align(Alignment.BottomCenter).windowInsetsPadding(WindowInsets.systemBars.union(WindowInsets.ime)))
+                    CompactInspector(step = step, onClose = { inspected = null }, onSettings = { link -> openSettings(link) }, modifier = Modifier.align(Alignment.BottomCenter).windowInsetsPadding(WindowInsets.systemBars.union(WindowInsets.ime)))
                 }
 
             }
@@ -172,7 +178,7 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
 }
 
 @Composable
-internal fun CompactInspector(step: ToolActivity, onClose: () -> Unit, modifier: Modifier = Modifier) {
+internal fun CompactInspector(step: ToolActivity, onClose: () -> Unit, modifier: Modifier = Modifier, onSettings: ((String?) -> Unit)? = null) {
     val clipboard = LocalClipboardManager.current
     BoxWithConstraints(modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
         val maxSheet = maxHeight * .45f
@@ -184,6 +190,19 @@ internal fun CompactInspector(step: ToolActivity, onClose: () -> Unit, modifier:
                     Text(step.name, Modifier.weight(1f).padding(horizontal = 9.dp), style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     IconButton(onClick = { clipboard.setText(AnnotatedString(listOf(step.arguments, step.summary.orEmpty()).filter { it.isNotBlank() }.joinToString("\n\n"))) }) { AppGlyph(GlyphName.Copy, "复制工具详情", modifier = Modifier.size(17.dp)) }
                     IconButton(onClick = onClose) { AppGlyph(GlyphName.Close, "关闭工具详情", modifier = Modifier.size(17.dp)) }
+                }
+                if (step.phase == ToolPhase.FAILED && onSettings != null) {
+                    val link = when {
+                        step.name.startsWith("ssh_") -> "settings://ssh"
+                        step.name.startsWith("termux_") -> "settings://connections/termux"
+                        step.name.startsWith("browser_") -> "settings://connections/browser"
+                        step.name.startsWith("mcp") || step.name.startsWith("mcp_") -> "settings://mcp"
+                        step.name in setOf("root_exec", "shizuku_exec") -> "settings://connections/privilege"
+                        step.name in setOf("take_screenshot", "read_window_tree", "click_node", "tap", "swipe", "set_text", "scroll", "global_action") -> "settings://connections/screen"
+                        step.name.startsWith("web_") || step.name == "search_web" -> "settings://search"
+                        else -> null
+                    }
+                    TextButton(onClick = { onSettings(link) }, modifier = Modifier.padding(horizontal = 12.dp)) { Text("前往设置检查连接与权限") }
                 }
                 SelectionContainer(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()).padding(horizontal = 17.dp, vertical = 12.dp)) {
                     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {

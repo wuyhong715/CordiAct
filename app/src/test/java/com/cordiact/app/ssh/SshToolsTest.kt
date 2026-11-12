@@ -81,8 +81,12 @@ class SshToolsTest {
 
     @Test
     fun `test save list delete and exec saved host flow`() {
-        val file = tempFolder.newFile("hosts.json")
-        val store = SshHostStore(file)
+        val file = java.io.File(tempFolder.root, "hosts.json")
+        val store = SshHostStore(file, object : SshCredentialStore {
+        private val values = mutableMapOf<String, String>()
+        override fun read(owner: String) = values[owner]
+        override fun write(owner: String, value: String?) { if (value == null) values.remove(owner) else values[owner] = value }
+    })
         val fakeService = FakeSshService()
         val plugin = SshPlugin(service = fakeService, hostStore = store)
         val toolMap = sshTools(plugin).associateBy { it.descriptor.id }
@@ -97,6 +101,7 @@ class SshToolsTest {
                     "port" to ToolValue.NumberValue(22.0),
                     "user" to ToolValue.StringValue("root"),
                     "password" to ToolValue.StringValue("pass123"),
+                    "pinned_fingerprint" to ToolValue.StringValue("SHA256:verified"),
                 )
             )
         )

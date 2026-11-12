@@ -60,5 +60,5 @@ class SystemCredentialStore(private val repository: SystemCredentialRepository, 
 
     private fun decrypt(record: SystemCredentialRecord) = crypto.decrypt(record.encrypted, aad(record.id), record.keyVersion)
     private fun aad(id: String) = "cordiact:system-credential:v1:$id".toByteArray(Charsets.UTF_8)
-    private fun validate(id: String) { require(id.matches(Regex("(model|search):[a-zA-Z0-9._-]{1,128}"))) { "Invalid system credential id" } }
+    private fun validate(id: String) { require(id.matches(Regex("(model|search|ssh|mcp):[a-zA-Z0-9._-]{1,128}"))) { "Invalid system credential id" } }
 }

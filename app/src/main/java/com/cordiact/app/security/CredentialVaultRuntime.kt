@@ -34,14 +34,19 @@ class CredentialVaultRuntime private constructor(
     val sensitivePayloads = com.cordiact.core.security.SensitivePayloadRegistry()
     val auditSigner = AndroidAuditSigner()
     val database = AndroidSecurityDatabase(context.applicationContext, auditSigner)
+    // Migration downgrade commits before audit availability; durable outbox retries in settings.
+    init { runCatching { profileStore.flushMigrationAudit(database) } }
     private val crypto = AndroidVaultCrypto(context.applicationContext)
     val humanApprovals = ApprovalGatewayHumanChannel(approvalGateway)
 
     @Volatile
     private var reviewerClient: com.cordiact.core.security.ReviewerClient? = null
-    private val reviewerDelegate = com.cordiact.core.security.ReviewerClient { snapshot ->
-        reviewerClient?.review(snapshot) ?: throw IllegalStateException("REVIEWER_NOT_CONFIGURED")
-    }
+    private val reviewerDelegate = com.cordiact.core.security.CurrentReviewerGuard(
+        current = { workspace -> profileStore.profileFor(workspace).reviewer },
+        delegate = com.cordiact.core.security.ReviewerClient { snapshot ->
+            reviewerClient?.review(snapshot) ?: throw IllegalStateException("REVIEWER_NOT_CONFIGURED")
+        },
+    )
 
     private val approvals = SecurityApprovalCoordinator(
         humanChannel = humanApprovals,
@@ -52,6 +57,15 @@ class CredentialVaultRuntime private constructor(
         reviewerClient = client
     }
 
+    private val privilegeSettings = com.cordiact.app.privilege.PrivilegeSettingsStore(context)
+
+    private fun effectiveProfile(workspaceId: String, provider: String?, model: String?): com.cordiact.core.security.EffectiveSecurityProfile {
+        val configured = profileStore.profileFor(workspaceId)
+        return if (configured.reviewer?.let { it.providerId == provider && it.modelId == model } == true)
+            com.cordiact.core.security.EffectiveSecurityProfile.workspaceOnly(workspaceId, configured.profileRevision, configured.policyEpoch)
+        else configured
+    }
+
     /** Host-issued context for one turn; tools never construct or widen it themselves. */
     fun newSecurityContext(
         workspaceId: String,
@@ -59,7 +73,7 @@ class CredentialVaultRuntime private constructor(
         modelProviderId: String?,
         modelId: String?,
     ): SecurityContext {
-        val profile = profileStore.profileFor(workspaceId)
+        val profile = effectiveProfile(workspaceId, modelProviderId, modelId)
         return SecurityContext(
             workspaceId = workspaceId,
             sessionId = sessionId,
@@ -70,6 +84,7 @@ class CredentialVaultRuntime private constructor(
             profile = profile,
             modelProviderId = modelProviderId,
             modelId = modelId,
+            securitySettingsRevision = privilegeSettings.read().revision,
         )
     }
 
@@ -78,7 +93,10 @@ class CredentialVaultRuntime private constructor(
     private val gate = SensitiveOperationGate(
         approvals = approvals,
         audit = database,
-        isContextCurrent = { context -> profileStore.profileFor(context.workspaceId) == context.profile },
+        isContextCurrent = { current ->
+            effectiveProfile(current.workspaceId, current.modelProviderId, current.modelId) == current.profile &&
+                privilegeSettings.read().revision == current.securitySettingsRevision
+        },
     )
 
     private val commitmentKey = ByteArray(32).also { SecureRandom().nextBytes(it) }

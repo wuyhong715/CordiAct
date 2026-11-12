@@ -208,4 +208,25 @@ class SecurityCoreTest {
         now = now.plusSeconds(2)
         assertFalse(coordinator.consume(context, request, grant))
     }
+
+    @Test
+    fun `privilege settings revision change during approval rejects stale execution`() {
+        var revision = 4L
+        val context = context(EffectiveSecurityProfile.workspaceOnly("ws-1")).copy(securitySettingsRevision = revision)
+        val request = intent(context, operation = CredentialOperation.READ_PLAINTEXT)
+        val gate = SensitiveOperationGate(
+            approvals = SecurityApprovalCoordinator(humanChannel = HumanApprovalChannel {
+                revision++
+                SecurityApprovalResult(SecurityApprovalDecision.ALLOW, "OWNER_ALLOWED")
+            }),
+            audit = audit,
+            isContextCurrent = { it.securitySettingsRevision == revision },
+        )
+        var executed = false
+        val failure = assertFailsWith<SecurityDeniedException> {
+            gate.run(context, request) { executed = true }
+        }
+        assertEquals("SECURITY_PROFILE_CHANGED", failure.reasonCode)
+        assertFalse(executed)
+    }
 }

@@ -47,10 +47,11 @@ class AndroidAttachmentImportService(
     private val blobs: AttachmentBlobStore,
     private val catalog: AttachmentCatalog,
     private val limits: AttachmentLimits = AttachmentLimits(),
+    val attachmentPolicy: com.cordiact.core.attachment.AttachmentPolicyProvider? = null,
     private val audit: AttachmentAuditSink = NoopAttachmentAuditSink,
     private val imageNormalizer: AndroidImageNormalizer? = AndroidImageNormalizer(),
 ) {
-    private val coordinator = AttachmentImportCoordinator(blobs, catalog, limits, audit)
+    private val coordinator get() = AttachmentImportCoordinator(blobs, catalog, com.cordiact.core.attachment.AttachmentPolicy.validate(attachmentPolicy?.limits() ?: limits), audit)
     private val renditionWriter = AttachmentRenditionWriter(blobs, catalog, audit)
 
     private fun resolver(): ContentResolver = (context

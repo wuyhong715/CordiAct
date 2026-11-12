@@ -28,6 +28,8 @@ class JSchSshService : SshExecutionService {
 
     private fun createSession(config: SshHostConfig, timeoutMs: Long): Session {
         val jsch = JSch()
+        val pin = config.pinnedFingerprint ?: error("SSH_PIN_REQUIRED")
+        jsch.setHostKeyRepository(PinnedHostKeyRepository(pin))
         if (!config.privateKey.isNullOrBlank()) {
             val keyBytes = config.privateKey.trim().toByteArray(Charsets.UTF_8)
             val passBytes = config.passphrase?.toByteArray(Charsets.UTF_8)
@@ -40,7 +42,7 @@ class JSchSshService : SshExecutionService {
         }
 
         val prop = Properties()
-        prop["StrictHostKeyChecking"] = "no"
+        prop["StrictHostKeyChecking"] = "yes"
         prop["PreferredAuthentications"] = if (!config.privateKey.isNullOrBlank()) {
             "publickey,password,keyboard-interactive"
         } else {
@@ -49,17 +51,6 @@ class JSchSshService : SshExecutionService {
         session.setConfig(prop)
         session.connect(timeoutMs.coerceAtLeast(1000).toInt())
 
-        // Fingerprint verification if pinned
-        if (!config.pinnedFingerprint.isNullOrBlank()) {
-            val actualFingerprint = session.hostKey?.getFingerPrint(jsch)
-            if (actualFingerprint != null && !actualFingerprint.equals(config.pinnedFingerprint, ignoreCase = true)) {
-                session.disconnect()
-                throw IllegalStateException(
-                    "Host key mismatch for ${config.name}! Pinned: ${config.pinnedFingerprint}, Presented: $actualFingerprint"
-                )
-            }
-        }
-
         return session
     }
 
@@ -67,7 +58,7 @@ class JSchSshService : SshExecutionService {
         return try {
             val session = createSession(config, timeoutMs)
             val hostKey = session.hostKey
-            val fp = hostKey?.getFingerPrint(JSch()) ?: "unknown"
+            val fp = hostKey?.key?.let { PinnedHostKeyRepository.sha256(java.util.Base64.getDecoder().decode(it)) } ?: "unknown"
             session.disconnect()
             true to "Connected successfully. Host fingerprint: $fp"
         } catch (e: Exception) {
@@ -91,7 +82,7 @@ class JSchSshService : SshExecutionService {
             }
             val latency = System.currentTimeMillis() - startTime
             val hostKey = session.hostKey
-            val fp = hostKey?.getFingerPrint(jsch)
+            val fp = hostKey?.key?.let { PinnedHostKeyRepository.sha256(java.util.Base64.getDecoder().decode(it)) }
             val keyType = hostKey?.type
             try {
                 session.disconnect()

@@ -429,6 +429,10 @@ class ToolManagerPlugin(
     @Volatile private var enabled = false
     @Volatile private var generation = 0L
     private val dispatchLock = Any()
+    @Volatile private var workspaceVisibility: (String, ToolDescriptor) -> Boolean = { _, _ -> true }
+    fun setWorkspaceVisibilityPolicy(policy: (String, ToolDescriptor) -> Boolean) {
+        workspaceVisibility = policy
+    }
 
     /**
      * Preserves the old global serialization for tools that did not opt into
@@ -698,7 +702,8 @@ class ToolManagerPlugin(
     )
 
     private fun isEnabled(workspaceId: String, descriptor: ToolDescriptor): Boolean =
-        preferences.isEnabled(workspaceId, descriptor.id) ?: descriptor.defaultEnabled
+        workspaceVisibility(workspaceId, descriptor) &&
+            (preferences.isEnabled(workspaceId, descriptor.id) ?: descriptor.defaultEnabled)
 
     private fun validateWorkspace(workspaceId: String) {
         try {

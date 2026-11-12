@@ -185,10 +185,15 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
                     }
                 }
                 cache.getOrPut(snapshot.selected.id) { restoreTranscript(snapshot.messages) }
-                val preferred = composer.value.model ?: mutable.value.model
+                val preferred = composer.value.model ?: mutable.value.model ?: app.getSharedPreferences("cordiact.settings.models", android.content.Context.MODE_PRIVATE).let { prefs ->
+                    snapshot.models.firstOrNull { it.id.providerId == prefs.getString("provider", null) && it.id.modelId == prefs.getString("model", null) }?.id
+                }
                 val model = snapshot.models.find { it.id == preferred }?.id
                     ?: snapshot.models.firstOrNull()?.id
                 composerController.open(snapshot.selected.id, snapshot.workspace.id, snapshot.models, model)
+                model?.let { selected -> withContext(Dispatchers.IO) {
+                    com.cordiact.app.model.ConversationModelSelectionStore(app).setForSession(snapshot.selected.id, selected)
+                } }
                 if (version != selectionVersion) return@launch
                 mutable.update { it.copy(loading = false, workspace = snapshot.workspace, workspaces = snapshot.workspaces,
                     sessions = snapshot.sessions, sidebar = snapshot.sidebar, sessionId = snapshot.selected.id, models = snapshot.models, providerNames = app.modelProviders.providers().associate { it.providerId to it.displayName }, model = composer.value.model,
@@ -203,30 +208,25 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
     private data class Loaded(val workspace: Workspace, val workspaces: List<Workspace>, val sessions: List<ConversationSession>,
         val selected: ConversationSession, val models: List<ModelDescriptor>, val messages: List<StoredMessage>, val sidebar: List<SidebarWorkspace>)
 
+    fun refreshSettingsModels() {
+        viewModelScope.launch {
+            val models = withContext(Dispatchers.IO) { app.modelAdapter.models() }
+            val prefs = app.getSharedPreferences("cordiact.settings.models", android.content.Context.MODE_PRIVATE)
+            val preferred = models.firstOrNull { it.id.providerId == prefs.getString("provider", null) && it.id.modelId == prefs.getString("model", null) }?.id
+            mutable.update { current -> current.copy(models = models,
+                providerNames = app.modelProviders.providers().associate { it.providerId to it.displayName },
+                model = preferred ?: current.model?.takeIf { model -> models.any { it.id == model } } ?: models.firstOrNull()?.id) }
+            mutable.value.model?.let(::selectModel)
+        }
+    }
+
     fun selectModel(model: ModelId) {
         val descriptor = mutable.value.models.find { it.id == model } ?: return
         mutable.update { it.copy(model = model) }
         composerController.select(descriptor)
-    }
-
-    fun addProvider(name: String, baseUrl: String, protocol: ModelProtocol, apiKey: String, done: (String?) -> Unit) {
-        viewModelScope.launch {
-            try {
-                val models = withContext(Dispatchers.IO) {
-                    val id = "provider-${UUID.randomUUID()}"
-                    val displayName = name.trim().ifBlank { runCatching { java.net.URI(baseUrl.trim().replace("{model}", "model")).host }.getOrNull() ?: "API Provider" }
-                    val connection = com.cordiact.model.providers.ModelProviderConnection(id, displayName, protocol, baseUrl)
-                    app.modelProviders.discoverAndAddProvider(connection, apiKey.trim())
-                    app.modelAdapter.models()
-                }
-                mutable.update { current -> current.copy(models = models,
-                    providerNames = app.modelProviders.providers().associate { config -> config.providerId to config.displayName },
-                    model = current.model?.takeIf { selected -> models.any { it.id == selected } } ?: models.firstOrNull()?.id) }
-                mutable.value.model?.let(::selectModel)
-                done(null)
-            } catch (cancel: CancellationException) { throw cancel }
-            catch (failure: Exception) { done(failure.message ?: "拉取模型失败") }
-        }
+        mutable.value.sessionId?.let { sessionId -> viewModelScope.launch(Dispatchers.IO) {
+            com.cordiact.app.model.ConversationModelSelectionStore(app).setForSession(sessionId, model)
+        } }
     }
 
     fun refreshProvider(providerId: String) {

@@ -71,17 +71,22 @@ class ConversationTurnService(
      * means "do not run at all" — compaction is not optional, its quality is.
      */
     private val summaryModelProvider: () -> ModelId? = { null },
+    private val summaryModelResolver: ((ModelId) -> ModelId?)? = null,
     /** Host-only one-shot transport for an approved plaintext credential result. */
     private val sensitivePayloads: com.cordiact.core.security.SensitivePayloadRegistry? = null,
 ) {
     /** Owns "should I compact, and how", so this service only decides *when* to ask. */
+    private val activeCompactionModel = ThreadLocal<ModelId>()
     private val compactor = DefaultContextCompactor(
         store = compactionStore,
         estimator = tokenEstimator,
         policy = contextPolicy,
         projector = contextProjector,
         summarizer = { prompt, body ->
-            summaryModelProvider()?.let { model ->
+            val selected = if (summaryModelResolver != null) {
+                summaryModelResolver.invoke(requireNotNull(activeCompactionModel.get()) { "Compaction model context missing" })
+            } else summaryModelProvider()
+            selected?.let { model ->
                 ModelSummarizer(models, contextPolicy.summaryTimeoutMs)
                     .summarize(prompt, body, model, sessionId = "compaction")
             }
@@ -116,8 +121,19 @@ class ConversationTurnService(
      * Returns null when there is nothing worth compressing yet, which is the common case: this is
      * called after every turn and must stay cheap when it has nothing to do.
      */
-    fun prepareCompactionCandidate(sessionId: String, model: ModelId) =
+    private fun <T> withCompactionModel(model: ModelId, block: () -> T): T {
+        val previous = activeCompactionModel.get()
+        // Resolve before SummaryCompactor's fallback catch: invalid references must stay visible.
+        summaryModelResolver?.invoke(model)
+        activeCompactionModel.set(model)
+        return try { block() } finally {
+            if (previous == null) activeCompactionModel.remove() else activeCompactionModel.set(previous)
+        }
+    }
+
+    fun prepareCompactionCandidate(sessionId: String, model: ModelId) = withCompactionModel(model) {
         compactor.prepareCandidate(sessionId, windowFor(model), rawHistoryOf(sessionId))
+    }
 
     private fun rawHistoryOf(sessionId: String): List<ConversationMessage> =
         sessions.messages(sessionId)
@@ -569,7 +585,7 @@ class ConversationTurnService(
     private fun recoverFromOverflow(sessionId: String, model: ModelId): List<ModelMessage>? {
         val raw = sessions.messages(sessionId)
             .filter { it.role == MessageRole.SYSTEM || it.role == MessageRole.USER || it.role == MessageRole.ASSISTANT }
-        val result = compactor.emergencyCompact(sessionId, windowFor(model), raw) ?: return null
+        val result = withCompactionModel(model) { compactor.emergencyCompact(sessionId, windowFor(model), raw) } ?: return null
         // Worth a log line: the turn continued, so nothing else would explain the sudden shrink.
         java.util.logging.Logger.getLogger(ConversationTurnService::class.java.name).warning(
             "Context overflow recovered for $sessionId: ${result.tokensBefore} -> ${result.tokensAfter} tokens " +
@@ -617,7 +633,7 @@ class ConversationTurnService(
     }
 
     private fun maybeCompact(sessionId: String, model: ModelId, rawMessages: List<ConversationMessage>, onEvent: ((ModelEvent) -> Unit)? = null) {
-        val result = compactor.compactIfNeeded(sessionId, windowFor(model), rawMessages)
+        val result = withCompactionModel(model) { compactor.compactIfNeeded(sessionId, windowFor(model), rawMessages) }
         if (result != null && onEvent != null) {
             val saved = (result.tokensBefore - result.tokensAfter).toLong()
             onEvent(ModelEvent.ContextCompacted(saved, result.summary))

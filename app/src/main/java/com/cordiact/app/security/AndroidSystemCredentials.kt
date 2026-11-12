@@ -16,15 +16,24 @@ class AndroidSystemCredentials private constructor(context: Context) {
     private val database by lazy { AndroidSecurityDatabase(appContext, AndroidAuditSigner()) }
     private val store by lazy { SystemCredentialStore(database, AndroidVaultCrypto(appContext)) }
 
-    fun has(kind: String, providerId: String): Boolean =
+    @Synchronized fun has(kind: String, providerId: String): Boolean =
         database.readSystemCredential("$kind:$providerId") != null || legacy(kind, providerId).hasValue()
 
-    fun read(kind: String, providerId: String): String? {
+    @Synchronized fun metadata() = database.systemCredentialMetadata()
+    @Synchronized fun clearExpected(kind: String, providerId: String, expectedRevision: Long) {
+        require(kind in setOf("model", "search", "ssh", "mcp"))
+        check(revision(kind, providerId) == expectedRevision) { "CREDENTIAL_REVISION_CONFLICT" }
+        check(has(kind, providerId)) { "CREDENTIAL_NOT_FOUND" }
+        set(kind, providerId, null)
+    }
+    fun revision(kind: String, providerId: String) = database.systemCredentialRevision("$kind:$providerId")
+
+    @Synchronized fun read(kind: String, providerId: String): String? {
         val bytes = store.read("$kind:$providerId", legacy(kind, providerId)) ?: return null
-        return try { bytes.toString(Charsets.UTF_8) } finally { bytes.fill(0) }
+        return try { database.markSystemCredentialUsed("$kind:$providerId"); bytes.toString(Charsets.UTF_8) } finally { bytes.fill(0) }
     }
 
-    fun set(kind: String, providerId: String, value: String?) {
+    @Synchronized fun set(kind: String, providerId: String, value: String?) {
         val normalized = value?.trim()?.takeIf(String::isNotEmpty)
         if (normalized == null) {
             store.delete("$kind:$providerId", legacy(kind, providerId))

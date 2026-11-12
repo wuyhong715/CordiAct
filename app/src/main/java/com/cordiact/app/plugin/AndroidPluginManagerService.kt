@@ -26,12 +26,27 @@ class AndroidPluginManagerService(
     private val manager: PluginLifecycleManager,
     private val publishedTools: (pluginId: String) -> List<String> = { emptyList() },
     private val onSpecInstalled: (PluginSpec) -> Boolean = { false },
+    private val afterRemoved: (String) -> Unit = {},
+    private val probeMcp: (McpServerConfig) -> Unit = { error("MCP_PROBE_UNAVAILABLE") },
+    private val bundledInventory: () -> List<PluginInventoryEntry> = { emptyList() },
+    private val workspaceProjection: (String, PluginInventoryEntry) -> PluginInventoryEntry = { _, entry -> entry },
 ) : PluginManagerService {
 
     override fun inventory(): List<PluginInventoryEntry> =
-        manager.all().map(::entryFor).sortedBy { it.spec.id }
+        (manager.all().map(::entryFor) + bundledInventory()).distinctBy { it.spec.id }.sortedBy { it.spec.id }
+
+    override fun inventory(workspaceId: String): List<PluginInventoryEntry> =
+        inventory().map { workspaceProjection(workspaceId, it) }
+
+    private fun protectedBuiltin(pluginId: String): PluginChangeResult? =
+        bundledInventory().find { it.spec.id == pluginId }?.let { entry ->
+            PluginChangeResult(pluginId, PluginChangeResult.Application.OVERRIDDEN,
+                reason = "Built-in capability lifecycle is owned by the runtime",
+                nextStep = "Change the capability for the selected workspace in settings; built-ins cannot be globally disabled or removed.", entry = entry)
+        }
 
     override fun setEnabled(pluginId: String, enabled: Boolean): PluginChangeResult {
+        protectedBuiltin(pluginId)?.let { return it }
         val record = requireRecord(pluginId)
         if (record.origin == PluginOrigin.BUNDLED_SYSTEM) {
             return PluginChangeResult(
@@ -56,6 +71,7 @@ class AndroidPluginManagerService(
     }
 
     override fun install(spec: PluginSpec): PluginChangeResult {
+        protectedBuiltin(spec.id)?.let { return it }
         val existing = manager.get(spec.id)
         if (existing != null) {
             if (existing.spec == spec) return applied(existing, "already installed")
@@ -68,12 +84,17 @@ class AndroidPluginManagerService(
             )
         }
         val installed = try {
+            if (spec.id.startsWith("$MCP_PLUGIN_ID.")) {
+                val config = McpServerConfigCodec.decode(spec.config)
+                require(config.headers.isEmpty()) { "MCP_HEADERS_MUST_USE_VAULT" }
+                probeMcp(config)
+            }
             onSpecInstalled(spec)
         } catch (failure: Exception) {
             return PluginChangeResult(
                 pluginId = spec.id,
                 application = PluginChangeResult.Application.FAILED,
-                reason = failure.message ?: "Installation failed",
+                reason = "Installation failed; verify connection, configuration and credentials",
                 nextStep = "Report the failure to the user; the plugin was not installed.",
             )
         }
@@ -89,6 +110,7 @@ class AndroidPluginManagerService(
     }
 
     override fun remove(pluginId: String): PluginChangeResult {
+        protectedBuiltin(pluginId)?.let { return it }
         val record = requireRecord(pluginId)
         if (record.origin == PluginOrigin.BUNDLED_SYSTEM) {
             return PluginChangeResult(
@@ -101,6 +123,7 @@ class AndroidPluginManagerService(
         }
         return try {
             manager.uninstall(pluginId)
+            afterRemoved(pluginId)
             PluginChangeResult(
                 pluginId = pluginId,
                 application = PluginChangeResult.Application.APPLIED,

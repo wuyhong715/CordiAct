@@ -48,6 +48,7 @@ class AndroidSecurityDatabase private constructor(
 ) : SQLiteOpenHelper(context.applicationContext, databaseName, null, DATABASE_VERSION),
     CredentialRepository,
     com.cordiact.core.vault.SystemCredentialRepository,
+    com.cordiact.core.vault.SystemCredentialMetadataRepository,
     TransactionalAuditLog {
 
     constructor(
@@ -118,10 +119,40 @@ class AndroidSecurityDatabase private constructor(
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
         if (oldVersion < 2) createSystemCredentials(db)
+        if (oldVersion < 3) createSystemCredentialMetadata(db)
     }
 
     private fun createSystemCredentials(db: SQLiteDatabase) {
+        createSystemCredentialMetadata(db)
         db.execSQL("CREATE TABLE IF NOT EXISTS system_credentials (id TEXT PRIMARY KEY NOT NULL, nonce BLOB NOT NULL, ciphertext BLOB NOT NULL, key_version INTEGER NOT NULL)")
+    }
+
+    private fun createSystemCredentialMetadata(db: SQLiteDatabase) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS system_credential_metadata (id TEXT PRIMARY KEY NOT NULL, revision INTEGER NOT NULL, updated_at INTEGER, last_used_at INTEGER)")
+    }
+
+    override fun systemCredentialMetadata(): List<com.cordiact.core.vault.SystemCredentialMetadata> =
+        readableDatabase.rawQuery("SELECT c.id, COALESCE(m.revision,0), m.updated_at, m.last_used_at FROM system_credentials c LEFT JOIN system_credential_metadata m ON m.id=c.id ORDER BY c.id", null).use { cursor ->
+            buildList { while (cursor.moveToNext()) add(com.cordiact.core.vault.SystemCredentialMetadata(
+                cursor.getString(0), cursor.getLong(1), if (cursor.isNull(2)) null else cursor.getLong(2),
+                if (cursor.isNull(3)) null else cursor.getLong(3))) }
+        }
+    override fun systemCredentialRevision(id: String): Long = readableDatabase.rawQuery(
+        "SELECT revision FROM system_credential_metadata WHERE id=?", arrayOf(id)).use { if (it.moveToFirst()) it.getLong(0) else 0 }
+    override fun markSystemCredentialUsed(id: String) = transaction {
+        // Upgraded v2 records have no metadata row. Record usage without inventing an update time or rotating revision.
+        writableDatabase.execSQL("INSERT OR IGNORE INTO system_credential_metadata(id,revision,updated_at,last_used_at) SELECT id,0,NULL,NULL FROM system_credentials WHERE id=?", arrayOf<Any>(id))
+        writableDatabase.execSQL("UPDATE system_credential_metadata SET last_used_at=? WHERE id=?", arrayOf<Any>(System.currentTimeMillis(), id))
+    }
+    private fun bumpSystemCredentialRevision(id: String) {
+        val revision = systemCredentialRevision(id)
+        check(revision < Long.MAX_VALUE) { "CREDENTIAL_REVISION_EXHAUSTED" }
+        val values = ContentValues().apply {
+            put("id", id); put("revision", revision + 1); put("updated_at", System.currentTimeMillis())
+            putNull("last_used_at")
+        }
+        check(writableDatabase.insertWithOnConflict("system_credential_metadata", null, values,
+            SQLiteDatabase.CONFLICT_REPLACE) != -1L) { "CREDENTIAL_METADATA_WRITE_FAILED" }
     }
 
     override fun readSystemCredential(id: String): com.cordiact.core.vault.SystemCredentialRecord? =
@@ -133,16 +164,18 @@ class AndroidSecurityDatabase private constructor(
             )
         }
 
-    override fun writeSystemCredential(record: com.cordiact.core.vault.SystemCredentialRecord) {
+    override fun writeSystemCredential(record: com.cordiact.core.vault.SystemCredentialRecord) = transaction {
         val values = ContentValues().apply {
             put("id", record.id); put("nonce", record.encrypted.nonce)
             put("ciphertext", record.encrypted.ciphertext); put("key_version", record.keyVersion)
         }
         check(writableDatabase.insertWithOnConflict("system_credentials", null, values, SQLiteDatabase.CONFLICT_REPLACE) != -1L) { "SYSTEM_CREDENTIAL_WRITE_FAILED" }
+        bumpSystemCredentialRevision(record.id)
     }
 
-    override fun deleteSystemCredential(id: String) {
+    override fun deleteSystemCredential(id: String) = transaction {
         writableDatabase.delete("system_credentials", "id = ?", arrayOf(id))
+        bumpSystemCredentialRevision(id)
     }
 
     // ---------------------------------------------------------------- credentials
@@ -407,6 +440,8 @@ class AndroidSecurityDatabase private constructor(
         filter.correlationId?.let { clauses += "$COL_AUDIT_CORRELATION_ID = ?"; args += it }
         filter.category?.let { clauses += "$COL_AUDIT_CATEGORY = ?"; args += it.name }
         filter.phase?.let { clauses += "$COL_AUDIT_PHASE = ?"; args += it.name }
+        filter.outcome?.let { clauses += "$COL_AUDIT_OUTCOME = ?"; args += it.name }
+        filter.since?.let { clauses += "$COL_AUDIT_OCCURRED_AT >= ?"; args += it.toEpochMilli().toString() }
         val selection = clauses.takeIf { it.isNotEmpty() }?.joinToString(" AND ")
         return readableDatabase.query(
             TABLE_AUDIT,
@@ -415,7 +450,7 @@ class AndroidSecurityDatabase private constructor(
             args.takeIf { it.isNotEmpty() }?.toTypedArray(),
             null,
             null,
-            "$COL_AUDIT_SEQUENCE ASC",
+            "$COL_AUDIT_SEQUENCE ${if (filter.newestFirst) "DESC" else "ASC"}",
             filter.limit.toString(),
         ).use { cursor -> buildList { while (cursor.moveToNext()) add(cursor.toAuditEvent()) } }
     }
@@ -463,7 +498,7 @@ class AndroidSecurityDatabase private constructor(
     private var bootInstance: String? = null
 
     private companion object {
-        const val DATABASE_VERSION = 2
+        const val DATABASE_VERSION = 3
         const val TABLE_CREDENTIALS = "credentials"
         const val TABLE_AUDIT = "audit_events"
 

@@ -11,6 +11,37 @@ import org.junit.Test
 
 class PrivilegeServiceTest {
 
+    @Test fun ordinaryToolCannotBorrowGlobalAdvancedSetting() {
+        var calls = 0
+        val channel = object : PrivilegedChannel {
+            override fun status() = PrivilegeStatus(PrivilegeLevel.SHELL)
+            override fun exec(command: String, timeoutMs: Long): ShellResult { calls++; return ShellResult(0, "ok", "") }
+        }
+        val service = PrivilegeService(channel,
+            liveSettings = { PrivilegeService.PrivilegeSettings(advancedCommandsEnabled = true) },
+            workspaceAllowsPrivilege = { false })
+        assertEquals(-1, service.exec("settings put system screen_brightness 100", 1000, advanced = false).exitCode)
+        assertEquals(0, calls)
+    }
+
+    @Test fun liveSettingsAndWorkspaceGateAreCheckedAtEveryExecution() {
+        var advanced = true
+        var calls = 0
+        val channel = object : PrivilegedChannel {
+            override fun status() = PrivilegeStatus(PrivilegeLevel.SHELL)
+            override fun exec(command: String, timeoutMs: Long): ShellResult { calls++; return ShellResult(0, "ok", "") }
+        }
+        val service = PrivilegeService(channel,
+            liveSettings = { PrivilegeService.PrivilegeSettings(advancedCommandsEnabled = advanced) },
+            workspaceAllowsPrivilege = { it == "full" })
+        assertEquals(-1, service.exec("pm list packages", 1000, true, workspaceId = "auto").exitCode)
+        assertEquals(-1, service.exec("pm list packages", 1000, true).exitCode)
+        assertEquals(0, service.exec("pm list packages", 1000, true, workspaceId = "full").exitCode)
+        advanced = false
+        assertEquals(-1, service.exec("pm list packages", 1000, true, workspaceId = "full").exitCode)
+        assertEquals(1, calls)
+    }
+
     @Test
     fun defaultSettingsNeverReachRootChannelForEitherAdvancedValue() {
         val fakeRoot = FakeChannel(PrivilegeLevel.ROOT)

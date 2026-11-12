@@ -42,7 +42,15 @@ fun sshTools(
     openTunnelTool(plugin),
     closeTunnelTool(plugin),
     listTunnelsTool(plugin),
-)
+).map { definition ->
+    definition.copy(executor = { context, args ->
+        try { definition.executor.invoke(context, args) }
+        catch (failure: Exception) {
+            if (failure is java.util.concurrent.CancellationException) throw failure
+            error("ssh_operation_failed", "SSH operation failed; verify host storage, credentials and pinned fingerprint in settings")
+        }
+    })
+}
 
 fun registerSshTools(
     registry: ToolDefinitionRegistry,
@@ -89,6 +97,7 @@ private fun saveHostTool(plugin: SshPlugin) = ToolDefinition(
         val passphrase = args.string("passphrase")
         val pinnedFingerprint = args.string("pinned_fingerprint")
 
+        if (pinnedFingerprint.isNullOrBlank()) return@ToolDefinition error("untrusted_host_key", "Probe the host and explicitly confirm its SHA256 fingerprint before saving")
         if (password.isNullOrBlank() && privateKey.isNullOrBlank()) {
             return@ToolDefinition error("missing_auth", "Either password or private_key must be provided")
         }

@@ -23,6 +23,14 @@ open class TermuxBridge(
     private val context: Context,
     private val privilegedShellRunner: ((String) -> Pair<Int, String>)? = null,
 ) {
+    @Volatile var readinessVerified: Boolean = false
+        private set
+    fun testReadiness(): ExecutionResult {
+        val result = executeCommand(TermuxCommandParams("/data/data/com.termux/files/usr/bin/true", timeoutMs = 10_000))
+        readinessVerified = result.isSuccess
+        return result
+    }
+
     companion object {
         const val TERMUX_PACKAGE_NAME = "com.termux"
         const val TERMUX_PERMISSION = "com.termux.permission.RUN_COMMAND"

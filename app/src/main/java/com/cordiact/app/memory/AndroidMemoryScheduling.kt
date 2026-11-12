@@ -145,8 +145,14 @@ class MemoryExtractionWorker(
         val host = applicationContext as? CordiActApplication
             ?: return Result.failure(workDataOf(KEY_REASON to "host application unavailable"))
 
+        // This worker scans a Workspace rather than one Session. Follow means the explicit
+        // conversation default; never borrow an unrelated foreground Session's choice.
         val conditions = host.deviceConditions()
-        val selection = ExtractionModelSelectionStore(applicationContext).selectedModel()
+        val selection = when (val result = ExtractionModelSelectionStore(applicationContext).resolve(host.modelAdapter.models().map { it.id }.toSet(), com.cordiact.app.model.ConversationModelSelectionStore(applicationContext).defaultModel())) {
+            is com.cordiact.app.experience.settings.ModelRoleResolution.Resolved -> result.model
+            com.cordiact.app.experience.settings.ModelRoleResolution.Disabled -> null
+            is com.cordiact.app.experience.settings.ModelRoleResolution.Invalid -> return Result.failure(workDataOf("reason" to result.reason))
+        }
 
         // Checked before the pipeline so a configuration gap does not look like a backlog: the
         // pipeline would also defer, but reporting it here keeps the reason in the work data.

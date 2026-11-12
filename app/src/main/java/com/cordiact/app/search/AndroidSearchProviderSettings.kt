@@ -12,15 +12,22 @@ import android.content.Context
 class AndroidSearchProviderSettings(context: Context) {
     private val preferences = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
 
+    fun providerRevision(): Long = preferences.getLong("revision", 0)
+    fun updateEndpoint(providerId: String, value: String?) {
+        require(providerId in setOf("deepseek", "tavily", "brave", "exa", "bocha", "searxng"))
+        value?.let {
+            val uri = java.net.URI(it)
+            require(uri.host != null && uri.rawUserInfo == null && uri.rawQuery == null && uri.fragment == null)
+            require(uri.scheme == "https" || uri.scheme == "http" && uri.host in setOf("localhost", "127.0.0.1", "::1", "[::1]"))
+        }
+        check(preferences.edit().apply { if (value == null) remove(key(providerId, "base_url")) else putString(key(providerId, "base_url"), value) }
+            .putLong("revision", providerRevision() + 1).commit()) { "SEARCH_ENDPOINT_WRITE_FAILED" }
+    }
+
     fun baseUrl(providerId: String): String? =
         preferences.getString(key(providerId, "base_url"), null)?.takeIf { it.isNotBlank() }
 
-    fun putBaseUrl(providerId: String, value: String?) {
-        val editor = preferences.edit()
-        if (value.isNullOrBlank()) editor.remove(key(providerId, "base_url"))
-        else editor.putString(key(providerId, "base_url"), value.trim())
-        editor.apply()
-    }
+    fun putBaseUrl(providerId: String, value: String?) = updateEndpoint(providerId, value?.trim()?.takeIf { it.isNotEmpty() })
 
     fun searchDepth(): String = preferences.getString("tavily.search_depth", null) ?: "basic"
 

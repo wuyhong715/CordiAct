@@ -23,6 +23,7 @@ interface ModelProviderRegistryService {
     fun providers(): List<ModelProviderConfig>
     fun addProvider(config: ModelProviderConfig)
     fun discoverAndAddProvider(connection: ModelProviderConnection, apiKey: String): ModelProviderConfig
+    fun commitProvider(connection: ModelProviderConnection, apiKey: String, selectedModels: List<String>, discoveredModels: List<String>): ModelProviderConfig
     fun refreshModels(providerId: String): ModelProviderConfig
     fun removeProvider(providerId: String)
 
@@ -62,6 +63,7 @@ class ModelProviderRegistryPlugin(
     private val attachmentAudit: AttachmentAuditSink = NoopAttachmentAuditSink,
     private val discovery: ModelDiscoveryService = HttpModelDiscoveryService(),
     private val saveCredential: ((String, String) -> Unit)? = null,
+    private val attachmentPolicy: com.cordiact.core.attachment.AttachmentPolicyProvider? = null,
 ) : ManagedPlugin, ModelProviderRegistryService {
     override val spec = modelProviderRegistryPluginSpec()
     private val configs = linkedMapOf<String, ModelProviderConfig>().apply {
@@ -131,6 +133,20 @@ class ModelProviderRegistryPlugin(
         return config
     }
 
+    override fun commitProvider(connection: ModelProviderConnection, apiKey: String, selectedModels: List<String>, discoveredModels: List<String>): ModelProviderConfig {
+        require(selectedModels.isNotEmpty() && discoveredModels.containsAll(selectedModels))
+        val config = connection.config(discoveredModels).withModels(selectedModels, discoveredModels)
+        val persistKey = saveCredential ?: error("Provider credential writer is not configured")
+        synchronized(this) {
+            check(enabled)
+            require(!configs.containsKey(connection.providerId)) { "Provider already configured" }
+            persistKey(connection.providerId, apiKey)
+            try { addProvider(config) }
+            catch (failure: Exception) { runCatching { forgetCredential(connection.providerId) }; throw failure }
+        }
+        return config
+    }
+
     override fun refreshModels(providerId: String): ModelProviderConfig {
         val original = synchronized(this) {
             check(enabled) { "Model Provider Registry is not enabled" }
@@ -139,7 +155,9 @@ class ModelProviderRegistryPlugin(
         val key = credentialFor(providerId).apiKey() ?: error("Provider API key is missing")
         val ids = discovery.discover(ModelProviderConnection(original.providerId, original.displayName, original.protocol, original.endpoint), key)
         val refreshed = original.duplicate(
-            models = ids,
+            models = original.models.filter { it in ids },
+            discoveredModels = ids,
+            modelDefaults = original.modelDefaults.filterKeys { it in ids },
             parameterCapabilities = original.parameterCapabilities.filterKeys { it in ids },
             attachmentCapabilities = original.attachmentCapabilities.filterKeys { it in ids },
         )
@@ -206,6 +224,7 @@ class ModelProviderRegistryPlugin(
             credentialFor(config.providerId),
             attachmentReader = attachmentReader,
             attachmentAudit = attachmentAudit,
+            attachmentPolicy = attachmentPolicy,
         )
         try {
             adapter.attachBackend(spec.id, backend)
