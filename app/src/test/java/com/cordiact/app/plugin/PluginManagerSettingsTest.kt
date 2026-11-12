@@ -3,7 +3,8 @@ package com.cordiact.app.plugin
 import com.cordiact.core.mcp.*
 import com.cordiact.core.plugin.*
 import com.cordiact.core.tool.*
-import kotlin.test.*
+import org.junit.Test
+import org.junit.Assert.*
 
 class PluginManagerSettingsTest {
     private class Records : PluginRecordStore {
