@@ -64,7 +64,8 @@ class ModelProviderDiscoveryRegistryTest {
             keys[connection.providerId] = "secret"
             registry.addProvider(config)
             val updated = registry.refreshModels(connection.providerId)
-            assertEquals(listOf("a", "b"), updated.models)
+            assertEquals(listOf("a"), updated.models)
+            assertEquals(listOf("a", "b"), updated.discoveredModels)
             assertEquals(defaults, updated.defaults)
             assertEquals(mapOf("a" to capability), updated.parameterCapabilities)
             assertFalse(updated.parameterCapabilities.containsKey("b"))

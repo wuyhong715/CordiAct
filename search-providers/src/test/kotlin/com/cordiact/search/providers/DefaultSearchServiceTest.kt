@@ -305,6 +305,131 @@ class DefaultSearchServiceTest {
         assertEquals(0.01, result.estimatedCostUsd)
     }
 
+    // --- B10: providerOrder / enabledProviders / TOOL visibility / AUTO fallback ---
+
+    @Test
+    fun `a declared provider order picks the first ready third party provider`() {
+        val a = FakeProvider("a")
+        val b = FakeProvider("b")
+        val firstB = service(a, b, policy = WorkspaceSearchPolicy(providerOrder = listOf("b", "a")))
+            .search("ws", route, listOf("q"), null, 3, 2_000)
+        assertEquals("b", firstB.sources.single().snippet)
+        assertEquals("b", firstB.providerId)
+        val firstA = service(a, b, policy = WorkspaceSearchPolicy(providerOrder = listOf("a", "b")))
+            .search("ws", route, listOf("q"), null, 3, 2_000)
+        assertEquals("a", firstA.sources.single().snippet)
+    }
+
+    @Test
+    fun `an ordered provider that is not ready is skipped for the next one`() {
+        val broken = FakeProvider("broken", ready = false)
+        val working = FakeProvider("working")
+        val result = service(broken, working, policy = WorkspaceSearchPolicy(providerOrder = listOf("broken", "working")))
+            .search("ws", route, listOf("q"), null, 3, 2_000)
+        assertEquals("working", result.sources.single().snippet)
+    }
+
+    @Test
+    fun `an order without any usable entry is an unavailable error not an arbitrary pick`() {
+        val failure = assertFailsWith<SearchException> {
+            service(FakeProvider("a"), policy = WorkspaceSearchPolicy(providerOrder = listOf("missing")))
+                .search("ws", route, listOf("q"), null, 3, 2_000)
+        }
+        assertEquals(SearchException.Code.PROVIDER_UNAVAILABLE, failure.code)
+    }
+
+    @Test
+    fun `a provider outside enabledProviders is never selected and removes the ambiguity`() {
+        val result = service(
+            FakeProvider("a"),
+            FakeProvider("b"),
+            policy = WorkspaceSearchPolicy(enabledProviders = setOf("b")),
+        ).search("ws", route, listOf("q"), null, 3, 2_000)
+        assertEquals("b", result.sources.single().snippet)
+    }
+
+    @Test
+    fun `an empty enabledProviders set closes every third party provider`() {
+        val failure = assertFailsWith<SearchException> {
+            service(FakeProvider("a"), policy = WorkspaceSearchPolicy(enabledProviders = emptySet()))
+                .search("ws", route, listOf("q"), null, 3, 2_000)
+        }
+        assertEquals(SearchException.Code.PROVIDER_UNAVAILABLE, failure.code)
+    }
+
+    @Test
+    fun `a pinned but disabled provider is rejected and does not fall back`() {
+        val failure = assertFailsWith<SearchException> {
+            service(
+                FakeProvider("a"),
+                FakeProvider("b"),
+                policy = WorkspaceSearchPolicy(searchProviderId = "a", enabledProviders = setOf("b")),
+            ).search("ws", route, listOf("q"), null, 3, 2_000)
+        }
+        assertEquals(SearchException.Code.UNSUPPORTED, failure.code)
+    }
+
+    @Test
+    fun `visibility hides a pinned but disabled provider`() {
+        assertFalse(
+            service(
+                FakeProvider("a"),
+                FakeProvider("b"),
+                policy = WorkspaceSearchPolicy(searchProviderId = "a", enabledProviders = setOf("b")),
+            ).shouldExposeSearch("ws", route),
+        )
+    }
+
+    @Test
+    fun `auto still prefers native search over an ordered third party list`() {
+        val native = FakeProvider("native", native = true, routeProviderId = "deepseek")
+        val result = service(
+            native,
+            FakeProvider("external"),
+            policy = WorkspaceSearchPolicy(providerOrder = listOf("external")),
+        ).search("ws", route, listOf("q"), null, 3, 2_000)
+        assertEquals("native", result.sources.single().snippet)
+    }
+
+    @Test
+    fun `tool mode never exposes or selects native search`() {
+        val native = FakeProvider("native", native = true, routeProviderId = "deepseek")
+        val toolService = service(native, policy = WorkspaceSearchPolicy(mode = SearchMode.TOOL))
+        assertFalse(toolService.shouldExposeSearch("ws", route))
+        val failure = assertFailsWith<SearchException> {
+            toolService.search("ws", route, listOf("q"), null, 3, 2_000)
+        }
+        assertEquals(SearchException.Code.PROVIDER_UNAVAILABLE, failure.code)
+    }
+
+    @Test
+    fun `an auto native failure falls back to the third party provider once`() {
+        val native = FakeProvider(
+            "native",
+            native = true,
+            routeProviderId = "deepseek",
+            failWith = SearchException(SearchException.Code.PROVIDER_ERROR, "native exploded"),
+        )
+        val result = service(native, FakeProvider("external"))
+            .search("ws", route, listOf("q"), null, 3, 2_000)
+        assertEquals("external", result.sources.single().snippet)
+        assertEquals("external", result.providerId)
+    }
+
+    @Test
+    fun `an auto native failure does not fall back when the failure is a cancellation`() {
+        val native = FakeProvider(
+            "native",
+            native = true,
+            routeProviderId = "deepseek",
+            failWith = SearchException(SearchException.Code.CANCELLED, "cancelled"),
+        )
+        val failure = assertFailsWith<SearchException> {
+            service(native, FakeProvider("external")).search("ws", route, listOf("q"), null, 3, 2_000)
+        }
+        assertEquals(SearchException.Code.CANCELLED, failure.code)
+    }
+
     private class FakeProvider(
         override val id: String,
         override val native: Boolean = false,
@@ -313,12 +438,14 @@ class DefaultSearchServiceTest {
         private val delayMs: Long = 0,
         private val perQuery: Map<String, List<SearchSource>> = emptyMap(),
         override val billable: Boolean = false,
+        private val failWith: SearchException? = null,
     ) : SearchProvider {
         override val pricing = com.cordiact.core.search.SearchPricing(usdPerCall = if (billable) 0.01 else null)
         override fun available(): Boolean = ready
         override fun ready(route: ModelRoute?): Boolean = ready
         override fun search(request: SearchRequest, signal: CancellationSignal): SearchResult {
             if (delayMs > 0) Thread.sleep(delayMs)
+            failWith?.let { throw it }
             val sources = perQuery[request.query] ?: listOf(source("u-$id", id))
             return SearchResult(sources = sources)
         }

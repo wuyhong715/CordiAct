@@ -56,6 +56,7 @@ data class McpServerConfig(
             if (uri.scheme == "http" && !isLoopback(uri.host)) {
                 throw McpConfigException("plain http is allowed only for a loopback host")
             }
+            if (uri.rawUserInfo != null || uri.fragment != null || uri.rawQuery != null) throw McpConfigException("credentials, query and fragment are not permitted in MCP URLs; use credential headers")
             if (uri.host.isNullOrBlank()) throw McpConfigException("url has no host")
             if (config.toolCallTimeoutMs !in 1..MAX_TOOL_CALL_TIMEOUT_MS) {
                 throw McpConfigException("toolCallTimeoutMs must be within 1..$MAX_TOOL_CALL_TIMEOUT_MS")

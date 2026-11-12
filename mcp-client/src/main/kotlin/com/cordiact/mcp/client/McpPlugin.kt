@@ -29,6 +29,7 @@ class McpPlugin(
     private val registry: ToolDefinitionRegistry,
     private val factory: McpClientFactory,
     private val credential: McpCredential? = null,
+    private val credentialProvider: ((String) -> McpCredential?)? = null,
 ) : ManagedPlugin {
 
     private val config: McpServerConfig = McpServerConfigCodec.decode(spec.config)
@@ -56,7 +57,7 @@ class McpPlugin(
     @Synchronized
     override fun onEnable() {
         if (connection != null) return
-        val live = factory.connect(config, credential)
+        val live = factory.connect(config, credentialProvider?.invoke(config.serverName) ?: credential)
         try {
             serverInfo = live.initialize()
             // sync both publishes the tools and takes the connection they dispatch through, so

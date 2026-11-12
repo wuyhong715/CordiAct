@@ -47,10 +47,11 @@ class AndroidAttachmentImportService(
     private val blobs: AttachmentBlobStore,
     private val catalog: AttachmentCatalog,
     private val limits: AttachmentLimits = AttachmentLimits(),
+    val attachmentPolicy: com.cordiact.core.attachment.AttachmentPolicyProvider? = null,
     private val audit: AttachmentAuditSink = NoopAttachmentAuditSink,
     private val imageNormalizer: AndroidImageNormalizer? = AndroidImageNormalizer(),
 ) {
-    private val coordinator = AttachmentImportCoordinator(blobs, catalog, limits, audit)
+    private val coordinator get() = AttachmentImportCoordinator(blobs, catalog, com.cordiact.core.attachment.AttachmentPolicy.validate(attachmentPolicy?.limits() ?: limits), audit)
     private val renditionWriter = AttachmentRenditionWriter(blobs, catalog, audit)
 
     private fun resolver(): ContentResolver = (context
@@ -65,6 +66,8 @@ class AndroidAttachmentImportService(
         declaredMimeType: String? = null,
         displayName: String? = null,
         nowMillis: Long = System.currentTimeMillis(),
+        checkCancelled: () -> Unit = {},
+        onVerifying: () -> Unit = {},
     ): ImportedAttachmentResult {
         if (uri.scheme != ContentResolver.SCHEME_CONTENT) {
             throw AttachmentException(
@@ -83,14 +86,21 @@ class AndroidAttachmentImportService(
         return importSource(
             workspaceId = workspaceId,
             source = AttachmentSource {
-                resolver().openInputStream(uri) ?: throw AttachmentException(
+                val input = resolver().openInputStream(uri) ?: throw AttachmentException(
                     AttachmentErrorCode.STORAGE_FAILURE,
                     "The picked item could not be opened; it may have moved or the grant was revoked",
                 )
+                object : java.io.FilterInputStream(input) {
+                    override fun read(): Int { checkCancelled(); return super.read() }
+                    override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+                        checkCancelled(); return `in`.read(buffer, offset, length)
+                    }
+                }
             },
             displayName = displayName ?: metadata.displayName,
             declaredMimeType = mimeType,
             nowMillis = nowMillis,
+            onVerifying = onVerifying,
         )
     }
 
@@ -101,6 +111,7 @@ class AndroidAttachmentImportService(
         displayName: String?,
         declaredMimeType: String,
         nowMillis: Long = System.currentTimeMillis(),
+        onVerifying: () -> Unit = {},
     ): ImportedAttachmentResult {
         val imported = coordinator.importDetailed(
             AttachmentImportRequest(
@@ -112,6 +123,7 @@ class AndroidAttachmentImportService(
             source,
         )
         val rendition = try {
+            onVerifying()
             normalizeIfNeeded(workspaceId, imported)
         } catch (failure: Exception) {
             // Without a safe rendition the image could leak metadata if it were sent, so the whole

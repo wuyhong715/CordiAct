@@ -205,6 +205,7 @@ class BundledConversationPlugins private constructor(
     fun runAttachmentGc(
         minAgeMillis: Long = com.cordiact.core.attachment.AttachmentGarbageCollector.DEFAULT_MIN_AGE_MILLIS,
     ): Int {
+        attachmentCatalog.pruneDeletedSessionDrafts()
         var removed = 0
         val workspaces = runCatching { workspaceManager.list(includeArchived = true) }.getOrDefault(emptyList())
         for (workspace in workspaces) {
@@ -244,13 +245,14 @@ class BundledConversationPlugins private constructor(
         set(value) {
             field = value
             value?.let { service ->
-                registerPluginManagerTools(registry, service, registerCredential = { name, header, hValue ->
-                    mcpCredentialWriter?.invoke(name, header, hValue)
+                registerPluginManagerTools(registry, service, confirmMcpInstall = { context, config -> mcpInstallApproval?.invoke(context, config) == true }, registerCredential = { name, header, hValue ->
+                    (mcpCredentialWriter ?: error("MCP_CREDENTIAL_STORE_UNAVAILABLE")).invoke(name, header, hValue)
                 })
             }
         }
 
     /** Persists an MCP auth header without putting it in the plugin config. */
+    var mcpInstallApproval: ((ToolInvocationContext, com.cordiact.core.mcp.McpServerConfig) -> Boolean)? = null
     var mcpCredentialWriter: ((serverName: String, headerName: String, headerValue: String) -> Unit)? = null
     val searchApiKeyStore: AndroidSearchApiKeyStore? get() = configuredSearchApiKeys
     fun hasSearchApiKey(providerId: String): Boolean = if (providerId.startsWith("deepseek")) {
@@ -367,11 +369,11 @@ class BundledConversationPlugins private constructor(
             registerSearch(AnthropicNativeSearchProvider(apiKey = key("anthropic-native"), options = nativeOptions))
             registerSearch(OpenAiNativeSearchProvider(apiKey = key("openai-native"), options = nativeOptions))
             registerSearch(GeminiNativeSearchProvider(apiKey = key("gemini-native"), options = nativeOptions))
-            registerSearch(TavilySearchProvider(tavilyConfig))
-            registerSearch(BraveSearchProvider(braveConfig))
-            registerSearch(ExaSearchProvider(exaConfig))
-            registerSearch(BochaSearchProvider(bochaConfig))
-            registerSearch(SearxngSearchProvider(searxngConfig))
+            registerSearch(com.cordiact.search.providers.DynamicSearchProvider { TavilySearchProvider(tavilyConfig.copy(baseUrl = providerSettings?.baseUrl("tavily") ?: tavilyConfig.baseUrl)) })
+            registerSearch(com.cordiact.search.providers.DynamicSearchProvider { BraveSearchProvider(braveConfig.copy(baseUrl = providerSettings?.baseUrl("brave") ?: braveConfig.baseUrl)) })
+            registerSearch(com.cordiact.search.providers.DynamicSearchProvider { ExaSearchProvider(exaConfig.copy(baseUrl = providerSettings?.baseUrl("exa") ?: exaConfig.baseUrl)) })
+            registerSearch(com.cordiact.search.providers.DynamicSearchProvider { BochaSearchProvider(bochaConfig.copy(baseUrl = providerSettings?.baseUrl("bocha") ?: bochaConfig.baseUrl)) })
+            registerSearch(com.cordiact.search.providers.DynamicSearchProvider { SearxngSearchProvider(searxngConfig.copy(baseUrl = providerSettings?.baseUrl("searxng") ?: searxngConfig.baseUrl)) })
             // Off unless enabled: a device-side fetch is an opt-in network capability, and
             // leaving it off keeps fetch-provider auto-selection unambiguous.
             registerFetch(
@@ -405,8 +407,8 @@ class BundledConversationPlugins private constructor(
         // The plugin manager tool is registered with the other tools but wired in the app host,
         // because only the host owns the lifecycle manager and the plugin factories.
         pluginManagerService?.let { service ->
-            registerPluginManagerTools(registry, service, registerCredential = { name, header, value ->
-                mcpCredentialWriter?.invoke(name, header, value)
+            registerPluginManagerTools(registry, service, confirmMcpInstall = { context, config -> mcpInstallApproval?.invoke(context, config) == true }, registerCredential = { name, header, value ->
+                (mcpCredentialWriter ?: error("MCP_CREDENTIAL_STORE_UNAVAILABLE")).invoke(name, header, value)
             })
         }
 
@@ -422,6 +424,7 @@ class BundledConversationPlugins private constructor(
             providerConfigStore,
             forgetProviderCredential,
             attachmentReader = attachmentCatalog,
+            attachmentPolicy = attachmentImportService.attachmentPolicy,
             attachmentAudit = attachmentAudit,
             saveCredential = saveProviderCredential,
         )
@@ -545,6 +548,7 @@ class BundledConversationPlugins private constructor(
                 catalog = attachmentCatalog,
                 audit = attachmentAudit,
                 imageNormalizer = AndroidImageNormalizer(),
+                attachmentPolicy = context?.let { com.cordiact.app.settings.AttachmentSettingsStore(it) },
             )
             return BundledConversationPlugins(
                 store,

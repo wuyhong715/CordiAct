@@ -13,6 +13,9 @@ interface PluginManagerService {
     /** Plugins the caller may list, with the reason any of them is read-only. */
     fun inventory(): List<PluginInventoryEntry>
 
+    /** Same inventory projected for one workspace, without mutating global lifecycle state. */
+    fun inventory(workspaceId: String): List<PluginInventoryEntry> = inventory()
+
     /** Enable or disable one plugin. Bundled plugins report [PluginChangeResult.Application.OVERRIDDEN]. */
     fun setEnabled(pluginId: String, enabled: Boolean): PluginChangeResult
 
@@ -43,6 +46,11 @@ data class PluginInventoryEntry(
     /** Tool ids this plugin currently publishes, for "is it actually doing anything" questions. */
     val publishedToolIds: List<String> = emptyList(),
     val readOnlyReason: ReadOnlyReason? = null,
+    /** Workspace projection; null on global inventory rows. */
+    val capabilityId: String? = null,
+    val workspaceId: String? = null,
+    val workspaceEnabled: Boolean? = null,
+    val readiness: com.cordiact.core.settings.Readiness? = null,
 ) {
     /** Why a management action is refused. */
     enum class ReadOnlyReason {

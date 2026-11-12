@@ -130,6 +130,12 @@ private fun TurnView(turn: TranscriptTurn, onInspect: (ToolActivity) -> Unit) {
     var menu by remember { mutableStateOf(false) }
     val clipboard = LocalClipboardManager.current
     Column(verticalArrangement = Arrangement.spacedBy(13.dp)) {
+        if (turn.attachments.isNotEmpty()) com.cordiact.app.experience.composer.AttachmentTray(turn.attachments.map { attachment ->
+            com.cordiact.app.experience.composer.AttachmentChip(attachment.descriptor, attachment.descriptor.state,
+                compatibility = if (attachment.interpretation == com.cordiact.core.attachment.Interpretation.LOCAL_ONLY)
+                    com.cordiact.core.composer.AttachmentCompatibility.LocalOnly else com.cordiact.core.composer.AttachmentCompatibility.Sendable(attachment.interpretation),
+                renditionId = attachment.renditionId)
+        })
         if (turn.prompt.isNotEmpty()) {
             Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {
                 Surface(
@@ -230,11 +236,12 @@ fun ToolRow(step: ToolActivity, large: Boolean = false, onClick: () -> Unit) {
 }
 
 @Composable
-fun ErrorStrip(message: String, onDismiss: (() -> Unit)? = null) {
+fun ErrorStrip(message: String, onDismiss: (() -> Unit)? = null, onSettings: (() -> Unit)? = null) {
     Surface(color = MaterialTheme.colorScheme.errorContainer, shape = RoundedCornerShape(12.dp)) {
         Row(Modifier.fillMaxWidth().padding(start = 12.dp, top = 8.dp, bottom = 8.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             AppGlyph(GlyphName.Warning, modifier = Modifier.size(17.dp), tint = MaterialTheme.colorScheme.error)
             Text(message, Modifier.weight(1f).padding(horizontal = 10.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onErrorContainer)
+            if (onSettings != null) TextButton(onClick = onSettings) { Text("设置") }
             if (onDismiss != null) IconButton(onClick = onDismiss) { AppGlyph(GlyphName.Close, "关闭错误提示", modifier = Modifier.size(17.dp)) }
         }
     }

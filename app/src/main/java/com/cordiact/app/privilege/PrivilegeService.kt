@@ -22,16 +22,20 @@ class PrivilegeService(
     shellChannel: PrivilegedChannel,
     rootChannel: PrivilegedChannel? = null,
     private val settings: PrivilegeSettings = PrivilegeSettings(),
+    private val liveSettings: (() -> PrivilegeSettings)? = null,
+    private val workspaceAllowsPrivilege: ((String) -> Boolean)? = null,
 ) {
     data class PrivilegeSettings(
         val advancedCommandsEnabled: Boolean = false,
         val rootEnabled: Boolean = false,
     )
 
-    private val router = PrivilegeRouter(shellChannel, rootChannel) { settings.rootEnabled }
+    private fun currentSettings() = liveSettings?.invoke() ?: settings
+
+    private val router = PrivilegeRouter(shellChannel, rootChannel) { currentSettings().rootEnabled }
 
     fun status(): PrivilegeStatus {
-        if (settings.rootEnabled) {
+        if (currentSettings().rootEnabled) {
             val rootStatus = router.statusFor(PrivilegeLevel.ROOT)
             if (rootStatus.level == PrivilegeLevel.ROOT) return rootStatus
         }
@@ -43,12 +47,22 @@ class PrivilegeService(
         timeoutMs: Long,
         advanced: Boolean,
         requireRoot: Boolean = false,
+        workspaceId: String? = null,
     ): ShellResult {
-        if (advanced && !settings.advancedCommandsEnabled) {
+        val classification = ShellCommandPolicy.classify(command)
+        if (classification != com.cordiact.core.automation.ShellCommandClass.READ_ONLY &&
+            (!advanced || !currentSettings().advancedCommandsEnabled)) {
+            return refused("mutating commands require the explicit advanced tool and enabled setting")
+        }
+        if ((advanced || requireRoot) && workspaceAllowsPrivilege != null &&
+            (workspaceId == null || !workspaceAllowsPrivilege.invoke(workspaceId))) {
+            return refused("advanced/root execution requires FULL_ACCESS for the calling workspace")
+        }
+        if (advanced && !currentSettings().advancedCommandsEnabled) {
             return refused("advanced commands are disabled in settings")
         }
         val level = if (requireRoot) PrivilegeLevel.ROOT else PrivilegeLevel.SHELL
-        if (level == PrivilegeLevel.ROOT && !settings.rootEnabled) {
+        if (level == PrivilegeLevel.ROOT && !currentSettings().rootEnabled) {
             return refused("root is disabled in settings")
         }
         val status = router.statusFor(level)
@@ -63,13 +77,13 @@ class PrivilegeService(
         if (level == PrivilegeLevel.SHELL && status.level == PrivilegeLevel.ROOT) {
             return refused("shell channel is root; explicit priv_root is required")
         }
-        if (!ShellCommandPolicy.isAllowed(command, status.level, settings.advancedCommandsEnabled)) {
+        if (!ShellCommandPolicy.isAllowed(command, status.level, advanced && currentSettings().advancedCommandsEnabled)) {
             return refused("command refused by policy")
         }
         return router.execAs(level, command, timeoutMs.coerceIn(1_000L, ShellLimits.MAX_TIMEOUT_MS))
     }
 
-    fun hasRoot(): Boolean = settings.rootEnabled &&
+    fun hasRoot(): Boolean = currentSettings().rootEnabled &&
         router.statusFor(PrivilegeLevel.ROOT).level == PrivilegeLevel.ROOT
 
     private fun refused(message: String): ShellResult = ShellResult(-1, "", message)

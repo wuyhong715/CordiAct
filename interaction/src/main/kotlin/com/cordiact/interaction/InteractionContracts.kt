@@ -234,6 +234,13 @@ data class InteractionEnvelope(
     val mentions: List<MentionReference>,
     val pronounBindings: Map<String, String>,
     val requiredCapabilities: Set<String>,
+    /**
+     * Attachments the user chose for this turn, already resolved to an interpretation the target
+     * model accepts. LOCAL_ONLY explicitly persists an item without transmitting its bytes.
+     */
+    val attachments: List<com.cordiact.core.attachment.MessagePart.Attachment> = emptyList(),
+    /** Host-only notification, never serialized or passed to a model. */
+    val onUserMessagePersisted: (() -> Unit)? = null,
 )
 
 /** Host-owned adapter to the existing ConversationTurnService; model choice stays provider-neutral. */
@@ -312,6 +319,12 @@ class InteractionService(
     fun prepare(text: String, context: InteractionContext): PreparedInteraction {
         check(enabled) { "Interaction plugin is disabled" }
         return parser.parse(text, context)
+    }
+
+    /** Empty text is valid only with explicit attachments; all other parser diagnostics remain. */
+    fun prepare(text: String, context: InteractionContext, attachments: List<com.cordiact.core.attachment.MessagePart.Attachment>): PreparedInteraction {
+        check(enabled) { "Interaction plugin is disabled" }
+        return parser.parse(text, context, allowEmptyWithAttachments = attachments.isNotEmpty())
     }
 
     fun dispatch(
@@ -406,12 +419,16 @@ class InteractionService(
         prepared: PreparedInteraction,
         modelId: ModelId,
         parameters: GenerationParameters? = null,
+        attachments: List<com.cordiact.core.attachment.MessagePart.Attachment> = emptyList(),
+        onUserMessagePersisted: (() -> Unit)? = null,
         onEvent: (ModelEvent) -> Unit,
     ): ModelCall {
         check(enabled) { "Interaction plugin is disabled" }
         val envelope = requireNotNull(prepared.envelope) { "Interaction has syntax errors" }
+            .copy(attachments = attachments, onUserMessagePersisted = onUserMessagePersisted)
         require(prepared.diagnostics.isEmpty()) { "Interaction has syntax errors" }
         require(envelope.command == null) { "Behavior commands must be dispatched, not sent as ordinary prompts" }
+        require(envelope.submittedText.isNotBlank() || attachments.isNotEmpty()) { "Message must not be blank" }
         val targets = envelope.mentions.flatMap { it.entities }
         val decision = authorization.authorize(envelope.context, null, targets)
         check(decision.allowed && !decision.requiresConfirmation) {

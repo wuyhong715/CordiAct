@@ -55,6 +55,7 @@ data class ReviewerConfig(
     val maxCallsPerRun: Int = 50,
     val costBudgetMicros: Long? = null,
     val fallbackPolicy: ReviewerFallbackPolicy = ReviewerFallbackPolicy.STOP,
+    val credentialRevision: Long = 0,
 ) {
     init {
         require(reviewerId.isNotBlank()) { "reviewerId must not be blank" }
@@ -202,6 +203,7 @@ data class SecurityContext(
     val modelId: String? = null,
     val source: InvocationSource = InvocationSource.MAIN_AGENT,
     val allowedGlobalCredentialIds: Set<String> = emptySet(),
+    val securitySettingsRevision: Long = 0,
 ) {
     init {
         require(workspaceId.isNotBlank()) { "workspaceId must not be blank" }

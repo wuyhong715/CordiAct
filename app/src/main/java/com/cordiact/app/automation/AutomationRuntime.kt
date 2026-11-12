@@ -50,7 +50,16 @@ class AutomationRuntime(context: Context) {
     // Termux bootstrap uses the ordinary shell channel only; root has its own
     // explicitly gated path inside PrivilegeService.
     val privilegeRouter = PrivilegeRouter(shizukuChannel)
-    val privilegeService = PrivilegeService(shizukuChannel, rootChannel)
+    val privilegeSettings = com.cordiact.app.privilege.PrivilegeSettingsStore(appContext)
+    val privilegeService = PrivilegeService(shizukuChannel, rootChannel,
+        liveSettings = {
+            val value = privilegeSettings.read()
+            PrivilegeService.PrivilegeSettings(rootEnabled = value.root, advancedCommandsEnabled = value.advanced)
+        },
+        workspaceAllowsPrivilege = { workspaceId ->
+            com.cordiact.app.security.SecurityProfileStore(appContext).profileFor(workspaceId).preset ==
+                com.cordiact.core.security.PermissionPreset.FULL_ACCESS
+        })
     val privilegePlugin = PrivilegePlugin(privilegeService)
     val displayPlugin = DisplayPlugin()
 

@@ -440,6 +440,14 @@ class AndroidAttachmentCatalog(
         ).use { it.moveToFirst() }
     }
 
+    /** References left by deleted sessions must not pin blobs forever. Live drafts never expire. */
+    fun pruneDeletedSessionDrafts(): Int = database().delete(
+        AttachmentDatabaseSchema.TABLE_DRAFT_ATTACHMENTS,
+        "${AttachmentDatabaseSchema.COL_SESSION_ID} IS NOT NULL AND " +
+            "${AttachmentDatabaseSchema.COL_SESSION_ID} NOT IN (SELECT session_id FROM conversation_sessions)",
+        null,
+    )
+
     fun clearDraft(draftId: String): Int = database().delete(
         AttachmentDatabaseSchema.TABLE_DRAFT_ATTACHMENTS,
         "${AttachmentDatabaseSchema.COL_DRAFT_ID} = ?",

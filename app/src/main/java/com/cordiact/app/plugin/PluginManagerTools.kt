@@ -103,13 +103,14 @@ fun pluginManagerToolDescriptor(): ToolDescriptor = ToolDescriptor(
 fun registerPluginManagerTools(
     registry: ToolDefinitionRegistry,
     service: PluginManagerService,
-    registerCredential: (serverName: String, headerName: String, headerValue: String) -> Unit = { _, _, _ -> },
+    registerCredential: (serverName: String, headerName: String, headerValue: String) -> Unit = { _, _, _ -> error("MCP_CREDENTIAL_STORE_UNAVAILABLE") },
+    confirmMcpInstall: (ToolInvocationContext, McpServerConfig) -> Boolean = { _, _ -> false },
 ) {
     registry.register(
         ToolDefinition(
             descriptor = pluginManagerToolDescriptor(),
             executor = ToolExecutor { context, arguments ->
-                execute(service, registerCredential, context, arguments)
+                execute(service, registerCredential, confirmMcpInstall, context, arguments)
             },
         ),
     )
@@ -118,6 +119,7 @@ fun registerPluginManagerTools(
 private fun execute(
     service: PluginManagerService,
     registerCredential: (String, String, String) -> Unit,
+    confirmMcpInstall: (ToolInvocationContext, McpServerConfig) -> Boolean,
     context: ToolInvocationContext,
     arguments: ToolArguments,
 ): ToolResult {
@@ -125,13 +127,13 @@ private fun execute(
     return try {
         when (action) {
             "list" -> ToolResult(
-                mapOf("plugins" to ToolValue.StringValue(PluginManagerPresenter.presentInventory(service.inventory()))),
+                mapOf("plugins" to ToolValue.StringValue(PluginManagerPresenter.presentInventory(service.inventory(context.workspaceId)))),
             )
             "enable", "disable" -> {
                 val pluginId = arguments.text("plugin_id") ?: return failure("plugin_id is required for $action")
                 ok(service.setEnabled(pluginId, enabled = action == "enable"))
             }
-            "add_mcp" -> addMcp(service, registerCredential, arguments)
+            "add_mcp" -> addMcp(service, registerCredential, confirmMcpInstall, context, arguments)
             "remove" -> {
                 val pluginId = arguments.text("plugin_id") ?: return failure("plugin_id is required for remove")
                 ok(service.remove(pluginId))
@@ -142,13 +144,15 @@ private fun execute(
         // A structured refusal is information the model can act on, not a turn-ending error.
         ToolResult(mapOf("error" to ToolValue.StringValue("${failure.code.name.lowercase()}: ${failure.message}")))
     } catch (failure: Exception) {
-        ToolResult(mapOf("error" to ToolValue.StringValue(failure.message ?: "plugin management failed")))
+        ToolResult(mapOf("error" to ToolValue.StringValue("plugin management failed; inspect settings")))
     }
 }
 
 private fun addMcp(
     service: PluginManagerService,
     registerCredential: (String, String, String) -> Unit,
+    confirmMcpInstall: (ToolInvocationContext, McpServerConfig) -> Boolean,
+    context: ToolInvocationContext,
     arguments: ToolArguments,
 ): ToolResult {
     val serverName = arguments.text("server_name") ?: return failure("server_name is required for add_mcp")
@@ -158,15 +162,13 @@ private fun addMcp(
     } catch (failure: McpConfigException) {
         return failure(failure.message ?: "invalid MCP configuration")
     }
+    if (!confirmMcpInstall(context, config)) return failure("MCP installation requires explicit confirmation; nothing was saved")
     val headerName = arguments.text("header_name")
     val headerValue = arguments.text("header_value")
-    if ((headerName == null) != (headerValue == null)) {
-        return failure("header_name and header_value must be given together")
-    }
+    require((headerName == null) == (headerValue == null)) { "Header name and value must be provided together" }
+    require(service.inventory().none { it.spec.id == "$MCP_PLUGIN_ID.$serverName" }) { "MCP_ALREADY_EXISTS" }
+    if (headerName != null && headerValue != null) registerCredential(serverName, headerName, headerValue)
     val result = service.install(mcpPluginSpec(config))
-    if (headerName != null && headerValue != null && result.application == PluginChangeResult.Application.APPLIED) {
-        registerCredential(serverName, headerName, headerValue)
-    }
     return ok(result)
 }
 

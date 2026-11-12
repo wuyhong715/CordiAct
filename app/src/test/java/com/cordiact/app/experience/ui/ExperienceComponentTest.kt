@@ -41,6 +41,17 @@ class ExperienceComponentTest {
         ExperienceTheme { Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) { Box(Modifier.fillMaxSize()) { block() } } }
     }
 
+    @Composable
+    private fun composer(state: ExperienceState, send: (String) -> Boolean, stop: () -> Unit) {
+        val app = org.robolectric.RuntimeEnvironment.getApplication()
+        val scope = rememberCoroutineScope()
+        val controller = remember { com.cordiact.app.experience.composer.ComposerController(app, scope,
+            { error("No catalogue needed in text input test") }, { error("No importer needed in text input test") }) }
+        val draft by controller.state.collectAsState()
+        com.cordiact.app.experience.composer.ComposerBar(state, draft.copy(model = model), controller,
+            "", {}, { text -> val accepted = send(text); if (accepted) controller.text(""); accepted }, stop, {}, {})
+    }
+
     @Test fun emptyState_hasActionsWithoutDemoTranscript() {
         var selected = ""
         content { TranscriptView(ready(), { selected = it }, {}) }
@@ -52,7 +63,7 @@ class ExperienceComponentTest {
     @Test fun input_clearsOnlyWhenSubmissionAccepted() {
         var accepted = false
         var submitted = ""
-        content { Composer(ready(), "", {}, { submitted = it; accepted }, {}, {}) }
+        content { composer(ready(), { submitted = it; accepted }, {}) }
         compose.onNodeWithTag("composer-input").performTextInput("检查项目")
         compose.onNodeWithTag("send-message").performClick()
         assertEquals("检查项目", submitted)
@@ -64,7 +75,7 @@ class ExperienceComponentTest {
     @Test fun runningComposer_stopNeverSubmitsInput() {
         var stopped = 0
         var sends = 0
-        content { Composer(ready(listOf(TranscriptTurn("t", "p", phase = RunPhase.RUNNING))), "", {}, { sends++; true }, { stopped++ }, {}) }
+        content { composer(ready(listOf(TranscriptTurn("t", "p", phase = RunPhase.RUNNING))), { sends++; true }, { stopped++ }) }
         compose.onNodeWithTag("stop-generation").performClick()
         assertEquals(1, stopped)
         assertEquals(0, sends)
@@ -101,7 +112,13 @@ class ExperienceComponentTest {
     @After fun clearPreviewQueue() { PreviewInbox.clear("revision2-artifacts"); PreviewInbox.clear("other-artifacts") }
 
     @Test fun tokens_areTypedInlineAndNeverOccupyShortcutButtons() {
-        content { Composer(ready(), "", {}, { true }, {}, {}) }
+        content {
+            val app = org.robolectric.RuntimeEnvironment.getApplication()
+            val scope = rememberCoroutineScope()
+            val controller = remember { com.cordiact.app.experience.composer.ComposerController(app, scope, { error("No catalogue needed for input test") }, { error("No import needed for input test") }) }
+            val state by controller.state.collectAsState()
+            com.cordiact.app.experience.composer.ComposerBar(ready(), state.copy(model = model), controller, "", {}, { true }, {}, {}, {})
+        }
         listOf("/", "@", "#").forEach { compose.onNodeWithText(it).assertDoesNotExist() }
         compose.onNodeWithTag("composer-input").performTextInput("/inspect @config #api-key")
         compose.onNodeWithTag("composer-input").assertTextContains("/inspect @config #api-key")

@@ -54,6 +54,9 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
     private var selectionVersion = 0L
     private var loadingSession = false
 
+    val composerController = com.cordiact.app.experience.composer.ComposerController(app, viewModelScope)
+    val composer = composerController.state
+
     private class OwnedCall(val turnId: String) {
         private val cancelled = AtomicBoolean(false)
         private val handle = AtomicReference<ModelCall?>(null)
@@ -161,7 +164,12 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
                             })
                     }
                     Loaded(workspace, workspaces, app.sessions.listSessions(workspace.id).filter { it.kind == SessionKind.USER }, selected,
-                        app.modelAdapter.models(), app.sessions.messages(selected.id).map { StoredMessage(it.id, it.role.name, it.content, it.createdAtMillis) }, sidebar)
+                        app.modelAdapter.models(), app.sessions.messages(selected.id).map { StoredMessage(it.id, it.role.name, it.content, it.createdAtMillis,
+                            it.parts.filterIsInstance<com.cordiact.core.attachment.MessagePart.Attachment>().mapNotNull { part ->
+                                app.attachments.find(workspace.id, part.id)?.let { descriptor ->
+                                    TranscriptAttachment(descriptor, part.interpretation, part.renditionId)
+                                }
+                            }) }, sidebar)
                 }
                 if (version != selectionVersion) return@launch
                 selectionMutex.withLock {
@@ -177,11 +185,18 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
                     }
                 }
                 cache.getOrPut(snapshot.selected.id) { restoreTranscript(snapshot.messages) }
-                val preferred = mutable.value.model ?: readModel()
+                val preferred = composer.value.model ?: mutable.value.model ?: app.getSharedPreferences("cordiact.settings.models", android.content.Context.MODE_PRIVATE).let { prefs ->
+                    snapshot.models.firstOrNull { it.id.providerId == prefs.getString("provider", null) && it.id.modelId == prefs.getString("model", null) }?.id
+                }
                 val model = snapshot.models.find { it.id == preferred }?.id
                     ?: snapshot.models.firstOrNull()?.id
+                composerController.open(snapshot.selected.id, snapshot.workspace.id, snapshot.models, model)
+                model?.let { selected -> withContext(Dispatchers.IO) {
+                    com.cordiact.app.model.ConversationModelSelectionStore(app).setForSession(snapshot.selected.id, selected)
+                } }
+                if (version != selectionVersion) return@launch
                 mutable.update { it.copy(loading = false, workspace = snapshot.workspace, workspaces = snapshot.workspaces,
-                    sessions = snapshot.sessions, sidebar = snapshot.sidebar, sessionId = snapshot.selected.id, models = snapshot.models, providerNames = app.modelProviders.providers().associate { it.providerId to it.displayName }, model = model,
+                    sessions = snapshot.sessions, sidebar = snapshot.sidebar, sessionId = snapshot.selected.id, models = snapshot.models, providerNames = app.modelProviders.providers().associate { it.providerId to it.displayName }, model = composer.value.model,
                     turns = cache[snapshot.selected.id].orEmpty(), error = null) }
                 onSelected()
             } catch (cancel: CancellationException) { throw cancel }
@@ -193,34 +208,25 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
     private data class Loaded(val workspace: Workspace, val workspaces: List<Workspace>, val sessions: List<ConversationSession>,
         val selected: ConversationSession, val models: List<ModelDescriptor>, val messages: List<StoredMessage>, val sidebar: List<SidebarWorkspace>)
 
-    private fun readModel(): ModelId? {
-        val prefs = app.getSharedPreferences("experience", 0)
-        val provider = prefs.getString("provider", null) ?: return null
-        return prefs.getString("model", null)?.let { ModelId(provider, it) }
-    }
-    fun selectModel(model: ModelId) {
-        if (mutable.value.models.none { it.id == model }) return
-        mutable.update { it.copy(model = model) }
-        app.getSharedPreferences("experience", 0).edit().putString("provider", model.providerId).putString("model", model.modelId).apply()
-    }
-    /** Explicit user connection: credentials never enter UI state, config or drafts. */
-    fun addProvider(name: String, baseUrl: String, protocol: ModelProtocol, apiKey: String, done: (String?) -> Unit) {
+    fun refreshSettingsModels() {
         viewModelScope.launch {
-            try {
-                val models = withContext(Dispatchers.IO) {
-                    val id = "provider-${UUID.randomUUID()}"
-                    val displayName = name.trim().ifBlank { runCatching { java.net.URI(baseUrl.trim().replace("{model}", "model")).host }.getOrNull() ?: "API Provider" }
-                    val connection = com.cordiact.model.providers.ModelProviderConnection(id, displayName, protocol, baseUrl)
-                    app.modelProviders.discoverAndAddProvider(connection, apiKey.trim())
-                    app.modelAdapter.models()
-                }
-                mutable.update { current -> current.copy(models = models,
-                    providerNames = app.modelProviders.providers().associate { config -> config.providerId to config.displayName },
-                    model = current.model?.takeIf { selected -> models.any { it.id == selected } } ?: models.firstOrNull()?.id) }
-                done(null)
-            } catch (cancel: CancellationException) { throw cancel }
-            catch (failure: Exception) { done(failure.message ?: "拉取模型失败") }
+            val models = withContext(Dispatchers.IO) { app.modelAdapter.models() }
+            val prefs = app.getSharedPreferences("cordiact.settings.models", android.content.Context.MODE_PRIVATE)
+            val preferred = models.firstOrNull { it.id.providerId == prefs.getString("provider", null) && it.id.modelId == prefs.getString("model", null) }?.id
+            mutable.update { current -> current.copy(models = models,
+                providerNames = app.modelProviders.providers().associate { it.providerId to it.displayName },
+                model = preferred ?: current.model?.takeIf { model -> models.any { it.id == model } } ?: models.firstOrNull()?.id) }
+            mutable.value.model?.let(::selectModel)
         }
+    }
+
+    fun selectModel(model: ModelId) {
+        val descriptor = mutable.value.models.find { it.id == model } ?: return
+        mutable.update { it.copy(model = model) }
+        composerController.select(descriptor)
+        mutable.value.sessionId?.let { sessionId -> viewModelScope.launch(Dispatchers.IO) {
+            com.cordiact.app.model.ConversationModelSelectionStore(app).setForSession(sessionId, model)
+        } }
     }
 
     fun refreshProvider(providerId: String) {
@@ -244,12 +250,18 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
         val state = mutable.value
         val session = state.sessionId ?: return false
         val workspace = state.workspace ?: return false
-        val model = state.model ?: run { mutable.update { it.copy(error = "请先配置并选择模型") }; return false }
-        if (state.loading || state.running || state.stopping || text.isBlank() || calls.containsKey(session)) return false
+        val draft = composer.value.copy(text = text)
+        if (loadingSession) return false
+        val model = draft.model ?: state.model ?: run { mutable.update { it.copy(error = "请先配置并选择模型") }; return false }
+        if (state.loading || state.running || state.stopping || (text.isBlank() && draft.sendableParts().isEmpty()) || calls.containsKey(session)) return false
+        if (draft.sendAvailability != com.cordiact.core.composer.ComposerRules.SendAvailability.READY) return false
         val turnId = UUID.randomUUID().toString()
         val owner = OwnedCall(turnId)
         calls[session] = owner
-        val turn = TranscriptTurn(turnId, text.trim(), phase = RunPhase.RUNNING, startedAt = System.currentTimeMillis())
+        val turn = TranscriptTurn(turnId, text.trim(), phase = RunPhase.RUNNING, startedAt = System.currentTimeMillis(),
+            attachments = draft.attachments.filter { it.ready }.map { chip ->
+                TranscriptAttachment(chip.descriptor, chip.part()?.interpretation ?: com.cordiact.core.attachment.Interpretation.LOCAL_ONLY, chip.renditionId)
+            })
         cache[session] = cache[session].orEmpty() + turn
         mutable.update { it.copy(turns = cache[session].orEmpty(), error = null, runningSessionIds = it.runningSessionIds + session) }
         val requestJob = viewModelScope.launch(start = CoroutineStart.LAZY) {
@@ -257,7 +269,7 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
                 val requestContext = currentCoroutineContext()
                 runInterruptible(Dispatchers.IO) {
                 requestContext.ensureActive()
-                val prepared = app.interactionService.prepare(text.trim(), InteractionContext(session, workspace.id))
+                val prepared = app.interactionService.prepare(text.trim(), InteractionContext(session, workspace.id), draft.sendableParts())
                 require(prepared.diagnostics.isEmpty()) { prepared.diagnostics.joinToString("\n") { it.toString() } }
                 val callback: (ModelEvent) -> Unit = { event ->
                     val now = System.currentTimeMillis()
@@ -273,9 +285,19 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
                     if (rendered != null) events.trySend(OwnedEvent(session, turnId, rendered))
                 }
                 requestContext.ensureActive()
-                if (prepared.envelope?.command == null) owner.attach(app.interactionService.submitOrdinary(prepared, model, onEvent = callback))
+                if (prepared.envelope?.command == null) {
+                    val call = app.interactionService.submitOrdinary(prepared, model,
+                            parameters = com.cordiact.core.composer.ComposerRules.parameters(draft.tuning),
+                            attachments = draft.sendableParts(),
+                            onUserMessagePersisted = { viewModelScope.launch { composerController.submitted(session, draft) } },
+                            onEvent = callback)
+                    owner.attach(call)
+                }
                 else {
-                    val result = app.interactionService.dispatch(prepared, model, onEvent = callback)
+                    require(draft.attachments.isEmpty()) { "行为指令不能携带附件，请分开发送" }
+                    val result = app.interactionService.dispatch(prepared, model,
+                        parameters = com.cordiact.core.composer.ComposerRules.parameters(draft.tuning), onEvent = callback)
+                    viewModelScope.launch { composerController.clearSubmittedText(session, draft.text) }
                     result.modelCall?.let(owner::attach) ?: run {
                         result.message?.let { events.trySend(OwnedEvent(session, turnId, TranscriptEvent.Answer(it))) }
                         events.trySend(OwnedEvent(session, turnId, TranscriptEvent.Finished(if (result.completed) RunPhase.COMPLETE else RunPhase.FAILED, System.currentTimeMillis(), if (result.completed) null else result.message)))

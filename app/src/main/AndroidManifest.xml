@@ -8,9 +8,17 @@
 
     <queries>
         <package android:name="com.termux" />
+        <intent><action android:name="android.media.action.IMAGE_CAPTURE" /></intent>
     </queries>
 
     <application android:name=".CordiActApplication" android:theme="@style/Theme.CordiAct" android:label="CordiAct" android:allowBackup="false">
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.attachments"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/attachment_paths" />
+        </provider>
         <provider
             android:name="rikka.shizuku.ShizukuProvider"
             android:authorities="${applicationId}.shizuku"

@@ -2,6 +2,7 @@ package com.cordiact.app.context
 
 import android.content.Context
 import com.cordiact.core.conversation.ModelId
+import com.cordiact.app.experience.settings.*
 
 /**
  * Persists the model the user picked for compaction summaries.
@@ -25,19 +26,33 @@ class SummaryModelSelectionStore(context: Context) {
         return ModelId(providerId = providerId, modelId = modelId)
     }
 
-    fun select(model: ModelId) {
-        prefs.edit()
+    fun selection(): ModelRoleSelection = when (prefs.getString("selection.mode", null)) {
+        "follow" -> ModelRoleSelection.FollowConversation
+        "disabled" -> ModelRoleSelection.Disabled
+        else -> selectedModel()?.let { ModelRoleSelection.Explicit(it) } ?: ModelRoleSelection.Disabled
+    }
+    fun selectFollowingConversation() = synchronized(WRITE_LOCK) {
+        check(prefs.edit().putString("selection.mode", "follow").remove(KEY_PROVIDER).remove(KEY_MODEL).putLong("revision", nextRevision()).commit())
+    }
+    fun resolve(available: Set<ModelId>, conversation: ModelId?): ModelRoleResolution = selection().resolve(available, conversation)
+
+    fun select(model: ModelId) = synchronized(WRITE_LOCK) {
+        check(prefs.edit().putString("selection.mode", "explicit")
             .putString(KEY_PROVIDER, model.providerId)
             .putString(KEY_MODEL, model.modelId)
-            .apply()
+            .putLong("revision", nextRevision()).commit())
     }
 
     /** Reverts to rule-based summaries; compaction itself keeps running. */
-    fun clear() {
-        prefs.edit().remove(KEY_PROVIDER).remove(KEY_MODEL).apply()
+    fun clear() = synchronized(WRITE_LOCK) {
+        check(prefs.edit().putString("selection.mode", "disabled").remove(KEY_PROVIDER).remove(KEY_MODEL).putLong("revision", nextRevision()).commit())
     }
 
+    fun revision(): Long = prefs.getLong("revision", 0)
+    private fun nextRevision(): Long = revision().also { check(it < Long.MAX_VALUE) { "ROLE_REVISION_EXHAUSTED" } } + 1
+
     private companion object {
+        val WRITE_LOCK = Any()
         const val PREFS_NAME = "cordiact.context.summary"
         const val KEY_PROVIDER = "summary.provider"
         const val KEY_MODEL = "summary.model"

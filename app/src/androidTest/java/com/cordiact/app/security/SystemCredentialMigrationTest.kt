@@ -44,7 +44,7 @@ class SystemCredentialMigrationTest {
             val database = AndroidSecurityDatabase(isolated, AuditSignerForTest())
             try {
                 val db = database
-                assertEquals(2, db.writableDatabase.version)
+                assertEquals(3, db.writableDatabase.version)
                 db.readableDatabase.rawQuery("SELECT marker FROM credentials", null).use { cursor -> assertTrue(cursor.moveToFirst()); assertEquals("keep-credential", cursor.getString(0)) }
                 db.readableDatabase.rawQuery("SELECT marker FROM audit_events", null).use { cursor -> assertTrue(cursor.moveToFirst()); assertEquals("keep-audit", cursor.getString(0)) }
                 db.writeSystemCredential(SystemCredentialRecord("model:test", EncryptedValue(ByteArray(12), byteArrayOf(1, 2, 3)), 1))
@@ -80,6 +80,47 @@ class SystemCredentialMigrationTest {
             model.clear(id); search.remove(id)
             KeyStore.getInstance("AndroidKeyStore").apply { load(null); deleteEntry(modelAlias) }
         }
+    }
+
+    @Test fun metadataRevisionsAreMonotonicAndPreserveLegacyUnknownDates() {
+        val isolated = isolatedContext()
+        val db = AndroidSecurityDatabase(isolated, AuditSignerForTest())
+        try {
+            val record = SystemCredentialRecord("model:metadata-test", EncryptedValue(ByteArray(12), byteArrayOf(1)), 1)
+            assertEquals(0L, db.systemCredentialRevision(record.id))
+            db.writeSystemCredential(record)
+            assertEquals(1L, db.systemCredentialRevision(record.id))
+            assertNotNull(db.systemCredentialMetadata().single().updatedAtMillis)
+            assertNull(db.systemCredentialMetadata().single().lastUsedAtMillis)
+            db.markSystemCredentialUsed(record.id)
+            assertNotNull(db.systemCredentialMetadata().single().lastUsedAtMillis)
+            assertEquals(1L, db.systemCredentialRevision(record.id))
+            db.deleteSystemCredential(record.id)
+            assertTrue(db.systemCredentialMetadata().isEmpty())
+            assertEquals(2L, db.systemCredentialRevision(record.id))
+            db.writeSystemCredential(record)
+            assertEquals(3L, db.systemCredentialRevision(record.id))
+            assertNull(db.systemCredentialMetadata().single().lastUsedAtMillis)
+        } finally { db.close(); isolated.noBackupFilesDir.deleteRecursively() }
+    }
+
+    @Test fun upgradesV2KeepingCiphertextAndUnknownTimestamps() {
+        val isolated = isolatedContext()
+        val path = File(isolated.noBackupFilesDir, "security/vault.db").apply { parentFile!!.mkdirs() }
+        SQLiteDatabase.openOrCreateDatabase(path, null).use { legacy ->
+            legacy.execSQL("CREATE TABLE system_credentials (id TEXT PRIMARY KEY NOT NULL, nonce BLOB NOT NULL, ciphertext BLOB NOT NULL, key_version INTEGER NOT NULL)")
+            legacy.execSQL("INSERT INTO system_credentials VALUES ('model:old', X'0102', X'0304', 1)")
+            legacy.version = 2
+        }
+        val db = AndroidSecurityDatabase(isolated, AuditSignerForTest())
+        try {
+            assertEquals(3, db.writableDatabase.version)
+            assertArrayEquals(byteArrayOf(3, 4), db.readSystemCredential("model:old")!!.encrypted.ciphertext)
+            val meta = db.systemCredentialMetadata().single()
+            assertEquals(0L, meta.revision)
+            assertNull(meta.updatedAtMillis)
+            assertNull(meta.lastUsedAtMillis)
+        } finally { db.close(); isolated.noBackupFilesDir.deleteRecursively() }
     }
 
     @Test fun systemNamespaceIsNotVisibleToAgentGlobalOrWorkspaceCredentialListing() {

@@ -16,7 +16,7 @@ class AndroidSearchPolicyStore(
 ) : SearchPolicyStore {
     override fun policy(workspaceId: String): WorkspaceSearchPolicy {
         val raw = store.pluginSetting(workspaceId, SEARCH_PLUGIN_ID, KEY) ?: return DEFAULT
-        return runCatching { parse(raw) }.getOrDefault(DEFAULT)
+        return parse(raw) // corrupt policy must not silently re-enable networking
     }
 
     fun save(workspaceId: String, policy: WorkspaceSearchPolicy) {
@@ -25,10 +25,12 @@ class AndroidSearchPolicyStore(
 
     private fun parse(raw: String): WorkspaceSearchPolicy {
         val json = JSONObject(raw)
-        val mode = runCatching { SearchMode.valueOf(json.optString("mode", SearchMode.AUTO.name)) }
-            .getOrDefault(SearchMode.AUTO)
+        val mode = SearchMode.valueOf(json.getString("mode"))
         return WorkspaceSearchPolicy(
             mode = mode,
+            providerOrder = json.optJSONArray("provider_order")?.let { rows -> (0 until rows.length()).map { rows.getString(it) } }.orEmpty(),
+            enabledProviders = json.optJSONArray("enabled_providers")?.let { rows -> (0 until rows.length()).map { rows.getString(it) }.toSet() },
+            monthlyBudgetCalls = if (json.has("monthly_budget")) json.getInt("monthly_budget") else null,
             searchProviderId = json.optString("search_provider").takeIf { it.isNotBlank() },
             fetchProviderId = json.optString("fetch_provider").takeIf { it.isNotBlank() },
         )
@@ -36,6 +38,9 @@ class AndroidSearchPolicyStore(
 
     private fun encode(policy: WorkspaceSearchPolicy): JSONObject = JSONObject().apply {
         put("mode", policy.mode.name)
+        put("provider_order", org.json.JSONArray(policy.providerOrder))
+        policy.enabledProviders?.let { put("enabled_providers", org.json.JSONArray(it.toList())) }
+        policy.monthlyBudgetCalls?.let { put("monthly_budget", it) }
         policy.searchProviderId?.let { put("search_provider", it) }
         policy.fetchProviderId?.let { put("fetch_provider", it) }
     }

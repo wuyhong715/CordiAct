@@ -193,8 +193,7 @@ class CordiActApplication : Application() {
         if (grants.isEmpty()) turnGrants.remove(sessionId) else turnGrants[sessionId] = grants
     }
 
-    @Volatile
-    var activeSessionId: String? = null
+    @Volatile var activeSessionId: String? = null
         private set
 
     val sandboxManager: SandboxManagerService get() = sandboxManagerPlugin
@@ -202,6 +201,11 @@ class CordiActApplication : Application() {
         get() = conversationCatalog.interactionService
     val fillValues: MutableFillValueStore
         get() = conversationCatalog.fillValueStore
+    /** Attachment catalogue (drafts included) and the import pipeline, for the composer. */
+    val attachments: com.cordiact.app.attachment.AndroidAttachmentCatalog get() = conversationCatalog.attachmentCatalog
+    val attachmentImporter: com.cordiact.app.attachment.AndroidAttachmentImportService
+        get() = conversationCatalog.attachmentImportService
+
     val modelAdapter: ModelAdapterService get() = modelAdapterPlugin
     val modelProviders: ModelProviderRegistryService get() = conversationCatalog.modelProviderRegistryPlugin
     val sessions: SessionManagerService get() = sessionManagerPlugin
@@ -407,9 +411,11 @@ class CordiActApplication : Application() {
      * a summary is the one part of compaction that costs the user wall-clock time.
      */
     fun prepareCompactionCandidate(sessionId: String) {
-        val model = runCatching {
-            com.cordiact.app.memory.ExtractionModelSelectionStore(this).selectedModel()
-        }.getOrNull() ?: return
+        val model = when (val result = summaryModelStore.resolve(modelAdapterPlugin.models().map { it.id }.toSet(), com.cordiact.app.model.ConversationModelSelectionStore(this).forSession(sessionId))) {
+            is com.cordiact.app.experience.settings.ModelRoleResolution.Resolved -> result.model
+            com.cordiact.app.experience.settings.ModelRoleResolution.Disabled -> return
+            is com.cordiact.app.experience.settings.ModelRoleResolution.Invalid -> error("Summary model reference invalid: ${result.reason}")
+        }
         runCatching { turnService.prepareCompactionCandidate(sessionId, model) }
             .onFailure { Log.e(TAG, "Preparing a compaction candidate for $sessionId failed", it) }
     }
@@ -485,6 +491,10 @@ class CordiActApplication : Application() {
         }
         automationRuntime = AutomationRuntime(this)
         automationRuntime.registerTools(conversationCatalog.toolRegistry, conversationCatalog.jobRegistry)
+        val capabilitySettings = com.cordiact.app.settings.CapabilitySettingsStore(this)
+        val automationReadiness = com.cordiact.app.settings.AutomationReadiness(this, automationRuntime)
+
+
         // Jobs left RUNNING by the previous process must be classified before anything reads them:
         // a local job is provably dead, a detached remote one is merely unknown.
         runCatching { conversationCatalog.jobRegistry.reconcileOnStartup() }
@@ -495,6 +505,7 @@ class CordiActApplication : Application() {
         conversationStore = conversationCatalog.conversationStore
         workspaceManager = conversationCatalog.workspacePlugin
         val needsRepair = pluginLifecycle.recoverBeforeDispatch()
+
         if (needsRepair.isNotEmpty()) {
             Log.e(TAG, "Plugin lifecycle recovery remains incomplete; blocked plugin ids: $needsRepair")
         }
@@ -506,6 +517,11 @@ class CordiActApplication : Application() {
             extraPlugins = listOf(credentialRuntime.credentialPlugin, credentialRuntime.auditPlugin),
             autoReview = credentialRuntime::reviewTool,
         )
+        conversationCatalog.toolManagerPlugin.setWorkspaceVisibilityPolicy { workspaceId, descriptor ->
+            com.cordiact.core.settings.WorkspaceCapabilityPolicy.visible(descriptor.ownerPluginId,
+                { capabilitySettings.enabled(workspaceId, it) },
+                { id -> if (id.startsWith("mcp.")) pluginLifecycle.manager.get("core.$id")?.state == PluginState.ENABLED else id == "search" || id == "privilege" && automationRuntime.privilegeSettings.read().root && automationRuntime.rootChannel.peekReady() || automationReadiness.probe(id).state == com.cordiact.core.settings.ReadinessState.READY })
+        }
         modelAdapterPlugin = plugins.filterIsInstance<ModelAdapterPlugin>().single()
         credentialRuntime.attachReviewerClient(
             com.cordiact.model.providers.ModelReviewerClient { modelAdapter },
@@ -517,7 +533,13 @@ class CordiActApplication : Application() {
             notices = backgroundSubagents,
             compactionStore = conversationCatalog.conversationStore,
             inbox = asyncTurnInbox,
-            summaryModelProvider = { summaryModelStore.selectedModel() },
+            summaryModelResolver = { conversation ->
+                when (val result = summaryModelStore.resolve(modelAdapterPlugin.models().map { it.id }.toSet(), conversation)) {
+                    is com.cordiact.app.experience.settings.ModelRoleResolution.Resolved -> result.model
+                    com.cordiact.app.experience.settings.ModelRoleResolution.Disabled -> null
+                    is com.cordiact.app.experience.settings.ModelRoleResolution.Invalid -> error("Summary model reference invalid: ${result.reason}")
+                }
+            },
             sensitivePayloads = credentialRuntime.sensitivePayloads,
         )
         // A finished turn is the cheapest moment to think about the next one: the summary can be
@@ -584,6 +606,8 @@ class CordiActApplication : Application() {
                 toolContext = toolContext,
                 parameters = parameters,
                 systemContext = skillIndexFor(envelope.context.workspaceId),
+                parts = envelope.attachments,
+                onUserMessagePersisted = envelope.onUserMessagePersisted,
                 onEvent = onEvent,
             )
         })
@@ -598,6 +622,17 @@ class CordiActApplication : Application() {
         // interrupted instead of waiting for it forever.
         runCatching { backgroundSubagents.recoverAbandonedRuns() }
             .onFailure { Log.e(TAG, "Recovering abandoned delegations failed", it) }
+        conversationCatalog.mcpCredentialWriter = { name, header, value ->
+            com.cordiact.app.settings.McpCredentialStore(this).set(name, com.cordiact.core.mcp.McpCredential(header, value))
+        }
+        conversationCatalog.mcpInstallApproval = { context, config ->
+            approvalGateway.requestApproval(com.cordiact.core.action.ApprovalRequest(
+                id = java.util.UUID.randomUUID().toString(), toolName = "mcp.install",
+                summary = "安装 MCP ${config.serverName}：${java.net.URI(config.url).host}。服务器将提供可由模型调用的工具。",
+                details = mapOf("workspace" to context.workspaceId, "server" to config.serverName),
+                riskLevel = com.cordiact.core.action.ApprovalRequest.RiskLevel.HIGH,
+            )).approved
+        }
         conversationCatalog.pluginManagerService = pluginManagerService()
         // Restore user plugins in the background so slow/offline MCP servers do not block Application.onCreate() or trigger NetworkOnMainThreadException.
         java.util.concurrent.Executors.newSingleThreadExecutor().execute {
@@ -633,10 +668,29 @@ class CordiActApplication : Application() {
      * Build the management service lazily: it needs the lifecycle manager (created earlier) and
      * the live plugin map (filled by [restoreUserPlugins] and by installs).
      */
-    private fun pluginManagerService(): PluginManagerService = AndroidPluginManagerService(
+    private val builtinCapabilityInventory by lazy {
+        val settings = com.cordiact.app.settings.CapabilitySettingsStore(this)
+        val readiness = com.cordiact.app.settings.AutomationReadiness(this, automationRuntime)
+        com.cordiact.app.plugin.BuiltinCapabilityInventory(conversationCatalog.toolRegistry, settings::enabled, readiness::probe)
+    }
+
+    fun pluginManagerService(): PluginManagerService = AndroidPluginManagerService(
+        bundledInventory = builtinCapabilityInventory::entries,
+        workspaceProjection = builtinCapabilityInventory::project,
         manager = pluginLifecycle.manager,
         publishedTools = { pluginId -> userPlugins[pluginId]?.publishedTools()?.values?.toList().orEmpty() },
         onSpecInstalled = ::installUserPlugin,
+        probeMcp = { config ->
+            val credential = com.cordiact.app.settings.McpCredentialStore(this).readForExecution(config.serverName)
+            val connection = HttpMcpClientFactory.connect(config, credential)
+            try { connection.listTools() } finally { connection.close() }
+        },
+        afterRemoved = { id ->
+            if (id.startsWith("$MCP_PLUGIN_ID.")) {
+                userPlugins.remove(id)
+                com.cordiact.app.settings.McpCredentialStore(this).set(id.removePrefix("$MCP_PLUGIN_ID."), null)
+            }
+        },
     )
 
     /**
@@ -648,7 +702,8 @@ class CordiActApplication : Application() {
     private fun installUserPlugin(spec: PluginSpec): Boolean {
         if (!spec.id.startsWith(MCP_PLUGIN_ID)) return false
         val plugin = try {
-            McpPlugin(spec, conversationCatalog.toolRegistry, HttpMcpClientFactory)
+            McpPlugin(spec, conversationCatalog.toolRegistry, HttpMcpClientFactory,
+                credentialProvider = { name -> com.cordiact.app.settings.McpCredentialStore(this).readForExecution(name) })
         } catch (failure: Exception) {
             Log.e(TAG, "Cannot construct plugin ${spec.id}", failure)
             return false
@@ -671,7 +726,8 @@ class CordiActApplication : Application() {
         val report = try {
             pluginLifecycle.manager.rebuildUserPlugins { spec ->
                 if (spec.id.startsWith(MCP_PLUGIN_ID)) {
-                    McpPlugin(spec, conversationCatalog.toolRegistry, HttpMcpClientFactory).also {
+                    McpPlugin(spec, conversationCatalog.toolRegistry, HttpMcpClientFactory,
+                credentialProvider = { name -> com.cordiact.app.settings.McpCredentialStore(this).readForExecution(name) }).also {
                         userPlugins[spec.id] = it
                     }
                 } else {

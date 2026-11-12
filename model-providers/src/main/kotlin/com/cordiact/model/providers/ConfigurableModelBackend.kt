@@ -120,6 +120,8 @@ class ModelProviderConfig private constructor(
      * name, the protocol name or the endpoint shape.
      */
     val attachmentCapabilities: Map<String, AttachmentInputCapability>,
+    val discoveredModels: List<String>,
+    val modelDefaults: Map<String, GenerationParameters>,
 ) {
     constructor(
         providerId: String,
@@ -132,6 +134,8 @@ class ModelProviderConfig private constructor(
         defaults: GenerationParameters = GenerationParameters.NONE,
         parameterCapabilities: Map<String, ModelParameterCapabilities> = emptyMap(),
         attachmentCapabilities: Map<String, AttachmentInputCapability> = emptyMap(),
+        discoveredModels: List<String> = models,
+        modelDefaults: Map<String, GenerationParameters> = emptyMap(),
     ) : this(
         providerId,
         displayName,
@@ -149,6 +153,8 @@ class ModelProviderConfig private constructor(
             )
         },
         attachmentCapabilities.toMap(),
+        discoveredModels.toList(),
+        modelDefaults.toMap(),
     )
 
     internal fun duplicate(
@@ -157,6 +163,8 @@ class ModelProviderConfig private constructor(
         allowInsecureLoopbackForTests: Boolean = false,
         parameterCapabilities: Map<String, ModelParameterCapabilities> = this.parameterCapabilities,
         attachmentCapabilities: Map<String, AttachmentInputCapability>? = null,
+        discoveredModels: List<String> = this.discoveredModels,
+        modelDefaults: Map<String, GenerationParameters> = this.modelDefaults,
     ) = ModelProviderConfig(
         providerId, displayName, protocol, endpoint, models.toList(), connectTimeoutMillis, readTimeoutMillis, allowInsecureLoopbackForTests, defaults.copy(),
         parameterCapabilities.mapValues { (_, capabilities) ->
@@ -167,6 +175,8 @@ class ModelProviderConfig private constructor(
         },
         // A duplicate keeps the same endpoint and protocol, so its media declaration still holds.
         (attachmentCapabilities ?: this.attachmentCapabilities).toMap(),
+        discoveredModels.toList(),
+        modelDefaults.toMap(),
     )
 
     override fun equals(other: Any?): Boolean = other is ModelProviderConfig &&
@@ -174,11 +184,11 @@ class ModelProviderConfig private constructor(
         endpoint == other.endpoint && models == other.models && connectTimeoutMillis == other.connectTimeoutMillis &&
         readTimeoutMillis == other.readTimeoutMillis && allowInsecureLoopbackForTests == other.allowInsecureLoopbackForTests &&
         defaults == other.defaults && parameterCapabilities == other.parameterCapabilities &&
-        attachmentCapabilities == other.attachmentCapabilities
+        attachmentCapabilities == other.attachmentCapabilities && discoveredModels == other.discoveredModels && modelDefaults == other.modelDefaults
 
     override fun hashCode(): Int = listOf(
         providerId, displayName, protocol, endpoint, models, connectTimeoutMillis, readTimeoutMillis,
-        allowInsecureLoopbackForTests, defaults, parameterCapabilities, attachmentCapabilities,
+        allowInsecureLoopbackForTests, defaults, parameterCapabilities, attachmentCapabilities, discoveredModels, modelDefaults,
     ).hashCode()
 
     companion object {
@@ -195,10 +205,28 @@ class ModelProviderConfig private constructor(
             attachmentCapabilities: Map<String, AttachmentInputCapability> = emptyMap(),
         ) = ModelProviderConfig(
             providerId, displayName, protocol, endpoint, models, connectTimeoutMillis, readTimeoutMillis, true, defaults,
-            parameterCapabilities.toMap(), attachmentCapabilities.toMap(),
+            parameterCapabilities.toMap(), attachmentCapabilities.toMap(), models.toList(), emptyMap(),
         )
     }
+    fun withModelDefaults(values: Map<String, GenerationParameters>): ModelProviderConfig {
+        require(values.keys.all { it in discoveredModels })
+        values.forEach { (id, params) ->
+            val caps = parameterCapabilities[id]
+            require(params.reasoningEffort == null || params.reasoningEffort == ReasoningEffort.AUTO || caps?.reasoningEffortValues?.containsKey(params.reasoningEffort) == true)
+            require(params.responseSpeed == null || params.responseSpeed == ResponseSpeed.AUTO || caps?.responseSpeedValues?.containsKey(params.responseSpeed) == true)
+        }
+        return duplicate(modelDefaults = values, allowInsecureLoopbackForTests = allowInsecureLoopbackForTests)
+    }
+
+    fun withModels(enabled: List<String>, discovered: List<String> = discoveredModels): ModelProviderConfig =
+        duplicate(models = enabled, discoveredModels = discovered, allowInsecureLoopbackForTests = allowInsecureLoopbackForTests)
+
     init {
+        require(discoveredModels.isNotEmpty() && discoveredModels.size <= HttpModelDiscoveryService.MAX_MODELS)
+        require(discoveredModels.distinct().size == discoveredModels.size && models.distinct().size == models.size)
+        require(discoveredModels.all { it.isNotBlank() && it.length <= 200 })
+        require(discoveredModels.containsAll(models)) { "Enabled models must be discovered" }
+
         require(providerId.matches(Regex("[a-z0-9][a-z0-9._-]{1,127}"))) { "Invalid provider id" }
         require(displayName.isNotBlank() && displayName.length <= 160) { "Provider name is required" }
         require(endpoint.length <= 2048) { "Provider endpoint is too long" }
@@ -216,12 +244,12 @@ class ModelProviderConfig private constructor(
         }) {
             "Provider credentials must be supplied through the secure key store, not endpoint query parameters"
         }
-        require(models.isNotEmpty() && models.all { it.isNotBlank() && it.length <= 256 }) { "At least one model is required" }
+        require(discoveredModels.isNotEmpty() && models.all { it.isNotBlank() && it.length <= 256 }) { "At least one model is required" }
         require(models.distinct().size == models.size) { "Model ids must be unique" }
-        require(parameterCapabilities.keys.all { it in models }) {
+        require(parameterCapabilities.keys.all { it in discoveredModels }) {
             "Parameter capabilities may only be declared for configured models"
         }
-        require(attachmentCapabilities.keys.all { it in models }) {
+        require(attachmentCapabilities.keys.all { it in discoveredModels }) {
             "Attachment capabilities may only be declared for configured models"
         }
         require(connectTimeoutMillis > 0 && readTimeoutMillis > 0)
@@ -244,6 +272,7 @@ class ConfigurableModelBackend(
      */
     private val attachmentReader: AttachmentReader? = null,
     private val attachmentLimits: AttachmentLimits = AttachmentLimits(),
+    private val attachmentPolicy: com.cordiact.core.attachment.AttachmentPolicyProvider? = null,
     /**
      * Audit trail for attachment decisions. An allowed send is recorded before the body is built;
      * a refused plan is recorded as DENIED; an unavailable audit log aborts the send.
@@ -293,10 +322,25 @@ class ConfigurableModelBackend(
     override val providerId: String get() = config.providerId
 
     override fun models(): List<ModelDescriptor> = config.models.map {
-        ModelDescriptor(ModelId(providerId, it), "${config.displayName} - $it", supportsStreaming = true)
+        val parameters = config.parameterCapabilities[it]
+        ModelDescriptor(
+            ModelId(providerId, it), "${config.displayName} - $it", supportsStreaming = true,
+            capabilities = com.cordiact.core.conversation.ModelCapabilities(
+                reasoningEfforts = parameters?.reasoningEffortValues?.keys.orEmpty() - ReasoningEffort.AUTO,
+                responseSpeeds = parameters?.responseSpeedValues?.keys.orEmpty() - ResponseSpeed.AUTO,
+                attachments = config.attachmentCapabilities[it] ?: AttachmentInputCapability.UNSUPPORTED,
+            ),
+        )
     }
 
-    override fun generate(request: ModelGenerationRequest, onEvent: (ModelEvent) -> Unit): ModelCall {
+    override fun generate(original: ModelGenerationRequest, onEvent: (ModelEvent) -> Unit): ModelCall {
+        // LOCAL_ONLY carries explicit consent to store without transmitting bytes. All other
+        // attachments (including prior turns) retain full preflight validation.
+        val request = original.copy(
+            messages = com.cordiact.core.attachment.AttachmentHistoryPolicy.normalize(
+                original.messages,
+            ),
+        )
         val running = RunningCall()
         fun emitEvent(event: ModelEvent) = running.emit(onEvent, event)
         val key = try {
@@ -681,7 +725,7 @@ class ConfigurableModelBackend(
         )
         val capability = config.attachmentCapabilities[request.model.modelId]
             ?: AttachmentInputCapability.UNSUPPORTED
-        val planner = AttachmentPlanner(reader, attachmentLimits)
+        val planner = AttachmentPlanner(reader, com.cordiact.core.attachment.AttachmentPolicy.validate(attachmentPolicy?.limits() ?: attachmentLimits))
         val plans = LinkedHashMap<ModelMessage, TransmissionPlan>(withAttachments.size)
         for (message in withAttachments) {
             val plan = try {
@@ -828,7 +872,7 @@ class ConfigurableModelBackend(
         request: ModelGenerationRequest,
         attachmentPlans: Map<ModelMessage, TransmissionPlan> = emptyMap(),
     ): JsonObject {
-        val parameters = config.defaults.mergedWith(request.parameters)
+        val parameters = config.defaults.mergedWith(config.modelDefaults[request.model.modelId] ?: GenerationParameters.NONE).mergedWith(request.parameters)
         if (config.protocol !in setOf(ModelProtocol.OPENAI_CHAT_COMPLETIONS, ModelProtocol.OPENAI_RESPONSES)) {
             require(parameters.reasoningEffort == null || parameters.reasoningEffort == ReasoningEffort.AUTO) {
                 "${config.providerId} does not support reasoning effort parameters"

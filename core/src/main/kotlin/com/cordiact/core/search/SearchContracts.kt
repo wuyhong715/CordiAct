@@ -39,12 +39,26 @@ enum class SearchMode { OFF, TOOL, NATIVE, AUTO }
  * [monthlyBudgetCalls] caps billable provider calls per calendar month. Null
  * means no cap. The cap is checked before dispatch and never degrades silently:
  * an exhausted budget is a structured error.
+ *
+ * [providerOrder] is an explicit preference list of third-party search provider
+ * ids. When it is non-empty the first id that is registered, enabled and ready
+ * wins, which removes the ambiguity error for multi-provider workspaces. When it
+ * is empty the legacy rule applies: exactly one usable provider, ambiguity
+ * otherwise.
+ *
+ * [enabledProviders] is the third-party allowlist. Null means "all providers, as
+ * before"; an empty set disables every third-party provider. Native providers are
+ * governed by [mode] instead, so an allowlist of external ids never silently
+ * removes the model's own search. A disabled provider is rejected even when
+ * pinned; there is no fallback that bypasses the allowlist.
  */
 data class WorkspaceSearchPolicy(
     val mode: SearchMode = SearchMode.AUTO,
     val searchProviderId: String? = null,
     val fetchProviderId: String? = null,
     val monthlyBudgetCalls: Int? = null,
+    val providerOrder: List<String> = emptyList(),
+    val enabledProviders: Set<String>? = null,
 )
 
 interface SearchPolicyStore {

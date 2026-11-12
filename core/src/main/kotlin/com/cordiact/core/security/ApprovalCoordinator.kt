@@ -124,6 +124,7 @@ data class ReviewSnapshot(
     val reviewerModelId: String? = null,
     val reviewerEndpointIdentity: String? = null,
     val reviewerConfigRevision: Long? = null,
+    val reviewerCredentialRevision: Long = 0,
     val reviewerTimeoutMillis: Long = 30_000L,
     val recentRelevantDecisionsAndToolFacts: List<String> = emptyList(),
     val deterministicPolicyFindings: List<String> = emptyList(),
@@ -201,6 +202,7 @@ class SecurityApprovalCoordinator(
             reviewerModelId = reviewer.modelId,
             reviewerEndpointIdentity = reviewer.endpointIdentity,
             reviewerConfigRevision = reviewer.revision,
+            reviewerCredentialRevision = reviewer.credentialRevision,
             reviewerTimeoutMillis = reviewer.timeoutMillis,
             deterministicPolicyFindings = listOf("credential_operation_requires_approval"),
         )
@@ -239,6 +241,7 @@ class SecurityApprovalCoordinator(
             profileRevision = context.profile.profileRevision,
             policyEpoch = context.profile.policyEpoch,
             reviewerConfigRevision = reviewer?.revision,
+            reviewerCredentialRevision = reviewer?.credentialRevision,
             nonce = UUID.randomUUID().toString(),
             issuedAt = now,
             expiresAt = now.plusMillis(grantTtlMillis),
@@ -255,6 +258,7 @@ class SecurityApprovalCoordinator(
             stored.profileRevision == context.profile.profileRevision &&
             stored.policyEpoch == context.profile.policyEpoch &&
             stored.reviewerConfigRevision == context.profile.reviewer?.revision &&
+            stored.reviewerCredentialRevision == context.profile.reviewer?.credentialRevision &&
             stored.expiresAt.isAfter(clock.now()) &&
             grant.intentDigest == stored.intentDigest
     }
@@ -301,6 +305,7 @@ data class OneShotGrant(
     val nonce: String,
     val issuedAt: Instant,
     val expiresAt: Instant,
+    val reviewerCredentialRevision: Long? = null,
 )
 
 class SecurityDeniedException(val reasonCode: String) : RuntimeException("Security operation denied: $reasonCode")

@@ -49,6 +49,28 @@ class ToolManagerPluginTest {
     }
 
     @Test
+    fun liveWorkspacePolicyHidesDiscoveryAndRejectsStaleInvocations() {
+        val workspaces = FakeWorkspaceManager()
+        val preferences = FakePreferences().apply { setEnabled(WORKSPACE_A, TOOL_ID, true); setEnabled(WORKSPACE_B, TOOL_ID, true) }
+        var invocations = 0
+        val registry = InMemoryToolDefinitionRegistry().apply {
+            register(ToolDefinition(descriptor(), ToolExecutor { _, _ -> invocations++; ToolResult() }))
+        }
+        val plugin = manager(registry, preferences, workspaces) { PluginState.ENABLED }
+        plugin.onEnable()
+        var enabled = true
+        plugin.setWorkspaceVisibilityPolicy { workspaceId, _ -> workspaceId != WORKSPACE_A || enabled }
+        assertTrue(plugin.resolveEnabled(WORKSPACE_A).isNotEmpty())
+        plugin.invoke(context(WORKSPACE_A), TOOL_ID, validArgs())
+        enabled = false
+        assertTrue(plugin.resolveEnabled(WORKSPACE_A).isEmpty())
+        assertFalse(plugin.list(WORKSPACE_A).single().dispatchable)
+        assertTrue(plugin.resolveEnabled(WORKSPACE_B).isNotEmpty())
+        assertFailsWith<ToolManagerException> { plugin.invoke(context(WORKSPACE_A), TOOL_ID, validArgs()) }
+        assertEquals(1, invocations)
+    }
+
+    @Test
     fun archivedWorkspaceAndInvalidArgumentsNeverReachExecutor() {
         val workspaces = FakeWorkspaceManager()
         val preferences = FakePreferences().apply { setEnabled(WORKSPACE_A, TOOL_ID, true) }

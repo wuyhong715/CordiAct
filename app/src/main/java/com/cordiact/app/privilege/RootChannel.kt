@@ -17,6 +17,8 @@ class RootChannel : PrivilegedChannel {
     @Volatile
     private var cached: PrivilegeStatus? = null
 
+    fun peekReady(): Boolean = cached?.ready == true
+
     override fun status(): PrivilegeStatus {
         cached?.let { return it }
         val probed = probe()

@@ -31,6 +31,29 @@ class AndroidModelProviderConfigStoreTest {
         store = AndroidModelProviderConfigStore(RuntimeEnvironment.getApplication())
     }
 
+    @Test fun perModelDefaultsRoundTrip() {
+        val capability = ModelParameterCapabilities.openAi(setOf(ReasoningEffort.HIGH))
+        val config = ModelProviderConfig("custom-settings-defaults", "D", ModelProtocol.OPENAI_RESPONSES,
+            "https://example.com/v1", listOf("a"), parameterCapabilities = mapOf("a" to capability))
+            .withModelDefaults(mapOf("a" to GenerationParameters(reasoningEffort = ReasoningEffort.HIGH, responseSpeed = ResponseSpeed.FAST)))
+        store.save(config)
+        val reopened = AndroidModelProviderConfigStore(RuntimeEnvironment.getApplication()).load().single()
+        assertEquals(config, reopened)
+        assertEquals(ReasoningEffort.HIGH, reopened.modelDefaults["a"]?.reasoningEffort)
+    }
+
+    @Test
+    fun discoveredAndEnabledAreDistinctAndZeroEnabledSurvivesRestart() {
+        val config = ModelProviderConfig("custom-settings", "Settings", ModelProtocol.OPENAI_RESPONSES,
+            "https://example.com/v1", models = listOf("b"), discoveredModels = listOf("a", "b"))
+        store.save(config)
+        assertEquals(config, AndroidModelProviderConfigStore(RuntimeEnvironment.getApplication()).load().single())
+        store.save(config.withModels(emptyList()))
+        val restarted = AndroidModelProviderConfigStore(RuntimeEnvironment.getApplication()).load().single()
+        assertTrue(restarted.models.isEmpty())
+        assertEquals(listOf("a", "b"), restarted.discoveredModels)
+    }
+
     @Test
     fun defaultsSurviveASaveAndReloadCycle() {
         val config = ModelProviderConfig(
@@ -146,5 +169,19 @@ class AndroidModelProviderConfigStoreTest {
 
         assertEquals(listOf("alpha", "mike", "zeta"), store.load().map { it.providerId })
         assertTrue(store.load().all { it.defaults == GenerationParameters.NONE })
+    }
+
+    @Test fun configRevisionPersistsAndIncrementsAcrossInstances() {
+        val initial = store.revision()
+        val config = ModelProviderConfig("revision-test", "R", ModelProtocol.OPENAI_RESPONSES,
+            "https://example.com/v1", listOf("a"))
+        store.save(config)
+        val second = AndroidModelProviderConfigStore(RuntimeEnvironment.getApplication())
+        assertEquals(initial + 1, second.revision())
+        second.save(ModelProviderConfig(config.providerId, config.displayName, config.protocol,
+            "https://changed.example/v1", config.models))
+        assertEquals(initial + 2, store.revision())
+        store.remove(config.providerId)
+        assertEquals(initial + 3, second.revision())
     }
 }

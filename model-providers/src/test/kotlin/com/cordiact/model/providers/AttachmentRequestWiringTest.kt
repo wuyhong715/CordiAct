@@ -64,6 +64,23 @@ class AttachmentRequestWiringTest {
     )
 
     @Test
+    fun liveUserPolicyIsReReadAtSendAndCombinedWithModelCapabilities() {
+        var limits = com.cordiact.core.attachment.AttachmentLimits()
+        val backend = ConfigurableModelBackend(config(ModelProtocol.OPENAI_CHAT_COMPLETIONS, capability),
+            ApiKeyProvider { "key" }, attachmentReader = reader,
+            attachmentPolicy = com.cordiact.core.attachment.AttachmentPolicyProvider { limits })
+        assertTrue(backend.preflightAttachments(request()).isNotEmpty())
+        limits = limits.copy(maxImageBytes = 1)
+        assertFailsWith<AttachmentException> { backend.preflightAttachments(request()) }
+        limits = com.cordiact.core.attachment.AttachmentLimits()
+        assertTrue(backend.preflightAttachments(request()).isNotEmpty())
+        val undeclared = ConfigurableModelBackend(config(ModelProtocol.OPENAI_CHAT_COMPLETIONS, null),
+            ApiKeyProvider { "key" }, attachmentReader = reader,
+            attachmentPolicy = com.cordiact.core.attachment.AttachmentPolicyProvider { limits })
+        assertFailsWith<AttachmentException> { undeclared.preflightAttachments(request()) }
+    }
+
+    @Test
     fun openAiChatContentBecomesAnArrayOfBlocks() {
         val backend = backend(ModelProtocol.OPENAI_CHAT_COMPLETIONS)
         val request = request()

@@ -23,7 +23,29 @@ data class ModelDescriptor(
      * When null, callers fall back to the provider default lookup table or conservative limits.
      */
     val contextWindowTokens: Int? = null,
+    /** What this model declares it accepts; empty means "nothing adjustable / no attachments". */
+    val capabilities: ModelCapabilities = ModelCapabilities.NONE,
 )
+
+/**
+ * User-facing capability declaration of one model. Only declared values may be offered by a UI;
+ * AUTO is never listed because it is expressed by omitting the parameter.
+ */
+data class ModelCapabilities(
+    val reasoningEfforts: Set<ReasoningEffort> = emptySet(),
+    val responseSpeeds: Set<ResponseSpeed> = emptySet(),
+    val attachments: com.cordiact.core.attachment.AttachmentInputCapability =
+        com.cordiact.core.attachment.AttachmentInputCapability.UNSUPPORTED,
+) {
+    init {
+        require(ReasoningEffort.AUTO !in reasoningEfforts) { "AUTO is implicit and must not be declared" }
+        require(ResponseSpeed.AUTO !in responseSpeeds) { "AUTO is implicit and must not be declared" }
+    }
+
+    companion object {
+        val NONE = ModelCapabilities()
+    }
+}
 
 enum class MessageRole { SYSTEM, USER, ASSISTANT, TOOL }
 

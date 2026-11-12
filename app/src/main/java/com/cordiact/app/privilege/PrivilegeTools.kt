@@ -93,7 +93,7 @@ private fun execTool(service: PrivilegeService) = ToolDefinition(
             ),
         ),
     ),
-    executor = { _, arguments -> runPrivileged(service, arguments, advanced = false) },
+    executor = { context, arguments -> runPrivileged(service, arguments, advanced = false, workspaceId = context.workspaceId) },
 )
 
 private fun shellTool(service: PrivilegeService) = ToolDefinition(
@@ -125,7 +125,7 @@ private fun shellTool(service: PrivilegeService) = ToolDefinition(
             ),
         ),
     ),
-    executor = { _, arguments -> runPrivileged(service, arguments, advanced = true) },
+    executor = { context, arguments -> runPrivileged(service, arguments, advanced = true, workspaceId = context.workspaceId) },
 )
 
 private fun rootTool(service: PrivilegeService) = ToolDefinition(
@@ -157,11 +157,11 @@ private fun rootTool(service: PrivilegeService) = ToolDefinition(
             ),
         ),
     ),
-    executor = { _, arguments ->
+    executor = { context, arguments ->
         if (!service.hasRoot()) {
             error("root_unavailable", "Root is not enabled or the root channel is not available")
         } else {
-            runPrivileged(service, arguments, advanced = true, requireRoot = true)
+            runPrivileged(service, arguments, advanced = true, requireRoot = true, workspaceId = context.workspaceId)
         }
     },
 )
@@ -171,6 +171,7 @@ private fun runPrivileged(
     arguments: ToolArguments,
     advanced: Boolean,
     requireRoot: Boolean = false,
+    workspaceId: String? = null,
 ): ToolResult {
     val command = arguments.string("command")
         ?: return error("invalid_arguments", "Missing required argument: command")
@@ -179,7 +180,7 @@ private fun runPrivileged(
     if (status.level == PrivilegeLevel.NONE) {
         return error(status.reason ?: "privileged_channel_unavailable", status.recovery ?: "Enable Shizuku or root first")
     }
-    val result = service.exec(command, timeout.toLong(), advanced, requireRoot)
+    val result = service.exec(command, timeout.toLong(), advanced, requireRoot, workspaceId)
     if (result.exitCode == -1 && result.stderr.isNotBlank()) {
         return error("exec_refused", result.stderr)
     }

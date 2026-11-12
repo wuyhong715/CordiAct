@@ -34,6 +34,18 @@ class AndroidModelProviderConfigStore(context: Context) : ModelProviderConfigSto
                     models = item.getJSONArray("models").let { models ->
                         List(models.length()) { modelIndex -> models.getString(modelIndex) }
                     },
+                    discoveredModels = (item.optJSONArray("discoveredModels") ?: item.getJSONArray("models")).let { models ->
+                        List(models.length()) { models.getString(it) }
+                    },
+                    modelDefaults = item.optJSONObject("modelDefaults")?.let { entries ->
+                        entries.keys().asSequence().associateWith { id ->
+                            val value = entries.getJSONObject(id)
+                            GenerationParameters(
+                                reasoningEffort = value.optString("reasoningEffort").takeIf { it.isNotBlank() }?.let(ReasoningEffort::valueOf),
+                                responseSpeed = value.optString("responseSpeed").takeIf { it.isNotBlank() }?.let(ResponseSpeed::valueOf),
+                            )
+                        }
+                    } ?: emptyMap(),
                     defaults = item.optJSONObject("defaults")?.let { defaults ->
                         GenerationParameters(
                             temperature = defaults.optDouble("temperature").takeIf { defaults.has("temperature") },
@@ -86,13 +98,13 @@ class AndroidModelProviderConfigStore(context: Context) : ModelProviderConfigSto
     }
 
     @Synchronized
-    override fun save(config: ModelProviderConfig) {
+    override fun save(config: ModelProviderConfig) = synchronized(WRITE_LOCK) {
         val configs = load().filterNot { it.providerId == config.providerId } + config
         write(configs)
     }
 
     @Synchronized
-    override fun remove(providerId: String) {
+    override fun remove(providerId: String) = synchronized(WRITE_LOCK) {
         write(load().filterNot { it.providerId == providerId })
     }
 
@@ -106,6 +118,13 @@ class AndroidModelProviderConfigStore(context: Context) : ModelProviderConfigSto
                 put("protocol", config.protocol.name)
                 put("endpoint", config.endpoint)
                 put("models", JSONArray().apply { config.models.forEach { put(it) } })
+                put("discoveredModels", JSONArray().apply { config.discoveredModels.forEach { put(it) } })
+                put("modelDefaults", JSONObject().apply {
+                    config.modelDefaults.forEach { (id, value) -> put(id, JSONObject().apply {
+                        value.reasoningEffort?.let { put("reasoningEffort", it.name) }
+                        value.responseSpeed?.let { put("responseSpeed", it.name) }
+                    }) }
+                })
                 val defaults = config.defaults
                 if (defaults.temperature != null || defaults.maxOutputTokens != null || defaults.topP != null ||
                     defaults.reasoningEffort != null || defaults.responseSpeed != null
@@ -156,12 +175,18 @@ class AndroidModelProviderConfigStore(context: Context) : ModelProviderConfigSto
                 }
             })
         }
-        check(preferences.edit().putString(CONFIGS, array.toString()).commit()) {
+        val currentRevision = revision()
+        check(currentRevision < Long.MAX_VALUE) { "MODEL_CONFIG_REVISION_EXHAUSTED" }
+        check(preferences.edit().putString(CONFIGS, array.toString())
+            .putLong("revision", currentRevision + 1).commit()) {
             "Could not save model provider configuration"
         }
     }
 
+    fun revision(): Long = preferences.getLong("revision", 1L)
+
     private companion object {
+        val WRITE_LOCK = Any()
         const val MAX_PROVIDER_COUNT = 32
         const val PREFERENCES = "model_provider_config"
         const val CONFIGS = "providers_json"

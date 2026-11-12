@@ -44,6 +44,13 @@ class SystemCredentialStoreTest {
     private val crypto = Crypto()
     private val store = SystemCredentialStore(repository, crypto)
 
+    @Test fun sshNamespaceUsesEncryptedRepository() {
+        val secret = "ssh-password".toByteArray()
+        store.write("ssh:host-1", secret)
+        assertContentEquals(secret, store.read("ssh:host-1"))
+        store.delete("ssh:host-1")
+        assertNull(store.read("ssh:host-1"))
+    }
     @Test fun migratesOnceAndReopensWithNoLegacy() {
         val legacy = Legacy()
         assertContentEquals("old-key".toByteArray(), store.read("model:deepseek", legacy))

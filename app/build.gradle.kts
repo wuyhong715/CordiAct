@@ -46,6 +46,7 @@ dependencies {
     implementation(project(":subagent"))
     implementation("androidx.activity:activity-compose:1.10.0")
     implementation("androidx.compose.ui:ui:1.7.6")
+    implementation("androidx.compose.ui:ui-tooling-preview:1.7.6")
     implementation("androidx.webkit:webkit:1.14.0")
     implementation("androidx.compose.material3:material3:1.3.1")
     // No image/network/HTML plugin: returned Markdown cannot silently fetch external resources.
@@ -61,6 +62,7 @@ dependencies {
     implementation("dev.rikka.shizuku:api:13.1.5")
     implementation("dev.rikka.shizuku:provider:13.1.5")
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
     testImplementation("org.robolectric:robolectric:4.14.1")
     testImplementation("androidx.compose.ui:ui-test-junit4:1.7.6")
     debugImplementation("androidx.compose.ui:ui-test-manifest:1.7.6")
