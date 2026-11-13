@@ -15,7 +15,8 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - uses: android-actions/setup-android@v3
+      - name: Configure Android SDK
+        run: echo "ANDROID_HOME=${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}" >> "$GITHUB_ENV"
       - uses: gradle/actions/setup-gradle@v4
       - name: JVM business regression and UI component tests
         run: ./gradlew :core:test :model-providers:test :interaction:test :subagent:test :mcp-client:test :app:testDebugUnitTest --stacktrace
