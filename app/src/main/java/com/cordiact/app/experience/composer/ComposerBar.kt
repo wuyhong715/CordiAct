@@ -114,7 +114,7 @@ internal fun ComposerBar(state: ExperienceState, composer: ComposerState, contro
                         cursorBrush = SolidColor(MaterialTheme.colorScheme.primary), decorationBox = { field ->
                             Box { if (composer.text.isEmpty()) Text("发送消息…", color = MaterialTheme.colorScheme.onSurfaceVariant); field() }
                         })
-                    if (!expanded) SendAction(state, composer, waiting, {
+                    SendAction(state, composer, waiting, {
                         if (state.running) onStop() else if (waiting) waiting = false else if (composer.sendAvailability == ComposerRules.SendAvailability.WAIT_FOR_ATTACHMENTS) waiting = true else submit()
                     })
                 }
