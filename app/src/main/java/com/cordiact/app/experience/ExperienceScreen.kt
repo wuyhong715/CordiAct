@@ -155,7 +155,7 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
                         Row(Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 5.dp), horizontalArrangement = Arrangement.Center) {
                             Surface(onClick = { scope.launch { pager.animateScrollToPage(1) } }, shape = CircleShape, color = MaterialTheme.colorScheme.inverseSurface) {
                                 Row(Modifier.padding(horizontal = 13.dp, vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
-                                    CircularProgressIndicator(Modifier.size(10.dp), color = MaterialTheme.colorScheme.inverseOnSurface, strokeWidth = 1.5.dp)
+                                    CircularProgressIndicator(Modifier.size(7.dp), color = MaterialTheme.colorScheme.inverseOnSurface, strokeWidth = 1.5.dp)
                                     Text(state.turns.lastOrNull()?.tools?.lastOrNull { it.phase == ToolPhase.RUNNING }?.name ?: "Agent 正在响应", Modifier.padding(start = 8.dp).widthIn(max = 240.dp), color = MaterialTheme.colorScheme.inverseOnSurface, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                 }
                             }
@@ -202,7 +202,7 @@ internal fun CompactInspector(step: ToolActivity, onClose: () -> Unit, modifier:
                         step.name.startsWith("web_") || step.name == "search_web" -> "settings://search"
                         else -> null
                     }
-                    TextButton(onClick = { onSettings(link) }, modifier = Modifier.padding(horizontal = 12.dp)) { Text("前往设置检查连接与权限") }
+                    TextButton(onClick = { onSettings(link) }, modifier = Modifier.padding(horizontal = 16.dp)) { Text("前往设置检查连接与权限") }
                 }
                 SelectionContainer(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()).padding(horizontal = 17.dp, vertical = 12.dp)) {
                     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {

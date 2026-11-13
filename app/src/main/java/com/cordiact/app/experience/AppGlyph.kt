@@ -13,7 +13,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.addPathNodes
 import androidx.compose.ui.unit.dp
 
-enum class GlyphName { Menu, Chat, Trace, Preview, Plus, Send, Stop, Close, ChevronDown, Check, Copy, ArrowDown, Expand, Terminal, Code, Globe, Back, Search, Settings, Link, Warning, Folder, More, Image, File, Camera, Bolt, Reset, Pin, Sparkle, Retry }
+enum class GlyphName { Menu, Chat, Trace, Preview, Plus, Send, Stop, Close, ChevronDown, Check, Copy, ArrowDown, Expand, Terminal, Code, Globe, Back, Search, Settings, Link, Warning, Folder, More, Image, File, Camera, Bolt, Reset, Pin, Sparkle, Retry, Model, Role, Connections, Credential, Audit, ChevronRight, Shield, Info }
 
 /** Cached original vectors: constant 24-unit viewport, no mutable Canvas scaling or per-frame paths. */
 private val glyphs: Map<GlyphName, ImageVector> by lazy {
@@ -26,6 +26,14 @@ private val glyphs: Map<GlyphName, ImageVector> by lazy {
         GlyphName.Pin to "M8,3 H16 L15,9 L19,13 H13 V21 L11,19 V13 H5 L9,9 Z",
         GlyphName.Sparkle to "M12,3 L14,9 L21,12 L14,15 L12,21 L10,15 L3,12 L10,9 Z",
         GlyphName.Retry to "M4,10 A8,8 0,1 1,5,17 M4,4 V10 H10",
+        GlyphName.Model to "M3,3 H9 V9 H3 Z M15,3 H21 V9 H15 Z M9,15 H15 V21 H9 Z M6,9 V15 M18,9 V15 M9,18 H15",
+        GlyphName.Role to "M12,5 A3,3 0,1 0,12,11 A3,3 0,1 0,12,5 M5,20 C5,13 19,13 19,20",
+        GlyphName.Connections to "M9,8 A3,3 0,1 0,9,14 A3,3 0,1 0,9,8 M15,10 A3,3 0,1 0,15,16 A3,3 0,1 0,15,10 M12,11 L12,13",
+        GlyphName.Credential to "M8,8 A4,4 0,1 0,8,16 A4,4 0,1 0,8,8 M12,12 H21 V16 M17,12 V15",
+        GlyphName.Audit to "M5,3 H19 V21 H5 Z M8,8 H16 M8,12 H16 M8,16 H13",
+        GlyphName.Shield to "M12,3 L20,6 V11 C20,17 16,20 12,22 C8,20 4,17 4,11 V6 Z M8,12 L11,15 L16,9",
+        GlyphName.Info to "M12,3 A9,9 0,1 0,12,21 A9,9 0,1 0,12,3 M12,11 V17 M12,7 V7.2",
+        GlyphName.ChevronRight to "M9,5 L16,12 L9,19",
         GlyphName.Folder to "M3,6 Q3,4 5,4 H9 L12,7 H19 Q21,7 21,9 V18 Q21,20 19,20 H5 Q3,20 3,18 Z",
         GlyphName.More to "M5,12 H5.7 M12,12 H12.7 M19,12 H19.7",
         GlyphName.Menu to "M4,7 H20 M4,12 H16 M4,17 H20",

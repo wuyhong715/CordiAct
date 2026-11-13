@@ -19,6 +19,9 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.cordiact.app.experience.AppGlyph
 import com.cordiact.app.experience.GlyphName
+import com.cordiact.app.experience.settings.components.SettingsSectionLabel
+import com.cordiact.app.experience.settings.components.SettingsRow
+import com.cordiact.app.experience.settings.components.SettingsGroup
 import com.cordiact.app.experience.settings.components.*
 import com.cordiact.core.conversation.ModelId
 import com.cordiact.model.providers.ModelProtocol
@@ -155,17 +158,26 @@ fun SettingsHost(vm: SettingsViewModel, initialLink: String? = null, onBack: () 
 }
 @Composable
 private fun SettingsMenu(state: SettingsSnapshot, navigate: (SettingsRoute) -> Unit, openLink: (String?) -> Unit) {
-                        SettingsHome(state, { navigate(SettingsRoute.PROVIDERS) }, { navigate(SettingsRoute.ROLES) }, openLink)
-                        SettingsRow("SSH 主机", "全局 · 凭据库与指纹固定") { navigate(SettingsRoute.SSH) }
-                        SettingsRow("连接与能力", "当前工作区 · 就绪向导与能力开关") { navigate(SettingsRoute.CONNECTIONS) }
-                        SettingsRow("权限档位", "按工作区 · 四档权限与独立审核人") { navigate(SettingsRoute.PERMISSIONS) }
-                        SettingsRow("特权执行", "全局开关 · 仅完全权限工作区生效") { navigate(SettingsRoute.PRIVILEGE) }
-                        SettingsRow("已存凭据", "模型 / 搜索 / SSH / MCP · 元数据与清除") { navigate(SettingsRoute.CREDENTIALS) }
-                        SettingsRow("搜索服务", "工作区模式与排序 · 全局 Key 和地址") { navigate(SettingsRoute.SEARCH) }
-                        SettingsRow("MCP 服务器", "全局 · 连接探测、鉴权与工具预览") { navigate(SettingsRoute.MCP) }
-                        SettingsRow("附件限制", "全局 · 仅允许下调安全上限") { navigate(SettingsRoute.ATTACHMENTS) }
-                        SettingsRow("关于", "版本 / 构建号 / 开源许可") { navigate(SettingsRoute.ABOUT) }
-                        SettingsRow("审计日志", "安全 / 凭据 / 审批 · 只读") { navigate(SettingsRoute.AUDIT) }
+    SettingsHome(state, { navigate(SettingsRoute.PROVIDERS) }, { navigate(SettingsRoute.ROLES) }, openLink)
+    SettingsSectionLabel("连接与能力")
+    SettingsGroup {
+        SettingsRow("SSH 主机", "全局 · 凭据库与指纹固定", GlyphName.Terminal) { navigate(SettingsRoute.SSH) }
+        SettingsRow("连接与能力", "当前工作区 · 就绪向导与能力开关", GlyphName.Connections) { navigate(SettingsRoute.CONNECTIONS) }
+        SettingsRow("权限档位", "按工作区 · 四档权限与独立审核人", GlyphName.Shield) { navigate(SettingsRoute.PERMISSIONS) }
+        SettingsRow("特权执行", "全局开关 · 仅完全权限工作区生效", GlyphName.Bolt) { navigate(SettingsRoute.PRIVILEGE) }
+    }
+    SettingsSectionLabel("模型与工具")
+    SettingsGroup {
+        SettingsRow("已存凭据", "模型 / 搜索 / SSH / MCP · 元数据与清除", GlyphName.Credential) { navigate(SettingsRoute.CREDENTIALS) }
+        SettingsRow("搜索服务", "工作区模式与排序 · 全局 Key 和地址", GlyphName.Search) { navigate(SettingsRoute.SEARCH) }
+        SettingsRow("MCP 服务器", "全局 · 连接探测、鉴权与工具预览", GlyphName.Connections) { navigate(SettingsRoute.MCP) }
+        SettingsRow("附件限制", "全局 · 仅允许下调安全上限", GlyphName.Folder) { navigate(SettingsRoute.ATTACHMENTS) }
+    }
+    SettingsSectionLabel("信息与安全")
+    SettingsGroup {
+        SettingsRow("审计日志", "安全 / 凭据 / 审批 · 只读", GlyphName.Audit) { navigate(SettingsRoute.AUDIT) }
+        SettingsRow("关于", "版本 / 构建号 / 开源许可", GlyphName.Info) { navigate(SettingsRoute.ABOUT) }
+    }
 }
 @Composable
 private fun SettingsHome(state: SettingsSnapshot, providers: () -> Unit, roles: () -> Unit, openLink: (String?) -> Unit) {
@@ -178,8 +190,8 @@ private fun SettingsHome(state: SettingsSnapshot, providers: () -> Unit, roles: 
         }
     }
     Text("模型", style = MaterialTheme.typography.titleMedium)
-    SettingsRow("模型提供商", "${state.providers.size} 个 · ${state.providers.sumOf { it.enabled.size }} 个启用模型") { providers() }
-    SettingsRow("模型角色", "对话默认 / 上下文摘要 / 记忆抽取") { roles() }
+    SettingsRow("模型提供商", "${state.providers.size} 个 · ${state.providers.sumOf { it.enabled.size }} 个启用模型", GlyphName.Model) { providers() }
+    SettingsRow("模型角色", "对话默认 / 上下文摘要 / 记忆抽取", GlyphName.Role) { roles() }
 }
 @Composable
 private fun ProviderList(state: SettingsSnapshot, select: (String) -> Unit) {

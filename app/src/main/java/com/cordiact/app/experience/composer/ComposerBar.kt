@@ -97,11 +97,9 @@ internal fun ComposerBar(state: ExperienceState, composer: ComposerState, contro
                         IconButton(onClick = { controller.popover(ComposerPopover.Attach) }, enabled = !state.loading && !state.running && !waiting) { AppGlyph(GlyphName.Plus, "添加附件", tint = if (composer.popover == ComposerPopover.Attach) MaterialTheme.colorScheme.primary else LocalContentColor.current) }
                         AnchoredPopover(composer.popover == ComposerPopover.Attach, { controller.popover(null) }) {
                             registry.actions().forEach { action ->
-                                Row(Modifier.fillMaxWidth().clickable { controller.popover(null); action.invoke() }.heightIn(min = 56.dp).padding(horizontal = 8.dp),
+                                Row(Modifier.fillMaxWidth().clickable { controller.popover(null); action.invoke() }.heightIn(min = 48.dp).padding(horizontal = 8.dp),
                                     verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                                    Surface(shape = CircleShape, color = MaterialTheme.colorScheme.surfaceContainerHigh) {
-                                        Box(Modifier.size(40.dp), contentAlignment = Alignment.Center) { AppGlyph(action.glyph) }
-                                    }
+                                    AppGlyph(action.glyph, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(22.dp))
                                     Text(action.label, style = MaterialTheme.typography.bodyLarge)
                                 }
                             }
@@ -142,9 +140,6 @@ internal fun ComposerBar(state: ExperienceState, composer: ComposerState, contro
                                     onManage = { controller.popover(null); onManage() })
                             }
                         }
-                        SendAction(state, composer, waiting, {
-                            if (state.running) onStop() else if (waiting) waiting = false else if (composer.sendAvailability == ComposerRules.SendAvailability.WAIT_FOR_ATTACHMENTS) waiting = true else submit()
-                        })
                     }
                 }
             }

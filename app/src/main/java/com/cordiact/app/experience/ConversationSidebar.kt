@@ -61,9 +61,9 @@ fun ConversationSidebar(
         OutlinedButton(
             onClick = { onNewSession(null) }, enabled = !busy,
             shape = RoundedCornerShape(16.dp),
-            border = androidx.compose.foundation.BorderStroke(1.dp, colors.outlineVariant),
             modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
             colors = ButtonDefaults.outlinedButtonColors(contentColor = colors.onSurface),
+            border = androidx.compose.foundation.BorderStroke(1.dp, colors.outlineVariant),
         ) {
             AppGlyph(GlyphName.Plus)
             Spacer(Modifier.width(8.dp))
@@ -168,7 +168,7 @@ fun ConversationSidebar(
             Row(Modifier.heightIn(min = 56.dp).padding(horizontal = 12.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                 AppGlyph(GlyphName.Settings)
                 Text("设置", Modifier.padding(start = 12.dp).weight(1f), style = MaterialTheme.typography.bodyMedium)
-                Text("批二", color = colors.onSurfaceVariant, style = MaterialTheme.typography.labelSmall)
+                AppGlyph(GlyphName.ChevronRight, tint = colors.onSurfaceVariant, modifier = Modifier.size(16.dp))
             }
         }
         Text("各工作区的对话与上下文相互隔离", Modifier.padding(start = 12.dp, bottom = 12.dp), style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
