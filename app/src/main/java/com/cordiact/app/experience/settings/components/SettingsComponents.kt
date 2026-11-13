@@ -6,21 +6,40 @@ import android.content.ContextWrapper
 import android.view.WindowManager
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import com.cordiact.app.experience.AppGlyph
+import com.cordiact.app.experience.GlyphName
 import com.cordiact.app.experience.settings.SettingsStatus
 import kotlinx.coroutines.delay
 
 @Composable
-fun SettingsRow(title: String, summary: String, enabled: Boolean = true, onClick: () -> Unit) {
-    Surface(shape = MaterialTheme.shapes.medium, color = MaterialTheme.colorScheme.surfaceContainerLowest) {
-        Column(Modifier.fillMaxWidth().clickable(enabled = enabled, onClick = onClick).heightIn(min = 56.dp).padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(title, style = MaterialTheme.typography.titleMedium)
-            Text(summary, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+fun SettingsSectionLabel(text: String) {
+    Text(text, Modifier.padding(start = 4.dp, top = 8.dp), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+}
+
+@Composable
+fun SettingsGroup(content: @Composable ColumnScope.() -> Unit) {
+    Surface(shape = RoundedCornerShape(18.dp), color = MaterialTheme.colorScheme.outlineVariant) {
+        Column(Modifier.fillMaxWidth().padding(1.dp), verticalArrangement = Arrangement.spacedBy(1.dp), content = content)
+    }
+}
+
+@Composable
+fun SettingsRow(title: String, summary: String, icon: GlyphName? = null, enabled: Boolean = true, onClick: () -> Unit) {
+    Surface(shape = RoundedCornerShape(0.dp), color = MaterialTheme.colorScheme.surfaceContainerLowest) {
+        Row(Modifier.fillMaxWidth().clickable(enabled = enabled, onClick = onClick).heightIn(min = 58.dp).padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+            if (icon != null) AppGlyph(icon, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(22.dp))
+            Column(Modifier.weight(1f).padding(start = if (icon == null) 0.dp else 14.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(title, style = MaterialTheme.typography.titleSmall)
+                Text(summary, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2)
+            }
+            AppGlyph(GlyphName.ChevronRight, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(16.dp))
         }
     }
 }

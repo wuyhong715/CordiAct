@@ -43,7 +43,7 @@ fun TrajectoryView(state: ExperienceState, onInspect: (ToolActivity) -> Unit, mo
                 TextButton(onClick = { zoom = 1f; pan = 0f; selected = null }) { Text("重置视图") }
             }
         }
-        item {
+        if (turns.isNotEmpty()) item {
             Surface(shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surface, border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
                 Column(Modifier.fillMaxWidth().heightIn(min = 250.dp).padding(18.dp), verticalArrangement = Arrangement.spacedBy(15.dp)) {
                     Row {
