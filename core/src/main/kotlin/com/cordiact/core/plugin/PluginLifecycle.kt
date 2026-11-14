@@ -331,7 +331,7 @@ class PluginLifecycleManager(
                         runtime.stopAndDrain(id)
                         capabilities.revokeAll(id)
                         runtime.detach(id)
-                        records.put(record.copy(state = PluginState.FAILED, lastError = "Interrupted system-plugin registration"))
+                        records.put(record.copy(state = PluginState.DISABLED, lastError = "Interrupted system-plugin registration; retry on next startup"))
                     }
                     record.state in setOf(PluginState.ENABLING, PluginState.ENABLED, PluginState.DISABLING) -> {
                         runtime.quiesce(id)
@@ -340,12 +340,22 @@ class PluginLifecycleManager(
                         runtime.detach(id)
                         records.put(record.copy(state = PluginState.DISABLED, lastError = "Recovered after process restart; re-enable required"))
                     }
+                    record.state == PluginState.FAILED && record.origin == PluginOrigin.BUNDLED_SYSTEM -> {
+                        // Bundled plugins are reconstructed and provenance-verified from the APK on
+                        // every launch. A stale FAILED row (for example from an interrupted upgrade)
+                        // must not permanently brick startup: quiesce it and let the host retry.
+                        runtime.quiesce(id)
+                        runtime.stopAndDrain(id)
+                        capabilities.suspendRuntimeAccess(id)
+                        runtime.detach(id)
+                        records.put(record.copy(state = PluginState.DISABLED, lastError = "Recovered after failed startup; retry required"))
+                    }
                     record.state == PluginState.FAILED -> {
                         runtime.quiesce(id)
                         runtime.stopAndDrain(id)
                         capabilities.suspendRuntimeAccess(id)
                         runtime.detach(id)
-                        needsRepair += id // Keep it blocked until an explicit repair or uninstall.
+                        needsRepair += id // User-installed plugins stay blocked until explicit repair or uninstall.
                     }
                     else -> Unit // REGISTERED and DISABLED are stable and non-routable until enabled.
                 }

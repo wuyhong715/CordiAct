@@ -249,6 +249,21 @@ class PluginLifecycleTest {
     }
 
     @Test
+    fun failedBundledPluginIsRetriedAfterRestart() {
+        val systemPlugin = FakePlugin(events, pluginId = "core.workspace-manager")
+        records.put(PluginRecord(systemPlugin.spec, PluginOrigin.BUNDLED_SYSTEM, PluginState.FAILED, "stale startup failure"))
+        val restarted = PluginLifecycleManager(
+            records, runtime, grants, data,
+            BundledPluginVerifier { it.id.startsWith("core.") },
+        )
+
+        assertEquals(emptyList(), restarted.recoverAfterProcessRestart())
+        assertEquals(PluginState.DISABLED, restarted.get(systemPlugin.spec.id)?.state)
+        restarted.registerBundledSystem(systemPlugin)
+        assertEquals(PluginState.ENABLED, restarted.enable(systemPlugin.spec.id).state)
+    }
+
+    @Test
     fun failedEnableFailsClosedAndRevokesCapabilities() {
         val broken = FakePlugin(events, throwsOnEnable = true)
         manager.register(broken)
