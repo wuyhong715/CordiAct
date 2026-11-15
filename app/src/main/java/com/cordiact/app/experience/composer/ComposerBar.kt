@@ -15,7 +15,6 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.*
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.*
 import androidx.compose.ui.platform.*
 import androidx.compose.ui.semantics.*
@@ -32,7 +31,6 @@ import kotlin.math.roundToInt
 internal fun ComposerBar(state: ExperienceState, composer: ComposerState, controller: ComposerController,
     insert: String, onInserted: () -> Unit, onSend: (String) -> Boolean, onStop: () -> Unit,
     onSelect: (ModelId) -> Unit, onManage: () -> Unit) {
-    var focused by remember { mutableStateOf(false) }
     var waiting by remember(state.sessionId) { mutableStateOf(false) }
     var confirmLocal by remember { mutableStateOf(false) }
     val context = LocalContext.current
@@ -74,7 +72,6 @@ internal fun ComposerBar(state: ExperienceState, composer: ComposerState, contro
         if (waiting && composer.sendAvailability == ComposerRules.SendAvailability.READY) { waiting = false; submit() }
         else if (composer.sendAvailability == ComposerRules.SendAvailability.BLOCKED) waiting = false
     }
-    val expanded = focused || composer.text.isNotEmpty() || composer.attachments.isNotEmpty() || composer.popover == ComposerPopover.Model || composer.popover == ComposerPopover.Effort
     val duration = motionDuration(Motion.Standard)
     Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
         AnimatedVisibility(composer.banner != null || composer.localOnlyCount > 0 || composer.failedCount > 0) {
@@ -87,11 +84,22 @@ internal fun ComposerBar(state: ExperienceState, composer: ComposerState, contro
         }
         com.cordiact.app.experience.FrostedSurface(
             modifier = Modifier.fillMaxWidth().animateContentSize(tween(duration))) {
-            Column(Modifier.padding(horizontal = 6.dp, vertical = 4.dp)) {
+            Column(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp)) {
                 AnimatedVisibility(composer.attachments.isNotEmpty(), enter = expandVertically(tween(duration)) + fadeIn(), exit = shrinkVertically(tween(duration)) + fadeOut()) {
                     AttachmentTray(composer.attachments, if (state.running) null else controller::remove, if (state.running) null else controller::retry)
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
+                    BasicTextField(composer.text, controller::text,
+                        enabled = !state.loading && !waiting,
+                        modifier = Modifier.weight(1f).padding(horizontal = 10.dp, vertical = 12.dp).heightIn(min = 24.dp, max = 160.dp)
+                            .testTag("composer-input"),
+                        minLines = 1, maxLines = 6, textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface),
+                        cursorBrush = SolidColor(MaterialTheme.colorScheme.primary), decorationBox = { field ->
+                            Box { if (composer.text.isEmpty()) Text("发送消息…", color = MaterialTheme.colorScheme.onSurfaceVariant); field() }
+                        })
+
+                }
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Box {
                         IconButton(onClick = { controller.popover(ComposerPopover.Attach) }, enabled = !state.loading && !state.running && !waiting) { AppGlyph(GlyphName.Plus, "添加附件", tint = if (composer.popover == ComposerPopover.Attach) MaterialTheme.colorScheme.primary else LocalContentColor.current) }
                         AnchoredPopover(composer.popover == ComposerPopover.Attach, { controller.popover(null) }) {
@@ -105,28 +113,16 @@ internal fun ComposerBar(state: ExperienceState, composer: ComposerState, contro
                             if (!composer.capabilities.attachments.declared) Text("当前模型不能读取附件，仅存到工作区", Modifier.padding(8.dp), style = MaterialTheme.typography.bodySmall)
                         }
                     }
-                    BasicTextField(composer.text, controller::text,
-                        enabled = !state.loading && !waiting,
-                        modifier = Modifier.weight(1f).padding(vertical = 10.dp).heightIn(min = 24.dp, max = 160.dp)
-                            .onFocusChanged { focused = it.isFocused }.testTag("composer-input"),
-                        minLines = 1, maxLines = 6, textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface),
-                        cursorBrush = SolidColor(MaterialTheme.colorScheme.primary), decorationBox = { field ->
-                            Box { if (composer.text.isEmpty()) Text("发送消息…", color = MaterialTheme.colorScheme.onSurfaceVariant); field() }
-                        })
-                    SendAction(state, composer, waiting, {
-                        if (state.running) onStop() else if (waiting) waiting = false else if (composer.sendAvailability == ComposerRules.SendAvailability.WAIT_FOR_ATTACHMENTS) waiting = true else submit()
-                    })
-                }
-                AnimatedVisibility(expanded, enter = expandVertically(tween(duration)) + fadeIn(), exit = shrinkVertically(tween(duration)) + fadeOut()) {
-                    Row(Modifier.fillMaxWidth().padding(start = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+
                         Box(Modifier.weight(1f)) {
                             Surface(onClick = { if (composer.model == null) onManage() else controller.popover(ComposerPopover.Effort) }, shape = CircleShape,
-                                color = MaterialTheme.colorScheme.surfaceContainerHigh, modifier = Modifier.heightIn(min = 40.dp).semantics { contentDescription = "模型与思考深度：${composer.pillLabel()}" }) {
-                                Row(Modifier.padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                color = Color.Transparent, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).semantics { contentDescription = "模型与思考深度：${composer.pillLabel()}" }) {
+                                Row(Modifier.padding(horizontal = 4.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                     if (composer.speed != ResponseSpeed.AUTO) AppGlyph(GlyphName.Bolt, size = GlyphSize.Small)
-                                    AnimatedContent(composer.pillLabel(), label = "model-pill", transitionSpec = { fadeIn(tween(duration)) togetherWith fadeOut(tween(duration)) }) { label ->
-                                        Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelLarge, modifier = Modifier.widthIn(max = 220.dp))
-                                    }
+                                    Text(composer.pillLabel(), maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.weight(1f, fill = false))
                                     AppGlyph(GlyphName.ChevronDown, size = GlyphSize.Small)
                                 }
                             }
@@ -139,8 +135,10 @@ internal fun ComposerBar(state: ExperienceState, composer: ComposerState, contro
                                     onManage = { controller.popover(null); onManage() })
                             }
                         }
+                    SendAction(state, composer, waiting, {
+                        if (state.running) onStop() else if (waiting) waiting = false else if (composer.sendAvailability == ComposerRules.SendAvailability.WAIT_FOR_ATTACHMENTS) waiting = true else submit()
+                    })
                     }
-                }
             }
         }
     }
