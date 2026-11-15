@@ -8,6 +8,9 @@ class BuiltInToolEffectClassifier : ToolEffectClassifier {
     override fun classify(toolId: String, ownerPluginId: String): ToolEffectClass = when {
         ownerPluginId == com.cordiact.core.security.CREDENTIAL_VAULT_PLUGIN_ID -> ToolEffectClass.CREDENTIAL
         toolId.startsWith("security_audit_") -> ToolEffectClass.PURE
+        toolId in setOf("job_list", "job_output", "job_probe", "tool_output_read", "skill.open") -> ToolEffectClass.WORKSPACE_READ
+        toolId == "job_kill" -> ToolEffectClass.COMMAND
+        toolId == "screen" -> ToolEffectClass.DEVICE_READ
         toolId == "workspace.files.write_text" -> ToolEffectClass.WORKSPACE_WRITE
         toolId in setOf("workspace.files.list", "workspace.files.read_text") -> ToolEffectClass.WORKSPACE_READ
         toolId in setOf("search.web", "search.fetch") -> ToolEffectClass.NETWORK

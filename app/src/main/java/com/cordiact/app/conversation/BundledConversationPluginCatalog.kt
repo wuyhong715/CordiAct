@@ -137,6 +137,14 @@ object BundledConversationPluginCatalog {
         com.cordiact.core.automation.AutomationCapabilities.BROWSER_CONTROL,
         com.cordiact.core.automation.AutomationCapabilities.PRIV_SHELL,
         com.cordiact.core.automation.AutomationCapabilities.DISPLAY_CONTROL,
+        com.cordiact.core.automation.AutomationCapabilities.SSH_EXEC,
+        com.cordiact.core.automation.AutomationCapabilities.SSH_SFTP,
+        com.cordiact.core.automation.AutomationCapabilities.SSH_TUNNEL,
+        com.cordiact.core.automation.AutomationCapabilities.TERMUX_EXEC,
+        com.cordiact.core.automation.AutomationCapabilities.TERMUX_SESSION,
+        com.cordiact.core.automation.AutomationCapabilities.PRIV_SHELL_ADVANCED,
+        com.cordiact.core.automation.AutomationCapabilities.PRIV_ROOT,
+
     )
 
     private val trustedSpecs = setOf(
@@ -286,6 +294,7 @@ class BundledConversationPlugins private constructor(
         autoReview: ((com.cordiact.core.security.SecurityContext, String, com.cordiact.core.tool.ToolArguments, () -> com.cordiact.core.tool.ToolResult) -> com.cordiact.core.tool.ToolResult)? = null,
         stateLookup: ToolPluginStateLookup,
         extraPlugins: List<ManagedPlugin> = emptyList(),
+        capabilityGate: com.cordiact.core.tool.ToolCapabilityGate = com.cordiact.core.tool.ToolCapabilityGate { _, required -> required.isEmpty() },
     ): List<ManagedPlugin> {
         registerContextTools(registry, spillStore)
         registerJobTools(registry, jobRegistry)
@@ -297,13 +306,7 @@ class BundledConversationPlugins private constructor(
             preferences = conversationStore,
             workspaces = workspaceManager,
             pluginStates = stateLookup,
-            // The default gate admits only tools that require nothing, so a declared capability
-            // would make the tool permanently undispatable. Delegation is a host-shipped
-            // capability: this build carries the runtime that enforces depth, Workspace equality
-            // and the grant copy, so it is granted here rather than through a user consent flow.
-            capabilities = com.cordiact.core.tool.ToolCapabilityGate { _, required ->
-                required.all { it in BundledConversationPluginCatalog.BUNDLED_GRANTED_CAPABILITIES }
-            },
+            capabilities = capabilityGate,
             executionPolicy = com.cordiact.core.tool.ToolExecutionAuthorizationPolicy(approvalGateway),
             autoReview = autoReview,
             accessPolicy = com.cordiact.core.security.EnvelopeToolAccessPolicy(

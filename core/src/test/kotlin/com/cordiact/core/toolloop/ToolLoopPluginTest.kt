@@ -69,6 +69,15 @@ class ToolLoopPluginTest {
     }
 
     @Test
+    fun emptyProviderReplyIsNotSuccessfulCompletion() {
+        val outcome = loop().run(CONTEXT, listOf(ModelMessage(MessageRole.USER, "hi")), dispatcher()) {
+            round("")
+        }
+        assertTrue(outcome is ToolLoopOutcome.Stopped)
+        assertEquals(ToolLoopStop.FAILED, outcome.reason)
+    }
+
+    @Test
     fun answersImmediatelyWhenNoToolsAreRequested() {
         val outcome = loop().run(CONTEXT, listOf(ModelMessage(MessageRole.USER, "hi")), dispatcher()) {
             round("hello")

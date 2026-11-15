@@ -19,6 +19,10 @@ class RootChannel : PrivilegedChannel {
 
     fun peekReady(): Boolean = cached?.ready == true
 
+    /** Explicit user-triggered re-probe; passive refresh must continue to use peekReady. */
+    @Synchronized
+    fun refreshStatus(): PrivilegeStatus = probe().also { cached = it }
+
     override fun status(): PrivilegeStatus {
         cached?.let { return it }
         val probed = probe()

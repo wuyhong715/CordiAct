@@ -49,10 +49,17 @@ class AndroidSettingsFacade(private val app: CordiActApplication) : SettingsFaca
     }
     override suspend fun setCapability(workspaceId: String, capability: String, enabled: Boolean) = withContext(Dispatchers.IO) {
         require(app.workspaceManager.get(workspaceId) != null) { "WORKSPACE_UNAVAILABLE" }
+        require(capability in com.cordiact.app.settings.CapabilitySettingsStore.IDS || capability.startsWith("mcp.")) { "UNKNOWN_CAPABILITY" }
         if (enabled && capability.startsWith("mcp.")) require(app.pluginManagerService().inventory().any { it.spec.id == "core.$capability" && it.state == com.cordiact.core.plugin.PluginState.ENABLED }) { "MCP_NOT_READY" }
         if (enabled && capability != "search" && !capability.startsWith("mcp.")) require(automationReadiness.probe(capability).state == com.cordiact.core.settings.ReadinessState.READY) { "CAPABILITY_NOT_READY" }
         audited("capability:$workspaceId:$capability", { capabilitySettings.revision(workspaceId) }) {
-            capabilitySettings.set(workspaceId, capability, enabled, com.cordiact.core.settings.SettingsWriter(audit = {}))
+            // Close visibility first; any partial persistence failure leaves the workspace closed.
+            capabilitySettings.set(workspaceId, capability, false, com.cordiact.core.settings.SettingsWriter(audit = {}))
+            app.tools.list(workspaceId).filter {
+                com.cordiact.core.settings.WorkspaceCapabilityPolicy.capabilityFor(it.descriptor.ownerPluginId) == capability
+            }.forEach { app.tools.setEnabled(workspaceId, it.descriptor.id, enabled) }
+            app.setPluginCapabilityConsent(workspaceId, capability, enabled)
+            if (enabled) capabilitySettings.set(workspaceId, capability, true, com.cordiact.core.settings.SettingsWriter(audit = {}))
         }
         Unit
     }
@@ -94,7 +101,7 @@ class AndroidSettingsFacade(private val app: CordiActApplication) : SettingsFaca
         val capabilities = app.pluginManagerService().inventory(workspaceId).mapNotNull { entry ->
             val id = entry.capabilityId ?: return@mapNotNull null
             val status = entry.readiness ?: return@mapNotNull null
-            CapabilitySummary(id, status.title, entry.workspaceEnabled == true, status)
+            CapabilitySummary(id, status.title, entry.workspaceEnabled == true && app.hasPluginCapabilityConsent(workspaceId, id), status)
         }.distinctBy { it.id }
         val connectionReadiness = capabilities.map { c -> c.readiness.let { r -> SettingsReadiness(r.id, c.label, SettingsStatus.valueOf(r.state.name), r.summary, r.reasonCode, "settings://connections/${c.id}") } }
         SettingsSnapshot(providers, available, readiness + connectionReadiness, providers.map { CredentialMeta("model", it.id, it.keyIsSet) }, roles, default, attachmentSettings.limits(), workspaceId, capabilities, app.workspaceManager.list().map { SecurityWorkspace(it.id, it.name) })

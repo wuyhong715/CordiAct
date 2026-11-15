@@ -299,6 +299,46 @@ class AndroidPluginLifecycleIntegrationTest {
         }
     }
 
+    @Test
+    fun workspaceConsentIsScopedAndSurvivesReopen() {
+        val record = record(state = PluginState.ENABLED)
+        store.put(record)
+        assertTrue(store.workspaceConsents(WORKSPACE_A, record.spec.id).isEmpty())
+
+        store.setWorkspaceConsent(WORKSPACE_A, record.spec.id, true)
+        assertEquals(record.spec.requestedCapabilities, store.workspaceConsents(WORKSPACE_A, record.spec.id))
+        assertTrue(store.workspaceConsents(WORKSPACE_B, record.spec.id).isEmpty())
+        assertEquals(record.spec.requestedCapabilities, store.activeConsents(record.spec.id))
+
+        // Revoking one workspace must not withdraw another workspace's live grant.
+        store.setWorkspaceConsent(WORKSPACE_B, record.spec.id, true)
+        store.setWorkspaceConsent(WORKSPACE_A, record.spec.id, false)
+        assertTrue(store.workspaceConsents(WORKSPACE_A, record.spec.id).isEmpty())
+        assertEquals(record.spec.requestedCapabilities, store.workspaceConsents(WORKSPACE_B, record.spec.id))
+        assertEquals(record.spec.requestedCapabilities, store.activeConsents(record.spec.id))
+
+        store.close()
+        store = AndroidPluginLifecycleStore(context, TEST_DATABASE)
+        assertEquals(record.spec.requestedCapabilities, store.workspaceConsents(WORKSPACE_B, record.spec.id))
+    }
+
+    @Test
+    fun workspaceConsentIsDroppedByVersionChangeAndRevokeAll() {
+        val record = record(state = PluginState.ENABLED)
+        store.put(record)
+        store.setWorkspaceConsent(WORKSPACE_A, record.spec.id, true)
+
+        store.put(record.copy(spec = record.spec.copy(version = "2.0.0")))
+        assertTrue(store.workspaceConsents(WORKSPACE_A, record.spec.id).isEmpty())
+        assertTrue(store.activeConsents(record.spec.id).isEmpty())
+
+        store.setWorkspaceConsent(WORKSPACE_A, record.spec.id, true)
+        assertEquals(record.spec.requestedCapabilities, store.workspaceConsents(WORKSPACE_A, record.spec.id))
+        store.revokeAll(record.spec.id)
+        assertTrue(store.workspaceConsents(WORKSPACE_A, record.spec.id).isEmpty())
+        assertTrue(store.activeConsents(record.spec.id).isEmpty())
+    }
+
     private fun record(
         id: String = "sample.notes",
         origin: PluginOrigin = PluginOrigin.USER_INSTALLED,
@@ -329,5 +369,9 @@ class AndroidPluginLifecycleIntegrationTest {
         override fun detach() { events += "detach" }
     }
 
-    private companion object { const val TEST_DATABASE = "cordiact-plugin-test.db" }
+    private companion object {
+        const val TEST_DATABASE = "cordiact-plugin-test.db"
+        const val WORKSPACE_A = "workspace-a"
+        const val WORKSPACE_B = "workspace-b"
+    }
 }

@@ -54,6 +54,7 @@ class AndroidPluginLifecycleStore(
             )""".trimIndent(),
         )
         db.execSQL("CREATE INDEX plugin_resources_owner ON $TABLE_RESOURCES($COL_RESOURCE_PLUGIN_ID)")
+        createWorkspaceConsents(db)
         db.execSQL(
             """CREATE TABLE $TABLE_GRANTS (
                 $COL_GRANT_PLUGIN_ID TEXT NOT NULL,
@@ -79,6 +80,7 @@ class AndroidPluginLifecycleStore(
             // restart; without this column an MCP server would come back with an empty config.
             db.execSQL("ALTER TABLE $TABLE_RECORDS ADD COLUMN $COL_CONFIG TEXT NOT NULL DEFAULT ''")
         }
+        if (oldVersion < 4 && newVersion >= 4) createWorkspaceConsents(db)
         if (newVersion > DATABASE_VERSION) throw IllegalStateException("Unsupported plugin lifecycle database version $newVersion")
     }
 
@@ -138,6 +140,7 @@ class AndroidPluginLifecycleStore(
             // Consent must not silently carry over to a different plugin version or removed capability.
             if (previousVersion != null && previousVersion != record.spec.version) {
                 db.delete(TABLE_GRANTS, "$COL_GRANT_PLUGIN_ID = ?", arrayOf(record.spec.id))
+                db.delete(TABLE_WORKSPACE_CONSENTS, "$COL_GRANT_PLUGIN_ID = ?", arrayOf(record.spec.id))
             } else {
                 val allowed = record.spec.requestedCapabilities
                 val existingCapabilities = db.query(
@@ -149,6 +152,13 @@ class AndroidPluginLifecycleStore(
                     null,
                     null,
                 ).use { cursor -> buildList { while (cursor.moveToNext()) add(cursor.getString(0)) } }
+                val scopedCapabilities = db.query(TABLE_WORKSPACE_CONSENTS, arrayOf(COL_GRANT_CAPABILITY),
+                    "$COL_GRANT_PLUGIN_ID = ?", arrayOf(record.spec.id), null, null, null
+                ).use { cursor -> buildSet { while (cursor.moveToNext()) add(cursor.getString(0)) } }
+                scopedCapabilities.filterNot { it in allowed }.forEach { capability ->
+                    db.delete(TABLE_WORKSPACE_CONSENTS,
+                        "$COL_GRANT_PLUGIN_ID = ? AND $COL_GRANT_CAPABILITY = ?", arrayOf(record.spec.id, capability))
+                }
                 existingCapabilities.filterNot { it in allowed }.forEach { capability ->
                     db.delete(
                         TABLE_GRANTS,
@@ -221,6 +231,54 @@ class AndroidPluginLifecycleStore(
         )
     }
 
+    private fun createWorkspaceConsents(db: SQLiteDatabase) {
+        db.execSQL("""CREATE TABLE $TABLE_WORKSPACE_CONSENTS (
+            $COL_WORKSPACE_ID TEXT NOT NULL,
+            $COL_GRANT_PLUGIN_ID TEXT NOT NULL,
+            $COL_GRANT_CAPABILITY TEXT NOT NULL,
+            PRIMARY KEY ($COL_WORKSPACE_ID, $COL_GRANT_PLUGIN_ID, $COL_GRANT_CAPABILITY),
+            FOREIGN KEY ($COL_GRANT_PLUGIN_ID) REFERENCES $TABLE_RECORDS($COL_ID) ON DELETE CASCADE
+        )""".trimIndent())
+    }
+
+    /** Explicit settings action only; legacy enabled switches are never inferred as consent. */
+    fun setWorkspaceConsent(workspaceId: String, pluginId: String, enabled: Boolean) {
+        require(workspaceId.isNotBlank())
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            val record = queryRecord(db, pluginId) ?: error("PLUGIN_NOT_REGISTERED")
+            writableDatabase.delete(TABLE_WORKSPACE_CONSENTS,
+                "$COL_WORKSPACE_ID = ? AND $COL_GRANT_PLUGIN_ID = ?", arrayOf(workspaceId, pluginId))
+            if (enabled) record.spec.requestedCapabilities.forEach { capability ->
+                writableDatabase.insertOrThrow(TABLE_WORKSPACE_CONSENTS, null, ContentValues().apply {
+                    put(COL_WORKSPACE_ID, workspaceId)
+                    put(COL_GRANT_PLUGIN_ID, pluginId)
+                    put(COL_GRANT_CAPABILITY, capability)
+                })
+                grantConsent(pluginId, capability)
+            }
+            // Revoking one workspace must not withdraw another workspace's live grant.
+            record.spec.requestedCapabilities.forEach { capability ->
+                val retained = readableDatabase.query(TABLE_WORKSPACE_CONSENTS, arrayOf(COL_GRANT_CAPABILITY),
+                    "$COL_GRANT_PLUGIN_ID = ? AND $COL_GRANT_CAPABILITY = ?", arrayOf(pluginId, capability),
+                    null, null, null).use { it.moveToFirst() }
+                if (!retained) writableDatabase.delete(TABLE_GRANTS,
+                    "$COL_GRANT_PLUGIN_ID = ? AND $COL_GRANT_CAPABILITY = ?", arrayOf(pluginId, capability))
+            }
+            if (record.state == PluginState.ENABLED) activateConsentedAccess(pluginId)
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    fun workspaceConsents(workspaceId: String, pluginId: String): Set<String> = readableDatabase.query(
+        TABLE_WORKSPACE_CONSENTS, arrayOf(COL_GRANT_CAPABILITY),
+        "$COL_WORKSPACE_ID = ? AND $COL_GRANT_PLUGIN_ID = ?", arrayOf(workspaceId, pluginId),
+        null, null, null,
+    ).use { cursor -> buildSet { while (cursor.moveToNext()) add(cursor.getString(0)) } }
+
     /** Record user consent for one requested capability. This is not a substitute for OS permission. */
     fun grantConsent(pluginId: String, capability: String) {
         val db = writableDatabase
@@ -273,6 +331,7 @@ class AndroidPluginLifecycleStore(
     }
 
     override fun revokeAll(id: String) {
+        writableDatabase.delete(TABLE_WORKSPACE_CONSENTS, "$COL_GRANT_PLUGIN_ID = ?", arrayOf(id))
         writableDatabase.delete(TABLE_GRANTS, "$COL_GRANT_PLUGIN_ID = ?", arrayOf(id))
     }
 
@@ -312,9 +371,11 @@ class AndroidPluginLifecycleStore(
 
     private companion object {
         const val DEFAULT_DATABASE_NAME = "cordiact-plugin-lifecycle.db"
-        const val DATABASE_VERSION = 3
+        const val DATABASE_VERSION = 4
         const val MAX_CONFIG_LENGTH = 64 * 1024
         const val TABLE_RECORDS = "plugin_records"
+        const val TABLE_WORKSPACE_CONSENTS = "plugin_workspace_consents"
+        const val COL_WORKSPACE_ID = "workspace_id"
         const val TABLE_GRANTS = "plugin_capability_grants"
         const val TABLE_RESOURCES = "plugin_owned_resources"
         const val COL_ID = "plugin_id"
