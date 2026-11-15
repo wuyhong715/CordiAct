@@ -331,6 +331,7 @@ class AndroidPluginLifecycleStore(
     }
 
     override fun revokeAll(id: String) {
+        writableDatabase.delete(TABLE_WORKSPACE_CONSENTS, "$COL_GRANT_PLUGIN_ID = ?", arrayOf(id))
         writableDatabase.delete(TABLE_GRANTS, "$COL_GRANT_PLUGIN_ID = ?", arrayOf(id))
     }
 
