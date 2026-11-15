@@ -35,6 +35,7 @@ fun registerSkillTools(registry: InMemoryToolDefinitionRegistry, skills: SkillSe
                     allowAdditional = false,
                 ),
                 ownerPluginId = SKILL_PLUGIN_ID,
+                defaultEnabled = true,
             ),
             executor = { context, arguments ->
                 val name = (arguments.values["name"] as? ToolValue.StringValue)?.value

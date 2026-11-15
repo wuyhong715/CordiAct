@@ -106,11 +106,13 @@ class DefaultApprovalGateway : ApprovalGateway {
     }
 
     override fun pendingRequests(): List<ApprovalRequest> =
-        pending.values.map { it.request }
+        pending.values.mapNotNull { slot -> synchronized(slot) { slot.request.takeIf { slot.decision == null } } }.sortedBy { it.id }
 
     override fun clear() {
         for (slot in pending.values) {
-            slot.decision = ApprovalDecision(approved = false, reason = "Approval gateway cleared")
+            synchronized(slot) {
+                if (slot.decision == null) slot.decision = ApprovalDecision(approved = false, reason = "Approval gateway cleared")
+            }
             slot.latch.countDown()
         }
         pending.clear()

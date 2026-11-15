@@ -36,6 +36,7 @@ fun registerWorkspaceFileTools(registry: InMemoryToolDefinitionRegistry, files: 
                     allowAdditional = false,
                 ),
                 ownerPluginId = FILE_MANAGER_PLUGIN_ID,
+                defaultEnabled = true,
             ),
             executor = { context, arguments ->
                 val directory = arguments.string("directory", required = false).orEmpty()
@@ -74,6 +75,7 @@ fun registerWorkspaceFileTools(registry: InMemoryToolDefinitionRegistry, files: 
                     ),
                 ),
                 ownerPluginId = FILE_MANAGER_PLUGIN_ID,
+                defaultEnabled = true,
             ),
             executor = { context, arguments ->
                 val path = arguments.string("path", required = true)!!
@@ -115,6 +117,7 @@ fun registerWorkspaceFileTools(registry: InMemoryToolDefinitionRegistry, files: 
                     ),
                 ),
                 ownerPluginId = FILE_MANAGER_PLUGIN_ID,
+                defaultEnabled = true,
             ),
             executor = { context, arguments ->
                 val path = arguments.string("path", required = true)!!

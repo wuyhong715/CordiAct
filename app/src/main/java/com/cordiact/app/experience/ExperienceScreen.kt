@@ -129,13 +129,17 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
                     }
                     },
                     bottom = {
-                    state.approvals.firstOrNull()?.let { request ->
+                    var approvalIndex by remember { mutableStateOf(0) }
+                    val visibleApprovalIndex = approvalIndex.coerceIn(0, (state.approvals.size - 1).coerceAtLeast(0))
+                    state.approvals.getOrNull(visibleApprovalIndex)?.let { request ->
                         Surface(Modifier.padding(horizontal = 16.dp, vertical = 5.dp).fillMaxWidth(), shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.tertiaryContainer) {
                             Column(Modifier.padding(13.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     AppGlyph(GlyphName.Warning, modifier = Modifier.size(17.dp))
                                     Text("需要确认 · ${request.toolName}", Modifier.padding(start = 7.dp).weight(1f), style = MaterialTheme.typography.titleSmall)
-                                    if (state.approvals.size > 1) Text("1 / ${state.approvals.size}", style = MaterialTheme.typography.labelSmall)
+                                    if (state.approvals.size > 1) TextButton(onClick = {
+                                        approvalIndex = (visibleApprovalIndex + 1) % state.approvals.size
+                                    }) { Text("${visibleApprovalIndex + 1} / ${state.approvals.size} · 下一项", style = MaterialTheme.typography.labelSmall) }
                                 }
                                 Text(request.summary, style = MaterialTheme.typography.bodySmall, maxLines = 5, overflow = TextOverflow.Ellipsis)
                                 request.details.takeIf { it.isNotEmpty() }?.let { details ->

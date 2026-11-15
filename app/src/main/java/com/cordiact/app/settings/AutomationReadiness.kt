@@ -13,7 +13,7 @@ import kotlinx.coroutines.withContext
 /** Passive probes only: no su launch, privilege grants or shell commands on refresh. */
 class AutomationReadiness(private val context: Context, private val runtime: AutomationRuntime) {
     @Volatile private var rootResult: Boolean? = null
-    fun testRoot() { rootResult = runtime.rootChannel.status().ready; check(rootResult == true) { "ROOT_UNAVAILABLE" } }
+    fun testRoot() { rootResult = runtime.rootChannel.refreshStatus().ready; check(rootResult == true) { "ROOT_UNAVAILABLE" } }
     fun rootReady() = rootResult == true
     fun probe(id: String): Readiness = try {
         when (id) {

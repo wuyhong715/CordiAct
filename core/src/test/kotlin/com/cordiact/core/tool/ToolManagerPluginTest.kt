@@ -257,6 +257,43 @@ class ToolManagerPluginTest {
         assertEquals(0, plugin.resolveEnabled(WORKSPACE_A, ToolActivationContext(WORKSPACE_A)).size)
     }
 
+    @Test
+    fun ownerAwareConsentIsCheckedAtDiscoveryAndAgainBeforeExecution() {
+        val registry = InMemoryToolDefinitionRegistry()
+        var calls = 0
+        val owned = descriptor().copy(requiredCapabilities = setOf("test.capability"))
+        registry.register(ToolDefinition(owned, ToolExecutor { _, _ -> calls++; ToolResult() }))
+        val foreign = owned.copy(id = "foreign.tool", ownerPluginId = "foreign.plugin")
+        registry.register(ToolDefinition(foreign, ToolExecutor { _, _ -> calls++; ToolResult() }))
+        val preferences = FakePreferences().apply {
+            listOf(WORKSPACE_A, WORKSPACE_B).forEach { workspace ->
+                setEnabled(workspace, TOOL_ID, true)
+                setEnabled(workspace, foreign.id, true)
+            }
+        }
+        var consent = false
+        val gate = object : ToolCapabilityGate {
+            override fun grantsAll(workspaceId: String, capabilityIds: Set<String>) = true
+            override fun grantsTool(workspaceId: String, descriptor: ToolDescriptor) =
+                consent && workspaceId == WORKSPACE_A && descriptor.ownerPluginId == OWNER_ID
+        }
+        val plugin = ToolManagerPlugin(registry, preferences, FakeWorkspaceManager(),
+            ToolPluginStateLookup { PluginState.ENABLED }, capabilities = gate)
+        plugin.onEnable()
+        assertTrue(plugin.resolveEnabled(WORKSPACE_A).isEmpty())
+        consent = true
+        assertEquals(listOf(TOOL_ID), plugin.resolveEnabled(WORKSPACE_A).map { it.id })
+        assertTrue(plugin.resolveEnabled(WORKSPACE_B).isEmpty())
+        plugin.invoke(context(WORKSPACE_A), TOOL_ID, validArgs())
+        consent = false
+        assertTrue(plugin.resolveEnabled(WORKSPACE_A).isEmpty())
+        val failure = assertFailsWith<ToolManagerException> {
+            plugin.invoke(context(WORKSPACE_A), TOOL_ID, validArgs())
+        }
+        assertEquals(ToolManagerException.Code.CAPABILITY_DENIED, failure.code)
+        assertEquals(1, calls)
+    }
+
     private fun manager(
         registry: ToolDefinitionRegistry,
         preferences: MutableToolPreferenceStore,

@@ -231,6 +231,9 @@ class ToolLoopPlugin(
             lastText = round.text.ifBlank { lastText }
 
             if (round.calls.isEmpty()) {
+                if (lastText.isBlank()) {
+                    return ToolLoopOutcome.Stopped(ToolLoopStop.FAILED, rounds, lastText, evidence.toList())
+                }
                 return ToolLoopOutcome.Completed(lastText, rounds, evidence.toList())
             }
 

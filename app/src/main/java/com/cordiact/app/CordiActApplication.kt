@@ -513,6 +513,21 @@ class CordiActApplication : Application() {
         val credentialRuntime = credentialVaultRuntime
         val plugins = conversationCatalog.create(
             stateLookup = { pluginId -> pluginLifecycle.manager.get(pluginId)?.state },
+            capabilityGate = object : com.cordiact.core.tool.ToolCapabilityGate {
+                override fun grantsAll(workspaceId: String, capabilityIds: Set<String>): Boolean = capabilityIds.isEmpty()
+                override fun grantsTool(workspaceId: String, descriptor: com.cordiact.core.tool.ToolDescriptor): Boolean {
+                    val required = descriptor.requiredCapabilities
+                    if (required.isEmpty()) return true
+                    val record = pluginLifecycle.manager.get(descriptor.ownerPluginId) ?: return false
+                    if (record.state != PluginState.ENABLED || !record.spec.requestedCapabilities.containsAll(required)) return false
+                    // Host runtime delegation is separate from device/connection consent.
+                    val hostRuntime = record.origin == com.cordiact.core.plugin.PluginOrigin.BUNDLED_SYSTEM &&
+                        record.spec.id in setOf("core.subagent", "core.subagent-orchestration", "core.subagent-background")
+                    if (hostRuntime) return required.all { it in BundledConversationPluginCatalog.BUNDLED_GRANTED_CAPABILITIES }
+                    return pluginLifecycle.store.workspaceConsents(workspaceId, record.spec.id).containsAll(required) &&
+                        pluginLifecycle.store.activeConsents(record.spec.id).containsAll(required)
+                }
+            },
             approvalGateway = approvalGateway,
             extraPlugins = listOf(credentialRuntime.credentialPlugin, credentialRuntime.auditPlugin),
             autoReview = credentialRuntime::reviewTool,
@@ -672,6 +687,23 @@ class CordiActApplication : Application() {
         val settings = com.cordiact.app.settings.CapabilitySettingsStore(this)
         val readiness = com.cordiact.app.settings.AutomationReadiness(this, automationRuntime)
         com.cordiact.app.plugin.BuiltinCapabilityInventory(conversationCatalog.toolRegistry, settings::enabled, readiness::probe)
+    }
+
+    fun hasPluginCapabilityConsent(workspaceId: String, capability: String): Boolean {
+        val records = pluginLifecycle.manager.all().filter {
+            com.cordiact.core.settings.WorkspaceCapabilityPolicy.capabilityFor(it.spec.id) == capability
+        }
+        return records.isNotEmpty() && records.all { record ->
+            pluginLifecycle.store.workspaceConsents(workspaceId, record.spec.id).containsAll(record.spec.requestedCapabilities)
+        }
+    }
+
+    /** Settings-only consent entry point; never called by model/plugin-manager tools. */
+    fun setPluginCapabilityConsent(workspaceId: String, capability: String, enabled: Boolean) {
+        require(workspaceManager.get(workspaceId) != null) { "WORKSPACE_UNAVAILABLE" }
+        pluginLifecycle.manager.all().filter {
+            com.cordiact.core.settings.WorkspaceCapabilityPolicy.capabilityFor(it.spec.id) == capability
+        }.forEach { pluginLifecycle.store.setWorkspaceConsent(workspaceId, it.spec.id, enabled) }
     }
 
     fun pluginManagerService(): PluginManagerService = AndroidPluginManagerService(

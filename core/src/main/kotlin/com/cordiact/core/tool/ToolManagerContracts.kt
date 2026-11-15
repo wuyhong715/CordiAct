@@ -217,6 +217,10 @@ fun interface ToolPluginStateLookup {
 
 fun interface ToolCapabilityGate {
     fun grantsAll(workspaceId: String, capabilityIds: Set<String>): Boolean
+
+    /** Owner-aware hook; legacy gates retain their existing capability-only behavior. */
+    fun grantsTool(workspaceId: String, descriptor: ToolDescriptor): Boolean =
+        grantsAll(workspaceId, descriptor.requiredCapabilities)
 }
 
 interface ToolDefinitionRegistry {
@@ -514,7 +518,7 @@ class ToolManagerPlugin(
         if (pluginStates.state(descriptor.ownerPluginId) != PluginState.ENABLED) {
             throw failure(ToolManagerException.Code.OWNER_PLUGIN_UNAVAILABLE, "Tool owner plugin is unavailable")
         }
-        if (!capabilities.grantsAll(context.workspaceId, descriptor.requiredCapabilities)) {
+        if (!capabilities.grantsTool(context.workspaceId, descriptor)) {
             throw failure(ToolManagerException.Code.CAPABILITY_DENIED, "Required capability is not granted")
         }
         validateArguments(descriptor.inputSchema, arguments)
@@ -698,7 +702,7 @@ class ToolManagerPlugin(
         descriptor = descriptor,
         enabledForWorkspace = isEnabled(workspaceId, descriptor),
         ownerEnabled = pluginStates.state(descriptor.ownerPluginId) == PluginState.ENABLED,
-        capabilitiesGranted = capabilities.grantsAll(workspaceId, descriptor.requiredCapabilities),
+        capabilitiesGranted = capabilities.grantsTool(workspaceId, descriptor),
     )
 
     private fun isEnabled(workspaceId: String, descriptor: ToolDescriptor): Boolean =

@@ -17,7 +17,7 @@ import com.cordiact.core.settings.ReadinessState
 internal fun ConnectionSettingsPage(state: SettingsSnapshot, vm: SettingsViewModel, busy: Boolean, initialCapabilityId: String? = null, onToggle: ((String, CapabilitySummary, Boolean) -> Unit)? = null) {
     val context = LocalContext.current
     WorkspaceScopePicker(state, busy, vm::selectWorkspace)
-    Text("关闭后，模型不再看到对应工具；已有调用请求也会重新检查。", style = MaterialTheme.typography.bodySmall)
+    Text("开启即同意此连接在当前工作区使用其声明的能力，并启用对应工具；执行仍受审批和系统权限限制。关闭会撤销本工作区同意，后续调用会重新检查。", style = MaterialTheme.typography.bodySmall)
     val targetRequester = remember { BringIntoViewRequester() }
     LaunchedEffect(initialCapabilityId, state.capabilities.map { it.id }) {
         if (initialCapabilityId != null && state.capabilities.any { it.id == initialCapabilityId }) {
