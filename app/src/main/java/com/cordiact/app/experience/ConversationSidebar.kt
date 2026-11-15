@@ -1,6 +1,14 @@
 package com.cordiact.app.experience
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
+import dev.chrisbanes.haze.HazeState
+import dev.chrisbanes.haze.hazeSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -47,49 +55,18 @@ fun ConversationSidebar(
     var name by rememberSaveable { mutableStateOf("") }
     val visible = remember(groups, query) { sidebarGroups(groups, query) }
     val colors = MaterialTheme.colorScheme
-    Column(modifier.fillMaxHeight().background(colors.surfaceContainerLowest).padding(horizontal = 14.dp)) {
-        Row(Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-            Surface(color = colors.primaryContainer, shape = RoundedCornerShape(12.dp)) {
-                AppGlyph(GlyphName.Chat, modifier = Modifier.padding(10.dp), tint = colors.primary)
-            }
-            Column(Modifier.weight(1f).padding(start = 12.dp)) {
-                Text("CordiAct", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-            }
-            IconButton(onClick = onClose) { AppGlyph(GlyphName.Close, description = "关闭侧边栏") }
-        }
-        FilledTonalButton(
-            onClick = { onNewSession(null) }, enabled = !busy,
-            shape = RoundedCornerShape(12.dp),
-            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
-            colors = ButtonDefaults.filledTonalButtonColors(containerColor = colors.primaryContainer, contentColor = colors.primary),
-        ) {
-            AppGlyph(GlyphName.Plus)
-            Spacer(Modifier.width(8.dp))
-            Text("新对话", style = MaterialTheme.typography.titleSmall)
-        }
-        if (!searchOpen) TextButton(onClick = { searchOpen = true }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
-            AppGlyph(GlyphName.Search, modifier = Modifier.size(18.dp))
-            Text("搜索工作区与对话", Modifier.weight(1f).padding(start = 8.dp), style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant)
-        }
-        Row(Modifier.fillMaxWidth().padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text("工作区", Modifier.weight(1f).padding(start = 8.dp), style = MaterialTheme.typography.labelLarge, color = colors.onSurfaceVariant)
-            IconButton(onClick = { searchOpen = !searchOpen; if (!searchOpen) query = "" }) {
-                AppGlyph(if (searchOpen) GlyphName.Close else GlyphName.Search, description = if (searchOpen) "收起搜索" else "搜索对话与工作区")
-            }
-            IconButton(onClick = { editingId = null; name = ""; editorOpen = true }, enabled = !busy) {
-                AppGlyph(GlyphName.Plus, description = "新建工作区")
-            }
-        }
-        if (searchOpen) {
-            OutlinedTextField(
-                value = query, onValueChange = { query = it }, singleLine = true,
-                placeholder = { Text("搜索对话或工作区", style = MaterialTheme.typography.bodyMedium) },
-                leadingIcon = { AppGlyph(GlyphName.Search) },
-                modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp), shape = RoundedCornerShape(12.dp),
-            )
-        }
-        if (busy) LinearProgressIndicator(Modifier.fillMaxWidth().height(2.dp))
-        if (error != null) {
+    val backdrop = remember { HazeState() }
+    var headerHeight by remember { mutableIntStateOf(0) }
+    var footerHeight by remember { mutableIntStateOf(0) }
+    val density = LocalDensity.current
+    val headerDp = with(density) { headerHeight.toDp() }
+    val footerDp = with(density) { footerHeight.toDp() }
+    CompositionLocalProvider(LocalBackdrop provides backdrop) {
+    Box(modifier.fillMaxHeight().fillMaxWidth().background(colors.surfaceContainerLowest).testTag("sidebar")) {
+      Column(Modifier.fillMaxSize().hazeSource(backdrop)) {
+        LazyColumn(Modifier.weight(1f).fillMaxWidth().testTag("sidebar-list"), contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = headerDp + 12.dp, bottom = footerDp + 24.dp)) {
+        if (busy) item { LinearProgressIndicator(Modifier.fillMaxWidth().height(2.dp)) }
+        if (error != null) item {
             Surface(color = colors.errorContainer, shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
                 Column(Modifier.padding(12.dp)) {
                     Text(error, color = colors.onErrorContainer, style = MaterialTheme.typography.bodySmall,
@@ -98,7 +75,6 @@ fun ConversationSidebar(
                 }
             }
         }
-        LazyColumn(Modifier.weight(1f).fillMaxWidth(), contentPadding = PaddingValues(bottom = 16.dp)) {
             if (visible.isEmpty()) item {
                 Text(if (query.isBlank()) "暂无工作区" else "没有匹配的对话或工作区", Modifier.padding(16.dp),
                     style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant)
@@ -107,7 +83,7 @@ fun ConversationSidebar(
                 val isExpanded = query.isNotBlank() || workspace.id in expanded ||
                     (workspace.id == activeWorkspaceId && workspace.id !in collapsed)
                 item(key = "workspace:${workspace.id}") {
-                    Row(Modifier.fillMaxWidth().padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Row(Modifier.fillMaxWidth().padding(top = 2.dp), verticalAlignment = Alignment.CenterVertically) {
                         IconButton(onClick = {
                             if (isExpanded) { expanded = expanded - workspace.id; collapsed = collapsed + workspace.id }
                             else { expanded = expanded + workspace.id; collapsed = collapsed - workspace.id }
@@ -117,13 +93,13 @@ fun ConversationSidebar(
                         }
                         Surface(
                             onClick = { onSelectWorkspace(workspace.id) }, enabled = !busy,
-                            color = if (workspace.id == activeWorkspaceId) colors.surfaceContainerLow else colors.surfaceContainerLowest, shape = RoundedCornerShape(12.dp),
+                            color = Color.Transparent, shape = RoundedCornerShape(12.dp),
                             modifier = Modifier.weight(1f).semantics { selected = workspace.id == activeWorkspaceId },
                         ) {
-                            Row(Modifier.heightIn(min = 48.dp).padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Row(Modifier.heightIn(min = 48.dp).padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                                 AppGlyph(GlyphName.Folder, modifier = Modifier.size(21.dp), tint = if (workspace.id == activeWorkspaceId) colors.primary else colors.onSurfaceVariant)
                                 Text(workspace.name, Modifier.weight(1f).padding(start = 8.dp), style = MaterialTheme.typography.titleSmall,
-                                    maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                    maxLines = 1, overflow = TextOverflow.Ellipsis)
                             }
                         }
                         Box {
@@ -141,21 +117,25 @@ fun ConversationSidebar(
                 }
                 if (isExpanded) {
                     if (workspace.sessions.isEmpty()) item(key = "empty:${workspace.id}") {
-                        Text("还没有对话", Modifier.padding(start = 38.dp, top = 8.dp, bottom = 12.dp),
+                        Text("还没有对话", Modifier.padding(start = 32.dp, top = 8.dp, bottom = 12.dp),
                             style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
                     }
                     items(workspace.sessions, key = { "session:${it.id}" }) { session ->
                         val current = activeSessionId == session.id
                         Surface(
                             onClick = { onSelectSession(session.id) }, enabled = !busy,
-                            shape = RoundedCornerShape(12.dp),
+                            shape = RoundedCornerShape(10.dp),
                             color = if (current) colors.primaryContainer else colors.surfaceContainerLowest,
-                            modifier = Modifier.fillMaxWidth().padding(start = 24.dp, top = 2.dp, bottom = 2.dp)
+                            modifier = Modifier.fillMaxWidth().padding(start = 20.dp)
                                 .semantics { selected = current; if (session.id in runningSessionIds) stateDescription = "执行中" },
                         ) {
-                            Row(Modifier.heightIn(min = 48.dp).padding(horizontal = 14.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Row(Modifier.heightIn(min = 48.dp).padding(horizontal = 12.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                                 Text(session.title.ifBlank { "新对话" }, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium,
-                                    fontWeight = if (current) FontWeight.Medium else FontWeight.Normal, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                    fontWeight = if (current) FontWeight.Medium else FontWeight.Normal, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                if (session.updatedAtMillis > 0) Text(
+                                    remember(session.updatedAtMillis) { java.text.SimpleDateFormat("MM-dd", java.util.Locale.getDefault()).format(java.util.Date(session.updatedAtMillis)) },
+                                    Modifier.padding(start = 8.dp), style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant,
+                                    maxLines = 1)
                                 if (session.id in runningSessionIds) {
                                     Text("●", Modifier.padding(start = 8.dp), color = colors.primary, style = MaterialTheme.typography.labelSmall)
                                 }
@@ -165,15 +145,56 @@ fun ConversationSidebar(
                 }
             }
         }
-        HorizontalDivider(color = colors.outlineVariant)
-        Surface(onClick = onSettings, color = colors.surfaceContainerLowest, shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth()) {
-            Row(Modifier.heightIn(min = 56.dp).padding(horizontal = 12.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-                AppGlyph(GlyphName.Settings)
-                Text("设置", Modifier.padding(start = 12.dp).weight(1f), style = MaterialTheme.typography.bodyMedium)
-                AppGlyph(GlyphName.ChevronRight, tint = colors.onSurfaceVariant, modifier = Modifier.size(16.dp))
+      }
+      ViewportFade(backdrop, true, Modifier.align(Alignment.TopCenter).fillMaxWidth().height(headerDp + 12.dp))
+      ViewportFade(backdrop, false, Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(footerDp + 16.dp))
+      Column(Modifier.align(Alignment.TopCenter).fillMaxWidth().onSizeChanged { headerHeight = it.height }.padding(horizontal = 12.dp)) {
+        Row(Modifier.fillMaxWidth().heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically) {
+            AppGlyph(GlyphName.Chat, modifier = Modifier.size(24.dp), tint = colors.primary)
+            Text("CordiAct", Modifier.weight(1f).padding(start = 10.dp), fontSize = 20.sp, fontWeight = FontWeight.Medium)
+            IconButton(onClick = onClose) { AppGlyph(GlyphName.Close, "关闭侧边栏", Modifier.size(20.dp)) }
+        }
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (searchOpen) {
+                Surface(color = colors.surfaceContainerLow, shape = RoundedCornerShape(10.dp), modifier = Modifier.weight(1f)) {
+                    Row(Modifier.heightIn(min = 48.dp).padding(start = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                        BasicTextField(query, { query = it }, Modifier.weight(1f).testTag("sidebar-search"), singleLine = true,
+                            textStyle = MaterialTheme.typography.bodyMedium.copy(color = colors.onSurface),
+                            decorationBox = { field -> Box { if (query.isEmpty()) Text("搜索…", color = colors.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium); field() } })
+                        IconButton(onClick = { query = ""; searchOpen = false }) { AppGlyph(GlyphName.Close, "收起搜索", Modifier.size(18.dp)) }
+                    }
+                }
+            } else Surface(onClick = { searchOpen = true }, color = colors.surfaceContainerLow, shape = RoundedCornerShape(10.dp), modifier = Modifier.weight(1f).testTag("sidebar-search-open")) {
+                Row(Modifier.heightIn(min = 48.dp).padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    AppGlyph(GlyphName.Search, "搜索对话与工作区", Modifier.size(18.dp), tint = colors.onSurfaceVariant)
+                    Text("搜索…", Modifier.padding(start = 8.dp), style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant)
+                }
+            }
+            val compactAction = LocalDensity.current.fontScale > 1.3f || androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp < 360
+            FilledTonalButton(onClick = { onNewSession(null) }, enabled = !busy,
+                shape = RoundedCornerShape(10.dp), contentPadding = PaddingValues(horizontal = 12.dp),
+                modifier = Modifier.heightIn(min = 48.dp).testTag("sidebar-new-session"),
+                colors = ButtonDefaults.filledTonalButtonColors(containerColor = colors.primaryContainer, contentColor = colors.primary)) {
+                AppGlyph(GlyphName.Plus, "新对话", Modifier.size(18.dp))
+                if (!compactAction) Text("新对话", Modifier.padding(start = 6.dp), style = MaterialTheme.typography.labelLarge)
             }
         }
-
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text("工作区", Modifier.weight(1f).padding(start = 4.dp), style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant)
+            IconButton(onClick = { editingId = null; name = ""; editorOpen = true }, enabled = !busy) { AppGlyph(GlyphName.Plus, "新建工作区", Modifier.size(18.dp)) }
+        }
+      }
+      Row(Modifier.align(Alignment.BottomCenter).fillMaxWidth().onSizeChanged { footerHeight = it.height }
+          .padding(horizontal = 12.dp, vertical = 4.dp).heightIn(min = 56.dp).testTag("sidebar-footer"), verticalAlignment = Alignment.CenterVertically) {
+          // Reserved for a future avatar + account name. No fake account or dead target.
+          Spacer(Modifier.weight(1f))
+          FrostedSurface(radius = 24.dp) {
+              IconButton(onClick = onSettings, modifier = Modifier.testTag("sidebar-settings")) {
+                  AppGlyph(GlyphName.Settings, "设置", Modifier.size(21.dp), tint = colors.onSurfaceVariant)
+              }
+          }
+      }
+    }
     }
     if (editorOpen) {
         val id = editingId
@@ -221,7 +242,7 @@ fun WorkspaceNameEditor(
         )
         if (!busy && validation == null && error != null) {
             Text(error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall,
-                modifier = Modifier.padding(top = 4.dp))
+                modifier = Modifier.padding(top = 2.dp))
         }
         Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.End) {
             TextButton(onClick = onDismiss, enabled = !busy) { Text("取消") }

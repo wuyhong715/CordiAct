@@ -99,7 +99,7 @@ class ConversationSidebarTest {
         compose.onNodeWithContentDescription("搜索对话与工作区").performClick()
         compose.onNode(hasSetTextAction()).performTextInput("不存在")
         compose.onNodeWithText("没有匹配的对话或工作区").assertIsDisplayed()
-        compose.onNodeWithText("设置").assertIsDisplayed().performClick()
+        compose.onNodeWithContentDescription("设置").assertIsDisplayed().performClick()
         assertEquals(1, settings)
     }
 
@@ -136,7 +136,7 @@ class ConversationSidebarTest {
         compose.onNodeWithContentDescription("新建工作区").assertIsNotEnabled()
         compose.onNodeWithText("侧边栏设计").assertIsNotEnabled()
         compose.onNodeWithContentDescription("关闭侧边栏").assertIsEnabled()
-        compose.onNodeWithText("设置").assertIsEnabled()
+        compose.onNodeWithContentDescription("设置").assertIsEnabled()
     }
 
     @Test fun failureShowsRetryAndLeavesSelectionVisible() {
@@ -150,10 +150,10 @@ class ConversationSidebarTest {
     @Test fun longListScrollsWithoutMovingSettingsAndSupportsNarrowScreens() {
         val many = groups.take(1).map { it.copy(sessions = (1..60).map { i -> SidebarConversation("s$i", "对话 $i", i.toLong()) }) }
         show(data = many, width = 275)
-        val before = compose.onNodeWithText("设置").fetchSemanticsNode().boundsInRoot
+        val before = compose.onNodeWithContentDescription("设置").fetchSemanticsNode().boundsInRoot
         compose.onNode(hasScrollAction()).performScrollToNode(hasText("对话 1", substring = false))
         compose.onNodeWithText("对话 1", substring = false).assertIsDisplayed()
-        assertEquals(before, compose.onNodeWithText("设置").fetchSemanticsNode().boundsInRoot)
+        assertEquals(before, compose.onNodeWithContentDescription("设置").fetchSemanticsNode().boundsInRoot)
         compose.onNodeWithContentDescription("新建工作区").assertIsDisplayed()
     }
 }
