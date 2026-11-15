@@ -19,9 +19,6 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.cordiact.app.experience.AppGlyph
 import com.cordiact.app.experience.GlyphName
-import com.cordiact.app.experience.settings.components.SettingsSectionLabel
-import com.cordiact.app.experience.settings.components.SettingsRow
-import com.cordiact.app.experience.settings.components.SettingsGroup
 import com.cordiact.app.experience.settings.components.*
 import com.cordiact.core.conversation.ModelId
 import com.cordiact.model.providers.ModelProtocol
@@ -70,9 +67,30 @@ fun SettingsHost(vm: SettingsViewModel, initialLink: String? = null, onBack: () 
     }
     fun navigate(target: SettingsRoute) = requestNavigation(navigation.push(target))
     fun back() = requestNavigation(navigation.pop())
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val termuxPermission = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestPermission()) { vm.reload() }
     fun openLink(raw: String?) {
         val link = SettingsLink.parse(raw) ?: return
         if (busy || securityBusy || dirty || discardBusy) return
+        if (raw == "settings://connections/screen") {
+            val component = android.content.ComponentName(context, com.cordiact.app.screen.CordiActAccessibilityService::class.java)
+            val intent = android.content.Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS)
+                .putExtra(":settings:fragment_args_key", component.flattenToString())
+                .putExtra(":settings:show_fragment_args", android.os.Bundle().apply {
+                    putString(":settings:fragment_args_key", component.flattenToString())
+                })
+            if (intent.resolveActivity(context.packageManager) != null) {
+                context.startActivity(intent)
+                return
+            }
+        }
+        if (raw == "settings://connections/termux" &&
+            androidx.core.content.ContextCompat.checkSelfPermission(context, "com.termux.permission.RUN_COMMAND") != android.content.pm.PackageManager.PERMISSION_GRANTED &&
+            runCatching { context.packageManager.getPermissionInfo("com.termux.permission.RUN_COMMAND", 0) }.isSuccess) {
+            termuxPermission.launch("com.termux.permission.RUN_COMMAND")
+            return
+        }
         providerId = link.providerId
         connectionId = link.connectionId
         applyNavigation(link.navigation())
@@ -90,7 +108,7 @@ fun SettingsHost(vm: SettingsViewModel, initialLink: String? = null, onBack: () 
             }
         }) { Text(if (discardBusy) "正在清理…" else "放弃") } })
     val snackbar = remember { SnackbarHostState() }
-    Scaffold(snackbarHost = { SnackbarHost(snackbar) }, topBar = { TopAppBar(title = { Text(route.title) }, navigationIcon = {
+    Scaffold(containerColor = MaterialTheme.colorScheme.surfaceContainerLow, snackbarHost = { SnackbarHost(snackbar) }, topBar = { TopAppBar(title = { Text(route.title) }, navigationIcon = {
         IconButton({ back() }, enabled = !busy && !securityBusy) { AppGlyph(GlyphName.Back, "返回") }
     }, actions = { if (route == SettingsRoute.PROVIDERS) TextButton({ navigate(SettingsRoute.ADD) }, enabled = !busy) { Text("添加") } }) }) { inset ->
         Row(Modifier.padding(inset).fillMaxSize()) {
@@ -104,7 +122,7 @@ fun SettingsHost(vm: SettingsViewModel, initialLink: String? = null, onBack: () 
             Box(Modifier.weight(1f).fillMaxHeight(), contentAlignment = Alignment.TopCenter) {
             key(route, providerId) {
             Column(Modifier.widthIn(max = 640.dp).fillMaxWidth().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text(when (route) {
+                if (route != SettingsRoute.HOME) Text(when (route) {
                     SettingsRoute.HOME -> "全局与工作区设置"
                     SettingsRoute.PERMISSIONS -> "按工作区设置"
                     SettingsRoute.CONNECTIONS -> "全局连接状态 · 工作区能力开关"
@@ -158,40 +176,7 @@ fun SettingsHost(vm: SettingsViewModel, initialLink: String? = null, onBack: () 
 }
 @Composable
 private fun SettingsMenu(state: SettingsSnapshot, navigate: (SettingsRoute) -> Unit, openLink: (String?) -> Unit) {
-    SettingsHome(state, { navigate(SettingsRoute.PROVIDERS) }, { navigate(SettingsRoute.ROLES) }, openLink)
-    SettingsSectionLabel("连接与能力")
-    SettingsGroup {
-        SettingsRow("SSH 主机", "全局 · 凭据库与指纹固定", GlyphName.Terminal) { navigate(SettingsRoute.SSH) }
-        SettingsRow("连接与能力", "当前工作区 · 就绪向导与能力开关", GlyphName.Connections) { navigate(SettingsRoute.CONNECTIONS) }
-        SettingsRow("权限档位", "按工作区 · 四档权限与独立审核人", GlyphName.Shield) { navigate(SettingsRoute.PERMISSIONS) }
-        SettingsRow("特权执行", "全局开关 · 仅完全权限工作区生效", GlyphName.Bolt) { navigate(SettingsRoute.PRIVILEGE) }
-    }
-    SettingsSectionLabel("模型与工具")
-    SettingsGroup {
-        SettingsRow("已存凭据", "模型 / 搜索 / SSH / MCP · 元数据与清除", GlyphName.Credential) { navigate(SettingsRoute.CREDENTIALS) }
-        SettingsRow("搜索服务", "工作区模式与排序 · 全局 Key 和地址", GlyphName.Search) { navigate(SettingsRoute.SEARCH) }
-        SettingsRow("MCP 服务器", "全局 · 连接探测、鉴权与工具预览", GlyphName.Connections) { navigate(SettingsRoute.MCP) }
-        SettingsRow("附件限制", "全局 · 仅允许下调安全上限", GlyphName.Folder) { navigate(SettingsRoute.ATTACHMENTS) }
-    }
-    SettingsSectionLabel("信息与安全")
-    SettingsGroup {
-        SettingsRow("审计日志", "安全 / 凭据 / 审批 · 只读", GlyphName.Audit) { navigate(SettingsRoute.AUDIT) }
-        SettingsRow("关于", "版本 / 构建号 / 开源许可", GlyphName.Info) { navigate(SettingsRoute.ABOUT) }
-    }
-}
-@Composable
-private fun SettingsHome(state: SettingsSnapshot, providers: () -> Unit, roles: () -> Unit, openLink: (String?) -> Unit) {
-    val warnings = state.readiness.filter { it.state == SettingsStatus.ERROR || it.state == SettingsStatus.NEEDS_ACTION }
-    if (warnings.isNotEmpty()) {
-        Text("${warnings.size} 项需要处理", style = MaterialTheme.typography.titleMedium)
-        warnings.forEach { item ->
-            val link = item.route ?: if (item.id.startsWith("role:")) "settings://models/roles" else null
-            SettingsRow(item.title, item.summary, enabled = SettingsLink.parse(link) != null) { openLink(link) }
-        }
-    }
-    Text("模型", style = MaterialTheme.typography.titleMedium)
-    SettingsRow("模型提供商", "${state.providers.size} 个 · ${state.providers.sumOf { it.enabled.size }} 个启用模型", GlyphName.Model) { providers() }
-    SettingsRow("模型角色", "对话默认 / 上下文摘要 / 记忆抽取", GlyphName.Role) { roles() }
+    SettingsOverview(state, navigate, openLink)
 }
 @Composable
 private fun ProviderList(state: SettingsSnapshot, select: (String) -> Unit) {

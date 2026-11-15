@@ -95,7 +95,7 @@ class AndroidSettingsFacade(private val app: CordiActApplication) : SettingsFaca
             val id = entry.capabilityId ?: return@mapNotNull null
             val status = entry.readiness ?: return@mapNotNull null
             CapabilitySummary(id, status.title, entry.workspaceEnabled == true, status)
-        }
+        }.distinctBy { it.id }
         val connectionReadiness = capabilities.map { c -> c.readiness.let { r -> SettingsReadiness(r.id, c.label, SettingsStatus.valueOf(r.state.name), r.summary, r.reasonCode, "settings://connections/${c.id}") } }
         SettingsSnapshot(providers, available, readiness + connectionReadiness, providers.map { CredentialMeta("model", it.id, it.keyIsSet) }, roles, default, attachmentSettings.limits(), workspaceId, capabilities, app.workspaceManager.list().map { SecurityWorkspace(it.id, it.name) })
     }
