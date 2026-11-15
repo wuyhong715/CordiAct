@@ -33,7 +33,7 @@ fun TrajectoryView(state: ExperienceState, onInspect: (ToolActivity) -> Unit, mo
     var zoom by rememberSaveable(state.sessionId) { mutableFloatStateOf(1f) }
     var pan by rememberSaveable(state.sessionId) { mutableFloatStateOf(0f) }
     var selected by rememberSaveable(state.sessionId) { mutableStateOf<String?>(null) }
-    LazyColumn(modifier.fillMaxSize(), contentPadding = PaddingValues(horizontal = 16.dp, vertical = 18.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
+    LazyColumn(modifier.fillMaxSize(), contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = LocalChromePadding.current.calculateTopPadding(), bottom = LocalChromePadding.current.calculateBottomPadding()), verticalArrangement = Arrangement.spacedBy(18.dp)) {
         item {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {

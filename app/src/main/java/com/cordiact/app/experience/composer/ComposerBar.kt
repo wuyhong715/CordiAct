@@ -76,7 +76,6 @@ internal fun ComposerBar(state: ExperienceState, composer: ComposerState, contro
     }
     val expanded = focused || composer.text.isNotEmpty() || composer.attachments.isNotEmpty() || composer.popover == ComposerPopover.Model || composer.popover == ComposerPopover.Effort
     val duration = motionDuration(Motion.Standard)
-    val border by animateColorAsState(if (focused) MaterialTheme.colorScheme.primary.copy(alpha = .4f) else MaterialTheme.colorScheme.outlineVariant, tween(duration))
     Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
         AnimatedVisibility(composer.banner != null || composer.localOnlyCount > 0 || composer.failedCount > 0) {
             Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -86,8 +85,8 @@ internal fun ComposerBar(state: ExperienceState, composer: ComposerState, contro
                 if (composer.localOnlyCount > 0) TextButton(onClick = { controller.popover(ComposerPopover.Model) }) { Text("换模型") }
             }
         }
-        Surface(shape = RoundedCornerShape(24.dp), border = BorderStroke(1.dp, border), color = MaterialTheme.colorScheme.surface,
-            shadowElevation = 2.dp, modifier = Modifier.fillMaxWidth().animateContentSize(tween(duration))) {
+        com.cordiact.app.experience.FrostedSurface(
+            modifier = Modifier.fillMaxWidth().animateContentSize(tween(duration))) {
             Column(Modifier.padding(horizontal = 6.dp, vertical = 4.dp)) {
                 AnimatedVisibility(composer.attachments.isNotEmpty(), enter = expandVertically(tween(duration)) + fadeIn(), exit = shrinkVertically(tween(duration)) + fadeOut()) {
                     AttachmentTray(composer.attachments, if (state.running) null else controller::remove, if (state.running) null else controller::retry)

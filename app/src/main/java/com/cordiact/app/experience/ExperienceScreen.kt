@@ -98,12 +98,12 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
                 ExperienceFrame(
                     top = {
                     Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
-                        IconButton(onClick = { scope.launch { drawer.open() } }, modifier = Modifier.testTag("open-navigation")) { AppGlyph(GlyphName.Menu, "打开工作区和会话") }
+                        FrostedSurface(radius = 24.dp) { IconButton(onClick = { scope.launch { drawer.open() } }, modifier = Modifier.testTag("open-navigation")) { AppGlyph(GlyphName.Menu, "打开工作区和会话") } }
                         Column(Modifier.weight(1f).padding(horizontal = 4.dp)) {
-                            Text(state.workspace?.name ?: "CordiAct", style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            Text(state.sessions.find { it.id == state.sessionId }?.title ?: "你的智能工作空间", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(state.workspace?.name ?: "CordiAct", style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(state.sessions.find { it.id == state.sessionId }?.title ?: "你的智能工作空间", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
-                        Row(Modifier.padding(end = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                        if (state.running) Row(Modifier.padding(end = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                             Box(Modifier.size(6.dp).background(if (state.running) MaterialTheme.colorScheme.primary else Color(0xFF5B927C), CircleShape))
                             Text(if (state.running) "运行中" else "就绪", style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(start = 6.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
@@ -123,7 +123,7 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
                         when (windows[page].id) {
                             "chat" -> TranscriptView(state, onPrompt = { promptToInsert = it }, onInspect = { inspected = it })
                             "trace" -> TrajectoryView(state, onInspect = { inspected = it })
-                            "preview" -> PreviewView(state, visible = pager.settledPage == 2)
+                            "preview" -> PreviewView(state, visible = pager.settledPage == 2, modifier = Modifier.padding(LocalChromePadding.current))
                         }
                     }
                     }
