@@ -46,6 +46,8 @@ dependencies {
     implementation(project(":subagent"))
     implementation("androidx.activity:activity-compose:1.10.0")
     implementation("androidx.compose.ui:ui:1.7.6")
+    // Background sampling + progressive blur (not foreground Modifier.blur).
+    implementation("dev.chrisbanes.haze:haze:1.6.10")
     implementation("androidx.compose.ui:ui-tooling-preview:1.7.6")
     implementation("androidx.webkit:webkit:1.14.0")
     implementation("androidx.compose.material3:material3:1.3.1")

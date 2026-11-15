@@ -65,17 +65,17 @@ fun TranscriptView(state: ExperienceState, onPrompt: (String) -> Unit, onInspect
         snapshotFlow {
             val layout = list.layoutInfo
             val footer = layout.visibleItemsInfo.lastOrNull { it.key == "transcript-end" }
-            latestPinned && latestRunning && latestCount > 0 && (footer == null || footer.offset + footer.size > layout.viewportEndOffset)
+            latestPinned && latestRunning && latestCount > 0 && (footer == null || footer.offset + footer.size > layout.viewportEndOffset - layout.afterContentPadding)
         }.collect { shouldFollow -> if (shouldFollow) list.scrollToItem(latestCount) }
     }
     Box(modifier.fillMaxSize()) {
         if (state.loading && state.turns.isEmpty()) {
             CircularProgressIndicator(Modifier.align(Alignment.Center).size(25.dp), strokeWidth = 2.dp)
         } else if (state.turns.isEmpty()) {
-            EmptyConversation(onPrompt, Modifier.align(Alignment.Center).padding(horizontal = 27.dp))
+            EmptyConversation(onPrompt, Modifier.align(Alignment.Center).padding(LocalChromePadding.current).padding(horizontal = 27.dp))
         } else {
             LazyColumn(
-                state = list, contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 18.dp, bottom = 32.dp),
+                state = list, contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = LocalChromePadding.current.calculateTopPadding(), bottom = LocalChromePadding.current.calculateBottomPadding()),
                 verticalArrangement = Arrangement.spacedBy(28.dp),
                 modifier = Modifier.fillMaxSize().nestedScroll(connection).testTag("transcript"),
             ) {
@@ -86,11 +86,13 @@ fun TranscriptView(state: ExperienceState, onPrompt: (String) -> Unit, onInspect
             }
         }
         if (!pinned) {
-            FilledTonalButton(
-                onClick = { pinPolicy.pin(); pinned = true; unread = 0; scope.launch { if (state.turns.isNotEmpty()) list.animateScrollToItem(state.turns.size) } },
-                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp).testTag("jump-to-latest"),
-                elevation = ButtonDefaults.filledTonalButtonElevation(3.dp),
-            ) { AppGlyph(GlyphName.ArrowDown, modifier = Modifier.size(15.dp)); Spacer(Modifier.width(8.dp)); Text(if (unread == 0) "回到最新" else "$unread 次新动态") }
+            FrostedSurface(Modifier.align(Alignment.BottomEnd).padding(end = 16.dp,
+                bottom = maxOf(8.dp, LocalChromePadding.current.calculateBottomPadding() - 12.dp)), radius = 20.dp) {
+                TextButton(
+                    onClick = { pinPolicy.pin(); pinned = true; unread = 0; scope.launch { if (state.turns.isNotEmpty()) list.animateScrollToItem(state.turns.size) } },
+                    modifier = Modifier.testTag("jump-to-latest"),
+                ) { AppGlyph(GlyphName.ArrowDown, modifier = Modifier.size(15.dp)); Spacer(Modifier.width(6.dp)); Text(if (unread == 0) "最新" else "$unread 次新动态") }
+            }
         }
     }
 }
@@ -139,9 +141,9 @@ private fun TurnView(turn: TranscriptTurn, onInspect: (ToolActivity) -> Unit) {
         if (turn.prompt.isNotEmpty()) {
             Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {
                 Surface(
-                    shape = RoundedCornerShape(20.dp, 20.dp, 5.dp, 20.dp),
+                    shape = RoundedCornerShape(16.dp, 16.dp, 5.dp, 16.dp),
                     color = MaterialTheme.colorScheme.surfaceContainer,
-                    modifier = Modifier.widthIn(max = 520.dp).combinedClickable(onClick = {}, onLongClick = { menu = true }),
+                    modifier = Modifier.fillMaxWidth(.85f).widthIn(max = 520.dp).combinedClickable(onClick = {}, onLongClick = { menu = true }),
                 ) {
                     SelectionContainer { Text(turn.prompt, Modifier.padding(horizontal = 16.dp, vertical = 12.dp), style = MaterialTheme.typography.bodyLarge) }
                 }

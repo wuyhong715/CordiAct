@@ -177,6 +177,9 @@ class ExperienceComponentTest {
         }
         val topBefore = compose.onNodeWithTag("frame-top").getUnclippedBoundsInRoot().top.value
         val before = compose.onNodeWithTag("frame-composer").getUnclippedBoundsInRoot().bottom.value
+        val viewport = compose.onNodeWithTag("frame-content").getUnclippedBoundsInRoot()
+        val chrome = compose.onNodeWithTag("frame-composer").getUnclippedBoundsInRoot()
+        assertTrue("Content must extend behind floating chrome", viewport.bottom >= chrome.bottom)
         compose.runOnIdle { ime = 300.dp }
         compose.waitForIdle()
         val after = compose.onNodeWithTag("frame-composer").getUnclippedBoundsInRoot().bottom.value
@@ -192,7 +195,7 @@ class ExperienceComponentTest {
         var page by mutableIntStateOf(0)
         content { WindowTabs(page, page.toFloat(), 0, 0, onSelect = { page = it }) }
         val rail = compose.onNodeWithTag("window-tabs").getUnclippedBoundsInRoot()
-        assertEquals(40f, (rail.bottom - rail.top).value, 1f)
+        assertEquals(48f, (rail.bottom - rail.top).value, 1f)
         val widths = listOf("chat", "trace", "preview").map { id ->
             val bounds = compose.onNodeWithTag("window-" + id).getUnclippedBoundsInRoot()
             (bounds.right - bounds.left).value

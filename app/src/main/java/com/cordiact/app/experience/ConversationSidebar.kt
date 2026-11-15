@@ -54,22 +54,24 @@ fun ConversationSidebar(
             }
             Column(Modifier.weight(1f).padding(start = 12.dp)) {
                 Text("CordiAct", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                Text("对话与工作区", style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant)
             }
             IconButton(onClick = onClose) { AppGlyph(GlyphName.Close, description = "关闭侧边栏") }
         }
-        OutlinedButton(
+        FilledTonalButton(
             onClick = { onNewSession(null) }, enabled = !busy,
-            shape = RoundedCornerShape(16.dp),
-            modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
-            colors = ButtonDefaults.outlinedButtonColors(contentColor = colors.onSurface),
-            border = androidx.compose.foundation.BorderStroke(1.dp, colors.outlineVariant),
+            shape = RoundedCornerShape(12.dp),
+            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+            colors = ButtonDefaults.filledTonalButtonColors(containerColor = colors.primaryContainer, contentColor = colors.primary),
         ) {
             AppGlyph(GlyphName.Plus)
             Spacer(Modifier.width(8.dp))
             Text("新对话", style = MaterialTheme.typography.titleSmall)
         }
-        Row(Modifier.fillMaxWidth().padding(top = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+        if (!searchOpen) TextButton(onClick = { searchOpen = true }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+            AppGlyph(GlyphName.Search, modifier = Modifier.size(18.dp))
+            Text("搜索工作区与对话", Modifier.weight(1f).padding(start = 8.dp), style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant)
+        }
+        Row(Modifier.fillMaxWidth().padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("工作区", Modifier.weight(1f).padding(start = 8.dp), style = MaterialTheme.typography.labelLarge, color = colors.onSurfaceVariant)
             IconButton(onClick = { searchOpen = !searchOpen; if (!searchOpen) query = "" }) {
                 AppGlyph(if (searchOpen) GlyphName.Close else GlyphName.Search, description = if (searchOpen) "收起搜索" else "搜索对话与工作区")
@@ -83,7 +85,7 @@ fun ConversationSidebar(
                 value = query, onValueChange = { query = it }, singleLine = true,
                 placeholder = { Text("搜索对话或工作区", style = MaterialTheme.typography.bodyMedium) },
                 leadingIcon = { AppGlyph(GlyphName.Search) },
-                modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp), shape = RoundedCornerShape(14.dp),
+                modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp), shape = RoundedCornerShape(12.dp),
             )
         }
         if (busy) LinearProgressIndicator(Modifier.fillMaxWidth().height(2.dp))
@@ -115,10 +117,10 @@ fun ConversationSidebar(
                         }
                         Surface(
                             onClick = { onSelectWorkspace(workspace.id) }, enabled = !busy,
-                            color = colors.surfaceContainerLowest, shape = RoundedCornerShape(12.dp),
+                            color = if (workspace.id == activeWorkspaceId) colors.surfaceContainerLow else colors.surfaceContainerLowest, shape = RoundedCornerShape(12.dp),
                             modifier = Modifier.weight(1f).semantics { selected = workspace.id == activeWorkspaceId },
                         ) {
-                            Row(Modifier.heightIn(min = 52.dp).padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Row(Modifier.heightIn(min = 48.dp).padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                                 AppGlyph(GlyphName.Folder, modifier = Modifier.size(21.dp), tint = if (workspace.id == activeWorkspaceId) colors.primary else colors.onSurfaceVariant)
                                 Text(workspace.name, Modifier.weight(1f).padding(start = 8.dp), style = MaterialTheme.typography.titleSmall,
                                     maxLines = 2, overflow = TextOverflow.Ellipsis)
@@ -139,7 +141,7 @@ fun ConversationSidebar(
                 }
                 if (isExpanded) {
                     if (workspace.sessions.isEmpty()) item(key = "empty:${workspace.id}") {
-                        Text("还没有对话", Modifier.padding(start = 56.dp, top = 8.dp, bottom = 12.dp),
+                        Text("还没有对话", Modifier.padding(start = 38.dp, top = 8.dp, bottom = 12.dp),
                             style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
                     }
                     items(workspace.sessions, key = { "session:${it.id}" }) { session ->
@@ -147,8 +149,8 @@ fun ConversationSidebar(
                         Surface(
                             onClick = { onSelectSession(session.id) }, enabled = !busy,
                             shape = RoundedCornerShape(12.dp),
-                            color = if (current) colors.surfaceContainer else colors.surfaceContainerLowest,
-                            modifier = Modifier.fillMaxWidth().padding(start = 38.dp, top = 2.dp, bottom = 2.dp)
+                            color = if (current) colors.primaryContainer else colors.surfaceContainerLowest,
+                            modifier = Modifier.fillMaxWidth().padding(start = 24.dp, top = 2.dp, bottom = 2.dp)
                                 .semantics { selected = current; if (session.id in runningSessionIds) stateDescription = "执行中" },
                         ) {
                             Row(Modifier.heightIn(min = 48.dp).padding(horizontal = 14.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -171,7 +173,7 @@ fun ConversationSidebar(
                 AppGlyph(GlyphName.ChevronRight, tint = colors.onSurfaceVariant, modifier = Modifier.size(16.dp))
             }
         }
-        Text("各工作区的对话与上下文相互隔离", Modifier.padding(start = 12.dp, bottom = 12.dp), style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
+
     }
     if (editorOpen) {
         val id = editingId

@@ -11,6 +11,13 @@ import kotlinx.coroutines.launch
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
+import dev.chrisbanes.haze.HazeState
+import dev.chrisbanes.haze.hazeSource
+import com.cordiact.app.experience.LocalBackdrop
+import com.cordiact.app.experience.FrostedSurface
+import com.cordiact.app.experience.ViewportFade
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
@@ -108,20 +115,25 @@ fun SettingsHost(vm: SettingsViewModel, initialLink: String? = null, onBack: () 
             }
         }) { Text(if (discardBusy) "正在清理…" else "放弃") } })
     val snackbar = remember { SnackbarHostState() }
-    Scaffold(containerColor = MaterialTheme.colorScheme.surfaceContainerLow, snackbarHost = { SnackbarHost(snackbar) }, topBar = { TopAppBar(title = { Text(route.title) }, navigationIcon = {
-        IconButton({ back() }, enabled = !busy && !securityBusy) { AppGlyph(GlyphName.Back, "返回") }
-    }, actions = { if (route == SettingsRoute.PROVIDERS) TextButton({ navigate(SettingsRoute.ADD) }, enabled = !busy) { Text("添加") } }) }) { inset ->
-        Row(Modifier.padding(inset).fillMaxSize()) {
+    val backdrop = remember { HazeState() }
+    var toolbarHeight by remember { mutableIntStateOf(0) }
+    val toolbarDp = with(LocalDensity.current) { toolbarHeight.toDp() }
+    Scaffold(containerColor = MaterialTheme.colorScheme.background,
+        contentWindowInsets = WindowInsets.systemBars.union(WindowInsets.ime),
+        snackbarHost = { SnackbarHost(snackbar) }) { inset ->
+      CompositionLocalProvider(LocalBackdrop provides backdrop) {
+        Box(Modifier.padding(inset).fillMaxSize()) {
+        Row(Modifier.fillMaxSize().hazeSource(backdrop)) {
             val wide = LocalConfiguration.current.screenWidthDp >= 600
             if (wide) {
-                Column(Modifier.width(360.dp).verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Column(Modifier.width(300.dp).fillMaxHeight().verticalScroll(rememberScrollState()).padding(start = 16.dp, end = 16.dp, top = toolbarDp + 16.dp, bottom = 40.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     SettingsMenu(state, ::navigate, ::openLink)
                 }
                 VerticalDivider()
             }
             Box(Modifier.weight(1f).fillMaxHeight(), contentAlignment = Alignment.TopCenter) {
             key(route, providerId) {
-            Column(Modifier.widthIn(max = 640.dp).fillMaxWidth().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Column(Modifier.widthIn(max = 640.dp).fillMaxWidth().fillMaxHeight().verticalScroll(rememberScrollState()).padding(start = 16.dp, end = 16.dp, top = toolbarDp + 16.dp, bottom = 40.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 if (route != SettingsRoute.HOME) Text(when (route) {
                     SettingsRoute.HOME -> "全局与工作区设置"
                     SettingsRoute.PERMISSIONS -> "按工作区设置"
@@ -172,6 +184,20 @@ fun SettingsHost(vm: SettingsViewModel, initialLink: String? = null, onBack: () 
             }
             }
         }
+        ViewportFade(backdrop, true, Modifier.align(Alignment.TopCenter).fillMaxWidth().height(toolbarDp + 32.dp))
+        ViewportFade(backdrop, false, Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(40.dp))
+        Row(Modifier.align(Alignment.TopCenter).fillMaxWidth().onSizeChanged { toolbarHeight = it.height }
+            .padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            FrostedSurface(radius = 24.dp) {
+                IconButton(onClick = { back() }, enabled = !busy && !securityBusy) { AppGlyph(GlyphName.Back, "返回") }
+            }
+            Text(route.title, Modifier.weight(1f).padding(horizontal = 12.dp), style = MaterialTheme.typography.titleLarge)
+            if (route == SettingsRoute.PROVIDERS) FrostedSurface(radius = 24.dp) {
+                TextButton({ navigate(SettingsRoute.ADD) }, enabled = !busy) { Text("添加") }
+            }
+        }
+        }
+      }
     }
 }
 @Composable
