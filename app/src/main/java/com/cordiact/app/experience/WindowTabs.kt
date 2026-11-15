@@ -64,11 +64,11 @@ internal fun ExperienceFrame(
     val topPadding = with(density) { topHeight.toDp() }
     val bottomPadding = with(density) { bottomHeight.toDp() }
     CompositionLocalProvider(LocalBackdrop provides backdrop,
-        LocalChromePadding provides PaddingValues(top = topPadding + 16.dp, bottom = bottomPadding + 24.dp)) {
+        LocalChromePadding provides PaddingValues(top = topPadding + 56.dp, bottom = bottomPadding + 56.dp)) {
         Box(modifier.fillMaxSize().windowInsetsPadding(insets).testTag("experience-frame")) {
             content(Modifier.fillMaxSize().hazeSource(backdrop))
-            ViewportFade(backdrop, top = true, Modifier.align(Alignment.TopCenter).fillMaxWidth().height(topPadding + 32.dp))
-            ViewportFade(backdrop, top = false, Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(bottomPadding + 40.dp))
+            ViewportFade(backdrop, top = true, Modifier.align(Alignment.TopCenter).fillMaxWidth().height(topPadding + 48.dp))
+            ViewportFade(backdrop, top = false, Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(bottomPadding + 48.dp))
             Column(Modifier.align(Alignment.TopCenter).fillMaxWidth().onSizeChanged { topHeight = it.height }) { top() }
             Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().onSizeChanged { bottomHeight = it.height }) { bottom() }
         }

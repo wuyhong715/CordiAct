@@ -126,14 +126,14 @@ fun SettingsHost(vm: SettingsViewModel, initialLink: String? = null, onBack: () 
         Row(Modifier.fillMaxSize().hazeSource(backdrop)) {
             val wide = LocalConfiguration.current.screenWidthDp >= 600
             if (wide) {
-                Column(Modifier.width(300.dp).fillMaxHeight().verticalScroll(rememberScrollState()).padding(start = 16.dp, end = 16.dp, top = toolbarDp + 16.dp, bottom = 40.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Column(Modifier.width(300.dp).fillMaxHeight().verticalScroll(rememberScrollState()).padding(start = 16.dp, end = 16.dp, top = toolbarDp + 56.dp, bottom = 56.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     SettingsMenu(state, ::navigate, ::openLink)
                 }
                 VerticalDivider()
             }
             Box(Modifier.weight(1f).fillMaxHeight(), contentAlignment = Alignment.TopCenter) {
             key(route, providerId) {
-            Column(Modifier.widthIn(max = 640.dp).fillMaxWidth().fillMaxHeight().verticalScroll(rememberScrollState()).padding(start = 16.dp, end = 16.dp, top = toolbarDp + 16.dp, bottom = 40.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Column(Modifier.widthIn(max = 640.dp).fillMaxWidth().fillMaxHeight().verticalScroll(rememberScrollState()).padding(start = 16.dp, end = 16.dp, top = toolbarDp + 56.dp, bottom = 56.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 if (route != SettingsRoute.HOME) Text(when (route) {
                     SettingsRoute.HOME -> "全局与工作区设置"
                     SettingsRoute.PERMISSIONS -> "按工作区设置"
@@ -184,8 +184,8 @@ fun SettingsHost(vm: SettingsViewModel, initialLink: String? = null, onBack: () 
             }
             }
         }
-        ViewportFade(backdrop, true, Modifier.align(Alignment.TopCenter).fillMaxWidth().height(toolbarDp + 32.dp))
-        ViewportFade(backdrop, false, Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(40.dp))
+        ViewportFade(backdrop, true, Modifier.align(Alignment.TopCenter).fillMaxWidth().height(toolbarDp + 48.dp))
+        ViewportFade(backdrop, false, Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(48.dp))
         Row(Modifier.align(Alignment.TopCenter).fillMaxWidth().onSizeChanged { toolbarHeight = it.height }
             .padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             FrostedSurface(radius = 24.dp) {
