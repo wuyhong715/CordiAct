@@ -74,7 +74,7 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
         drawerState = drawer,
         gesturesEnabled = drawer.isOpen || pager.currentPage == 0,
         drawerContent = {
-            val drawerWidth = minOf(LocalConfiguration.current.screenWidthDp.dp * .86f, 360.dp)
+            val drawerWidth = minOf(LocalConfiguration.current.screenWidthDp.dp * .84f, 360.dp)
             val context = LocalContext.current
             val closeAfterSelection: () -> Unit = { scope.launch { drawer.close() } }
             ModalDrawerSheet(modifier = Modifier.width(drawerWidth), drawerContainerColor = MaterialTheme.colorScheme.surfaceContainerLowest) {

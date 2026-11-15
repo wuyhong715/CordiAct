@@ -52,6 +52,27 @@ class ExperienceComponentTest {
             "", {}, { text -> val accepted = send(text); if (accepted) controller.text(""); accepted }, stop, {}, {})
     }
 
+    @Test fun compactSidebar_searchesAndSettingsStaysBottomRight() {
+        var settings = 0
+        content {
+            ConversationSidebar(
+                groups = listOf(SidebarWorkspace("w", "工作区A", 0, listOf(SidebarConversation("s", "示例会话", 0)))),
+                activeWorkspaceId = "w", activeSessionId = "s", busy = false, error = null,
+                onClose = {}, onSettings = { settings++ }, onNewSession = {}, onSelectWorkspace = {},
+                onSelectSession = {}, onCreateWorkspace = {}, onRenameWorkspace = { _, _ -> }, onRetry = {})
+        }
+        compose.onNodeWithText("示例会话").assertIsDisplayed()
+        compose.onNodeWithTag("sidebar-search-open").performClick()
+        compose.onNodeWithTag("sidebar-search").performTextInput("不匹配")
+        compose.onNodeWithText("没有匹配的对话或工作区").assertIsDisplayed()
+        val panel = compose.onNodeWithTag("sidebar").getUnclippedBoundsInRoot()
+        val settingsBounds = compose.onNodeWithTag("sidebar-settings").getUnclippedBoundsInRoot()
+        assertTrue(settingsBounds.left > panel.left + (panel.right - panel.left) / 2)
+        assertTrue(settingsBounds.top > panel.top + (panel.bottom - panel.top) / 2)
+        compose.onNodeWithTag("sidebar-settings").performClick()
+        assertEquals(1, settings)
+    }
+
     @Test fun emptyState_hasActionsWithoutDemoTranscript() {
         var selected = ""
         content { TranscriptView(ready(), { selected = it }, {}) }
