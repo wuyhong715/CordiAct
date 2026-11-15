@@ -57,7 +57,7 @@ class ExperienceComponentTest {
         content {
             ConversationSidebar(
                 groups = listOf(SidebarWorkspace("w", "工作区A", 0, listOf(SidebarConversation("s", "示例会话", 0)))),
-                activeWorkspaceId = "w", activeSessionId = "s", busy = false, error = null,
+                activeWorkspaceId = "w", activeSessionId = "s", runningSessionIds = emptySet(), busy = false, error = null,
                 onClose = {}, onSettings = { settings++ }, onNewSession = {}, onSelectWorkspace = {},
                 onSelectSession = {}, onCreateWorkspace = {}, onRenameWorkspace = { _, _ -> }, onRetry = {})
         }
