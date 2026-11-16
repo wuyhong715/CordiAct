@@ -87,6 +87,10 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
                     onSelectSession = { viewModel.selectSession(it, closeAfterSelection) },
                     onCreateWorkspace = { name, onSuccess -> viewModel.createWorkspace(name) { closeAfterSelection(); onSuccess() } },
                     onRenameWorkspace = { id, name, onSuccess -> viewModel.renameWorkspace(id, name, onSuccess) },
+                    onRenameSession = { id, title, done -> viewModel.renameSession(id, title, done) },
+                    onArchiveSession = viewModel::archiveSession,
+                    onRestoreSession = { viewModel.restoreSession(it) },
+                    onPinSession = viewModel::pinSession,
                     onRetry = viewModel::refresh,
                     onSettings = { scope.launch { drawer.close() }; settingsVm.reload(); openSettings() },
                 )
@@ -165,7 +169,20 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
                             }
                         }
                     }
-                    com.cordiact.app.experience.composer.ComposerBar(
+                    if (state.undoArchivedSessionId != null) {
+                        Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text("会话已归档，运行任务不受影响", Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+                            TextButton(onClick = viewModel::undoArchive, enabled = !state.loading) { Text("撤销") }
+                            TextButton(onClick = viewModel::dismissArchiveUndo) { Text("关闭") }
+                        }
+                    }
+                    if (state.archived) {
+                        Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text("此会话已归档", Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+                            if (state.running) TextButton(onClick = viewModel::stop) { Text("停止") }
+                            TextButton(onClick = { state.sessionId?.let { viewModel.restoreSession(it) } }, enabled = !state.loading) { Text("恢复并继续") }
+                        }
+                    } else com.cordiact.app.experience.composer.ComposerBar(
                         state, composer, viewModel.composerController, promptToInsert,
                         { promptToInsert = "" }, viewModel::send, viewModel::stop,
                         viewModel::selectModel, { openSettings("settings://models/providers") },

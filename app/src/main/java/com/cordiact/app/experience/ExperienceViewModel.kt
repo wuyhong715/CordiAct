@@ -37,9 +37,11 @@ data class ExperienceState(
     val approvals: List<ApprovalRequest> = emptyList(),
     val error: String? = null,
     val stoppingSessions: Set<String> = emptySet(),
+    val undoArchivedSessionId: String? = null,
 ) {
     val running get() = turns.any { it.isRunning }
     val stopping get() = sessionId in stoppingSessions
+    val archived get() = sessions.any { it.id == sessionId && it.archivedAtMillis != null }
     val activeTools get() = turns.flatMap { it.tools }.count { it.phase == ToolPhase.RUNNING }
 }
 
@@ -51,6 +53,7 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
     private val calls = mutableMapOf<String, OwnedCall>()
     private val events = Channel<OwnedEvent>(Channel.UNLIMITED)
     private val selectionMutex = Mutex()
+    private val metadataMutex = Mutex()
     private var selectionVersion = 0L
     private var loadingSession = false
 
@@ -75,6 +78,7 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
                 val owned = calls[entry.session]?.turnId == entry.turn
                 if (entry.event is TranscriptEvent.Finished && owned) {
                     calls.remove(entry.session)
+                    refreshSessionMetadata()
                     mutable.update { it.copy(stoppingSessions = it.stoppingSessions - entry.session, runningSessionIds = it.runningSessionIds - entry.session) }
                 }
                 if (mutable.value.sessionId == entry.session) mutable.update { it.copy(turns = cache[entry.session].orEmpty()) }
@@ -122,6 +126,79 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
         }
     }
 
+    fun renameSession(id: String, title: String, onSuccess: () -> Unit = {}) =
+        mutateSession(id, { app.sessions.renameSession(id, title) }, onSuccess = onSuccess)
+
+    fun pinSession(id: String, pinned: Boolean) =
+        mutateSession(id, { app.sessions.setSessionPinned(id, pinned) })
+
+    fun archiveSession(id: String) = mutateSession(id, { app.sessions.archiveSession(id) }, onSuccess = {
+        mutable.update { it.copy(undoArchivedSessionId = id) }
+        // A new foreground conversation does not cancel the archived call or its child tasks.
+        if (mutable.value.sessionId == id) newSession(mutable.value.workspace?.id)
+    })
+
+    fun restoreSession(id: String, onSuccess: () -> Unit = {}) =
+        mutateSession(id, { app.sessions.restoreSession(id) }, onSuccess = {
+            mutable.update { it.copy(undoArchivedSessionId = it.undoArchivedSessionId?.takeUnless { saved -> saved == id }) }
+            onSuccess()
+        })
+
+    fun undoArchive() {
+        val id = mutable.value.undoArchivedSessionId ?: return
+        restoreSession(id) { selectSession(id) }
+    }
+
+    fun dismissArchiveUndo() { mutable.update { it.copy(undoArchivedSessionId = null) } }
+
+    private fun mutateSession(id: String, operation: () -> ConversationSession, onSuccess: () -> Unit = {}) {
+        if (loadingSession) return
+        loadingSession = true
+        mutable.update { it.copy(loading = true, error = null) }
+        viewModelScope.launch {
+            var succeeded = false
+            try {
+                withContext(Dispatchers.IO) {
+                    requireNotNull(app.sessions.getSession(id)) { "会话不存在" }
+                    operation()
+                }
+                reloadSessionMetadata()
+                succeeded = true
+            } catch (cancel: CancellationException) { throw cancel }
+            catch (error: Exception) { mutable.update { it.copy(error = error.message ?: "更新会话失败") } }
+            finally {
+                loadingSession = false
+                mutable.update { it.copy(loading = false) }
+            }
+            if (succeeded) onSuccess()
+        }
+    }
+
+    private fun refreshSessionMetadata() {
+        viewModelScope.launch {
+            try { reloadSessionMetadata() }
+            catch (cancel: CancellationException) { throw cancel }
+            catch (error: Exception) { mutable.update { it.copy(error = error.message ?: "刷新会话列表失败") } }
+        }
+    }
+
+    private suspend fun reloadSessionMetadata() = metadataMutex.withLock {
+        val sidebar = withContext(Dispatchers.IO) {
+            app.workspaceManager.list().map { workspace ->
+                SidebarWorkspace(workspace.id, workspace.name, workspace.updatedAtMillis,
+                    app.sessions.listSessions(workspace.id).filter { it.kind == SessionKind.USER }.map {
+                        SidebarConversation(it.id, it.title, it.updatedAtMillis, it.archivedAtMillis, it.pinnedAtMillis)
+                    })
+            }
+        }
+        val workspaceId = mutable.value.workspace?.id
+        val sessions = withContext(Dispatchers.IO) {
+            workspaceId?.let { app.sessions.listSessions(it).filter { session -> session.kind == SessionKind.USER } }.orEmpty()
+        }
+        mutable.update { current -> current.copy(sidebar = sidebar,
+            sessions = if (current.workspace?.id == workspaceId) sessions else current.sessions) }
+    }
+
     private fun loadSession(
         sessionId: String?, workspaceId: String?, create: Boolean = false,
         newWorkspaceName: String? = null, onSelected: () -> Unit = {},
@@ -151,16 +228,16 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
                     val selected = when {
                         create -> app.sessions.createSession(workspace.id, "新对话")
                         requested != null -> requested.also { require(it.kind == SessionKind.USER) { "无法选择内部执行会话" } }
-                        workspaceId != null -> sessions.firstOrNull() ?: app.sessions.createSession(workspace.id, "新对话")
-                        else -> app.activeSessionId?.let(app.sessions::getSession)?.takeIf { it.workspaceId == workspace.id && it.kind == SessionKind.USER }
-                            ?: sessions.firstOrNull() ?: app.sessions.createSession(workspace.id, "新对话")
+                        workspaceId != null -> sessions.firstOrNull { it.archivedAtMillis == null } ?: app.sessions.createSession(workspace.id, "新对话")
+                        else -> app.activeSessionId?.let(app.sessions::getSession)?.takeIf { it.workspaceId == workspace.id && it.kind == SessionKind.USER && it.archivedAtMillis == null }
+                            ?: sessions.firstOrNull { it.archivedAtMillis == null } ?: app.sessions.createSession(workspace.id, "新对话")
                     }
                     require(selected.workspaceId == workspace.id)
                     val workspaces = app.workspaceManager.list()
                     val sidebar = workspaces.map { item ->
                         SidebarWorkspace(item.id, item.name, item.updatedAtMillis,
                             app.sessions.listSessions(item.id).filter { it.kind == SessionKind.USER }.map {
-                                SidebarConversation(it.id, it.title, it.updatedAtMillis)
+                                SidebarConversation(it.id, it.title, it.updatedAtMillis, it.archivedAtMillis, it.pinnedAtMillis)
                             })
                     }
                     Loaded(workspace, workspaces, app.sessions.listSessions(workspace.id).filter { it.kind == SessionKind.USER }, selected,
@@ -252,6 +329,7 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
         val workspace = state.workspace ?: return false
         val draft = composer.value.copy(text = text)
         if (loadingSession) return false
+        if (state.archived) { mutable.update { it.copy(error = "请先恢复此归档会话再继续") }; return false }
         val model = draft.model ?: state.model ?: run { mutable.update { it.copy(error = "请先配置并选择模型") }; return false }
         if (state.loading || state.running || state.stopping || (text.isBlank() && draft.sendableParts().isEmpty()) || calls.containsKey(session)) return false
         if (draft.sendAvailability != com.cordiact.core.composer.ComposerRules.SendAvailability.READY) return false
@@ -289,7 +367,7 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
                     val call = app.interactionService.submitOrdinary(prepared, model,
                             parameters = com.cordiact.core.composer.ComposerRules.parameters(draft.tuning),
                             attachments = draft.sendableParts(),
-                            onUserMessagePersisted = { viewModelScope.launch { composerController.submitted(session, draft) } },
+                            onUserMessagePersisted = { viewModelScope.launch { composerController.submitted(session, draft); refreshSessionMetadata() } },
                             onEvent = callback)
                     owner.attach(call)
                 }

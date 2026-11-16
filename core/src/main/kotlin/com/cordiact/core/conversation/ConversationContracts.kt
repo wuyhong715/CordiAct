@@ -266,6 +266,9 @@ data class ConversationSession(
      * delegation, and a walk would put the whole ancestor chain on that path.
      */
     val depth: Int = 0,
+    val archivedAtMillis: Long? = null,
+    val pinnedAtMillis: Long? = null,
+    val titleManuallySet: Boolean = false,
 )
 
 data class ConversationMessage(
@@ -287,6 +290,14 @@ data class ConversationMessage(
 
 /** Storage port; the app implementation is durable SQLite and scoped by session/workspace. */
 interface ConversationSessionStore {
+    fun updateFirstUserTitleFromOriginal(sessionId: String, originalText: String) {}
+
+
+    fun renameSession(sessionId: String, title: String): ConversationSession = throw UnsupportedOperationException("Session rename unavailable")
+    fun archiveSession(sessionId: String, nowMillis: Long): ConversationSession = throw UnsupportedOperationException("Session archive unavailable")
+    fun restoreSession(sessionId: String): ConversationSession = throw UnsupportedOperationException("Session restore unavailable")
+    fun setSessionPinned(sessionId: String, pinned: Boolean, nowMillis: Long): ConversationSession = throw UnsupportedOperationException("Session pin unavailable")
+
     /**
      * Creates one Session.
      *
@@ -341,6 +352,13 @@ interface ConversationSessionStore {
 }
 
 interface SessionManagerService {
+    fun updateFirstUserTitleFromOriginal(sessionId: String, originalText: String) {}
+
+    fun renameSession(sessionId: String, title: String): ConversationSession = throw UnsupportedOperationException("Session management unavailable")
+    fun archiveSession(sessionId: String): ConversationSession = throw UnsupportedOperationException("Session management unavailable")
+    fun restoreSession(sessionId: String): ConversationSession = throw UnsupportedOperationException("Session management unavailable")
+    fun setSessionPinned(sessionId: String, pinned: Boolean): ConversationSession = throw UnsupportedOperationException("Session management unavailable")
+
     fun createSession(workspaceId: String, title: String = "New conversation"): ConversationSession
 
     /**
@@ -522,6 +540,36 @@ class SessionManagerPlugin(
     override fun onDisable() { enabled = false }
     override fun onUninstall() { enabled = false }
 
+    private fun requireManagedUserSession(id: String): ConversationSession {
+        requireEnabled()
+        val session = requireNotNull(store.get(id)) { "会话不存在" }
+        require(session.kind == SessionKind.USER) { "只能整理用户会话" }
+        requireNotNull(workspaces.findSessionWorkspace(session.workspaceId)) { "工作区不存在或已归档" }
+        return session
+    }
+
+    override fun updateFirstUserTitleFromOriginal(sessionId: String, originalText: String) {
+        requireEnabled()
+        store.updateFirstUserTitleFromOriginal(sessionId, originalText)
+    }
+
+    override fun renameSession(sessionId: String, title: String): ConversationSession {
+        requireManagedUserSession(sessionId)
+        return store.renameSession(sessionId, normalizeSessionTitle(title))
+    }
+    override fun archiveSession(sessionId: String): ConversationSession {
+        requireManagedUserSession(sessionId)
+        return store.archiveSession(sessionId, clockMillis())
+    }
+    override fun restoreSession(sessionId: String): ConversationSession {
+        requireManagedUserSession(sessionId)
+        return store.restoreSession(sessionId)
+    }
+    override fun setSessionPinned(sessionId: String, pinned: Boolean): ConversationSession {
+        requireManagedUserSession(sessionId)
+        return store.setSessionPinned(sessionId, pinned, clockMillis())
+    }
+
     override fun createSession(workspaceId: String, title: String): ConversationSession {
         requireEnabled()
         require(workspaceId.isNotBlank()) { "Workspace id must not be blank" }
@@ -647,4 +695,22 @@ interface TurnNoticeSource {
      * of the model must stay pending, or the parent silently loses the child's outcome.
      */
     fun acknowledge(sessionId: String, ids: List<String>)
+}
+
+/** Display-only metadata: never inject these values into model context. */
+fun normalizeSessionTitle(title: String): String {
+    val normalized = title.trim()
+    require(normalized.length in 1..120 && normalized.none { it.isISOControl() || it == '\u2028' || it == '\u2029' }) {
+        "标题须为1至120个字符，且不能包含换行或控制字符"
+    }
+    return normalized
+}
+
+fun firstUserSentenceTitle(content: String): String {
+    val firstLine = content.trim().lineSequence().firstOrNull().orEmpty()
+    val end = firstLine.indexOfFirst { it in "。！？.!?" }
+    val sentence = (if (end >= 0) firstLine.substring(0, end + 1) else firstLine)
+        .replace(Regex("[\\s\\p{Cc}\\p{Z}]+"), " ").trim()
+    val limit = if (sentence.length > 120 && sentence[119].isHighSurrogate()) 119 else 120
+    return sentence.take(limit).ifBlank { "附件对话" }
 }

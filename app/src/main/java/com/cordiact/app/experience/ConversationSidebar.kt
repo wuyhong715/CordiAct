@@ -26,7 +26,13 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import com.cordiact.app.experience.model.*
 
-/** Standalone drawer content, without a ViewModel dependency. The owner controls navigation. */
+/**
+ * Standalone drawer content, without a ViewModel dependency. The owner controls navigation.
+ *
+ * Conversation management (rename / pin / archive / restore) is expressed only through optional
+ * callbacks so existing call sites and tests stay source-compatible. [archiveMode] is an in-drawer
+ * view rather than a separate screen: the same header, search, list and edge fades are reused.
+ */
 @Composable
 fun ConversationSidebar(
     groups: List<SidebarWorkspace>,
@@ -44,16 +50,30 @@ fun ConversationSidebar(
     onRetry: () -> Unit,
     onSettings: () -> Unit,
     modifier: Modifier = Modifier,
+    onRenameSession: (String, String, () -> Unit) -> Unit = { _, _, _ -> },
+    onArchiveSession: (String) -> Unit = {},
+    onRestoreSession: (String) -> Unit = {},
+    onPinSession: (String, Boolean) -> Unit = { _, _ -> },
 ) {
     var query by rememberSaveable { mutableStateOf("") }
     var searchOpen by rememberSaveable { mutableStateOf(false) }
+    var includeArchived by rememberSaveable { mutableStateOf(false) }
+    var archiveMode by rememberSaveable { mutableStateOf(false) }
     var expanded by rememberSaveable { mutableStateOf(emptyList<String>()) }
     var collapsed by rememberSaveable { mutableStateOf(emptyList<String>()) }
     var menuId by remember { mutableStateOf<String?>(null) }
+    var topMenuOpen by remember { mutableStateOf(false) }
+    var sessionMenuId by remember { mutableStateOf<String?>(null) }
     var editingId by rememberSaveable { mutableStateOf<String?>(null) }
     var editorOpen by rememberSaveable { mutableStateOf(false) }
     var name by rememberSaveable { mutableStateOf("") }
-    val visible = remember(groups, query) { sidebarGroups(groups, query) }
+    var sessionEditingId by rememberSaveable { mutableStateOf<String?>(null) }
+    var sessionEditorOpen by rememberSaveable { mutableStateOf(false) }
+    var sessionName by rememberSaveable { mutableStateOf("") }
+    val visible = remember(groups, query, includeArchived, archiveMode) {
+        if (archiveMode) sidebarGroups(groups, query, archivedOnly = true)
+        else sidebarGroups(groups, query, includeArchived = includeArchived)
+    }
     val colors = MaterialTheme.colorScheme
     val backdrop = remember { HazeState() }
     var headerHeight by remember { mutableIntStateOf(0) }
@@ -76,12 +96,22 @@ fun ConversationSidebar(
             }
         }
             if (visible.isEmpty()) item {
-                Text(if (query.isBlank()) "暂无工作区" else "没有匹配的对话或工作区", Modifier.padding(16.dp),
+                val emptyText = when {
+                    archiveMode && query.isBlank() -> "暂无归档会话"
+                    archiveMode -> "没有匹配的归档会话"
+                    query.isBlank() -> "暂无工作区"
+                    else -> "没有匹配的对话或工作区"
+                }
+                Text(emptyText, Modifier.padding(16.dp),
                     style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant)
             }
             visible.forEach { workspace ->
-                val isExpanded = query.isNotBlank() || workspace.id in expanded ||
-                    (workspace.id == activeWorkspaceId && workspace.id !in collapsed)
+                val isExpanded = when {
+                    archiveMode -> workspace.id !in collapsed
+                    query.isNotBlank() -> true
+                    else -> workspace.id in expanded ||
+                        (workspace.id == activeWorkspaceId && workspace.id !in collapsed)
+                }
                 item(key = "workspace:${workspace.id}") {
                     Row(Modifier.fillMaxWidth().padding(top = 2.dp), verticalAlignment = Alignment.CenterVertically) {
                         IconButton(onClick = {
@@ -102,42 +132,97 @@ fun ConversationSidebar(
                                     maxLines = 1, overflow = TextOverflow.Ellipsis)
                             }
                         }
-                        Box {
-                            IconButton(onClick = { menuId = workspace.id }, enabled = !busy) {
-                                AppGlyph(GlyphName.More, description = "工作区 ${workspace.name} 的更多操作")
-                            }
-                            DropdownMenu(expanded = menuId == workspace.id, onDismissRequest = { menuId = null }) {
-                                DropdownMenuItem(text = { Text("在此新建对话") }, onClick = { menuId = null; onNewSession(workspace.id) })
-                                DropdownMenuItem(text = { Text("重命名工作区") }, onClick = {
-                                    menuId = null; editingId = workspace.id; name = workspace.name; editorOpen = true
-                                })
+                        if (!archiveMode) {
+                            Box {
+                                IconButton(onClick = { menuId = workspace.id }, enabled = !busy) {
+                                    AppGlyph(GlyphName.More, description = "工作区 ${workspace.name} 的更多操作")
+                                }
+                                DropdownMenu(expanded = menuId == workspace.id, onDismissRequest = { menuId = null }) {
+                                    DropdownMenuItem(text = { Text("在此新建对话") }, onClick = { menuId = null; onNewSession(workspace.id) })
+                                    DropdownMenuItem(text = { Text("重命名工作区") }, onClick = {
+                                        menuId = null; editingId = workspace.id; name = workspace.name; editorOpen = true
+                                    })
+                                }
                             }
                         }
                     }
                 }
                 if (isExpanded) {
                     if (workspace.sessions.isEmpty()) item(key = "empty:${workspace.id}") {
-                        Text("还没有对话", Modifier.padding(start = 32.dp, top = 8.dp, bottom = 12.dp),
+                        Text(if (archiveMode) "暂无归档会话" else "还没有对话",
+                            Modifier.padding(start = 32.dp, top = 8.dp, bottom = 12.dp),
                             style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
                     }
                     items(workspace.sessions, key = { "session:${it.id}" }) { session ->
                         val current = activeSessionId == session.id
-                        Surface(
-                            onClick = { onSelectSession(session.id) }, enabled = !busy,
-                            shape = RoundedCornerShape(10.dp),
-                            color = if (current) colors.primaryContainer else colors.surfaceContainerLowest,
-                            modifier = Modifier.fillMaxWidth().padding(start = 20.dp)
-                                .semantics { selected = current; if (session.id in runningSessionIds) stateDescription = "执行中" },
+                        Row(
+                            Modifier.fillMaxWidth().padding(start = 20.dp),
+                            verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Row(Modifier.heightIn(min = 48.dp).padding(horizontal = 12.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Text(session.title.ifBlank { "新对话" }, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium,
-                                    fontWeight = if (current) FontWeight.Medium else FontWeight.Normal, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                if (session.updatedAtMillis > 0) Text(
-                                    remember(session.updatedAtMillis) { java.text.SimpleDateFormat("MM-dd", java.util.Locale.getDefault()).format(java.util.Date(session.updatedAtMillis)) },
-                                    Modifier.padding(start = 8.dp), style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant,
-                                    maxLines = 1)
-                                if (session.id in runningSessionIds) {
-                                    Text("●", Modifier.padding(start = 8.dp), color = colors.primary, style = MaterialTheme.typography.labelSmall)
+                            Surface(
+                                onClick = { onSelectSession(session.id) }, enabled = !busy,
+                                shape = RoundedCornerShape(10.dp),
+                                color = if (current) colors.primaryContainer else colors.surfaceContainerLowest,
+                                modifier = Modifier.weight(1f)
+                                    .semantics { selected = current; if (session.id in runningSessionIds) stateDescription = "执行中" },
+                            ) {
+                                Row(Modifier.heightIn(min = 48.dp).padding(horizontal = 12.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    if (session.pinnedAtMillis != null) {
+                                        AppGlyph(GlyphName.Pin, description = "已置顶", modifier = Modifier.size(14.dp), tint = colors.primary)
+                                    }
+                                    Text(session.title.ifBlank { "新对话" },
+                                        Modifier.weight(1f).padding(start = if (session.pinnedAtMillis != null) 6.dp else 0.dp),
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = if (current) FontWeight.Medium else FontWeight.Normal, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    if (session.archivedAtMillis != null) Text(
+                                        "已归档", Modifier.padding(start = 6.dp), style = MaterialTheme.typography.labelSmall,
+                                        color = colors.tertiary, maxLines = 1)
+                                    if (session.updatedAtMillis > 0) Text(
+                                        remember(session.updatedAtMillis) { java.text.SimpleDateFormat("MM-dd", java.util.Locale.getDefault()).format(java.util.Date(session.updatedAtMillis)) },
+                                        Modifier.padding(start = 8.dp), style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant,
+                                        maxLines = 1)
+                                    if (session.id in runningSessionIds) {
+                                        Text("●", Modifier.padding(start = 8.dp), color = colors.primary, style = MaterialTheme.typography.labelSmall)
+                                    }
+                                }
+                            }
+                            Box {
+                                IconButton(
+                                    onClick = { sessionMenuId = session.id }, enabled = !busy,
+                                    modifier = Modifier.size(48.dp),
+                                ) {
+                                    AppGlyph(GlyphName.More,
+                                        description = "会话 ${session.title.ifBlank { "新对话" }} 的更多操作",
+                                        modifier = Modifier.size(20.dp))
+                                }
+                                DropdownMenu(expanded = sessionMenuId == session.id, onDismissRequest = { sessionMenuId = null }) {
+                                    if (archiveMode && session.archivedAtMillis != null) {
+                                        DropdownMenuItem(text = { Text("恢复") }, enabled = !busy, onClick = {
+                                            sessionMenuId = null; onRestoreSession(session.id)
+                                        })
+                                        DropdownMenuItem(text = { Text("重命名") }, enabled = !busy, onClick = {
+                                            sessionMenuId = null; sessionEditingId = session.id
+                                            sessionName = session.title; sessionEditorOpen = true
+                                        })
+                                    } else {
+                                        DropdownMenuItem(text = { Text("重命名") }, enabled = !busy, onClick = {
+                                            sessionMenuId = null; sessionEditingId = session.id
+                                            sessionName = session.title; sessionEditorOpen = true
+                                        })
+                                        DropdownMenuItem(
+                                            text = { Text(if (session.pinnedAtMillis == null) "置顶" else "取消置顶") },
+                                            enabled = !busy,
+                                            onClick = { sessionMenuId = null; onPinSession(session.id, session.pinnedAtMillis == null) },
+                                        )
+                                        if (session.id in runningSessionIds) {
+                                            Text("归档后任务仍继续",
+                                                Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                                                style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
+                                        }
+                                        DropdownMenuItem(text = { Text("归档") }, enabled = !busy, onClick = {
+                                            sessionMenuId = null; onArchiveSession(session.id)
+                                        })
+                                    }
                                 }
                             }
                         }
@@ -150,8 +235,25 @@ fun ConversationSidebar(
       ViewportFade(backdrop, false, Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(footerDp + 16.dp))
       Column(Modifier.align(Alignment.TopCenter).fillMaxWidth().onSizeChanged { headerHeight = it.height }.padding(horizontal = 12.dp)) {
         Row(Modifier.fillMaxWidth().heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically) {
-            AppGlyph(GlyphName.Chat, modifier = Modifier.size(24.dp), tint = colors.primary)
-            Text("CordiAct", Modifier.weight(1f).padding(start = 10.dp), fontSize = 20.sp, fontWeight = FontWeight.Medium)
+            if (archiveMode) {
+                IconButton(onClick = { archiveMode = false; query = ""; searchOpen = false }, modifier = Modifier.size(48.dp)) {
+                    AppGlyph(GlyphName.Back, "返回会话列表", Modifier.size(20.dp))
+                }
+                Text("归档会话", Modifier.weight(1f).padding(start = 4.dp), fontSize = 20.sp, fontWeight = FontWeight.Medium)
+            } else {
+                AppGlyph(GlyphName.Chat, modifier = Modifier.size(24.dp), tint = colors.primary)
+                Text("CordiAct", Modifier.weight(1f).padding(start = 10.dp), fontSize = 20.sp, fontWeight = FontWeight.Medium)
+                Box {
+                    IconButton(onClick = { topMenuOpen = true }, enabled = !busy) {
+                        AppGlyph(GlyphName.More, "更多操作")
+                    }
+                    DropdownMenu(expanded = topMenuOpen, onDismissRequest = { topMenuOpen = false }) {
+                        DropdownMenuItem(text = { Text("归档会话") }, enabled = !busy, onClick = {
+                            topMenuOpen = false; archiveMode = true; query = ""; searchOpen = false
+                        })
+                    }
+                }
+            }
             IconButton(onClick = onClose) { AppGlyph(GlyphName.Close, "关闭侧边栏", Modifier.size(20.dp)) }
         }
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -160,28 +262,41 @@ fun ConversationSidebar(
                     Row(Modifier.heightIn(min = 48.dp).padding(start = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                         BasicTextField(query, { query = it }, Modifier.weight(1f).testTag("sidebar-search"), singleLine = true,
                             textStyle = MaterialTheme.typography.bodyMedium.copy(color = colors.onSurface),
-                            decorationBox = { field -> Box { if (query.isEmpty()) Text("搜索…", color = colors.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium); field() } })
+                            decorationBox = { field -> Box { if (query.isEmpty()) Text(if (archiveMode) "搜索归档…" else "搜索…", color = colors.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium); field() } })
                         IconButton(onClick = { query = ""; searchOpen = false }) { AppGlyph(GlyphName.Close, "收起搜索", Modifier.size(18.dp)) }
                     }
                 }
             } else Surface(onClick = { searchOpen = true }, color = colors.surfaceContainerLow, shape = RoundedCornerShape(10.dp), modifier = Modifier.weight(1f).testTag("sidebar-search-open")) {
                 Row(Modifier.heightIn(min = 48.dp).padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                     AppGlyph(GlyphName.Search, "搜索对话与工作区", Modifier.size(18.dp), tint = colors.onSurfaceVariant)
-                    Text("搜索…", Modifier.padding(start = 8.dp), style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant)
+                    Text(if (archiveMode) "搜索归档…" else "搜索…", Modifier.padding(start = 8.dp), style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant)
                 }
             }
-            val compactAction = LocalDensity.current.fontScale > 1.3f || androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp < 360
-            FilledTonalButton(onClick = { onNewSession(null) }, enabled = !busy,
-                shape = RoundedCornerShape(10.dp), contentPadding = PaddingValues(horizontal = 12.dp),
-                modifier = Modifier.heightIn(min = 48.dp).testTag("sidebar-new-session"),
-                colors = ButtonDefaults.filledTonalButtonColors(containerColor = colors.primaryContainer, contentColor = colors.primary)) {
-                AppGlyph(GlyphName.Plus, "新对话", Modifier.size(18.dp))
-                if (!compactAction) Text("新对话", Modifier.padding(start = 6.dp), style = MaterialTheme.typography.labelLarge)
+            if (!archiveMode) {
+                val compactAction = LocalDensity.current.fontScale > 1.3f || androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp < 360
+                FilledTonalButton(onClick = { onNewSession(null) }, enabled = !busy,
+                    shape = RoundedCornerShape(10.dp), contentPadding = PaddingValues(horizontal = 12.dp),
+                    modifier = Modifier.heightIn(min = 48.dp).testTag("sidebar-new-session"),
+                    colors = ButtonDefaults.filledTonalButtonColors(containerColor = colors.primaryContainer, contentColor = colors.primary)) {
+                    AppGlyph(GlyphName.Plus, "新对话", Modifier.size(18.dp))
+                    if (!compactAction) Text("新对话", Modifier.padding(start = 6.dp), style = MaterialTheme.typography.labelLarge)
+                }
             }
         }
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text("工作区", Modifier.weight(1f).padding(start = 4.dp), style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant)
-            IconButton(onClick = { editingId = null; name = ""; editorOpen = true }, enabled = !busy) { AppGlyph(GlyphName.Plus, "新建工作区", Modifier.size(18.dp)) }
+        if (searchOpen && !archiveMode) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Checkbox(
+                    checked = includeArchived, onCheckedChange = { includeArchived = it }, enabled = !busy,
+                    modifier = Modifier.testTag("sidebar-include-archived"),
+                )
+                Text("包含归档会话", style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant)
+            }
+        }
+        if (!archiveMode) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text("工作区", Modifier.weight(1f).padding(start = 4.dp), style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant)
+                IconButton(onClick = { editingId = null; name = ""; editorOpen = true }, enabled = !busy) { AppGlyph(GlyphName.Plus, "新建工作区", Modifier.size(18.dp)) }
+            }
         }
       }
       Row(Modifier.align(Alignment.BottomCenter).fillMaxWidth().onSizeChanged { footerHeight = it.height }
@@ -213,6 +328,64 @@ fun ConversationSidebar(
                         onDismiss = { editorOpen = false },
                     )
                 }
+            }
+        }
+    }
+    if (sessionEditorOpen) {
+        val id = sessionEditingId
+        Dialog(onDismissRequest = { if (!busy) sessionEditorOpen = false }) {
+            Surface(shape = RoundedCornerShape(24.dp), color = colors.surfaceContainerLow, tonalElevation = 6.dp) {
+                Column(Modifier.widthIn(max = 380.dp).padding(20.dp)) {
+                    Text("重命名对话", style = MaterialTheme.typography.titleMedium)
+                    Spacer(Modifier.height(12.dp))
+                    SessionNameEditor(
+                        name = sessionName, busy = busy, error = error,
+                        onNameChange = { sessionName = it },
+                        onConfirm = { trimmed ->
+                            if (id == null) sessionEditorOpen = false
+                            else onRenameSession(id, trimmed) { sessionEditorOpen = false }
+                        },
+                        onDismiss = { if (!busy) sessionEditorOpen = false },
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Self-contained editor panel. Production shows it inside [Dialog]; component tests render it
+ * inline so validation and trimming are exercised without a second window. The dialog only closes
+ * through the caller's success callback, so a failed rename keeps the text for correction.
+ */
+@Composable
+fun SessionNameEditor(
+    name: String,
+    busy: Boolean,
+    error: String?,
+    onNameChange: (String) -> Unit,
+    onConfirm: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val validation = sidebarSessionNameError(name)
+    var submitting by remember { mutableStateOf(false) }
+    // A backend turn flips busy or publishes an error; either one releases the local latch.
+    LaunchedEffect(busy, error) { if (!busy) submitting = false }
+    Column(Modifier.fillMaxWidth()) {
+        OutlinedTextField(
+            value = name, onValueChange = onNameChange, singleLine = true, enabled = !busy && !submitting,
+            label = { Text("对话名称") }, isError = name.isNotEmpty() && validation != null,
+            supportingText = { Text(validation ?: "1–120 个字符，仅更改显示名称") },
+            modifier = Modifier.fillMaxWidth().testTag("sidebar-session-name"),
+        )
+        if (!busy && !submitting && validation == null && error != null) {
+            Text(error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(top = 2.dp))
+        }
+        Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.End) {
+            TextButton(onClick = onDismiss, enabled = !busy && !submitting) { Text("取消") }
+            TextButton(onClick = { submitting = true; onConfirm(name.trim()) }, enabled = !busy && !submitting && validation == null) {
+                Text("保存")
             }
         }
     }

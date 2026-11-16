@@ -19,6 +19,8 @@ import com.cordiact.core.conversation.ConversationMessage
 import com.cordiact.core.conversation.ConversationSession
 import com.cordiact.core.conversation.ConversationSessionStore
 import com.cordiact.core.conversation.MessageRole
+import com.cordiact.core.conversation.normalizeSessionTitle
+import com.cordiact.core.conversation.firstUserSentenceTitle
 import com.cordiact.core.conversation.SessionKind
 import com.cordiact.core.subagent.AgentRunRecord
 import com.cordiact.core.subagent.AgentRunStore
@@ -69,6 +71,11 @@ class AndroidConversationSessionStore(
         if (oldVersion < 8 && newVersion >= 8) migrateV7ToV8(db)
         if (oldVersion < 9 && newVersion >= 9) migrateV8ToV9(db)
         if (oldVersion < 10 && newVersion >= 10) AttachmentDatabaseSchema.create(db)
+        if (oldVersion < 11 && newVersion >= 11) {
+            if (!db.hasColumn(TABLE_SESSIONS, COL_SESSION_ARCHIVED)) db.execSQL("ALTER TABLE $TABLE_SESSIONS ADD COLUMN $COL_SESSION_ARCHIVED INTEGER")
+            if (!db.hasColumn(TABLE_SESSIONS, COL_SESSION_PINNED)) db.execSQL("ALTER TABLE $TABLE_SESSIONS ADD COLUMN $COL_SESSION_PINNED INTEGER")
+            if (!db.hasColumn(TABLE_SESSIONS, COL_TITLE_MANUAL)) db.execSQL("ALTER TABLE $TABLE_SESSIONS ADD COLUMN $COL_TITLE_MANUAL INTEGER NOT NULL DEFAULT 0")
+        }
         if (newVersion > DATABASE_VERSION) throw IllegalStateException("Unsupported conversation database version $newVersion")
     }
 
@@ -253,7 +260,10 @@ class AndroidConversationSessionStore(
             $COL_WORKSPACE_ID TEXT NOT NULL REFERENCES $TABLE_WORKSPACES($COL_WORKSPACE_ID) ON DELETE RESTRICT,
             $COL_TITLE TEXT NOT NULL,
             $COL_CREATED_AT INTEGER NOT NULL,
-            $COL_UPDATED_AT INTEGER NOT NULL$delegationColumns
+            $COL_UPDATED_AT INTEGER NOT NULL,
+            $COL_SESSION_ARCHIVED INTEGER,
+            $COL_SESSION_PINNED INTEGER,
+            $COL_TITLE_MANUAL INTEGER NOT NULL DEFAULT 0$delegationColumns
         )""".trimIndent(),
         )
         if (withDelegation) {
@@ -553,6 +563,54 @@ class AndroidConversationSessionStore(
         "$COL_CREATED_AT ASC,$COL_SESSION_ID ASC",
     ).use { c -> buildList { while (c.moveToNext()) add(c.toSession()) } }
 
+    private fun updateSessionMetadata(id: String, values: (ConversationSession) -> ContentValues): ConversationSession {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            val session = requireNotNull(get(id)) { "会话不存在" }
+            require(session.kind == SessionKind.USER) { "只能整理用户会话" }
+            check(db.update(TABLE_SESSIONS, values(session), "$COL_SESSION_ID = ?", arrayOf(id)) == 1)
+            val result = requireNotNull(get(id))
+            db.setTransactionSuccessful()
+            return result
+        } finally { db.endTransaction() }
+    }
+
+    override fun updateFirstUserTitleFromOriginal(sessionId: String, originalText: String) {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            val session = get(sessionId)
+            if (session != null && session.kind == SessionKind.USER && !session.titleManuallySet) {
+                val count = db.rawQuery("SELECT COUNT(*) FROM $TABLE_MESSAGES WHERE $COL_MESSAGE_SESSION_ID = ? AND $COL_ROLE = ?", arrayOf(sessionId, MessageRole.USER.name)).use { it.moveToFirst(); it.getLong(0) }
+                if (count == 1L) db.update(TABLE_SESSIONS, ContentValues().apply { put(COL_TITLE, firstUserSentenceTitle(originalText)) }, "$COL_SESSION_ID = ?", arrayOf(sessionId))
+            }
+            db.setTransactionSuccessful()
+        } finally { db.endTransaction() }
+    }
+
+    override fun renameSession(sessionId: String, title: String): ConversationSession {
+        val normalized = normalizeSessionTitle(title)
+        return updateSessionMetadata(sessionId) { ContentValues().apply { put(COL_TITLE, normalized); put(COL_TITLE_MANUAL, 1) } }
+    }
+    override fun archiveSession(sessionId: String, nowMillis: Long): ConversationSession =
+        updateSessionMetadata(sessionId) { session -> ContentValues().apply { put(COL_SESSION_ARCHIVED, session.archivedAtMillis ?: nowMillis) } }
+    override fun restoreSession(sessionId: String): ConversationSession =
+        updateSessionMetadata(sessionId) { ContentValues().apply { putNull(COL_SESSION_ARCHIVED) } }
+    override fun setSessionPinned(sessionId: String, pinned: Boolean, nowMillis: Long): ConversationSession =
+        updateSessionMetadata(sessionId) { session -> ContentValues().apply {
+            if (pinned) put(COL_SESSION_PINNED, session.pinnedAtMillis ?: nowMillis) else putNull(COL_SESSION_PINNED)
+        } }
+
+    /** Called before inserting, under the same message transaction: metadata cannot race a rename. */
+    private fun updateFirstUserTitle(db: SQLiteDatabase, id: String, role: MessageRole, content: String) {
+        if (role != MessageRole.USER) return
+        val session = requireNotNull(get(id)) { "会话不存在" }
+        if (session.kind != SessionKind.USER || session.titleManuallySet) return
+        val exists = db.rawQuery("SELECT 1 FROM $TABLE_MESSAGES WHERE $COL_MESSAGE_SESSION_ID = ? AND $COL_ROLE = ? LIMIT 1", arrayOf(id, MessageRole.USER.name)).use { it.moveToFirst() }
+        if (!exists) db.update(TABLE_SESSIONS, ContentValues().apply { put(COL_TITLE, firstUserSentenceTitle(content)) }, "$COL_SESSION_ID = ?", arrayOf(id))
+    }
+
     override fun append(
         sessionId: String,
         role: MessageRole,
@@ -565,6 +623,7 @@ class AndroidConversationSessionStore(
         val db = writableDatabase
         db.beginTransaction()
         try {
+            updateFirstUserTitle(db, sessionId, role, content)
             val updated = ContentValues().apply { put(COL_UPDATED_AT, nowMillis) }
             check(db.update(TABLE_SESSIONS, updated, "$COL_SESSION_ID = ?", arrayOf(sessionId)) == 1) { "Conversation session does not exist" }
             val values = ContentValues().apply {
@@ -598,6 +657,7 @@ class AndroidConversationSessionStore(
         val db = writableDatabase
         db.beginTransaction()
         try {
+            updateFirstUserTitle(db, sessionId, role, content)
             val updated = ContentValues().apply { put(COL_UPDATED_AT, nowMillis) }
             check(db.update(TABLE_SESSIONS, updated, "$COL_SESSION_ID = ?", arrayOf(sessionId)) == 1) {
                 "Conversation session does not exist"
@@ -786,6 +846,9 @@ class AndroidConversationSessionStore(
         id = getString(getColumnIndexOrThrow(COL_SESSION_ID)), workspaceId = getString(getColumnIndexOrThrow(COL_WORKSPACE_ID)),
         title = getString(getColumnIndexOrThrow(COL_TITLE)), createdAtMillis = getLong(getColumnIndexOrThrow(COL_CREATED_AT)),
         updatedAtMillis = getLong(getColumnIndexOrThrow(COL_UPDATED_AT)),
+        archivedAtMillis = getColumnIndex(COL_SESSION_ARCHIVED).takeIf { it >= 0 && !isNull(it) }?.let { getLong(it) },
+        pinnedAtMillis = getColumnIndex(COL_SESSION_PINNED).takeIf { it >= 0 && !isNull(it) }?.let { getLong(it) },
+        titleManuallySet = getColumnIndex(COL_TITLE_MANUAL).takeIf { it >= 0 }?.let { getInt(it) != 0 } ?: false,
         parentSessionId = getColumnIndex(COL_PARENT_SESSION_ID).takeIf { it >= 0 && !isNull(it) }
             ?.let { getString(it) },
         // An unknown or missing value reads as USER: the migration default is USER, and a
@@ -1152,7 +1215,7 @@ class AndroidConversationSessionStore(
 
     private companion object {
         const val DATABASE_NAME = "cordiact-conversations.db"
-        const val DATABASE_VERSION = 10
+        const val DATABASE_VERSION = 11
         const val TABLE_WORKSPACES = "workspaces"
         const val TABLE_TOOL_PREFERENCES = "workspace_tool_preferences"
         const val TABLE_PLUGIN_SETTINGS = "workspace_plugin_settings"
@@ -1220,6 +1283,9 @@ class AndroidConversationSessionStore(
         const val COL_WORKSPACE_CREATED = "created_at"
         const val COL_WORKSPACE_UPDATED = "updated_at"
         const val COL_WORKSPACE_ARCHIVED = "archived_at"
+        const val COL_SESSION_ARCHIVED = "session_archived_at"
+        const val COL_SESSION_PINNED = "session_pinned_at"
+        const val COL_TITLE_MANUAL = "title_manually_set"
         const val COL_TITLE = "title"
         const val COL_CREATED_AT = "created_at"
         const val COL_UPDATED_AT = "updated_at"
@@ -1234,6 +1300,7 @@ class AndroidConversationSessionStore(
         val WORKSPACE_COLUMNS = arrayOf(COL_WORKSPACE_ID,COL_WORKSPACE_NAME,COL_WORKSPACE_CREATED,COL_WORKSPACE_UPDATED,COL_WORKSPACE_ARCHIVED)
         val SESSION_COLUMNS = arrayOf(
             COL_SESSION_ID,COL_WORKSPACE_ID,COL_TITLE,COL_CREATED_AT,COL_UPDATED_AT,
+            COL_SESSION_ARCHIVED,COL_SESSION_PINNED,COL_TITLE_MANUAL,
             COL_PARENT_SESSION_ID,COL_SESSION_KIND,COL_AGENT_LABEL,COL_DEPTH,
         )
         const val COL_RUN_SESSION_ID = "session_id"

@@ -623,7 +623,10 @@ class CordiActApplication : Application() {
                 parameters = parameters,
                 systemContext = skillIndexFor(envelope.context.workspaceId),
                 parts = envelope.attachments,
-                onUserMessagePersisted = envelope.onUserMessagePersisted,
+                onUserMessagePersisted = {
+                    sessions.updateFirstUserTitleFromOriginal(envelope.context.sessionId, envelope.originalText)
+                    envelope.onUserMessagePersisted?.invoke()
+                },
                 onEvent = onEvent,
             )
         })

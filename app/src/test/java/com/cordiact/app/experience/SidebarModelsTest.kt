@@ -55,4 +55,61 @@ class SidebarModelsTest {
         assertNull(sidebarNameError("  工作区 🗂️  "))
         assertNull(sidebarNameError("a".repeat(80)))
     }
+
+    private val mixed = SidebarWorkspace("m", "混合", 40, listOf(
+        SidebarConversation("live", "现役对话", 8),
+        SidebarConversation("gone", "已归档对话", 9, archivedAtMillis = 10),
+        SidebarConversation("pinned", "置顶对话", 2, pinnedAtMillis = 5),
+    ))
+    private val archivedOnlyWorkspace = SidebarWorkspace("only", "归档区", 30, listOf(
+        SidebarConversation("old", "旧对话", 5, archivedAtMillis = 6),
+    ))
+
+    @Test fun archivedSessionsAreHiddenAndEmptiedWorkspacesDisappearByDefault() {
+        val result = sidebarGroups(listOf(archivedOnlyWorkspace, mixed), "")
+        assertEquals(listOf("m"), result.map { it.id })
+        assertEquals(listOf("pinned", "live"), result.single().sessions.map { it.id })
+    }
+
+    @Test fun includeArchivedShowsArchivedSessionsAndKeepsMarker() {
+        val result = sidebarGroups(listOf(mixed), "", includeArchived = true).single()
+        assertEquals(listOf("pinned", "gone", "live"), result.sessions.map { it.id })
+        assertNotNull(result.sessions.first { it.id == "gone" }.archivedAtMillis)
+    }
+
+    @Test fun archivedOnlyReturnsArchivedSessionsAndSkipsWorkspacesWithoutThem() {
+        val empty = SidebarWorkspace("empty", "新工作区", 50, emptyList())
+        val result = sidebarGroups(listOf(mixed, empty, archivedOnlyWorkspace), "", archivedOnly = true)
+        assertEquals(listOf("m", "only"), result.map { it.id })
+        assertEquals(listOf("gone"), result.first().sessions.map { it.id })
+        assertEquals(listOf("old"), result[1].sessions.map { it.id })
+    }
+
+    @Test fun genuinelyEmptyWorkspaceSurvivesDefaultFilterForNewConversations() {
+        val empty = SidebarWorkspace("empty", "新工作区", 0, emptyList())
+        assertEquals(empty, sidebarGroups(listOf(empty), "").single())
+    }
+
+    @Test fun pinnedSessionsSortBeforeNewerUnpinnedOnes() {
+        val workspace = SidebarWorkspace("w", "工作区", 1, listOf(
+            SidebarConversation("new", "新对话", 90),
+            SidebarConversation("pin", "置顶对话", 10, pinnedAtMillis = 5),
+        ))
+        assertEquals(listOf("pin", "new"), sidebarGroups(listOf(workspace), "").single().sessions.map { it.id })
+    }
+
+    @Test fun searchRunsAfterArchiveFiltering() {
+        assertTrue(sidebarGroups(listOf(mixed), "已归档").isEmpty())
+        assertEquals("gone", sidebarGroups(listOf(mixed), "已归档", includeArchived = true).single().sessions.single().id)
+    }
+
+    @Test fun sessionNamesTrimAndRejectBlankLongAndControlInput() {
+        assertNotNull(sidebarSessionNameError(""))
+        assertNotNull(sidebarSessionNameError("   "))
+        assertNotNull(sidebarSessionNameError("a".repeat(121)))
+        assertNotNull(sidebarSessionNameError("a\nb"))
+        assertNotNull(sidebarSessionNameError("a\tb"))
+        assertNull(sidebarSessionNameError("  对话 🗂️  "))
+        assertNull(sidebarSessionNameError("a".repeat(120)))
+    }
 }
