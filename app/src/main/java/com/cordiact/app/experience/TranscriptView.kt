@@ -82,6 +82,11 @@ fun TranscriptView(state: ExperienceState, onPrompt: (String) -> Unit, onInspect
                 items(state.turns, key = { it.id }, contentType = { "turn" }) { turn ->
                     TurnView(turn, onInspect)
                 }
+                val workspaceId = state.workspace?.id
+                val sessionId = state.sessionId
+                if (workspaceId != null && sessionId != null) item(key = "generated-images") {
+                    com.cordiact.app.image.GeneratedImagesView(workspaceId, sessionId, state.turns, state.running)
+                }
                 item(key = "transcript-end") { Spacer(Modifier.height(1.dp)) }
             }
         }

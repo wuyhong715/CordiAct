@@ -67,6 +67,7 @@ class AttachmentWireEncoder(private val payloads: AttachmentPayloadSource) {
 
     private fun textBlock(protocol: ModelProtocol, text: String): JsonObject = JsonObject().apply {
         when (protocol) {
+            ModelProtocol.OPENAI_IMAGES -> error("Image generation does not accept conversation attachments")
             ModelProtocol.OPENAI_CHAT_COMPLETIONS -> {
                 addProperty("type", "text")
                 addProperty("text", text)
@@ -93,6 +94,7 @@ class AttachmentWireEncoder(private val payloads: AttachmentPayloadSource) {
         val dataUrl = "data:${attachment.mimeType};base64,$data"
         return JsonObject().apply {
             when (protocol) {
+            ModelProtocol.OPENAI_IMAGES -> error("Image generation does not accept conversation attachments")
                 ModelProtocol.OPENAI_CHAT_COMPLETIONS -> {
                     addProperty("type", "image_url")
                     add("image_url", JsonObject().apply { addProperty("url", dataUrl) })
@@ -129,6 +131,7 @@ class AttachmentWireEncoder(private val payloads: AttachmentPayloadSource) {
         val dataUrl = "data:${attachment.mimeType};base64,$data"
         return JsonObject().apply {
             when (protocol) {
+            ModelProtocol.OPENAI_IMAGES -> error("Image generation does not accept conversation attachments")
                 ModelProtocol.OPENAI_CHAT_COMPLETIONS -> {
                     addProperty("type", "file")
                     add("file", JsonObject().apply {

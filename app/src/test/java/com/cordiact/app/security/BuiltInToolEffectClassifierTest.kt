@@ -10,6 +10,8 @@ class BuiltInToolEffectClassifierTest {
         listOf("job_list", "job_output", "job_probe", "tool_output_read", "skill.open").forEach {
             assertEquals(it, ToolEffectClass.WORKSPACE_READ, classifier.classify(it, ""))
         }
+        assertEquals(ToolEffectClass.WORKSPACE_WRITE, classifier.classify("generate_image", "model.providers"))
+        assertEquals(ToolEffectClass.PURE, classifier.classify("list_image_models", "model.providers"))
         assertEquals(ToolEffectClass.COMMAND, classifier.classify("job_kill", ""))
         assertEquals(ToolEffectClass.DEVICE_READ, classifier.classify("screen", ""))
         assertEquals(ToolEffectClass.UNKNOWN, classifier.classify("unknown_tool", ""))

@@ -241,8 +241,10 @@ private fun ProviderEditor(vm: SettingsViewModel, busy: Boolean, dirty: (Boolean
     var discovered by remember { mutableStateOf(emptyList<String>()) }
     var selected by remember { mutableStateOf(emptySet<String>()) }
     var query by remember { mutableStateOf("") }
+    var manualImageModel by rememberSaveable { mutableStateOf("gpt-image-1.5") }
     DisposableEffect(Unit) { onDispose { secret = "" } }
     Text("第 ${step + 1} 步 / 3", style = MaterialTheme.typography.titleMedium)
+    if (protocol == ModelProtocol.OPENAI_IMAGES.name) Text("GPT 生图模型通过 generate_image 工具使用，不进入聊天模型选择器；生成可能计费。", style = MaterialTheme.typography.bodySmall)
     when(step) {
         0 -> {
             ModelProtocol.entries.forEach { p ->
@@ -259,6 +261,12 @@ private fun ProviderEditor(vm: SettingsViewModel, busy: Boolean, dirty: (Boolean
             SecretField(secret, { secret = it; dirty(true) }, !busy)
             Text("Key 仅发送到你填写的端点，加密保存在本机凭据库。拉取模型不保存任何配置。", style = MaterialTheme.typography.bodySmall)
             Button({ vm.perform { discovered = vm.facade.discover(ProviderDraft(id, name, ModelProtocol.valueOf(protocol), url), secret); selected = discovered.toSet(); step = 2 } }, enabled = !busy && url.isNotBlank() && secret.isNotBlank()) { Text("拉取模型") }
+            if (protocol == ModelProtocol.OPENAI_IMAGES.name) {
+                OutlinedTextField(manualImageModel, { manualImageModel = it; dirty(true) }, label = { Text("生图模型 ID（手动填写）") }, enabled = !busy, modifier = Modifier.fillMaxWidth())
+                Text("部分代理不支持模型发现，可填写服务商实际支持的 gpt-image-* ID。", style = MaterialTheme.typography.bodySmall)
+                Button({ discovered = listOf(manualImageModel.trim()); selected = discovered.toSet(); step = 2 },
+                    enabled = !busy && url.isNotBlank() && secret.isNotBlank() && manualImageModel.trim().matches(Regex("gpt-image-[a-zA-Z0-9._-]+"))) { Text("使用此生图模型") }
+            }
             TextButton({ step = 0 }, enabled = !busy) { Text("上一步") }
         }
         2 -> {
@@ -366,6 +374,7 @@ private fun ModelRoles(state: SettingsSnapshot, vm: SettingsViewModel, busy: Boo
 private fun ModelProtocol.label() = when(this) {
     ModelProtocol.OPENAI_CHAT_COMPLETIONS -> "OpenAI 兼容 · Chat Completions"
     ModelProtocol.OPENAI_RESPONSES -> "OpenAI Responses"
+    ModelProtocol.OPENAI_IMAGES -> "GPT 图像生成"
     ModelProtocol.ANTHROPIC_MESSAGES -> "Anthropic Messages"
     ModelProtocol.GEMINI_GENERATE_CONTENT -> "Gemini"
 }
