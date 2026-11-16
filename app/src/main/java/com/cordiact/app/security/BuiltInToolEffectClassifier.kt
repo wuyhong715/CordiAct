@@ -11,6 +11,8 @@ class BuiltInToolEffectClassifier : ToolEffectClassifier {
         toolId in setOf("job_list", "job_output", "job_probe", "tool_output_read", "skill.open") -> ToolEffectClass.WORKSPACE_READ
         toolId == "job_kill" -> ToolEffectClass.COMMAND
         toolId == "screen" -> ToolEffectClass.DEVICE_READ
+        toolId == "list_image_models" -> ToolEffectClass.PURE
+        toolId == "generate_image" -> ToolEffectClass.WORKSPACE_WRITE
         toolId == "workspace.files.write_text" -> ToolEffectClass.WORKSPACE_WRITE
         toolId in setOf("workspace.files.list", "workspace.files.read_text") -> ToolEffectClass.WORKSPACE_READ
         toolId in setOf("search.web", "search.fetch") -> ToolEffectClass.NETWORK

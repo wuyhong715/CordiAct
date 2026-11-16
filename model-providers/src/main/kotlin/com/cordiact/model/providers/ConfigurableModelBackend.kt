@@ -51,6 +51,7 @@ import java.util.concurrent.atomic.AtomicReference
  * that looks like a model failure.
  */
 internal fun supportsToolCalls(protocol: ModelProtocol): Boolean = when (protocol) {
+    ModelProtocol.OPENAI_IMAGES -> false
     // All four carry tools; only the wire shape differs, and each branch of the request and
     // stream builders handles its own. The function stays so a future protocol has to declare
     // support explicitly instead of silently half-working.
@@ -96,6 +97,7 @@ enum class ModelProtocol {
     ANTHROPIC_MESSAGES,
     GEMINI_GENERATE_CONTENT,
     OPENAI_RESPONSES,
+    OPENAI_IMAGES,
 }
 
 /** Public, non-secret provider settings. API keys must be supplied separately. */
@@ -321,7 +323,7 @@ class ConfigurableModelBackend(
     private val activeCalls = ConcurrentHashMap.newKeySet<RunningCall>()
     override val providerId: String get() = config.providerId
 
-    override fun models(): List<ModelDescriptor> = config.models.map {
+    override fun models(): List<ModelDescriptor> = (if (config.protocol == ModelProtocol.OPENAI_IMAGES) emptyList() else config.models).map {
         val parameters = config.parameterCapabilities[it]
         ModelDescriptor(
             ModelId(providerId, it), "${config.displayName} - $it", supportsStreaming = true,
@@ -485,6 +487,7 @@ class ConfigurableModelBackend(
                             }
                             val type = json.string("type") ?: event
                             when (config.protocol) {
+                                ModelProtocol.OPENAI_IMAGES -> error("Use generate_image for image models")
                                 ModelProtocol.OPENAI_CHAT_COMPLETIONS -> {
                                     // DeepSeek and other OpenAI-compatible providers report usage in the
                                     // final chunk, with an empty `choices` array.
@@ -496,6 +499,7 @@ class ConfigurableModelBackend(
                                 else -> Unit
                             }
                             when (config.protocol) {
+                                ModelProtocol.OPENAI_IMAGES -> error("Use generate_image for image models")
                                 ModelProtocol.OPENAI_CHAT_COMPLETIONS -> {
                                     val deltaObject = json.getAsJsonArray("choices")?.firstOrNull()?.asJsonObject
                                         ?.getAsJsonObject("delta")
@@ -682,7 +686,7 @@ class ConfigurableModelBackend(
 
     private fun setAuthHeaders(connection: HttpURLConnection, key: String) {
         when (config.protocol) {
-            ModelProtocol.OPENAI_CHAT_COMPLETIONS, ModelProtocol.OPENAI_RESPONSES -> connection.setRequestProperty("Authorization", "Bearer $key")
+            ModelProtocol.OPENAI_CHAT_COMPLETIONS, ModelProtocol.OPENAI_RESPONSES, ModelProtocol.OPENAI_IMAGES -> connection.setRequestProperty("Authorization", "Bearer $key")
             ModelProtocol.ANTHROPIC_MESSAGES -> {
                 connection.setRequestProperty("x-api-key", key)
                 connection.setRequestProperty("anthropic-version", "2023-06-01")
@@ -882,6 +886,7 @@ class ConfigurableModelBackend(
             }
         }
         return when (config.protocol) {
+        ModelProtocol.OPENAI_IMAGES -> error("Use generate_image for image models")
         ModelProtocol.OPENAI_CHAT_COMPLETIONS -> JsonObject().apply {
             addProperty("model", request.model.modelId)
             addProperty("stream", true)

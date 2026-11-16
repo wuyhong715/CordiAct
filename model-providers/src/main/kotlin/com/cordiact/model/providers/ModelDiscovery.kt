@@ -12,6 +12,7 @@ data class ModelProviderConnection(val providerId: String, val displayName: Stri
     fun generationEndpoint(): String = base().let { base -> when (protocol) {
         ModelProtocol.OPENAI_CHAT_COMPLETIONS -> "$base/chat/completions"
         ModelProtocol.OPENAI_RESPONSES -> "$base/responses"
+        ModelProtocol.OPENAI_IMAGES -> "$base/images/generations"
         ModelProtocol.ANTHROPIC_MESSAGES -> "$base/messages"
         ModelProtocol.GEMINI_GENERATE_CONTENT -> "$base/models/{model}:streamGenerateContent?alt=sse"
     } }
@@ -36,6 +37,7 @@ data class ModelProviderConnection(val providerId: String, val displayName: Stri
         path = when (protocol) {
             ModelProtocol.OPENAI_CHAT_COMPLETIONS -> path.removeSuffix("/chat/completions")
             ModelProtocol.OPENAI_RESPONSES -> path.removeSuffix("/responses")
+            ModelProtocol.OPENAI_IMAGES -> path.removeSuffix("/images/generations")
             ModelProtocol.ANTHROPIC_MESSAGES -> path.removeSuffix("/messages")
             ModelProtocol.GEMINI_GENERATE_CONTENT -> if (path.contains("/models/")) path.substringBeforeLast("/models/") else path.removeSuffix("/models")
         }.removeSuffix("/models")
@@ -119,7 +121,7 @@ class HttpModelDiscoveryService : ModelDiscoveryService {
                 }
                 if (cursor == null) {
                     check(models.isNotEmpty()) { "MODEL_DISCOVERY_EMPTY" }
-                    return models.toList()
+                    return models.filter { protocol != ModelProtocol.OPENAI_IMAGES || it.startsWith("gpt-image-") }.also { check(it.isNotEmpty()) { "MODEL_DISCOVERY_NO_GPT_IMAGE_MODELS" } }
                 }
                 check(cursor.length <= 4096 && cursors.add(cursor)) { "MODEL_DISCOVERY_INVALID_CURSOR" }
             } catch (failure: InterruptedException) { throw failure }

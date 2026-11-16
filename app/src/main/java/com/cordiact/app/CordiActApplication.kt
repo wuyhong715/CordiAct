@@ -566,6 +566,7 @@ class CordiActApplication : Application() {
         // delegation tools must be in it before the first turn assembles its specs.
         // Always published: the preview window is a session surface, not an integration.
         registerPreviewTools(conversationCatalog.toolRegistry)
+        com.cordiact.app.image.registerImageGenerationTools(this, conversationCatalog.toolRegistry)
         registerSubagentTools(conversationCatalog.toolRegistry, subagentRuntime)
         registerOrchestrationTools(conversationCatalog.toolRegistry, orchestrationPlugin)
         registerBackgroundSubagentTools(conversationCatalog.toolRegistry, backgroundSubagents)

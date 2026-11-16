@@ -19,7 +19,7 @@ class ToolCallStreamTest {
     fun everyProtocolSupportsToolCalls() {
         // All four carry tools; only the wire shape differs. The flag remains so a future
         // protocol has to declare support explicitly instead of silently half-working.
-        for (protocol in ModelProtocol.entries) {
+        for (protocol in ModelProtocol.entries.filter { it != ModelProtocol.OPENAI_IMAGES }) {
             assertTrue(supportsToolCalls(protocol), "$protocol must support tools")
         }
     }
