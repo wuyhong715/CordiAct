@@ -118,22 +118,35 @@ fun SettingsHost(vm: SettingsViewModel, initialLink: String? = null, onBack: () 
     val backdrop = remember { HazeState() }
     var toolbarHeight by remember { mutableIntStateOf(0) }
     val toolbarDp = with(LocalDensity.current) { toolbarHeight.toDp() }
+    val sections = settingsSections(route)
+    var selectedSection by rememberSaveable(route.name) { mutableStateOf(sections.firstOrNull()?.id.orEmpty()) }
+    val editor = remember(route) { SettingsEditorState() }
+    val keyboardVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
+    val showSections = sections.isNotEmpty() && !editor.active && !keyboardVisible
+    var sectionBarHeight by remember { mutableIntStateOf(0) }
+    val sectionBottom = with(LocalDensity.current) { if (showSections) sectionBarHeight.toDp() else 0.dp }
+    // Keep a separate scroll position per section without discarding the page's draft state.
+    val firstScroll = rememberSaveable(route.name, saver = androidx.compose.foundation.ScrollState.Saver) { androidx.compose.foundation.ScrollState(0) }
+    val secondScroll = rememberSaveable(route.name, saver = androidx.compose.foundation.ScrollState.Saver) { androidx.compose.foundation.ScrollState(0) }
+    val thirdScroll = rememberSaveable(route.name, saver = androidx.compose.foundation.ScrollState.Saver) { androidx.compose.foundation.ScrollState(0) }
+    val sectionScroll = when (sections.indexOfFirst { it.id == selectedSection }) { 1 -> secondScroll; 2 -> thirdScroll; else -> firstScroll }
+
     Scaffold(containerColor = MaterialTheme.colorScheme.background,
         contentWindowInsets = WindowInsets.systemBars.union(WindowInsets.ime),
         snackbarHost = { SnackbarHost(snackbar) }) { inset ->
-      CompositionLocalProvider(LocalBackdrop provides backdrop) {
+      CompositionLocalProvider(LocalBackdrop provides backdrop, LocalSettingsSection provides selectedSection, LocalSettingsEditor provides editor) {
         Box(Modifier.padding(inset).fillMaxSize()) {
         Row(Modifier.fillMaxSize().hazeSource(backdrop)) {
             val wide = LocalConfiguration.current.screenWidthDp >= 600
             if (wide) {
-                Column(Modifier.width(300.dp).fillMaxHeight().verticalScroll(rememberScrollState()).padding(start = 16.dp, end = 16.dp, top = toolbarDp + 56.dp, bottom = 56.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Column(Modifier.width(300.dp).fillMaxHeight().verticalScroll(rememberScrollState()).padding(start = 16.dp, end = 16.dp, top = toolbarDp + 56.dp, bottom = sectionBottom + 56.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     SettingsMenu(state, ::navigate, ::openLink)
                 }
                 VerticalDivider()
             }
             Box(Modifier.weight(1f).fillMaxHeight(), contentAlignment = Alignment.TopCenter) {
             key(route, providerId) {
-            Column(Modifier.widthIn(max = 640.dp).fillMaxWidth().fillMaxHeight().verticalScroll(rememberScrollState()).padding(start = 16.dp, end = 16.dp, top = toolbarDp + 56.dp, bottom = 56.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Column(Modifier.widthIn(max = 640.dp).fillMaxWidth().fillMaxHeight().verticalScroll(sectionScroll).padding(start = 16.dp, end = 16.dp, top = toolbarDp + 56.dp, bottom = sectionBottom + 56.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 if (route != SettingsRoute.HOME) Text(when (route) {
                     SettingsRoute.HOME -> "全局与工作区设置"
                     SettingsRoute.PERMISSIONS -> "按工作区设置"
@@ -185,7 +198,9 @@ fun SettingsHost(vm: SettingsViewModel, initialLink: String? = null, onBack: () 
             }
         }
         ViewportFade(backdrop, true, Modifier.align(Alignment.TopCenter).fillMaxWidth().height(toolbarDp + 48.dp))
-        ViewportFade(backdrop, false, Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(48.dp))
+        ViewportFade(backdrop, false, Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(sectionBottom + 48.dp))
+        if (showSections) SettingsSectionBar(sections, selectedSection, { selectedSection = it },
+            Modifier.align(Alignment.BottomCenter).padding(horizontal = 20.dp, vertical = 12.dp).onSizeChanged { sectionBarHeight = it.height })
         Row(Modifier.align(Alignment.TopCenter).fillMaxWidth().onSizeChanged { toolbarHeight = it.height }
             .padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             FrostedSurface(radius = 24.dp) {

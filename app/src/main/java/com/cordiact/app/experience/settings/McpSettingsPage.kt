@@ -57,6 +57,8 @@ internal fun McpSettingsPage(facade: McpSettings?, dirty: (Boolean) -> Unit, onB
             finishForm(); message = "鉴权已更新 · 连接验证成功"
         }
     }
+    val diagnostic = LocalSettingsSection.current == "diagnostics"
+    SettingsEditor(adding || editingAuth != null)
     LaunchedEffect(Unit) { work {} }
     Text("全局 · 仅 HTTPS 或 localhost HTTP；秘密仅进入凭据库。", style = MaterialTheme.typography.bodySmall)
     if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
@@ -90,7 +92,7 @@ internal fun McpSettingsPage(facade: McpSettings?, dirty: (Boolean) -> Unit, onB
         }
         else -> {
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Button(enabled = !busy, onClick = { adding = true; name = ""; url = ""; header = "Authorization"; secret = ""; tools = null }) { Text("添加服务器") }
+                if (!diagnostic) Button(enabled = !busy, onClick = { adding = true; name = ""; url = ""; header = "Authorization"; secret = ""; tools = null }) { Text("添加服务器") }
                 OutlinedButton(enabled = !busy, onClick = { work {} }) { Text("刷新") }
             }
             if (items.isEmpty() && !busy) Text("尚无 MCP 服务器。添加后可连接并预览工具，再确认安装。")
@@ -100,10 +102,11 @@ internal fun McpSettingsPage(facade: McpSettings?, dirty: (Boolean) -> Unit, onB
                         Text(item.name, style = MaterialTheme.typography.titleMedium)
                         Text(item.url)
                         Text("${item.state} · ${item.toolCount} 个工具 · ${if (item.keySet) "鉴权已设置" else "无鉴权凭据"}")
-                        Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                        if (!diagnostic) Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
                             Switch(item.enabled, enabled = !busy, onCheckedChange = { enabled -> work { facade.setEnabled(item.name, enabled); statuses.remove(item.name); details.remove(item.name) } })
                             Text(if (item.enabled) "已启用" else "已关闭")
                         }
+                        if (diagnostic) {
                         OutlinedButton(enabled = !busy, onClick = { work {
                             val outcome = facade.reconnect(item.name)
                             statuses[item.name] = outcome
@@ -118,7 +121,8 @@ internal fun McpSettingsPage(facade: McpSettings?, dirty: (Boolean) -> Unit, onB
                             Text(tool.name, style = MaterialTheme.typography.titleSmall)
                             if (tool.description.isNotBlank()) Text(tool.description, style = MaterialTheme.typography.bodySmall)
                         }
-                        TextButton(enabled = !busy, onClick = { editingAuth = item; authHeader = "Authorization"; authSecret = ""; removeAuth = false; message = null }) { Text("更换 / 清除鉴权") }
+                        }
+                        if (!diagnostic) TextButton(enabled = !busy, onClick = { editingAuth = item; authHeader = "Authorization"; authSecret = ""; removeAuth = false; message = null }) { Text("更换 / 清除鉴权") }
                         TextButton(enabled = !busy, onClick = { deleting = item }) { Text("删除服务器") }
                     }
                 }

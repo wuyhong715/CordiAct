@@ -57,9 +57,11 @@ internal fun SshSettingsPage(facade: SshSettings?, dirty: (Boolean) -> Unit, onB
     if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
     error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
     message?.let { Text(it) }
+    val diagnostic = LocalSettingsSection.current == "diagnostics"
+    SettingsEditor(adding)
     if (!adding) {
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Button(enabled = !busy, onClick = { adding = true; originalName = null; name = ""; host = ""; port = "22"; user = ""; secret = ""; passphrase = ""; importedKey = null; candidate = null; accepted = false }) { Text("添加主机") }
+            if (!diagnostic) Button(enabled = !busy, onClick = { adding = true; originalName = null; name = ""; host = ""; port = "22"; user = ""; secret = ""; passphrase = ""; importedKey = null; candidate = null; accepted = false }) { Text("添加主机") }
             OutlinedButton(enabled = !busy, onClick = { work {} }) { Text("刷新") }
         }
         hosts.forEach { summary ->
@@ -69,14 +71,14 @@ internal fun SshSettingsPage(facade: SshSettings?, dirty: (Boolean) -> Unit, onB
                     Text("${summary.user}@${summary.host}:${summary.port} · ${summary.authType}")
                     Text(summary.pinnedFingerprint ?: "未固定指纹 · 禁止连接")
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        TextButton(enabled = !busy, onClick = { work { message = facade.test(summary.name) } }) { Text("测试连接") }
-                        TextButton(enabled = !busy, onClick = { work {
+                        if (diagnostic) TextButton(enabled = !busy, onClick = { work { message = facade.test(summary.name) } }) { Text("测试连接") }
+                        if (diagnostic) TextButton(enabled = !busy, onClick = { work {
                             val result = facade.probe(summary.host, summary.port)
                             check(result.reachable && !result.fingerprintSha256.isNullOrBlank())
                             pin = summary to result.fingerprintSha256!!
                         } }) { Text("探测指纹") }
-                        TextButton(enabled = !busy, onClick = { originalName = summary.name; name = summary.name; host = summary.host; port = summary.port.toString(); user = summary.user; secret = ""; passphrase = ""; importedKey = null; candidate = null; accepted = false; adding = true }) { Text("编辑") }
-                        TextButton(enabled = !busy, onClick = { delete = summary }) { Text("删除") }
+                        if (!diagnostic) TextButton(enabled = !busy, onClick = { originalName = summary.name; name = summary.name; host = summary.host; port = summary.port.toString(); user = summary.user; secret = ""; passphrase = ""; importedKey = null; candidate = null; accepted = false; adding = true }) { Text("编辑") }
+                        if (!diagnostic) TextButton(enabled = !busy, onClick = { delete = summary }) { Text("删除") }
                     }
                 }
             }
