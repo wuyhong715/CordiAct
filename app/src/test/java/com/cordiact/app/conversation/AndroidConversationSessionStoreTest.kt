@@ -48,7 +48,9 @@ class AndroidConversationSessionStoreTest {
         val second = store.append(session.id, MessageRole.ASSISTANT, "Hello", 30)
         assertNotEquals(first.id, second.id)
         assertEquals(30L, store.get(session.id)?.updatedAtMillis)
-        assertEquals(listOf(session.copy(updatedAtMillis = 30)), store.list("workspace-a"))
+        // The first user message names the conversation; ordering still follows activity.
+        assertEquals("Hi", store.get(session.id)?.title)
+        assertEquals(listOf(session.copy(updatedAtMillis = 30, title = "Hi")), store.list("workspace-a"))
         assertTrue(store.list("workspace-b").isEmpty())
 
         store.close()
