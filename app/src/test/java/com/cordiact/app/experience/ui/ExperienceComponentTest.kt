@@ -52,6 +52,20 @@ class ExperienceComponentTest {
             "", {}, { text -> val accepted = send(text); if (accepted) controller.text(""); accepted }, stop, {}, {})
     }
 
+    @Test fun settingsSections_selectsOnlyRequestedSection() {
+        var selected by mutableStateOf("services")
+        content {
+            com.cordiact.app.experience.settings.SettingsSectionBar(
+                com.cordiact.app.experience.settings.settingsSections(com.cordiact.app.experience.settings.SettingsRoute.SEARCH),
+                selected, { selected = it })
+        }
+        compose.onNodeWithTag("settings-section-services").assertIsSelected()
+        compose.onNodeWithTag("settings-section-policy").performClick()
+        compose.onNodeWithTag("settings-section-policy").assertIsSelected()
+        compose.onNodeWithTag("settings-section-services").assertIsNotSelected()
+        assertEquals("policy", selected)
+    }
+
     @Test fun compactSidebar_searchesAndSettingsStaysBottomRight() {
         var settings = 0
         content {

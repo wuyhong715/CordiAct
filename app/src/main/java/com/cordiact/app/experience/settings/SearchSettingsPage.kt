@@ -40,38 +40,56 @@ internal fun SearchSettingsPage(facade: SearchSettings?, workspaceId: String, di
         order = initial.policy.providerOrder + ids.filter { it !in initial.policy.providerOrder }
         enabled = initial.policy.enabledProviders ?: ids.toSet()
     } }
-    Text("模式和优先顺序作用于工作区：$workspaceId。Key 和地址作用于所有工作区。", style = MaterialTheme.typography.bodySmall)
+    val section = LocalSettingsSection.current.ifEmpty { "services" }
+    SettingsEditor(editing != null)
+    Text(if (section == "policy") "当前工作区 · $workspaceId" else if (section == "diagnostics") "诊断与计费 · 当前工作区 $workspaceId" else "全局服务配置 · 所有工作区共用", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
     if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
     error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
     state?.let { snapshot ->
-        Text("本月 ${snapshot.monthlyCalls} 次计费调用 · 本地抓取${if (snapshot.localFetch) "已启用（SSRF 防护）" else "已关闭"}")
-        if (editing == null) {
+        if (section == "diagnostics" && editing == null) {
+            Text("连接诊断", style = MaterialTheme.typography.titleMedium)
+            Text("本月 ${snapshot.monthlyCalls} 次计费调用 · 本地抓取${if (snapshot.localFetch) "已启用（SSRF 防护）" else "已关闭"}")
+            snapshot.providers.filter { !it.native }.forEach { provider ->
+                OutlinedCard(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp)) {
+                    Text(provider.id, style = MaterialTheme.typography.titleMedium)
+                    Text(if (provider.keySet) "凭据已配置" else "凭据未设置或无需凭据", style = MaterialTheme.typography.bodySmall)
+                    TextButton(enabled = !busy, onClick = { work { result = facade.test(workspaceId, provider.id) } }) { Text("测试搜索（消耗服务额度）") }
+                } }
+            }
+            result.forEach { Text(it) }
+        }
+        if (editing == null && section != "diagnostics") {
+            if (section == "policy") {
             listOf(SearchMode.AUTO to "自动：原生优先，受限回落第三方", SearchMode.TOOL to "仅第三方", SearchMode.OFF to "关闭").forEach { (value, label) ->
                 Row { RadioButton(mode == value, enabled = !busy, onClick = { mode = value; dirty(true) }); Text(label) }
             }
             if (mode == SearchMode.NATIVE) Text("当前为仅原生模式，可改为自动、仅第三方或关闭。")
-            Text("第三方服务（上方优先；修改排序后请先保存再配置服务）", style = MaterialTheme.typography.titleMedium)
+            }
+            Text(if (section == "policy") "第三方服务 · 上方优先" else "搜索服务", style = MaterialTheme.typography.titleMedium)
+            if (section == "services" && (mode != snapshot.policy.mode || order != (snapshot.policy.providerOrder + snapshot.providers.filter { !it.native }.map { it.id }.filter { it !in snapshot.policy.providerOrder }) || enabled != (snapshot.policy.enabledProviders ?: snapshot.providers.filter { !it.native }.map { it.id }.toSet()))) {
+                Text("策略草稿尚未保存；请先切回“策略”保存，再编辑服务。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
             order.forEachIndexed { index, id ->
                 val provider = snapshot.providers.firstOrNull { it.id == id } ?: return@forEachIndexed
                 ElevatedCard(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(12.dp)) {
                         Row {
-                            Checkbox(id in enabled, enabled = !busy, onCheckedChange = { yes -> enabled = if (yes) enabled + id else enabled - id; dirty(true) })
+                            if (section == "policy") Checkbox(id in enabled, enabled = !busy, onCheckedChange = { yes -> enabled = if (yes) enabled + id else enabled - id; dirty(true) })
                             Column(Modifier.weight(1f)) { Text(id); Text(if (provider.keySet) "Key 已配置" else if (id == "searxng") "实例地址服务" else "未配置 Key", style = MaterialTheme.typography.bodySmall) }
-                            TextButton(enabled = !busy && mode == snapshot.policy.mode && order == (snapshot.policy.providerOrder + snapshot.providers.map { it.id }.filter { it !in snapshot.policy.providerOrder }) && enabled == (snapshot.policy.enabledProviders ?: snapshot.providers.map { it.id }.toSet()), onClick = { editing = provider; endpoint = provider.endpoint; key = ""; result = emptyList() }) { Text("配置") }
+                            if (section == "services") TextButton(enabled = !busy && mode == snapshot.policy.mode && order == (snapshot.policy.providerOrder + snapshot.providers.filter { !it.native }.map { it.id }.filter { it !in snapshot.policy.providerOrder }) && enabled == (snapshot.policy.enabledProviders ?: snapshot.providers.filter { !it.native }.map { it.id }.toSet()), onClick = { editing = provider; endpoint = provider.endpoint; key = ""; result = emptyList() }) { Text("配置") }
                         }
-                        Row {
+                        if (section == "policy") Row {
                             TextButton(enabled = !busy && index > 0, onClick = { order = order.toMutableList().apply { add(index - 1, removeAt(index)) }; dirty(true) }) { Text("上移") }
                             TextButton(enabled = !busy && index < order.lastIndex, onClick = { order = order.toMutableList().apply { add(index + 1, removeAt(index)) }; dirty(true) }) { Text("下移") }
                         }
                     }
                 }
             }
-            Button(enabled = !busy, onClick = { work {
+            if (section == "policy") Button(enabled = !busy, onClick = { work {
                 facade.savePolicy(workspaceId, snapshot.policy.copy(mode = mode, providerOrder = order, enabledProviders = enabled, searchProviderId = null))
                 dirty(false)
             } }) { Text("保存模式与排序") }
-        } else {
+        } else if (editing != null) {
             val provider = editing!!
             Text("${provider.id} · 全局配置", style = MaterialTheme.typography.titleMedium)
             OutlinedTextField(endpoint, { endpoint = it; dirty(true) }, label = { Text("服务地址") }, enabled = !busy, modifier = Modifier.fillMaxWidth())
