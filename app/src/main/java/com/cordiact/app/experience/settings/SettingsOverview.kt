@@ -2,6 +2,7 @@ package com.cordiact.app.experience.settings
 
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -13,6 +14,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.semantics.*
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.cordiact.app.experience.AppGlyph
 import com.cordiact.app.experience.GlyphName
@@ -72,9 +74,19 @@ private data class OverviewEntry(val title: String, val glyph: GlyphName, val ro
 private fun OverviewGroup(title: String, entries: List<OverviewEntry>, navigate: (SettingsRoute) -> Unit) {
     Text(title, Modifier.padding(start = 8.dp, top = 12.dp, bottom = 2.dp),
         style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-    Surface(shape = RoundedCornerShape(24.dp), color = MaterialTheme.colorScheme.surfaceContainerLowest) {
-        Column(Modifier.padding(vertical = 4.dp)) {
-            entries.forEach { entry -> OverviewRow(entry.title, entry.glyph) { navigate(entry.route) } }
+    val outline = MaterialTheme.colorScheme.outlineVariant
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(26.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerLowest,
+        border = BorderStroke(1.dp, outline),
+    ) {
+        // One shared outline; dividers meet it without double borders or rounded rows.
+        Column {
+            entries.forEachIndexed { index, entry ->
+                if (index > 0) HorizontalDivider(thickness = 1.dp, color = outline)
+                OverviewRow(entry.title, entry.glyph) { navigate(entry.route) }
+            }
         }
     }
 }
@@ -86,12 +98,12 @@ private fun OverviewRow(title: String, glyph: GlyphName, urgent: Boolean = false
     Row(Modifier.fillMaxWidth().semantics(mergeDescendants = true) {
         if (expand) { stateDescription = "已收起，共 $count 项" }
     }.clickable(role = Role.Button, onClickLabel = if (expand) "展开待处理项" else "打开$title", onClick = onClick)
-        .heightIn(min = 64.dp).padding(horizontal = 18.dp, vertical = 14.dp),
+        .heightIn(min = 64.dp).padding(horizontal = 18.dp, vertical = 12.dp),
         horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.CenterVertically) {
         Box(Modifier.size(36.dp), contentAlignment = Alignment.Center) {
             AppGlyph(glyph, tint = tint, size = GlyphSize.Large)
         }
-        Text(title, Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
+        Text(title, Modifier.weight(1f), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Medium)
         AppGlyph(if (expand) GlyphName.ChevronDown else GlyphName.Back,
             modifier = if (expand) Modifier else Modifier.rotate(180f),
             tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = .55f), size = GlyphSize.Small)
