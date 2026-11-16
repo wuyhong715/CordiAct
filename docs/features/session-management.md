@@ -25,6 +25,6 @@
 - 临时JVM harness `/workspace/.verify-session` 复用现有Gradle/Robolectric依赖，绑定仓库生产和测试源：
   `/workspace/CordiAct/gradlew -p /workspace/.verify-session --offline --no-daemon :test --tests 'com.cordiact.app.experience.*' --console=plain`
   SidebarModelsTest 17项、SessionTitleTest 2项通过。
-- SessionLifecycleTest已编译，执行被本机Robolectric SDK35 `sqlite.nativeOpen` UnsatisfiedLinkError阻塞；SDK28依赖未缓存，备用legacy模式受SDK35 shadow不兼容阻塞，最终恢复标准SDK35配置供CI运行。未宣称持久层Android测试通过。
+- SessionLifecycleTest 已在本机编译，并在 PR #75 的 CI（ubuntu，`:app:testDebugUnitTest`）执行通过；本机 Robolectric SDK35 `sqlite.nativeOpen` UnsatisfiedLinkError 属本地环境限制。
 - Python sqlite3执行生产v10→v11 ALTER SQL，验证已有title/updated时间保留、字段默认值与写入。仅SQL迁移烟测，不替代Android/事务并发验证。
-- 未打APK、未真机验收、未提交推送。APK按约定由GitHub Actions打包。
+- PR #75 已 squash 合并到 main（9e276f83）；合并后 main 的 Android build 与 isolated-service proof（API 29/35）均通过，未手动打APK。
