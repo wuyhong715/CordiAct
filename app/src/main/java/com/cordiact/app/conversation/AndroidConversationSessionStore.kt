@@ -605,7 +605,8 @@ class AndroidConversationSessionStore(
     /** Called before inserting, under the same message transaction: metadata cannot race a rename. */
     private fun updateFirstUserTitle(db: SQLiteDatabase, id: String, role: MessageRole, content: String) {
         if (role != MessageRole.USER) return
-        val session = requireNotNull(get(id)) { "会话不存在" }
+        // A missing session must keep the caller's own "does not exist" failure path.
+        val session = get(id) ?: return
         if (session.kind != SessionKind.USER || session.titleManuallySet) return
         val exists = db.rawQuery("SELECT 1 FROM $TABLE_MESSAGES WHERE $COL_MESSAGE_SESSION_ID = ? AND $COL_ROLE = ? LIMIT 1", arrayOf(id, MessageRole.USER.name)).use { it.moveToFirst() }
         if (!exists) db.update(TABLE_SESSIONS, ContentValues().apply { put(COL_TITLE, firstUserSentenceTitle(content)) }, "$COL_SESSION_ID = ?", arrayOf(id))
