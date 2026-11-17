@@ -13,6 +13,12 @@ import com.cordiact.app.experience.ExperienceViewModel
 
 /** Fresh UI. Business services remain application-owned; drafts and scroll survive rotation. */
 class MainActivity : ComponentActivity() {
+    override fun onResume() {
+        super.onResume()
+        runCatching { com.cordiact.app.service.ExecutionPresenceHost.onUserForeground(this) }
+            .onFailure { android.util.Log.w("MainActivity", "Execution state refresh failed", it) }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)

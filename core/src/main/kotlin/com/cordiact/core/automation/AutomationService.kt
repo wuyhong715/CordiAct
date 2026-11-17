@@ -236,12 +236,52 @@ class AutomationService(
         val run = runs[runId] ?: return null
         if (run.state != TaskRunState.QUEUED) return null
 
-        val updated = run.copy(state = TaskRunState.RUNNING, startedAt = now())
+        val updated = run.copy(state = TaskRunState.RUNNING, startedAt = now(),
+            executionCheckpoint = TaskExecutionCheckpoint(TaskExecutionStage.PREPARING, now()))
         val nextRuns = LinkedHashMap(runs)
         nextRuns[runId] = updated
         persist(tasks, nextRuns)
         runs = nextRuns
         return updated
+    }
+
+    /** Persist before dispatch. No arguments, credentials or model output enter this journal. */
+    fun beginTool(runId: String): String? = synchronized(lock) {
+        val run = runs[runId] ?: return null
+        if (run.state != TaskRunState.RUNNING) return null
+        check(run.executionCheckpoint?.pendingToolToken == null) { "Unresolved tool boundary" }
+        val token = UUID.randomUUID().toString()
+        writeCheckpoint(run, TaskExecutionCheckpoint(TaskExecutionStage.TOOL, now(), token))
+        token
+    }
+
+    /** Records only that dispatch returned; it is NOT an external success receipt. */
+    fun completeTool(runId: String, token: String): Boolean = synchronized(lock) {
+        val run = runs[runId] ?: return false
+        if (run.executionCheckpoint?.pendingToolToken != token) return false
+        writeCheckpoint(run, TaskExecutionCheckpoint(TaskExecutionStage.MODEL, now()))
+        true
+    }
+
+    fun executionStage(runId: String, stage: TaskExecutionStage): Boolean = synchronized(lock) {
+        val run = runs[runId] ?: return false
+        if (run.state != TaskRunState.RUNNING) return false
+        val previous = run.executionCheckpoint
+        if (previous?.pendingToolToken != null) {
+            require(stage == TaskExecutionStage.TOOL || stage == TaskExecutionStage.WAITING_USER) {
+                "Cannot discard an unresolved tool boundary"
+            }
+        }
+        if (previous?.stage == stage) return true
+        writeCheckpoint(run, TaskExecutionCheckpoint(stage, now(), previous?.pendingToolToken))
+        true
+    }
+
+    private fun writeCheckpoint(run: AutomationRun, checkpoint: TaskExecutionCheckpoint) {
+        val next = LinkedHashMap(runs)
+        next[run.id] = run.copy(executionCheckpoint = checkpoint)
+        persist(tasks, next)
+        runs = next
     }
 
     /** Only a RUNNING run can finish; a CANCELLED run wins over a late finish. */
@@ -255,10 +295,15 @@ class AutomationService(
         val run = runs[runId] ?: return null
         if (run.state != TaskRunState.RUNNING) return null
 
+        val unresolved = run.executionCheckpoint?.pendingToolToken != null
+        require(state != TaskRunState.SUCCEEDED || !unresolved) { "Cannot succeed with unresolved tool dispatch" }
+        val effectiveDiagnostic = if (unresolved)
+            "External effects unknown; do not replay unresolved tool dispatch. ${diagnostic ?: run.diagnostic.orEmpty()}"
+            else diagnostic ?: run.diagnostic
         val updated = run.copy(
             state = state,
             finishedAt = now(),
-            diagnostic = diagnostic?.take(2000) ?: run.diagnostic,
+            diagnostic = effectiveDiagnostic?.take(2000),
             summary = summary?.take(8000) ?: run.summary,
         )
         val nextRuns = trimRuns(LinkedHashMap(runs).apply { put(runId, updated) })
@@ -296,7 +341,9 @@ class AutomationService(
             nextRuns[id] = run.copy(
                 state = TaskRunState.INTERRUPTED,
                 finishedAt = current,
-                diagnostic = run.diagnostic ?: "Interrupted by process restart",
+                diagnostic = if (run.executionCheckpoint?.pendingToolToken != null)
+                    "Interrupted with unresolved tool dispatch; external effects unknown, do not replay"
+                else run.diagnostic ?: "Interrupted by process restart; not automatically replayed",
             )
             recovered++
         }
@@ -484,6 +531,15 @@ class AutomationService(
                 val state: TaskRunState? = run.state
                 if (state == null) {
                     throw IllegalStateException("Run ${run.id} has no state")
+                }
+                run.executionCheckpoint?.let { checkpoint ->
+                    @Suppress("SENSELESS_COMPARISON")
+                    require(checkpoint.stage != null && checkpoint.updatedAt > 0) { "Invalid execution checkpoint" }
+                    require(checkpoint.pendingToolToken == null ||
+                        (checkpoint.pendingToolToken.isNotBlank() && checkpoint.pendingToolToken.length <= 128 &&
+                            checkpoint.stage in setOf(TaskExecutionStage.TOOL, TaskExecutionStage.WAITING_USER))) {
+                        "Invalid pending tool boundary"
+                    }
                 }
                 // Gson can leave a non-null Kotlin field null after tampering;
                 // validate through a local so a bad document is still rejected.

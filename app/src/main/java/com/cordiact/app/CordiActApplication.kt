@@ -289,7 +289,7 @@ class CordiActApplication : Application(), androidx.work.Configuration.Provider 
         JGitWorkspaceGitService()
     }
 
-    val approvalGateway: com.cordiact.core.action.ApprovalGateway = com.cordiact.core.action.DefaultApprovalGateway()
+    val approvalGateway = com.cordiact.core.action.ObservingApprovalGateway(com.cordiact.core.action.DefaultApprovalGateway())
 
     /** Credential vault + mandatory security gate; lazily opens its private no-backup database. */
     val credentialVaultRuntime: com.cordiact.app.security.CredentialVaultRuntime by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
