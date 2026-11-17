@@ -177,6 +177,10 @@ fun SettingsHost(vm: SettingsViewModel, initialLink: String? = null, onBack: () 
                     SettingsRoute.ROLES -> ModelRoles(state, vm, busy)
                     SettingsRoute.CREDENTIALS -> CredentialSettingsPage(vm) { securityBusy = it }
                     SettingsRoute.ATTACHMENTS -> AttachmentSettingsPage(state.attachmentLimits, busy, { dirty = it }) { value -> vm.saveAttachments(value) { dirty = false } }
+                    SettingsRoute.TASKS -> {
+                        WorkspaceScopePicker(state, busy || dirty, vm::selectWorkspace)
+                        key(state.capabilityWorkspaceId) { AutomationTasksPage(state.capabilityWorkspaceId) }
+                    }
                     SettingsRoute.SEARCH -> {
                         WorkspaceScopePicker(state, busy || dirty, vm::selectWorkspace)
                         key(state.capabilityWorkspaceId) { SearchSettingsPage(vm.facade.searchSettings, state.capabilityWorkspaceId, { dirty = it }, { securityBusy = it }) }

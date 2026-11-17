@@ -59,6 +59,7 @@ internal fun SettingsOverview(state: SettingsSnapshot, navigate: (SettingsRoute)
     OverviewGroup("连接与执行", listOf(
         OverviewEntry("连接与能力", GlyphName.Link, SettingsRoute.CONNECTIONS),
         OverviewEntry("SSH 主机", GlyphName.Terminal, SettingsRoute.SSH),
+        OverviewEntry("自动化任务", GlyphName.Bolt, SettingsRoute.TASKS),
         OverviewEntry("特权执行", GlyphName.Bolt, SettingsRoute.PRIVILEGE)), navigate)
     OverviewGroup("安全与权限", listOf(
         OverviewEntry("权限档位", GlyphName.Settings, SettingsRoute.PERMISSIONS),

@@ -130,6 +130,7 @@ object BundledConversationPluginCatalog {
         com.cordiact.core.subagent.SUBAGENT_DELEGATE_CAPABILITY,
         com.cordiact.core.subagent.ORCHESTRATION_CAPABILITY,
         com.cordiact.core.subagent.BACKGROUND_CAPABILITY,
+        com.cordiact.app.automation.tasks.TASK_CAPABILITY,
         // Automation capabilities are declared here but the tools themselves default to
         // off; the user must enable each tool (and the accessibility service) explicitly.
         com.cordiact.core.automation.AutomationCapabilities.SCREEN_OBSERVE,
@@ -161,6 +162,7 @@ object BundledConversationPluginCatalog {
         subagentPluginSpec(),
         orchestrationPluginSpec(),
         backgroundSubagentPluginSpec(),
+        com.cordiact.app.automation.tasks.automationTasksPluginSpec(),
         pluginManagerPluginSpec(),
         screenPluginSpec(),
         browserPluginSpec(),
@@ -222,6 +224,7 @@ class BundledConversationPlugins private constructor(
         return removed
     }
     val fillValueStore: MutableFillValueStore get() = fillValues
+    var targetTaskExecutor: InteractionCommandExecutor? = null
     lateinit var interactionPlugin: InteractionPlugin
         private set
     lateinit var interactionDirectory: AndroidInteractionDirectory
@@ -454,12 +457,10 @@ class BundledConversationPlugins private constructor(
                 ownerPluginId = INTERACTION_PLUGIN_ID,
                 allowedMentionTypes = MentionType.entries.toSet(),
                 requiredCapabilities = setOf("interaction.execute"),
-                requiresMention = true,
+                requiresMention = false,
                 executor = InteractionCommandExecutor { envelope, modelId, submitter, onEvent ->
-                    CommandExecutionResult(
-                        completed = false,
-                        modelCall = submitter.submit(envelope.copy(submittedText = envelope.commandInput), modelId, parameters = null, onEvent = onEvent),
-                    )
+                    requireNotNull(targetTaskExecutor) { "自动化任务执行器尚未就绪" }
+                        .execute(envelope, modelId, submitter, onEvent)
                 },
             ),
         )

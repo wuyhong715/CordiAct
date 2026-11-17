@@ -93,6 +93,11 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
                     onPinSession = viewModel::pinSession,
                     onRetry = viewModel::refresh,
                     onSettings = { scope.launch { drawer.close() }; settingsVm.reload(); openSettings() },
+                    onAutomationTasks = {
+                        scope.launch { drawer.close() }
+                        settingsVm.reload()
+                        openSettings("settings://tasks")
+                    },
                 )
             }
         },

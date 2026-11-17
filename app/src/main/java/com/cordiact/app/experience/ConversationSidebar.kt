@@ -50,6 +50,7 @@ fun ConversationSidebar(
     onRetry: () -> Unit,
     onSettings: () -> Unit,
     modifier: Modifier = Modifier,
+    onAutomationTasks: () -> Unit = {},
     onRenameSession: (String, String, () -> Unit) -> Unit = { _, _, _ -> },
     onArchiveSession: (String) -> Unit = {},
     onRestoreSession: (String) -> Unit = {},
@@ -280,6 +281,22 @@ fun ConversationSidebar(
                     colors = ButtonDefaults.filledTonalButtonColors(containerColor = colors.primaryContainer, contentColor = colors.primary)) {
                     AppGlyph(GlyphName.Plus, "新对话", Modifier.size(18.dp))
                     if (!compactAction) Text("新对话", Modifier.padding(start = 6.dp), style = MaterialTheme.typography.labelLarge)
+                }
+            }
+        }
+        if (!archiveMode) {
+            Surface(
+                onClick = onAutomationTasks,
+                color = Color.Transparent,
+                modifier = Modifier.fillMaxWidth().testTag("sidebar-automation-tasks"),
+            ) {
+                Row(
+                    Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(horizontal = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    AppGlyph(GlyphName.Bolt, modifier = Modifier.size(20.dp))
+                    Text("自动化任务", style = MaterialTheme.typography.bodyLarge)
                 }
             }
         }
