@@ -73,7 +73,11 @@ import com.cordiact.core.tool.ToolInvocationContext
 import com.cordiact.interaction.MutableFillValueStore
 
 /** Opens the plugin host, recovers durable state, then registers and enables core conversation plugins. */
-class CordiActApplication : Application() {
+class CordiActApplication : Application(), androidx.work.Configuration.Provider {
+    // Supports on-demand initialization when AndroidX Startup is not installed by the host.
+    override val workManagerConfiguration: androidx.work.Configuration
+        get() = androidx.work.Configuration.Builder().build()
+
     lateinit var pluginLifecycle: AndroidPluginLifecycle
         private set
     lateinit var conversationStore: AndroidConversationSessionStore
@@ -94,6 +98,10 @@ class CordiActApplication : Application() {
         private set
     lateinit var providerApiKeyStore: AndroidProviderApiKeyStore
         private set
+    val automationTasks by lazy { com.cordiact.app.automation.tasks.AutomationTaskRuntime(this) }
+    fun automationToolSpecs(workspaceId: String, model: ModelId) = availableToolSpecs(workspaceId, model)
+    fun automationToolDispatcher(): com.cordiact.core.toolloop.ToolDispatcher = toolDispatcher
+
     lateinit var turnService: ConversationTurnService
         private set
     lateinit var sessionManagerPlugin: SessionManagerPlugin
@@ -636,6 +644,39 @@ class CordiActApplication : Application() {
         }
         (plugins + automationRuntime.plugins() + sandboxManagerPlugin + subagentRuntime + orchestrationPlugin + backgroundSubagents + pluginManagerPlugin)
             .forEach(::registerAndEnableSystemPlugin)
+        com.cordiact.app.automation.tasks.registerAutomationTaskTools(
+            conversationCatalog.toolRegistry, { automationTasks }, sessions,
+        )
+        conversationCatalog.targetTaskExecutor = com.cordiact.interaction.InteractionCommandExecutor { envelope, model, _, _ ->
+            require(envelope.commandInput.isNotBlank()) { "请输入目标，例如：/目标 检查当前项目并总结待办" }
+            require(envelope.attachments.isEmpty() && envelope.mentions.isEmpty()) {
+                "一次性任务暂不支持附件或 @ 引用；请将必要内容写入目标正文"
+            }
+            val sourceSession = sessions.getSession(envelope.context.sessionId)
+            check(sourceSession != null && sourceSession.workspaceId == envelope.context.workspaceId &&
+                sourceSession.depth == 0 && sourceSession.archivedAtMillis == null) { "当前会话不可创建任务" }
+            val runtime = automationTasks
+            check(runtime.enabled(envelope.context.workspaceId)) { "请先启用当前工作区的自动化任务插件" }
+            // Keep the definition disabled: runNow creates the sole occurrence without a clock replay.
+            val task = runtime.service.save(com.cordiact.core.automation.AutomationTask(
+                id = "", workspaceId = envelope.context.workspaceId,
+                name = envelope.commandInput.lineSequence().first().trim().take(60).ifBlank { "一次性目标" },
+                prompt = envelope.commandInput,
+                trigger = com.cordiact.core.automation.TaskTrigger(
+                    kind = com.cordiact.core.automation.TriggerKind.ONCE,
+                    atMillis = System.currentTimeMillis(),
+                ),
+                enabled = false, maxDurationMinutes = 8,
+            ))
+            val run = runtime.service.runNow(task.workspaceId, task.id)
+            com.cordiact.app.model.ConversationModelSelectionStore(this)
+                .setForSession(requireNotNull(run.sessionId), model)
+            runtime.kick()
+            val receipt = "已创建一次性任务：${task.name}\n任务编号：${task.id}\n可在侧边栏「自动化任务」查看进度与结果。"
+            sessions.appendMessage(envelope.context.sessionId, com.cordiact.core.conversation.MessageRole.ASSISTANT, receipt)
+            com.cordiact.interaction.CommandExecutionResult(completed = true, message = receipt)
+        }
+        com.cordiact.app.automation.tasks.AutomationTaskScheduling.install(this)
         // Nothing can legitimately be RUNNING at startup, so anything that says it is belongs to
         // the process that died. Recovering here queues a notice so the parent learns a child was
         // interrupted instead of waiting for it forever.

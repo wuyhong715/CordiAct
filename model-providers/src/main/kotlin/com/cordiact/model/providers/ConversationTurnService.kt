@@ -254,14 +254,20 @@ class ConversationTurnService(
         parameters: GenerationParameters? = null,
         systemContext: String? = null,
         onEvent: (ModelEvent) -> Unit = {},
+        sourceMetadataJson: String? = null,
     ): ToolLoopOutcome {
         require(text.isNotBlank()) { "Message must not be blank" }
         requireNotNull(sessions.getSession(sessionId)) { "Session does not exist" }
         check(activeSessions.add(sessionId)) { "A model turn is already active for this Session" }
 
         val terminal = AtomicBoolean(false)
+        val controller = ModelCall {
+            terminal.set(true)
+            activeToolRounds[sessionId]?.cancel()
+        }
+        activeCallsBySession[sessionId] = controller
         try {
-            sessions.appendMessage(sessionId, MessageRole.USER, text.trim())
+            sessions.appendMessage(sessionId, MessageRole.USER, text.trim(), sourceMetadataJson)
             // The user message was just persisted, so the history read below already contains it.
             // Appending it again would send every delegated / child turn a duplicated prompt.
             val initial = buildList {
@@ -292,7 +298,10 @@ class ConversationTurnService(
             return outcome
         } finally {
             terminal.set(true)
-            activeSessions.remove(sessionId)
+            if (activeCallsBySession.remove(sessionId, controller)) {
+                activeSessions.remove(sessionId)
+                activeToolRounds.remove(sessionId)?.cancel()
+            }
         }
     }
 
