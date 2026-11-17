@@ -43,14 +43,14 @@ class ContextCompactionTurnTest {
         }
     }
 
-    private class FakeModelAdapter(val onGenerate: (ModelGenerationRequest) -> Unit) : ModelAdapterService {
+    private class FakeModelAdapter(val reply: String = "OK, continued.", val onGenerate: (ModelGenerationRequest) -> Unit) : ModelAdapterService {
         override fun models(): List<ModelDescriptor> = listOf(
             ModelDescriptor(ModelId("deepseek", "deepseek-chat"), "DeepSeek Chat", contextWindowTokens = 128_000),
         )
 
         override fun generate(request: ModelGenerationRequest, onEvent: (ModelEvent) -> Unit): ModelCall {
             onGenerate(request)
-            onEvent(ModelEvent.Delta("OK, continued."))
+            onEvent(ModelEvent.Delta(reply))
             onEvent(ModelEvent.Completed(inputTokens = 100L, outputTokens = 10L))
             return ModelCall {}
         }
@@ -106,4 +106,82 @@ class ContextCompactionTurnTest {
         // Initial goal should be preserved in Head
         assertEquals("First command: explore project.", dispatchedMessages.firstOrNull { it.role == MessageRole.USER }?.content)
     }
+    @Test
+    fun `manual compression preserves transcript and uses configured summary model`() {
+        val sessions = FakeSessionManager()
+        sessions.appendMessage("s1", MessageRole.SYSTEM, "stable system prefix")
+        sessions.appendMessage("s1", MessageRole.USER, "initial goal")
+        repeat(12) {
+            sessions.appendMessage("s1", MessageRole.ASSISTANT, "result $it " + "details ".repeat(60))
+            sessions.appendMessage("s1", MessageRole.USER, "continue $it")
+        }
+        val before = sessions.messages("s1")
+        val store = InMemoryContextCompactionStore()
+        var prompt = ""
+        val adapter = FakeModelAdapter(reply = """
+            ## 1. 任务与目标
+            保留接口约束
+            ## 2. 已完成与关键决策
+            原记录保留
+            ## 3. 当前状态
+            已定位接口
+            ## 4. 重要事实与约束
+            继续实现
+            ## 5. 工具产出索引
+            /workspace
+            ## 6. 下一步
+            从当前任务继续
+            ## 7. 必须保留的原文
+            接口约束
+        """.trimIndent()) { prompt = it.messages.first().content }
+        val service = ConversationTurnService(sessions, adapter,
+            contextPolicy = ContextPolicy(enabled = true, contextWindowOverride = 400,
+                maxOutputTokens = 40, thresholdRatio = 0.5, retainRatio = 0.2, minRetainTurns = 1),
+            compactionStore = store,
+            summaryModelProvider = { ModelId("deepseek", "deepseek-chat") },
+        )
+        val result = service.compactManually("s1", ModelId("deepseek", "deepseek-chat"), "保留接口约束")
+        assertNotNull(result)
+        assertEquals(before, sessions.messages("s1"))
+        assertTrue(prompt.contains("保留接口约束"))
+        assertEquals(1, store.listActive("s1").size)
+    }
+
+    @Test
+    fun `manual compression requires configuration and releases lease on failure`() {
+        val service = ConversationTurnService(FakeSessionManager(), FakeModelAdapter {},
+            contextPolicy = ContextPolicy(enabled = true),
+            compactionStore = InMemoryContextCompactionStore(),
+        )
+        repeat(2) {
+            val failure = org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException::class.java) {
+                service.compactManually("s1", ModelId("deepseek", "deepseek-chat"))
+            }
+            assertTrue(failure.message!!.contains("配置摘要模型"))
+        }
+    }
+
+    @Test
+    fun `failed manual summary does not install rules fallback`() {
+        val sessions = FakeSessionManager()
+        sessions.appendMessage("s1", MessageRole.SYSTEM, "stable prefix")
+        repeat(8) {
+            sessions.appendMessage("s1", MessageRole.USER, "goal $it")
+            sessions.appendMessage("s1", MessageRole.ASSISTANT, "details ".repeat(150))
+        }
+        val before = sessions.messages("s1")
+        val store = InMemoryContextCompactionStore()
+        val service = ConversationTurnService(sessions, FakeModelAdapter {},
+            contextPolicy = ContextPolicy(enabled = true, contextWindowOverride = 400,
+                maxOutputTokens = 40, minRetainTurns = 1), compactionStore = store,
+            summaryModelProvider = { ModelId("deepseek", "deepseek-chat") })
+        repeat(2) {
+            org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException::class.java) {
+                service.compactManually("s1", ModelId("deepseek", "deepseek-chat"))
+            }
+            assertTrue(store.listActive("s1").isEmpty())
+            assertEquals(before, sessions.messages("s1"))
+        }
+    }
+
 }

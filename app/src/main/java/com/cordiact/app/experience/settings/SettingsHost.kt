@@ -173,6 +173,7 @@ fun SettingsHost(vm: SettingsViewModel, initialLink: String? = null, onBack: () 
                         privilege = route == SettingsRoute.PRIVILEGE,
                         onState = { changed, working -> dirty = changed; securityBusy = working },
                         onBack = { back() })
+                    SettingsRoute.INPUT_VARIABLES -> InputVariablesPage()
                     SettingsRoute.ABOUT -> AboutSettingsPage()
                     SettingsRoute.ROLES -> ModelRoles(state, vm, busy)
                     SettingsRoute.CREDENTIALS -> CredentialSettingsPage(vm) { securityBusy = it }

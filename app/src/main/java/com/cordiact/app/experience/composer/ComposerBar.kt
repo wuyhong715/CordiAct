@@ -52,7 +52,7 @@ internal fun ComposerBar(state: ExperienceState, composer: ComposerState, contro
     }
     val photo = rememberLauncherForActivityResult(AttachmentPickerRequests.imagePicker()) { importResult(it) }
     val files = rememberLauncherForActivityResult(AttachmentPickerRequests.documentPicker()) { importResult(it) }
-    val registry = remember(photo, files, camera, state.sessionId, state.workspace?.id) { ComposerActionRegistry().apply {
+    val registry = remember(photo, files, camera, state.sessionId.orEmpty(), state.workspace?.id) { ComposerActionRegistry().apply {
         val intent = android.content.Intent(android.provider.MediaStore.ACTION_IMAGE_CAPTURE)
         if (intent.resolveActivity(context.packageManager) != null) register(ComposerAction("camera", "拍照", GlyphName.Camera) {
             val directory = java.io.File(context.cacheDir, "composer_camera").apply { mkdirs() }
@@ -89,14 +89,11 @@ internal fun ComposerBar(state: ExperienceState, composer: ComposerState, contro
                     AttachmentTray(composer.attachments, if (state.running) null else controller::remove, if (state.running) null else controller::retry)
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    BasicTextField(composer.text, controller::text,
-                        enabled = !state.loading && !waiting,
-                        modifier = Modifier.weight(1f).padding(horizontal = 10.dp, vertical = 12.dp).heightIn(min = 24.dp, max = 160.dp)
-                            .testTag("composer-input"),
-                        minLines = 1, maxLines = 6, textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface),
-                        cursorBrush = SolidColor(MaterialTheme.colorScheme.primary), decorationBox = { field ->
-                            Box { if (composer.text.isEmpty()) Text("发送消息…", color = MaterialTheme.colorScheme.onSurfaceVariant); field() }
-                        })
+                    Box(Modifier.weight(1f)) {
+                        CompletionEditor(context.applicationContext as? com.cordiact.app.CordiActApplication,
+                            state.sessionId.orEmpty(), state.workspace?.id, composer.text,
+                            !state.loading && !waiting, controller::text)
+                    }
 
                 }
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {

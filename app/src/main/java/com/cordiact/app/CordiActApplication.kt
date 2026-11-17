@@ -631,6 +631,11 @@ class CordiActApplication : Application(), androidx.work.Configuration.Provider 
                 parameters = parameters,
                 systemContext = skillIndexFor(envelope.context.workspaceId),
                 parts = envelope.attachments,
+                userMetadataJson = org.json.JSONObject().apply {
+                    put("input_version", 1)
+                    put("original_input", envelope.originalText)
+                    put("expanded_input", envelope.submittedText)
+                }.toString(),
                 onUserMessagePersisted = {
                     sessions.updateFirstUserTitleFromOriginal(envelope.context.sessionId, envelope.originalText)
                     envelope.onUserMessagePersisted?.invoke()
@@ -647,6 +652,17 @@ class CordiActApplication : Application(), androidx.work.Configuration.Provider 
         com.cordiact.app.automation.tasks.registerAutomationTaskTools(
             conversationCatalog.toolRegistry, { automationTasks }, sessions,
         )
+        conversationCatalog.manualCompactionExecutor = com.cordiact.interaction.InteractionCommandExecutor { envelope, model, _, onEvent ->
+            val result = turnService.compactManually(envelope.context.sessionId, model, envelope.commandInput)
+            if (result != null) onEvent(com.cordiact.core.conversation.ModelEvent.ContextCompacted(
+                (result.tokensBefore - result.tokensAfter).toLong(), result.summary,
+            ))
+            com.cordiact.interaction.CommandExecutionResult(
+                completed = true,
+                message = if (result == null) "当前历史不足以压缩，原始记录未改变" else
+                    "上下文压缩已生效：${result.tokensBefore} → ${result.tokensAfter} tokens；原始记录保留",
+            )
+        }
         conversationCatalog.targetTaskExecutor = com.cordiact.interaction.InteractionCommandExecutor { envelope, model, _, _ ->
             require(envelope.commandInput.isNotBlank()) { "请输入目标，例如：/目标 检查当前项目并总结待办" }
             require(envelope.attachments.isEmpty() && envelope.mentions.isEmpty()) {

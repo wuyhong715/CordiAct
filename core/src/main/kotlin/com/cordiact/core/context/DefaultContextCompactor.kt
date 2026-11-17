@@ -29,7 +29,11 @@ class DefaultContextCompactor(
      */
     private val summarizer: ((String, List<ConversationMessage>) -> String?)? = null,
     private val candidates: CompactionCandidateStore = CompactionCandidateStore(),
+    private val requireSummary: Boolean = false,
 ) {
+
+    /** Discard a prepared automatic summary after another compaction was installed. */
+    fun discardCandidate(sessionId: String) { candidates.remove(sessionId) }
 
     fun compactIfNeeded(
         sessionId: String,
@@ -171,7 +175,11 @@ class DefaultContextCompactor(
         )
 
         val plan = planned ?: forcedPlan(rawMessages) ?: return null
-        return record(sessionId, SummaryCompactor.compact(plan, estimator, summarizer), compactionStore)
+        val result = SummaryCompactor.compact(plan, estimator, summarizer)
+        if (requireSummary) {
+            check(result.fallbackLevel == 0 && result.tokensBefore > result.tokensAfter) { "摘要生成失败或未节省上下文，原上下文未改变" }
+        }
+        return record(sessionId, result, compactionStore)
     }
 
     /**
@@ -222,7 +230,11 @@ class DefaultContextCompactor(
             reason = reason,
         ) ?: return null
 
-        return record(sessionId, SummaryCompactor.compact(plan, estimator, summarizer), compactionStore)
+        val result = SummaryCompactor.compact(plan, estimator, summarizer)
+        if (requireSummary) {
+            check(result.fallbackLevel == 0 && result.tokensBefore > result.tokensAfter) { "摘要生成失败或未节省上下文，原上下文未改变" }
+        }
+        return record(sessionId, result, compactionStore)
     }
 
     private fun newRecordId(): String = "cmp-${java.util.UUID.randomUUID().toString().take(8)}"
