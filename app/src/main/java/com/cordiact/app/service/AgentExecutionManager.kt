@@ -68,7 +68,7 @@ class AgentExecutionManager(
         val activeJobs = jobRegistry.listActive()
         ExecutionPresenceHost.replace(context, "jobs", activeJobs.map {
             com.cordiact.core.jobs.ExecutionPresence(it.id,
-                com.cordiact.core.jobs.ExecutionPhase.TOOL, foregroundEligible = true)
+                com.cordiact.core.jobs.ExecutionPhase.TOOL, foregroundEligible = com.cordiact.core.jobs.AndroidExecutionPolicy.allowsDataSync(it.kind))
         })
     }
 

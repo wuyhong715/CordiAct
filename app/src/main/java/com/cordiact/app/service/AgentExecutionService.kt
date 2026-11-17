@@ -27,6 +27,8 @@ class AgentExecutionService : Service() {
 
     }
 
+    private var receiptId: String? = null
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val action = intent?.action ?: ACTION_START_OR_UPDATE
         if (action == ACTION_STOP) {
@@ -34,6 +36,12 @@ class AgentExecutionService : Service() {
             return START_NOT_STICKY
         }
 
+        val requestId = intent?.getStringExtra(EXTRA_REQUEST_ID)
+        if (requestId == null || !ExecutionPresenceHost.accepts(requestId)) {
+            stopSelf(startId)
+            return START_NOT_STICKY
+        }
+        receiptId = requestId
         val activeCount = intent?.getIntExtra(EXTRA_ACTIVE_COUNT, 1) ?: 1
         val summary = intent?.getStringExtra(EXTRA_SUMMARY) ?: "正在后台执行任务..."
 
@@ -43,10 +51,15 @@ class AgentExecutionService : Service() {
             return START_NOT_STICKY
         }
         val notification = buildNotification(activeCount, summary)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+            } else { startForeground(NOTIFICATION_ID, notification) }
+            ExecutionPresenceHost.serviceReceipt(this, requestId, true)
+        } catch (error: Exception) {
+            Log.e("AgentExecutionService", "Foreground promotion failed", error)
+            ExecutionPresenceHost.serviceReceipt(this, requestId, false)
+            stopSelf(startId)
         }
 
         // The FGS alone does not require a CPU wake lock; bounded workers own CPU needs.
@@ -68,6 +81,7 @@ class AgentExecutionService : Service() {
     }
 
     override fun onDestroy() {
+        ExecutionPresenceHost.serviceStopped(this, receiptId)
         super.onDestroy()
     }
 
@@ -116,12 +130,14 @@ class AgentExecutionService : Service() {
         const val ACTION_UPDATE = "com.cordiact.app.service.UPDATE"
         const val ACTION_STOP = "com.cordiact.app.service.STOP"
 
+        const val EXTRA_REQUEST_ID = "extra_request_id"
         const val EXTRA_ACTIVE_COUNT = "extra_active_count"
         const val EXTRA_SUMMARY = "extra_summary"
 
-        fun updateService(context: Context, activeCount: Int, summary: String): Boolean {
+        fun updateService(context: Context, activeCount: Int, summary: String, requestId: String): Boolean {
             val intent = Intent(context, AgentExecutionService::class.java).apply {
                 action = ACTION_START_OR_UPDATE
+                putExtra(EXTRA_REQUEST_ID, requestId)
                 putExtra(EXTRA_ACTIVE_COUNT, activeCount)
                 putExtra(EXTRA_SUMMARY, summary)
             }
