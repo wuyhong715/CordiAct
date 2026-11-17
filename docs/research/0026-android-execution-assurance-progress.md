@@ -42,3 +42,17 @@
 - AutomationExecutionLease 使用 FileChannel.tryLock，运行时读取任务快照/中断恢复前获取，进程生命周期内持有；失败关闭文件句柄，进程死亡由OS释放，不使用过期时间偷锁，不删除锁文件。
 - 该锁保护采用同一路径的Android任务运行时，不能约束绕过它的独立AutomationService写入者，也不是工具端幂等/执行一次保证。
 - 独占/释放测试与自动化15项共16项通过；App Kotlin编译与diff检查通过。未做独立子进程崩溃释放或真机验收。
+
+## 第五批：后台资格及真实服务回执（PR79合并后）
+- 分支feat/android-runtime-conditions，基线main 02b7c76，本批尚未提交推送。
+- 当前SHELL/SSH/TERMUX/SUBAGENT JobKind均不能证明dataSync资格，不再无差别启动dataSync服务；改为普通状态通知。此保守策略收紧旧保活行为，尚无合规可授权前台服务的专用传输工作类型。
+- ForegroundReceiptGate区分REQUESTED/ACTIVE/REJECTED/TIMED_OUT/STOPPED；只有startForeground返回后才确认ACTIVE，过期requestId回执不能复活已停止请求；启动拒绝不随状态更新反复重试，实际用户回到前台才允许重新请求。
+- ExecutionPresenceHost.conditions暴露StateFlow，包括前台回执、通知是否允许、资格与预算阻塞；通知允许不等于已展示。不含网络/锁屏状态，UI未消费该flow，OEM联动仍未实现。
+- 未收到服务回执的REQUESTED超时检测尚待补充；现有工作类型不获资格，正常运行走普通通知路径。
+- 6项策略/回执/投影测试通过；App Kotlin编译通过；无APK/真机验收。
+
+## 第六批：请求超时与设备条件采样
+- FGS请求10秒未收到成功/失败回执转START_TIMEOUT，停止服务并阻止状态更新自动重试；旧超时回调/迟到回执不能影响新requestId，用户回到前台可重试。此为应用侧检测，不延长Android系统自己的FGS时限。
+- 有活动任务时注册默认网络回调、屏幕/解锁/省电广播，结束后注销；conditions记录网络validated、设备锁定、省电、后台受限及采样时间，读取失败为null，不把条件直接改写成任务失败。网络validated不是模型服务可达性。
+- 新增ACCESS_NETWORK_STATE普通权限，不弹权限申请。后台受限仅随这些事件/状态更新采样，非持续实时监视；条件flow尚未接UI。
+- 7项策略/回执/投影测试通过，App Kotlin编译及diff检查通过；尚无Android回调生命周期/真机验证。
