@@ -19,7 +19,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 @Composable
-internal fun CompletionEditor(app: CordiActApplication, sessionId: String, workspaceId: String?, text: String,
+internal fun CompletionEditor(app: CordiActApplication?, sessionId: String, workspaceId: String?, text: String,
     enabled: Boolean, onText: (String) -> Unit) {
     var editor by remember(sessionId, workspaceId) { mutableStateOf(TextFieldValue(text, TextRange(text.length))) }
     var candidates by remember(sessionId, workspaceId) { mutableStateOf(emptyList<InputCompletionCandidate>()) }
@@ -33,7 +33,7 @@ internal fun CompletionEditor(app: CordiActApplication, sessionId: String, works
     val snapshot = editor
     LaunchedEffect(snapshot, workspaceId, enabled, dismissed) {
         candidates = emptyList(); candidateOwner = null; selected = 0
-        if (target != null && snapshot != dismissed && workspaceId != null) {
+        if (target != null && snapshot != dismissed && workspaceId != null && app != null) {
             val found = withContext(Dispatchers.IO) {
                 runCatching { completionCandidates(target, app.conversationCatalog.interactionPlugin.commandRegistry,
                     app.conversationCatalog.interactionDirectory, app.fillValues,

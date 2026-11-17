@@ -146,7 +146,7 @@ class ExperienceComponentTest {
     }
     @After fun clearPreviewQueue() { PreviewInbox.clear("revision2-artifacts"); PreviewInbox.clear("other-artifacts") }
 
-    @Test fun tokens_areTypedInlineAndNeverOccupyShortcutButtons() {
+    @Test fun tokens_supportInlineInputAndShortcutInsertion() {
         content {
             val app = org.robolectric.RuntimeEnvironment.getApplication()
             val scope = rememberCoroutineScope()
@@ -154,9 +154,11 @@ class ExperienceComponentTest {
             val state by controller.state.collectAsState()
             com.cordiact.app.experience.composer.ComposerBar(ready(), state.copy(model = model), controller, "", {}, { true }, {}, {}, {})
         }
-        listOf("/", "@", "#").forEach { compose.onNodeWithText(it).assertDoesNotExist() }
+        listOf("/", "@", "#").forEach { compose.onNodeWithText(it).assertIsDisplayed() }
         compose.onNodeWithTag("composer-input").performTextInput("/inspect @config #api-key")
         compose.onNodeWithTag("composer-input").assertTextContains("/inspect @config #api-key")
+        compose.onNodeWithText("#", substring = false).performClick()
+        compose.onNodeWithTag("composer-input").assertTextContains("/inspect @config #api-key #")
     }
 
     @Test fun artifactQueue_isSessionScopedAndOnlyRendersAfterExplicitSelection() {

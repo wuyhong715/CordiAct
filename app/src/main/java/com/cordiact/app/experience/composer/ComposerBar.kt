@@ -90,7 +90,7 @@ internal fun ComposerBar(state: ExperienceState, composer: ComposerState, contro
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Box(Modifier.weight(1f)) {
-                        CompletionEditor(context.applicationContext as com.cordiact.app.CordiActApplication,
+                        CompletionEditor(context.applicationContext as? com.cordiact.app.CordiActApplication,
                             state.sessionId.orEmpty(), state.workspace?.id, composer.text,
                             !state.loading && !waiting, controller::text)
                     }
