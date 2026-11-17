@@ -15,11 +15,20 @@ import java.util.concurrent.TimeUnit
 
 /** Root task execution, never impersonates a delegated parent session. */
 class AutomationTaskRuntime(private val app: CordiActApplication) {
-    val service = AutomationService(File(app.filesDir, "automation/tasks-v1.json"))
+    // Acquire before reading snapshots or recovering RUNNING entries. Retain for process life;
+    // deleting the lease file would break ownership by allowing a different inode to be locked.
+    private val ownedStore = run {
+        val lease = AutomationExecutionLease.acquire(File(app.filesDir, "automation/tasks-v1.lease"))
+        try {
+            val store = AutomationService(File(app.filesDir, "automation/tasks-v1.json"))
+            store.recoverInterrupted()
+            lease to store
+        } catch (error: Throwable) { lease.close(); throw error }
+    }
+    val service = ownedStore.second
     private val draining = kotlinx.coroutines.sync.Mutex()
     private val active = ConcurrentHashMap<String, String>()
     private val sessionLocks = ConcurrentHashMap<String, Any>()
-    init { service.recoverInterrupted() }
 
     fun kick() { AutomationTaskScheduling.kick(app) }
     fun cancel(workspaceId: String, runId: String): AutomationRun? {

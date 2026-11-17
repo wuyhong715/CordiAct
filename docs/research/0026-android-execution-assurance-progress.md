@@ -36,3 +36,9 @@
 - recoverInterrupted 对未结工具明确记 external effects unknown/do not replay，保留 token，不重新排队。进程中异常结束的任务同样保留未知外部效果诊断。
 - 取消与派发返回竞争时允许记录已有工具返回，但不复活 CANCELLED 状态。未实现 exactly-once、跨进程租约、工具专属幂等键或自动安全续跑。
 - 新增2项服务测试验证重开存储/中断恢复、token校验、未结边界成功门禁及取消竞争；相关测试共23项曾通过，最后修改后重新验证自动化15项及App Kotlin编译。
+
+## PR与第四批：运行时独占所有权
+- PR #79，分支 feat/android-execution-assurance；首提交3acb3f3远端CI已成功，Android build首次查询仍在运行。
+- AutomationExecutionLease 使用 FileChannel.tryLock，运行时读取任务快照/中断恢复前获取，进程生命周期内持有；失败关闭文件句柄，进程死亡由OS释放，不使用过期时间偷锁，不删除锁文件。
+- 该锁保护采用同一路径的Android任务运行时，不能约束绕过它的独立AutomationService写入者，也不是工具端幂等/执行一次保证。
+- 独占/释放测试与自动化15项共16项通过；App Kotlin编译与diff检查通过。未做独立子进程崩溃释放或真机验收。
