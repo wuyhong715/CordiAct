@@ -74,10 +74,12 @@ class InteractionParser(
         val names = commands.candidates().flatMap { descriptor ->
             (descriptor.aliases + descriptor.name).map { it to descriptor }
         }.distinctBy { it.first }.sortedByDescending { it.first.length }
-        val match = names.firstOrNull { (name, _) -> text.startsWith("/$name") }
+        val match = names.firstOrNull { (name, _) -> text.startsWith("/$name") && (text.length == name.length + 1 || text[name.length + 1].isWhitespace() || text[name.length + 1] in ":：") }
             ?: return invalidHeader("unknown_command", "Unknown or disabled behavior command", 0, tokenEnd(text, 0))
         val (name, command) = match
         val index = 1 + name.length
+        if (index == text.length && command.allowsEmptyBody) return ParsedHeader(command, index,
+            token = InteractionToken(InteractionTokenKind.COMMAND, 0, index, TokenStatus.VALID, command.id))
         if (index == text.length) {
             return invalidHeader("command_separator_missing", "Separate the command from its body with ':' or spaces", 0, index)
         }
@@ -118,7 +120,7 @@ class InteractionParser(
         val result = mutableListOf<MentionReference>()
         var index = bodyStart
         while (index < text.length) {
-            if (text[index] == '：' && index + 1 == text.length) {
+            if (text[index] == '：' && index + 1 == text.length && InputSyntax.isActive(text, index)) {
                 val start = (index - 1).coerceAtLeast(bodyStart)
                 val end = text.length
                 tokens += InteractionToken(InteractionTokenKind.MENTION, start, end, TokenStatus.INCOMPLETE)
@@ -130,7 +132,7 @@ class InteractionParser(
                 )
                 break
             }
-            if (text[index] != '@' || isEscaped(text, index)) {
+            if (text[index] != '@' || !InputSyntax.isActive(text, index)) {
                 index++
                 continue
             }
@@ -256,16 +258,19 @@ class InteractionParser(
     ): String {
         val output = StringBuilder(text.length)
         var cursor = 0
-        val pattern = Regex("(?<![A-Za-z0-9_])#([A-Za-z0-9_-]+)(?![A-Za-z0-9_-])")
+        val pattern = Regex("#(?:\\{([^}\\n]*)\\}|([\\p{L}\\p{N}_-]+))")
         pattern.findAll(text).forEach { match ->
-            val key = match.groupValues[1]
-            if (match.range.first < bodyStart) return@forEach
             val start = match.range.first
             val end = match.range.last + 1
-            val value = fills.get(key)
+            if (start < bodyStart || !InputSyntax.isActive(text, start)) return@forEach
+            val explicit = text.getOrNull(start + 1) == '{'
+            val key = if (explicit) match.groupValues[1] else match.groupValues[2]
+            val value = if (InputSyntax.validFillKey(key)) fills.get(key) else null
             if (value == null) {
-                tokens += InteractionToken(InteractionTokenKind.FILL, start, end, TokenStatus.INVALID, key)
-                diagnostics += InteractionDiagnostic("fill_undefined", "No local value is defined for #$key", start, end)
+                if (explicit) {
+                    tokens += InteractionToken(InteractionTokenKind.FILL, start, end, TokenStatus.INVALID, key)
+                    diagnostics += InteractionDiagnostic("fill_undefined", "未定义预设变量 #$key", start, end)
+                }
             } else {
                 tokens += InteractionToken(InteractionTokenKind.FILL, start, end, TokenStatus.VALID, key)
                 output.append(text, cursor, start).append(value)

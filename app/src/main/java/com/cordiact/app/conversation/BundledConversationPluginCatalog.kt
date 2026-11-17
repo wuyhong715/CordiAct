@@ -224,6 +224,7 @@ class BundledConversationPlugins private constructor(
         return removed
     }
     val fillValueStore: MutableFillValueStore get() = fillValues
+    var manualCompactionExecutor: InteractionCommandExecutor? = null
     var targetTaskExecutor: InteractionCommandExecutor? = null
     lateinit var interactionPlugin: InteractionPlugin
         private set
@@ -475,12 +476,9 @@ class BundledConversationPlugins private constructor(
                 requiresMention = false,
                 allowsEmptyBody = true,
                 executor = InteractionCommandExecutor { envelope, modelId, submitter, onEvent ->
-                    val instruction = envelope.commandInput.ifBlank { "执行上下文检查点压缩并精简历史" }
-                    val prompt = "【用户指令】/compact $instruction\n请结合当前已完成任务进展、核心约束和下一步计划，对历史上下文进行整理归档。"
-                    CommandExecutionResult(
-                        completed = false,
-                        modelCall = submitter.submit(envelope.copy(submittedText = prompt), modelId, parameters = null, onEvent = onEvent),
-                    )
+                    require(envelope.attachments.isEmpty()) { "压缩指令不接受附件" }
+                    requireNotNull(manualCompactionExecutor) { "上下文压缩尚未就绪" }
+                        .execute(envelope, modelId, submitter, onEvent)
                 },
             ),
         )

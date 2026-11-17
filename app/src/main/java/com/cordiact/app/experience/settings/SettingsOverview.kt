@@ -51,6 +51,7 @@ internal fun SettingsOverview(state: SettingsSnapshot, navigate: (SettingsRoute)
             }
         }
     }
+    OverviewGroup("输入", listOf(OverviewEntry("预设变量", GlyphName.Code, SettingsRoute.INPUT_VARIABLES)), navigate)
     OverviewGroup("模型与服务", listOf(
         OverviewEntry("模型提供商", GlyphName.Link, SettingsRoute.PROVIDERS),
         OverviewEntry("模型角色", GlyphName.Sparkle, SettingsRoute.ROLES),

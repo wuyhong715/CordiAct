@@ -6,7 +6,7 @@ internal enum class SettingsRoute(val title: String) {
     HOME("设置"), PROVIDERS("模型提供商"), ADD("添加模型提供商"), DETAIL("提供商详情"),
     ROLES("模型角色"), AUDIT("审计日志"), PERMISSIONS("权限档位"), PRIVILEGE("特权执行"),
     CREDENTIALS("已存凭据"), CONNECTIONS("连接与能力"), ATTACHMENTS("附件限制"),
-    TASKS("自动化任务"), SSH("SSH 主机"), MCP("MCP 服务器"), SEARCH("搜索服务"), ABOUT("关于")
+    INPUT_VARIABLES("预设变量"), TASKS("自动化任务"), SSH("SSH 主机"), MCP("MCP 服务器"), SEARCH("搜索服务"), ABOUT("关于")
 }
 
 /** Pure navigation state: a real stack, shared by system and toolbar back actions. */

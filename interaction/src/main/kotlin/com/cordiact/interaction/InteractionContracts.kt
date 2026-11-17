@@ -493,7 +493,7 @@ class InMemoryFillValueStore(initial: Map<String, String> = emptyMap()) : Mutabl
 
     @Synchronized
     override fun set(key: String, value: String) {
-        require(key.matches(Regex("[A-Za-z0-9_-]{1,64}"))) { "Invalid fill key" }
+        require(InputSyntax.validFillKey(key)) { "Invalid fill key" }
         values[key] = value
     }
 

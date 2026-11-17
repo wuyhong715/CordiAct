@@ -131,6 +131,32 @@ class ConversationTurnService(
         }
     }
 
+    /** Uses the same session lease as turns; raw transcript is never rewritten. */
+    fun compactManually(sessionId: String, model: ModelId, instructions: String = ""): com.cordiact.core.context.CompactionResult? {
+        check(activeSessions.add(sessionId)) { "当前会话正在运行，请停止或等待本轮结束后再压缩" }
+        try {
+            check(compactionStore != null && contextPolicy.enabled) { "上下文压缩未启用" }
+            val selected = if (summaryModelResolver != null) summaryModelResolver.invoke(model) else summaryModelProvider()
+            check(selected != null) { "请先在设置中启用并配置摘要模型" }
+            val manual = DefaultContextCompactor(
+                estimator = tokenEstimator, policy = contextPolicy, store = compactionStore,
+                projector = contextProjector, requireSummary = true,
+                summarizer = { prompt, body ->
+                    ModelSummarizer(models, contextPolicy.summaryTimeoutMs).summarize(
+                        prompt + if (instructions.isBlank()) "" else "\n本次额外保留要求：\n" + instructions,
+                        body, selected, sessionId = "compaction",
+                    )
+                },
+            )
+            val result = manual.compactIfNeeded(sessionId, windowFor(model), rawHistoryOf(sessionId),
+                reason = com.cordiact.core.context.CompactionReason.MANUAL, force = true)
+            if (result != null) compactor.discardCandidate(sessionId)
+            return result
+        } finally {
+            activeSessions.remove(sessionId)
+        }
+    }
+
     fun prepareCompactionCandidate(sessionId: String, model: ModelId) = withCompactionModel(model) {
         compactor.prepareCandidate(sessionId, windowFor(model), rawHistoryOf(sessionId))
     }
@@ -159,10 +185,11 @@ class ConversationTurnService(
         systemContext: String? = null,
         parts: List<MessagePart> = emptyList(),
         onUserMessagePersisted: (() -> Unit)? = null,
+        userMetadataJson: String? = null,
         onEvent: (ModelEvent) -> Unit,
     ): ModelCall {
         if (tools.isEmpty()) {
-            return submit(sessionId, model, text, emptyList(), parameters, systemContext, parts, onUserMessagePersisted, onEvent)
+            return submit(sessionId, model, text, emptyList(), parameters, systemContext, parts, onUserMessagePersisted, userMetadataJson, onEvent)
         }
         require(text.isNotBlank() || parts.isNotEmpty()) { "Message must not be blank" }
         requireNotNull(sessions.getSession(sessionId)) { "Session does not exist" }
@@ -189,7 +216,7 @@ class ConversationTurnService(
         }
         try {
             val pending = notices?.pending(sessionId).orEmpty()
-            appendUserMessage(sessionId, text, parts)
+            appendUserMessage(sessionId, text, parts, userMetadataJson)
             onUserMessagePersisted?.invoke()
             val initial = buildProjectedHistory(sessionId, model, systemContext, pending, onEvent)
             if (pending.isNotEmpty()) runCatching { notices?.acknowledge(sessionId, pending.map { it.id }) }
@@ -405,10 +432,11 @@ class ConversationTurnService(
         systemContext: String? = null,
         parts: List<MessagePart> = emptyList(),
         onUserMessagePersisted: (() -> Unit)? = null,
+        userMetadataJson: String? = null,
         onEvent: (ModelEvent) -> Unit,
     ): ModelCall {
         require(text.isNotBlank() || parts.isNotEmpty()) { "Message must not be blank" }
-        return runTurn(sessionId, model, text.trim(), transientContext, parameters, systemContext, onEvent, parts, onUserMessagePersisted)
+        return runTurn(sessionId, model, text.trim(), transientContext, parameters, systemContext, onEvent, parts, onUserMessagePersisted, userMetadataJson)
     }
 
     /**
@@ -438,9 +466,9 @@ class ConversationTurnService(
      * A message may consist only of attachments: the stored `content` is then a text projection so
      * search and notifications keep working, while [parts] remains the semantic source.
      */
-    private fun appendUserMessage(sessionId: String, text: String, parts: List<MessagePart>) {
+    private fun appendUserMessage(sessionId: String, text: String, parts: List<MessagePart>, metadataJson: String? = null) {
         if (parts.isEmpty()) {
-            sessions.appendMessage(sessionId, MessageRole.USER, text.trim())
+            sessions.appendMessage(sessionId, MessageRole.USER, text.trim(), metadataJson)
             return
         }
         // The text the caller passed must also exist as a part; otherwise it would live only in
@@ -450,7 +478,7 @@ class ConversationTurnService(
         } else {
             parts
         }
-        sessions.appendMessageWithParts(sessionId, MessageRole.USER, MessageParts.plainText(normalized), normalized)
+        sessions.appendMessageWithParts(sessionId, MessageRole.USER, MessageParts.plainText(normalized), normalized, metadataJson)
     }
 
     private fun runTurn(
@@ -463,6 +491,7 @@ class ConversationTurnService(
         onEvent: (ModelEvent) -> Unit,
         userParts: List<MessagePart> = emptyList(),
         onUserMessagePersisted: (() -> Unit)? = null,
+        userMetadataJson: String? = null,
     ): ModelCall {
         val session = requireNotNull(sessions.getSession(sessionId)) { "Session does not exist" }
         check(activeSessions.add(sessionId)) { "A model turn is already active for this Session" }
@@ -478,7 +507,7 @@ class ConversationTurnService(
             // A woken turn has no user message to persist: the report block is its trigger, and
             // storing one would put words in the user's mouth on the next replay.
             if (userText != null) {
-                appendUserMessage(sessionId, userText, userParts)
+                appendUserMessage(sessionId, userText, userParts, userMetadataJson)
                 onUserMessagePersisted?.invoke()
             }
             val projected = buildProjectedHistory(sessionId, model, systemContext, pending, onEvent)

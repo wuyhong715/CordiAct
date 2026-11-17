@@ -288,7 +288,7 @@ class AndroidFillValueStore(context: Context) : MutableFillValueStore {
         .toSet()
 
     override fun set(key: String, value: String) {
-        require(key.matches(Regex("[A-Za-z0-9_-]{1,64}"))) { "Invalid fill key" }
+        require(com.cordiact.interaction.InputSyntax.validFillKey(key)) { "Invalid fill key" }
         check(preferences.edit().putString("value.$key", value).commit()) { "Could not save fill value" }
     }
 

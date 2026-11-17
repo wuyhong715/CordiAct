@@ -71,9 +71,9 @@ class InteractionParserTest {
         val missing = parser.parse("/目标执行", context)
 
         assertFalse(unknown.valid)
-        assertEquals("command_separator_missing", unknown.diagnostics.single().code)
+        assertEquals("unknown_command", unknown.diagnostics.single().code)
         assertFalse(missing.valid)
-        assertEquals("command_separator_missing", missing.diagnostics.single().code)
+        assertEquals("unknown_command", missing.diagnostics.single().code)
     }
 
     @Test
@@ -102,8 +102,8 @@ class InteractionParserTest {
     }
 
     @Test
-    fun undefinedFillBlocksSubmission() {
-        val result = parser.parse("/目标 使用#missing", context)
+    fun undefinedExplicitFillBlocksSubmission() {
+        val result = parser.parse("/目标 使用#{missing}", context)
 
         assertFalse(result.valid)
         assertEquals("fill_undefined", result.diagnostics.single().code)
@@ -151,7 +151,46 @@ class InteractionParserTest {
     fun fillKeyMatchesWholeTokenRatherThanPrefix() {
         val result = parser.parse("/目标 订单#1110", context)
 
-        assertFalse(result.valid)
-        assertTrue(result.diagnostics.any { it.code == "fill_undefined" })
+        assertTrue(result.valid)
+        assertTrue(result.envelope!!.submittedText.contains("#1110"))
     }
+    @Test
+    fun chineseVariablesExpandOnceAndExplicitUndefinedBlocks() {
+        fills.set("项目", "原文 #111 @{file-1} /目标")
+        val result = parser.parse("按#{项目}执行，#missing保留", context)
+        assertTrue(result.valid, result.diagnostics.toString())
+        assertEquals("按原文 #111 @{file-1} /目标执行，#missing保留", result.envelope!!.submittedText)
+        assertTrue(result.envelope!!.mentions.isEmpty())
+        assertFalse(parser.parse("#{不存在}", context).valid)
+    }
+
+    @Test
+    fun shieldsCodeEscapesAndLinks() {
+        val text = "`@missing #{missing}` https://example.com/#missing \\#111\n```kotlin\n@missing #{missing}\n```"
+        val result = parser.parse(text, context)
+        assertTrue(result.valid, result.diagnostics.toString())
+        assertEquals(text, result.envelope!!.submittedText)
+    }
+
+    @Test
+    fun completionTargetsFollowCursorAndSuppressLiteralRegions() {
+        val text = "前文 #{项目} 后文"
+        val target = InputSyntax.completionTarget(text, text.indexOf("项") + 1)!!
+        assertEquals('#', target.kind)
+        assertEquals("#{项目}", text.substring(target.start, target.endExclusive))
+        assertNull(InputSyntax.completionTarget("`#项目`", 4))
+        assertNull(InputSyntax.completionTarget("https://a/#项目", 12))
+        assertNull(InputSyntax.completionTarget("正文 /压", 5))
+        assertEquals("压", InputSyntax.completionTarget("/压", 2)!!.query)
+    }
+
+    @Test
+    fun localCommandWithoutParametersAndCandidateAliases() {
+        registry.register(CommandDescriptor("compact", "compact", "plugin.test", aliases = setOf("压缩"),
+            allowsEmptyBody = true, executor = InteractionCommandExecutor { _, _, _, _ -> CommandExecutionResult(true) }))
+        assertTrue(parser.parse("/压缩", context).valid)
+        val candidates = completionCandidates(InputCompletionTarget('/', 0, 2, "压"), registry, directory, fills, context)
+        assertEquals("/压缩 ", candidates.single().insertText)
+    }
+
 }
