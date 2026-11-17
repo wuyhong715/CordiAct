@@ -73,7 +73,11 @@ import com.cordiact.core.tool.ToolInvocationContext
 import com.cordiact.interaction.MutableFillValueStore
 
 /** Opens the plugin host, recovers durable state, then registers and enables core conversation plugins. */
-class CordiActApplication : Application() {
+class CordiActApplication : Application(), androidx.work.Configuration.Provider {
+    // Supports on-demand initialization when AndroidX Startup is not installed by the host.
+    override val workManagerConfiguration: androidx.work.Configuration
+        get() = androidx.work.Configuration.Builder().build()
+
     lateinit var pluginLifecycle: AndroidPluginLifecycle
         private set
     lateinit var conversationStore: AndroidConversationSessionStore
