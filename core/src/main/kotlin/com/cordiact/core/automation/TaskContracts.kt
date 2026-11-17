@@ -29,6 +29,14 @@ enum class TaskDestination { NEW_SESSION, EXISTING_SESSION }
 /** Lifecycle of one scheduled execution. */
 enum class TaskRunState { QUEUED, RUNNING, SUCCEEDED, FAILED, CANCELLED, INTERRUPTED, SKIPPED }
 
+/** Last durable boundary, not a resumable program counter or proof of external success. */
+enum class TaskExecutionStage { PREPARING, MODEL, TOOL, WAITING_USER }
+data class TaskExecutionCheckpoint(
+    val stage: TaskExecutionStage,
+    val updatedAt: Long,
+    val pendingToolToken: String? = null,
+)
+
 /** A durable automation definition. */
 data class AutomationTask(
     val id: String,
@@ -65,6 +73,7 @@ data class AutomationRun(
     val diagnostic: String? = null,
     val summary: String? = null,
     val taskSnapshot: AutomationTask,
+    val executionCheckpoint: TaskExecutionCheckpoint? = null,
 )
 
 /** Thrown when a compare-and-set edit is based on a stale task revision. */

@@ -60,18 +60,16 @@ class AgentExecutionManager(
     fun stop() {
         if (!running.compareAndSet(true, false)) return
         handler.removeCallbacks(sweepRunnable)
-        AgentExecutionService.stopService(context)
+        ExecutionPresenceHost.replace(context, "jobs", emptyList())
         Log.d(TAG, "AgentExecutionManager stopped")
     }
 
     private fun onJobStateChanged(snapshot: JobSnapshot) {
         val activeJobs = jobRegistry.listActive()
-        if (activeJobs.isEmpty()) {
-            AgentExecutionService.stopService(context)
-        } else {
-            val summary = activeJobs.joinToString("; ") { "[${it.kind.name.lowercase()}] ${it.label}" }
-            AgentExecutionService.updateService(context, activeJobs.size, summary)
-        }
+        ExecutionPresenceHost.replace(context, "jobs", activeJobs.map {
+            com.cordiact.core.jobs.ExecutionPresence(it.id,
+                com.cordiact.core.jobs.ExecutionPhase.TOOL, foregroundEligible = true)
+        })
     }
 
     companion object {

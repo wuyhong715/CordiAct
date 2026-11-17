@@ -15,11 +15,20 @@ import java.util.concurrent.TimeUnit
 
 /** Root task execution, never impersonates a delegated parent session. */
 class AutomationTaskRuntime(private val app: CordiActApplication) {
-    val service = AutomationService(File(app.filesDir, "automation/tasks-v1.json"))
+    // Acquire before reading snapshots or recovering RUNNING entries. Retain for process life;
+    // deleting the lease file would break ownership by allowing a different inode to be locked.
+    private val ownedStore = run {
+        val lease = AutomationExecutionLease.acquire(File(app.filesDir, "automation/tasks-v1.lease"))
+        try {
+            val store = AutomationService(File(app.filesDir, "automation/tasks-v1.json"))
+            store.recoverInterrupted()
+            lease to store
+        } catch (error: Throwable) { lease.close(); throw error }
+    }
+    val service = ownedStore.second
     private val draining = kotlinx.coroutines.sync.Mutex()
     private val active = ConcurrentHashMap<String, String>()
     private val sessionLocks = ConcurrentHashMap<String, Any>()
-    init { service.recoverInterrupted() }
 
     fun kick() { AutomationTaskScheduling.kick(app) }
     fun cancel(workspaceId: String, runId: String): AutomationRun? {
@@ -56,8 +65,10 @@ class AutomationTaskRuntime(private val app: CordiActApplication) {
 
     private fun execute(run: AutomationRun) {
         val task = run.taskSnapshot
-        val sessionId = requireNotNull(run.sessionId)
+        val sessionId = run.sessionId
         try {
+            publishPresence(run.id, com.cordiact.core.jobs.ExecutionPhase.PREPARING)
+            requireNotNull(sessionId)
             check(service.runs(run.workspaceId, run.taskId).any { it.id == run.id && it.state == TaskRunState.RUNNING }) { "运行已取消" }
             check(enabled(run.workspaceId)) { "自动化插件已停用" }
             check(app.workspaceManager.list(false).any { it.id == run.workspaceId }) { "工作区不可用或已归档" }
@@ -86,11 +97,30 @@ class AutomationTaskRuntime(private val app: CordiActApplication) {
             val timer = timeout.schedule({ expired.set(true); app.turnService.cancelTurn(sessionId) }, task.maxDurationMinutes.coerceAtMost(8).toLong(), TimeUnit.MINUTES)
             try {
                 // Tool definitions and dispatch both retain the normal workspace and approval gates.
+                publishPresence(run.id, com.cordiact.core.jobs.ExecutionPhase.MODEL)
                 val outcome = app.turnService.runTurnToCompletion(sessionId, model, task.prompt,
                     app.automationToolSpecs(run.workspaceId, model).filterNot { it.name == "automation_tasks" }, loop,
                     ToolDispatcher { ctx, call ->
                         check(!expired.get() && service.runs(run.workspaceId, run.taskId).any { it.id == run.id && it.state == TaskRunState.RUNNING }) { "运行已结束，拒绝后续工具调用" }
-                        app.automationToolDispatcher().dispatch(ctx, call)
+                        val dispatchToken = requireNotNull(service.beginTool(run.id)) { "运行已结束" }
+                        publishPresence(run.id, com.cordiact.core.jobs.ExecutionPhase.TOOL)
+                        try {
+                            app.approvalGateway.observeWaiting({ waiting ->
+                                publishPresence(run.id, if (waiting) com.cordiact.core.jobs.ExecutionPhase.WAITING_USER
+                                    else com.cordiact.core.jobs.ExecutionPhase.TOOL)
+                            }) { app.automationToolDispatcher().dispatch(ctx, call) }.also {
+                                check(service.completeTool(run.id, dispatchToken)) { "工具边界回执不匹配" }
+                            }
+                        }
+                        finally {
+                            // Preserve unresolved token on a throwing dispatch. Never pretend MODEL
+                            // was reached or replace the original dispatch error with a UI error.
+                            runCatching {
+                                if (service.runs(run.workspaceId, run.taskId).firstOrNull { it.id == run.id }
+                                        ?.executionCheckpoint?.pendingToolToken == null)
+                                    publishPresence(run.id, com.cordiact.core.jobs.ExecutionPhase.MODEL)
+                            }.onFailure { android.util.Log.w("AutomationTaskRuntime", "Stage refresh failed", it) }
+                        }
                     }, context,
                     systemContext = "此轮来源为自动化任务。仅在当前工作区执行，不创建递归调度；没有用户在场不代表获得额外权限。",
                     sourceMetadataJson = "{\"source\":\"automation\",\"taskId\":\"${task.id}\",\"runId\":\"${run.id}\"}")
@@ -103,16 +133,38 @@ class AutomationTaskRuntime(private val app: CordiActApplication) {
                 timer.cancel(false); timeout.shutdownNow(); active.remove(run.id); loop.onDisable()
             }
         } catch (error: kotlinx.coroutines.CancellationException) {
-            app.turnService.cancelTurn(sessionId)
+            sessionId?.let(app.turnService::cancelTurn)
             service.finish(run.id, TaskRunState.INTERRUPTED, "系统停止后台工作，未自动重放")
             throw error
         } catch (error: InterruptedException) {
-            app.turnService.cancelTurn(sessionId)
+            sessionId?.let(app.turnService::cancelTurn)
             service.finish(run.id, TaskRunState.INTERRUPTED, "系统停止后台工作，未自动重放")
             throw error
         } catch (error: Exception) {
             service.finish(run.id, TaskRunState.FAILED, error.message?.take(500) ?: error.javaClass.simpleName)
+        } finally { clearPresence(run.id) }
+    }
+
+    private val presence = java.util.concurrent.ConcurrentHashMap<String, com.cordiact.core.jobs.ExecutionPresence>()
+    @Synchronized private fun publishPresence(id: String, phase: com.cordiact.core.jobs.ExecutionPhase) {
+        val stage = when (phase) {
+            com.cordiact.core.jobs.ExecutionPhase.PREPARING -> TaskExecutionStage.PREPARING
+            com.cordiact.core.jobs.ExecutionPhase.MODEL -> TaskExecutionStage.MODEL
+            com.cordiact.core.jobs.ExecutionPhase.TOOL -> TaskExecutionStage.TOOL
+            com.cordiact.core.jobs.ExecutionPhase.WAITING_USER -> TaskExecutionStage.WAITING_USER
+            com.cordiact.core.jobs.ExecutionPhase.STOPPING -> null
         }
+        if (stage != null && !service.executionStage(id, stage)) return
+        presence[id] = com.cordiact.core.jobs.ExecutionPresence(id, phase)
+        // Scheduled agent reasoning has no generic dataSync FGS entitlement. Stay honest:
+        // WorkManager owns the execution window; this is only a user-facing projection.
+        runCatching { com.cordiact.app.service.ExecutionPresenceHost.replace(app, "automation", presence.values.toList()) }
+            .onFailure { android.util.Log.w("AutomationTaskRuntime", "Task notification unavailable", it) }
+    }
+    @Synchronized private fun clearPresence(id: String) {
+        presence.remove(id)
+        runCatching { com.cordiact.app.service.ExecutionPresenceHost.replace(app, "automation", presence.values.toList()) }
+            .onFailure { android.util.Log.w("AutomationTaskRuntime", "Task notification cleanup failed", it) }
     }
 
     fun interruptActive() {

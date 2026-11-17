@@ -12,6 +12,43 @@ import kotlin.test.assertTrue
 
 class AutomationServiceTest {
 
+    @Test fun unresolvedToolSurvivesRestartAndIsNeverQueued() {
+        val file = tempFile()
+        val service = AutomationService(file)
+        val definition = service.save(task(trigger = interval()))
+        val run = service.runNow("w1", definition.id)
+        assertNotNull(service.claim(run.id))
+        val token = assertNotNull(service.beginTool(run.id))
+        assertFailsWith<IllegalArgumentException> { service.finish(run.id, TaskRunState.SUCCEEDED) }
+        service.executionStage(run.id, TaskExecutionStage.WAITING_USER)
+        assertFailsWith<IllegalArgumentException> { service.executionStage(run.id, TaskExecutionStage.MODEL) }
+        assertFalse(service.completeTool(run.id, "stale-token"))
+        val reopened = AutomationService(file)
+        assertEquals(token, reopened.runs("w1", definition.id).single().executionCheckpoint?.pendingToolToken)
+        assertEquals(1, reopened.recoverInterrupted())
+        val recovered = reopened.runs("w1", definition.id).single()
+        assertEquals(TaskRunState.INTERRUPTED, recovered.state)
+        assertTrue(recovered.diagnostic.orEmpty().contains("external effects unknown"))
+        assertNull(reopened.claim(run.id))
+        assertNull(reopened.beginTool(run.id))
+    }
+
+    @Test fun completedDispatchClearsBoundaryButDoesNotReviveCancelledRun() {
+        val service = AutomationService(tempFile())
+        val definition = service.save(task(trigger = interval()))
+        val run = service.runNow("w1", definition.id)
+        service.claim(run.id)
+        val token = assertNotNull(service.beginTool(run.id))
+        assertFailsWith<IllegalStateException> { service.beginTool(run.id) }
+        service.cancel("w1", run.id)
+        assertTrue(service.completeTool(run.id, token))
+        val cancelled = service.runs("w1", definition.id).single()
+        assertEquals(TaskRunState.CANCELLED, cancelled.state)
+        assertNull(cancelled.executionCheckpoint?.pendingToolToken)
+        assertFalse(service.completeTool(run.id, token))
+        assertFalse(service.executionStage(run.id, TaskExecutionStage.MODEL))
+    }
+
     private fun tempFile(name: String = "automation.json"): File =
         Files.createTempDirectory("cordiact-automation-test").resolve(name).toFile()
 
