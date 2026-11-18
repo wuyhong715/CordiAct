@@ -51,6 +51,8 @@ data class PluginInventoryEntry(
     val workspaceId: String? = null,
     val workspaceEnabled: Boolean? = null,
     val readiness: com.cordiact.core.settings.Readiness? = null,
+    /** Actual instance status, distinct from the persisted enable intent in state. */
+    val runtimeStatus: PluginInstanceStatus? = null,
 ) {
     /** Why a management action is refused. */
     enum class ReadOnlyReason {

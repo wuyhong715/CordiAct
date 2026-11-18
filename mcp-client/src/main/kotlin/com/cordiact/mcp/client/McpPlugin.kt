@@ -9,6 +9,7 @@ import com.cordiact.core.mcp.McpServerInfo
 import com.cordiact.core.mcp.McpServerConfigCodec
 import com.cordiact.core.plugin.ManagedPlugin
 import com.cordiact.core.plugin.PluginSpec
+import com.cordiact.core.plugin.PluginScope
 import com.cordiact.core.tool.ToolDefinitionRegistry
 
 /**
@@ -40,6 +41,8 @@ class McpPlugin(
         toolTimeoutMs = config.toolCallTimeoutMs,
     )
 
+    private var resources: PluginScope? = null
+
     @Volatile
     private var connection: McpConnection? = null
 
@@ -56,19 +59,24 @@ class McpPlugin(
 
     @Synchronized
     override fun onEnable() {
-        if (connection != null) return
-        val live = factory.connect(config, credentialProvider?.invoke(config.serverName) ?: credential)
+        if (connection != null && resources?.isOpen == true) return
+        // Never reconnect over a connection/tool generation whose cleanup failed.
+        resources?.let { it.close(); resources = null }
+        val scope = PluginScope()
+        resources = scope
         try {
+            val live = factory.connect(config, credentialProvider?.invoke(config.serverName) ?: credential)
+            scope.effect { live.close() }
+            // Reverse release order: withdraw tools, then close the transport. Register before
+            // sync so a partial publication is also withdrawn if initialization fails.
+            scope.effect { bridge.dispose() }
             serverInfo = live.initialize()
-            // sync both publishes the tools and takes the connection they dispatch through, so
-            // a failure here must close the connection rather than leave tools pointing at a
-            // server nobody will ever close.
             bridge.sync(live)
             connection = live
             lastError = null
         } catch (failure: Exception) {
-            runCatching { bridge.dispose() }
-            runCatching { live.close() }
+            try { scope.close(); resources = null } catch (cleanup: Exception) { failure.addSuppressed(cleanup) }
+            connection = null
             serverInfo = null
             lastError = failure.message
             throw failure
@@ -77,10 +85,17 @@ class McpPlugin(
 
     @Synchronized
     override fun onDisable() {
-        bridge.dispose()
-        connection?.let { runCatching { it.close() } }
-        connection = null
-        serverInfo = null
+        try {
+            resources?.close()
+            resources = null
+            lastError = null
+        } catch (failure: Exception) {
+            lastError = failure.message
+            throw failure
+        } finally {
+            connection = null
+            serverInfo = null
+        }
     }
 
     @Synchronized

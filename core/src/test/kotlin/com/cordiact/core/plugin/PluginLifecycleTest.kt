@@ -331,6 +331,45 @@ class PluginLifecycleTest {
         assertEquals(PluginState.ENABLED, manager.get(spec.id)?.state)
     }
 
+    @Test fun `durable enable intent survives dependency wait and restart reconstruction`() {
+        val key = ServiceKey("test.text", String::class.java)
+        val spec = PluginSpec("consumer", "1", PluginTarget.ANDROID_NATIVE)
+        fun consumer(kernel: PluginKernel) = ContextManagedPlugin(spec, kernel, object : ContextPlugin {
+            override val requiredServices = setOf(key)
+            override fun start(context: PluginContext) { assertEquals("ready", context.service(key)) }
+        })
+        val kernel = PluginKernel()
+        manager.register(consumer(kernel))
+        manager.enable(spec.id)
+        assertEquals(PluginState.ENABLED, records.get(spec.id)?.state)
+        assertNull(records.get(spec.id)?.runtimeStatus)
+        assertEquals(PluginInstanceState.WAITING, manager.get(spec.id)?.runtimeStatus?.state)
+        val provider = PluginInstanceId("provider")
+        kernel.register(provider, object : ContextPlugin {
+            override fun start(context: PluginContext) { context.provide(key, "ready") }
+        })
+        kernel.enable(provider)
+        assertEquals(PluginInstanceState.ACTIVE, manager.get(spec.id)?.runtimeStatus?.state)
+        kernel.disable(provider)
+        assertEquals(PluginState.ENABLED, manager.get(spec.id)?.state)
+        assertEquals(PluginInstanceState.WAITING, manager.get(spec.id)?.runtimeStatus?.state)
+
+        val restoredKernel = PluginKernel()
+        val restored = PluginLifecycleManager(records, FakeRuntime(events), FakeCapabilities(events),
+            FakeData(events), BundledPluginVerifier { false })
+        restored.rebuildUserPlugins { consumer(restoredKernel) }
+        assertEquals(PluginState.ENABLED, restored.get(spec.id)?.state)
+        assertEquals(PluginInstanceState.WAITING, restored.get(spec.id)?.runtimeStatus?.state)
+        restoredKernel.register(provider, object : ContextPlugin {
+            override fun start(context: PluginContext) { context.provide(key, "ready") }
+        })
+        restoredKernel.enable(provider)
+        assertEquals(PluginInstanceState.ACTIVE, restored.get(spec.id)?.runtimeStatus?.state)
+        restored.disable(spec.id)
+        assertEquals(PluginState.DISABLED, records.get(spec.id)?.state)
+        assertEquals(PluginInstanceState.DISABLED, restored.get(spec.id)?.runtimeStatus?.state)
+    }
+
     private class FakeRecords : PluginRecordStore {
         private val values = mutableMapOf<String, PluginRecord>()
         override fun get(id: String) = values[id]

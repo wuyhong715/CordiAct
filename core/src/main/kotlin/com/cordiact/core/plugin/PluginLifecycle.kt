@@ -27,6 +27,8 @@ data class PluginRecord(
     val origin: PluginOrigin,
     val state: PluginState,
     val lastError: String? = null,
+    /** ENABLED is durable enable intent; runtime state is a live, non-persisted projection. */
+    val runtimeStatus: PluginInstanceStatus? = null,
 )
 
 /**
@@ -54,6 +56,11 @@ interface ManagedPlugin {
     fun onEnable() = Unit
     fun onDisable() = Unit
     fun onUninstall() = Unit
+}
+
+/** Optional live projection; durable ENABLED records retain enable intent while dependencies wait. */
+interface RuntimeAwarePlugin : ManagedPlugin {
+    fun runtimeStatus(): PluginInstanceStatus?
 }
 
 /**
@@ -379,9 +386,13 @@ class PluginLifecycleManager(
         stillPending
     }
 
-    fun get(id: String): PluginRecord? = synchronized(lock) { records.get(id) }
+    fun get(id: String): PluginRecord? = synchronized(lock) { records.get(id)?.withRuntimeStatus() }
 
-    fun all(): List<PluginRecord> = synchronized(lock) { records.all() }
+    fun all(): List<PluginRecord> = synchronized(lock) { records.all().map { it.withRuntimeStatus() } }
+
+    private fun PluginRecord.withRuntimeStatus(): PluginRecord = copy(
+        runtimeStatus = (bindings[spec.id] as? RuntimeAwarePlugin)?.runtimeStatus(),
+    )
 
     /**
      * Rebuild every user-installed plugin from its durable record.

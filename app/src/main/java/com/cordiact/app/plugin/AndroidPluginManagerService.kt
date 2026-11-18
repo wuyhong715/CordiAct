@@ -156,7 +156,15 @@ class AndroidPluginManagerService(
     private fun applied(record: PluginRecord, reason: String?) = PluginChangeResult(
         pluginId = record.spec.id,
         application = PluginChangeResult.Application.APPLIED,
-        reason = reason,
+        reason = reason ?: record.runtimeStatus?.let { status ->
+            when (status.state) {
+                com.cordiact.core.plugin.PluginInstanceState.WAITING ->
+                    "Enable intent saved; waiting for services: ${status.missingServices.joinToString()}"
+                com.cordiact.core.plugin.PluginInstanceState.FAILED ->
+                    "Enable intent saved; runtime failed: ${status.lastError}"
+                else -> null
+            }
+        },
         entry = entryFor(record),
     )
 
@@ -180,7 +188,10 @@ class AndroidPluginManagerService(
         origin = record.origin,
         state = record.state,
         lastError = record.lastError,
-        publishedToolIds = if (record.state == PluginState.ENABLED) publishedTools(record.spec.id) else emptyList(),
+        runtimeStatus = record.runtimeStatus,
+        publishedToolIds = if (record.state == PluginState.ENABLED &&
+            (record.runtimeStatus?.let { it.state == com.cordiact.core.plugin.PluginInstanceState.ACTIVE } ?: true))
+            publishedTools(record.spec.id) else emptyList(),
         readOnlyReason = if (record.origin == PluginOrigin.BUNDLED_SYSTEM) {
             PluginInventoryEntry.ReadOnlyReason.MANAGEMENT_REQUIRED
         } else {

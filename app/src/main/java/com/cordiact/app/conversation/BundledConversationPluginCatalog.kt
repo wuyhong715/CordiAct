@@ -285,6 +285,9 @@ class BundledConversationPlugins private constructor(
      */
     val toolRegistry: ToolDefinitionRegistry get() = registry
 
+    /** Shared trusted-code runtime; durable lifecycle and approval remain authoritative. */
+    val pluginKernel = com.cordiact.core.plugin.PluginKernel()
+
     val spillStore: SpillStore by lazy {
         StandardSpillStore(spillStoreDir ?: File(System.getProperty("java.io.tmpdir"), "cordiact-spills"))
     }
@@ -402,7 +405,7 @@ class BundledConversationPlugins private constructor(
         searchPolicyStore = searchPolicies
         searchUsageStore = searchUsage
         searchRegistry = searchProviders
-        searchPlugin = SearchPlugin(searchService)
+        searchPlugin = SearchPlugin(searchService, pluginKernel)
         registerSearchTools(registry, searchService)
         registry.registerVisibility(SEARCH_TOOL_ID) { context ->
             searchService.shouldExposeSearch(context.workspaceId, context.searchRoute())
@@ -450,7 +453,7 @@ class BundledConversationPlugins private constructor(
             fills = fillValues,
             authorization = interactionAuthorization,
         )
-        interactionPlugin = InteractionPlugin(interactionService, commandRegistry)
+        interactionPlugin = InteractionPlugin(interactionService, commandRegistry, pluginKernel)
         commandRegistry.register(
             CommandDescriptor(
                 id = "core.interaction.target",
