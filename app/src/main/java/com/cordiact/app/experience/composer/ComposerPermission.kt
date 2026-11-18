@@ -25,8 +25,8 @@ import kotlinx.coroutines.launch
 
 @Composable
 internal fun ComposerPermission(workspaceId: String?, model: ModelId?, canEdit: Boolean, onSecurity: () -> Unit) = key(workspaceId) {
-    val app = LocalContext.current.applicationContext as CordiActApplication
-    val facade = remember(app) { SecuritySettingsFacade(app) }
+    val app = LocalContext.current.applicationContext as? CordiActApplication
+    val facade = remember(app) { app?.let(::SecuritySettingsFacade) }
     val scope = rememberCoroutineScope()
     val canEditNow by rememberUpdatedState(canEdit)
     val modelNow by rememberUpdatedState(model)
@@ -37,7 +37,7 @@ internal fun ComposerPermission(workspaceId: String?, model: ModelId?, canEdit: 
     var feedback by remember { mutableStateOf<String?>(null) }
     var rememberedReviewer by remember { mutableStateOf<ModelId?>(null) }
     suspend fun refresh(id: String) {
-        val fresh = facade.snapshot(id).takeIf { it.workspaceId == id }
+        val fresh = facade?.snapshot(id)?.takeIf { it.workspaceId == id }
         if (fresh?.reviewer != null) rememberedReviewer = fresh.reviewer
         snapshot = fresh
     }
@@ -62,6 +62,7 @@ internal fun ComposerPermission(workspaceId: String?, model: ModelId?, canEdit: 
 
     fun save(preset: PermissionPreset) {
         val id = workspaceId ?: return
+        val security = facade ?: return
         val previous = snapshot ?: return
         if (!canEditNow || busy || previous.workspaceId != id) return
         val reviewer = previous.reviewer ?: rememberedReviewer
@@ -69,7 +70,7 @@ internal fun ComposerPermission(workspaceId: String?, model: ModelId?, canEdit: 
         busy = true; feedback = null
         scope.launch {
             try {
-                val receipt = facade.setPermission(id, previous.revision, preset, reviewer)
+                val receipt = security.setPermission(id, previous.revision, preset, reviewer)
                 refresh(id)
                 feedback = when {
                     !receipt.auditRecorded -> "已生效，但审计记录失败，请检查安全设置。"
@@ -86,7 +87,7 @@ internal fun ComposerPermission(workspaceId: String?, model: ModelId?, canEdit: 
     }
 
     Box {
-        IconButton(onClick = { feedback = null; expanded = true }, enabled = workspaceId != null,
+        IconButton(onClick = { feedback = null; expanded = true }, enabled = workspaceId != null && facade != null,
             modifier = Modifier.size(48.dp).testTag("composer-permission").semantics { contentDescription = description }) {
             Canvas(Modifier.size(20.dp)) {
                 val x = size.width / 24f; val y = size.height / 24f
