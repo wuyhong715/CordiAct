@@ -49,19 +49,16 @@ class McpToolBridge(
      * Replace the previous generation with whatever [live] reports.
      *
      * @throws McpProtocolException when the tool list cannot be read.
-     * @throws IllegalStateException when registration is refused; the registry is left with
-     *   zero tools from this server in that case.
+     * @throws IllegalStateException when registration is refused. Cleanup attempts every
+     *   registered tool; any failed withdrawal stays tracked for a later disposal retry.
      */
     fun sync(live: McpConnection): Map<String, String> {
         val descriptors = live.listTools(toolTimeoutMs)
         val next = buildGeneration(descriptors)
-        val previous = generation
 
         // Retire the old generation only after the new one is fully built, so a listing failure
         // above leaves the currently working tools in place.
-        previous.keys.forEach(registry::unregister)
-        generation = emptyMap()
-        connection = null
+        dispose()
 
         val registered = linkedMapOf<String, String>()
         try {
@@ -70,7 +67,8 @@ class McpToolBridge(
                 registered[toolId] = definition.descriptor.name
             }
         } catch (failure: Exception) {
-            registered.keys.forEach(registry::unregister)
+            generation = registered
+            try { dispose() } catch (cleanup: Exception) { failure.addSuppressed(cleanup) }
             throw failure
         }
         generation = registered
@@ -80,9 +78,19 @@ class McpToolBridge(
 
     /** Withdraw every tool this bridge published. Safe to call when nothing is registered. */
     fun dispose() {
-        generation.keys.forEach(registry::unregister)
-        generation = emptyMap()
         connection = null
+        var failure: Exception? = null
+        val remaining = generation.toMutableMap()
+        for (id in generation.keys) {
+            try {
+                registry.unregister(id)
+                remaining.remove(id)
+            } catch (caught: Exception) {
+                if (failure == null) failure = caught else failure.addSuppressed(caught)
+            }
+        }
+        generation = remaining
+        failure?.let { throw it }
     }
 
     private fun buildGeneration(descriptors: List<McpToolDescriptor>): Map<String, ToolDefinition> {

@@ -26,6 +26,33 @@ class McpPluginCredentialTest {
         assertFalse(spec.config.contains("first-secret")); assertFalse(spec.config.contains("replacement"))
         plugin.onDisable()
     }
+    @Test fun failedTransportCleanupIsVisibleAndRetriedBeforeReconnect() {
+        val registry = InMemoryToolDefinitionRegistry()
+        var fail = true
+        var connects = 0
+        var closes = 0
+        val plugin = McpPlugin(mcpPluginSpec(McpServerConfig("demo", "https://example.test/mcp")), registry,
+            McpClientFactory { _, _ ->
+                connects++
+                object : McpConnection {
+                    override fun initialize() = McpServerInfo(protocolVersion = "2025-06-18", serverName = "fake")
+                    override fun listTools(timeoutMs: Long) = listOf(McpToolDescriptor("ping", "Ping"))
+                    override fun callTool(name: String, argumentsJson: String, timeoutMs: Long) = McpToolCallResult("ok", false)
+                    override fun close() { closes++; if (fail) error("transport cleanup failed") }
+                }
+            })
+        plugin.onEnable()
+        assertFailsWith<IllegalStateException> { plugin.onDisable() }
+        assertNull(registry.get("core.mcp.demo.ping"))
+        assertFailsWith<IllegalStateException> { plugin.onEnable() }
+        assertEquals(1, connects)
+        fail = false
+        plugin.onEnable()
+        assertEquals(2, connects)
+        assertEquals(3, closes)
+        plugin.onDisable()
+    }
+
     @Test fun credentialFailurePublishesNoTools() {
         val registry = InMemoryToolDefinitionRegistry()
         val plugin = McpPlugin(mcpPluginSpec(McpServerConfig("demo", "https://example.test/mcp")), registry,

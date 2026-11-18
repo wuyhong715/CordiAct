@@ -200,11 +200,33 @@ class InteractionCommandRegistry {
     private val enabledOwners = ConcurrentHashMap.newKeySet<String>()
 
     @Synchronized
-    fun register(descriptor: CommandDescriptor) {
-        val names = descriptor.aliases + descriptor.name
-        require(names.size == descriptor.aliases.size + 1) { "Command name duplicates an alias" }
+    fun register(descriptor: CommandDescriptor): CommandDescriptor {
+        val snapshot = descriptor.copy(
+            aliases = descriptor.aliases.toSet(),
+            allowedMentionTypes = descriptor.allowedMentionTypes.toSet(),
+            requiredCapabilities = descriptor.requiredCapabilities.toSet(),
+        )
+        val names = snapshot.aliases + snapshot.name
+        require(names.size == snapshot.aliases.size + 1) { "Command name duplicates an alias" }
+        require(commands.values.none { it.id == snapshot.id }) { "Command id is already registered" }
         require(names.none { name -> commands.containsKey(name) }) { "Command name is already registered" }
-        names.forEach { commands[it] = descriptor }
+        names.forEach { commands[it] = snapshot }
+        return snapshot
+    }
+
+    /** Identity token returned by register; safe even when executors are reused. */
+    @Synchronized
+    fun unregisterRegistration(registration: CommandDescriptor): Boolean {
+        if (commands[registration.name] !== registration) return false
+        commands.entries.removeIf { it.value === registration }
+        return true
+    }
+
+    @Synchronized
+    fun unregister(id: String): Boolean {
+        if (commands.values.none { it.id == id }) return false
+        commands.entries.removeIf { it.value.id == id }
+        return true
     }
 
     @Synchronized
@@ -510,21 +532,38 @@ class InMemoryFillValueStore(initial: Map<String, String> = emptyMap()) : Mutabl
 class InteractionPlugin(
     val service: InteractionService,
     val commandRegistry: InteractionCommandRegistry,
-) : ManagedPlugin {
+    kernel: com.cordiact.core.plugin.PluginKernel = com.cordiact.core.plugin.PluginKernel(),
+) : com.cordiact.core.plugin.RuntimeAwarePlugin {
     override val spec: PluginSpec = interactionPluginSpec()
     @Volatile private var enabled = false
 
-    override fun onEnable() {
-        enabled = true
-        service.setEnabled(true)
-        commandRegistry.setOwnerEnabled(spec.id, true)
-    }
+    private val runtime = com.cordiact.core.plugin.ContextManagedPlugin(spec, kernel,
+        object : com.cordiact.core.plugin.ContextPlugin {
+            override fun start(context: com.cordiact.core.plugin.PluginContext) {
+                context.provide(COMMAND_REGISTRY, commandRegistry)
+                context.provide(SERVICE, service)
+                context.effect { commandRegistry.setOwnerEnabled(spec.id, false) }
+                context.effect { service.setEnabled(false) }
+                context.effect { enabled = false }
+                commandRegistry.setOwnerEnabled(spec.id, true)
+                service.setEnabled(true)
+                enabled = true
+            }
+        })
 
-    override fun onDisable() {
-        enabled = false
-        service.setEnabled(false)
-        commandRegistry.setOwnerEnabled(spec.id, false)
+    override fun runtimeStatus() = runtime.runtimeStatus()
+    override fun onRegister() = runtime.onRegister()
+    override fun onEnable() {
+        runtime.onRegister() // preserves standalone host use as well as durable lifecycle registration
+        runtime.onEnable()
     }
+    override fun onDisable() = runtime.onDisable()
+    override fun onUninstall() = runtime.onUninstall()
 
     fun isEnabled(): Boolean = enabled
+
+    companion object {
+        val COMMAND_REGISTRY = com.cordiact.core.plugin.ServiceKey("core.interaction.commands", InteractionCommandRegistry::class.java)
+        val SERVICE = com.cordiact.core.plugin.ServiceKey("core.interaction.service", InteractionService::class.java)
+    }
 }

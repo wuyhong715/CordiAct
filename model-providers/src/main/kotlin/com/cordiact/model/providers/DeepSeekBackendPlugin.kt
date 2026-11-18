@@ -3,6 +3,7 @@ package com.cordiact.model.providers
 import com.cordiact.core.conversation.MODEL_ADAPTER_PLUGIN_ID
 import com.cordiact.core.conversation.ModelAdapterPlugin
 import com.cordiact.core.plugin.ManagedPlugin
+import com.cordiact.core.plugin.PluginScope
 import com.cordiact.core.plugin.PluginSpec
 import com.cordiact.core.plugin.PluginTarget
 
@@ -31,13 +32,28 @@ class DeepSeekBackendPlugin(
         }
     }
 
-    override fun onEnable() {
-        adapter.attachBackend(spec.id, backend)
+    private var resources: PluginScope? = null
+
+    @Synchronized override fun onEnable() {
+        if (resources?.isOpen == true) return
+        resources?.let { it.close(); resources = null }
+        val scope = PluginScope()
+        resources = scope
+        try {
+            adapter.attachBackend(spec.id, backend)
+            // Only acquire cleanup ownership after attach succeeds: a conflicting owner must
+            // never have its backend detached by our failed initialization.
+            scope.effect { adapter.detachBackend(spec.id, backend.providerId) }
+            scope.effect { backend.cancelActiveCalls() }
+        } catch (failure: Exception) {
+            try { scope.close(); resources = null } catch (cleanup: Exception) { failure.addSuppressed(cleanup) }
+            throw failure
+        }
     }
 
-    override fun onDisable() {
-        backend.cancelActiveCalls()
-        adapter.detachBackend(spec.id, backend.providerId)
+    @Synchronized override fun onDisable() {
+        resources?.close()
+        resources = null
     }
 
     override fun onUninstall() {
