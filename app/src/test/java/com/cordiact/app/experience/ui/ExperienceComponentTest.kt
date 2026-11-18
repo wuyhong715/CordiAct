@@ -49,7 +49,7 @@ class ExperienceComponentTest {
             { error("No catalogue needed in text input test") }, { error("No importer needed in text input test") }) }
         val draft by controller.state.collectAsState()
         com.cordiact.app.experience.composer.ComposerBar(state, draft.copy(model = model), controller,
-            "", {}, { text -> val accepted = send(text); if (accepted) controller.text(""); accepted }, stop, {}, {})
+            "", {}, { text -> val accepted = send(text); if (accepted) controller.text(""); accepted }, stop, {}, {}, {})
     }
 
     @Test fun settingsSections_selectsOnlyRequestedSection() {
