@@ -40,7 +40,10 @@ jobs:
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
-          java-version: '17'
+          # Robolectric's Android 16 sandbox requires Java 21; JVM modules still use a Java 17 toolchain.
+          java-version: |
+            17
+            21
       - uses: gradle/actions/setup-gradle@v4
       - name: Verify preinstalled Android SDK
         run: |
