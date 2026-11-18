@@ -90,7 +90,7 @@ class ExperienceComponentTest {
     @Test fun emptyState_hasActionsWithoutDemoTranscript() {
         var selected = ""
         content { TranscriptView(ready(), { selected = it }, {}) }
-        compose.onNodeWithText("从一个想法开始。").assertIsDisplayed()
+        compose.onNodeWithText("今天想做什么？").assertIsDisplayed()
         compose.onNodeWithText("了解工作区").performClick()
         assertTrue(selected.contains("当前工作区"))
         compose.onNodeWithText("CordiAct", useUnmergedTree = true).assertDoesNotExist()
@@ -120,7 +120,7 @@ class ExperienceComponentTest {
         var inspect: ToolActivity? = null
         content { TranscriptView(ready(listOf(TranscriptTurn("t", "prompt", tools = listOf(step)))), {}, { inspect = it }) }
         compose.onNodeWithText("found config").assertDoesNotExist()
-        compose.onNodeWithText("完成 1 / 1 个步骤").performClick()
+        compose.onNodeWithText("执行过程 · 1 步完成").performClick()
         compose.mainClock.advanceTimeBy(1000)
         compose.waitForIdle()
         compose.onNodeWithText("found config").performScrollTo().assertIsDisplayed().performClick()
@@ -152,13 +152,12 @@ class ExperienceComponentTest {
             val scope = rememberCoroutineScope()
             val controller = remember { com.cordiact.app.experience.composer.ComposerController(app, scope, { error("No catalogue needed for input test") }, { error("No import needed for input test") }) }
             val state by controller.state.collectAsState()
-            com.cordiact.app.experience.composer.ComposerBar(ready(), state.copy(model = model), controller, "", {}, { true }, {}, {}, {})
+            com.cordiact.app.experience.composer.ComposerBar(ready(), state.copy(model = model), controller, "", {}, { true }, {}, {}, {}, {})
         }
-        listOf("/", "@", "#").forEach { compose.onNodeWithText(it).assertIsDisplayed() }
+        // The composers rails were retired: tokens stay typeable, the hint carries the affordance.
+        listOf("/", "@", "#").forEach { compose.onNodeWithText(it).assertDoesNotExist() }
         compose.onNodeWithTag("composer-input").performTextInput("/inspect @config #api-key")
         compose.onNodeWithTag("composer-input").assertTextContains("/inspect @config #api-key")
-        compose.onNodeWithText("#", substring = false).performClick()
-        compose.onNodeWithTag("composer-input").assertTextContains("/inspect @config #api-key #")
     }
 
     @Test fun artifactQueue_isSessionScopedAndOnlyRendersAfterExplicitSelection() {

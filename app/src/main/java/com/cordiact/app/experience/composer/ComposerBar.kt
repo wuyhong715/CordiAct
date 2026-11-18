@@ -30,7 +30,7 @@ import kotlin.math.roundToInt
 @Composable
 internal fun ComposerBar(state: ExperienceState, composer: ComposerState, controller: ComposerController,
     insert: String, onInserted: () -> Unit, onSend: (String) -> Boolean, onStop: () -> Unit,
-    onSelect: (ModelId) -> Unit, onManage: () -> Unit) {
+    onSelect: (ModelId) -> Unit, onManage: () -> Unit, onSecurity: () -> Unit) {
     var waiting by remember(state.sessionId) { mutableStateOf(false) }
     var confirmLocal by remember { mutableStateOf(false) }
     val context = LocalContext.current
@@ -96,7 +96,7 @@ internal fun ComposerBar(state: ExperienceState, composer: ComposerState, contro
                     }
 
                 }
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Box {
                         IconButton(onClick = { controller.popover(ComposerPopover.Attach) }, enabled = !state.loading && !state.running && !waiting) { AppGlyph(GlyphName.Plus, "添加附件", tint = if (composer.popover == ComposerPopover.Attach) MaterialTheme.colorScheme.primary else LocalContentColor.current) }
                         AnchoredPopover(composer.popover == ComposerPopover.Attach, { controller.popover(null) }) {
@@ -132,10 +132,11 @@ internal fun ComposerBar(state: ExperienceState, composer: ComposerState, contro
                                     onManage = { controller.popover(null); onManage() })
                             }
                         }
+                    ComposerPermission(state.workspace?.id, composer.model, !state.running && !state.loading && !state.stopping && !waiting, onSecurity)
                     SendAction(state, composer, waiting, {
                         if (state.running) onStop() else if (waiting) waiting = false else if (composer.sendAvailability == ComposerRules.SendAvailability.WAIT_FOR_ATTACHMENTS) waiting = true else submit()
                     })
-                    }
+                }
             }
         }
     }
@@ -150,9 +151,8 @@ private fun SendAction(state: ExperienceState, composer: ComposerState, waiting:
     val duration = motionDuration(Motion.Standard)
     val enabled = !state.loading && !state.stopping && (state.running || waiting || (composer.model != null && composer.sendAvailability in setOf(ComposerRules.SendAvailability.READY, ComposerRules.SendAvailability.WAIT_FOR_ATTACHMENTS)))
     val color by animateColorAsState(if (enabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceContainerHigh, tween(duration))
-    val radius by animateDpAsState(if (state.running) 12.dp else 24.dp, tween(duration))
     IconButton(onClick, enabled = enabled, modifier = Modifier.size(48.dp).testTag(if (state.running) "stop-generation" else "send-message")) {
-        Surface(color = color, shape = RoundedCornerShape(radius)) {
+        Surface(color = color, shape = CircleShape) {
             Box(Modifier.size(36.dp), contentAlignment = Alignment.Center) {
                 if (waiting || state.stopping) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
                 else AnimatedContent(state.running, label = "send-stop", transitionSpec = { fadeIn(tween(duration)) togetherWith fadeOut(tween(duration)) }) { running ->

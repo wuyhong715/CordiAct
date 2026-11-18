@@ -24,10 +24,10 @@ private val tabs = listOf(WindowTab("chat", "对话", GlyphName.Chat), WindowTab
 @Composable
 internal fun WindowTabs(selected: Int, position: Float, tools: Int, previews: Int, onSelect: (Int) -> Unit, modifier: Modifier = Modifier) {
     BoxWithConstraints(modifier.fillMaxWidth().padding(horizontal = 12.dp).height(48.dp).testTag("window-tabs")) {
-        val width = minOf(maxWidth / tabs.size, 104.dp)
+        val width = minOf(maxWidth / tabs.size, 78.dp)
         val density = androidx.compose.ui.platform.LocalDensity.current
         val offset = with(density) { ((position.coerceIn(0f, 2f) * width.toPx()) + (width - 26.dp).toPx() / 2).roundToInt() }
-        Box(Modifier.fillMaxWidth().height(1.dp).align(Alignment.BottomStart).background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = .55f)))
+        Box(Modifier.width(width * tabs.size).height(32.dp).align(Alignment.CenterStart).background(MaterialTheme.colorScheme.surfaceContainer.copy(alpha = .78f), RoundedCornerShape(11.dp)))
         Row(Modifier.fillMaxHeight()) {
             tabs.forEachIndexed { index, tab -> key(tab.id) {
                 val active = selected == index
@@ -38,13 +38,14 @@ internal fun WindowTabs(selected: Int, position: Float, tools: Int, previews: In
                         .selectable(active, role = Role.Tab, onClick = { onSelect(index) }).testTag("window-${tab.id}"),
                     horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text(tab.title, color = tint, style = MaterialTheme.typography.labelLarge)
+                    AppGlyph(tab.glyph, modifier = Modifier.size(14.dp), tint = tint)
+                    Text(tab.title, Modifier.padding(start = 4.dp), color = tint, style = MaterialTheme.typography.labelMedium)
                     val badge = if (index == 1) tools else if (index == 2) previews else 0
                     if (badge > 0) Text(" $badge", color = tint, style = MaterialTheme.typography.labelSmall)
                 }
             } }
         }
-        Box(Modifier.align(Alignment.BottomStart).offset { IntOffset(offset, 0) }.width(26.dp).height(2.dp).background(MaterialTheme.colorScheme.primary, RoundedCornerShape(1.dp)))
+        Box(Modifier.align(Alignment.BottomStart).padding(bottom = 8.dp).offset { IntOffset(offset, 0) }.width(26.dp).height(2.dp).background(MaterialTheme.colorScheme.primary, RoundedCornerShape(1.dp)))
     }
 }
 
