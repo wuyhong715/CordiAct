@@ -3,7 +3,12 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
-android { namespace = "com.cordiact.app"; compileSdk = 35
+// Dedicated beta identity keeps the existing debug app and its database intact.
+val betaBuild = providers.gradleProperty("cordiactBeta").orNull == "true"
+val betaCode = providers.gradleProperty("cordiactBetaVersionCode").orNull
+val betaName = providers.gradleProperty("cordiactBetaVersionName").orNull
+
+android { namespace = "com.cordiact.app"; compileSdk = 36
     ndkVersion = "27.2.12479018"
     externalNativeBuild {
         cmake {
@@ -18,13 +23,34 @@ android { namespace = "com.cordiact.app"; compileSdk = 35
     defaultConfig {
         applicationId = "com.cordiact.app"
         minSdk = 26
-        targetSdk = 35
+        targetSdk = 36
         versionCode = 1
         versionName = "0.1.0"
+        if (betaBuild) {
+            applicationId = "com.cordiact.app.beta"
+            versionCode = requireNotNull(betaCode?.toIntOrNull()?.takeIf { it in 2..2_100_000_000 }) {
+                "cordiactBetaVersionCode must be in 2..2100000000"
+            }
+            versionName = requireNotNull(betaName?.takeIf { it.matches(Regex("[0-9]+[.][0-9]+[.][0-9]+-beta[.][0-9]+")) }) {
+                "cordiactBetaVersionName must look like 0.1.0-beta.1"
+            }
+            manifestPlaceholders["cordiactLabel"] = "CordiAct Beta"
+        } else {
+            manifestPlaceholders["cordiactLabel"] = "CordiAct"
+        }
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk { abiFilters += setOf("arm64-v8a", "x86_64") }
     }
     signingConfigs {
+        if (betaBuild) create("beta") {
+            fun requiredEnv(name: String): String = requireNotNull(providers.environmentVariable(name).orNull?.takeIf { it.isNotBlank() }) {
+                "Missing $name for CordiAct beta signing"
+            }
+            storeFile = file(requiredEnv("CORDIACT_BETA_KEYSTORE_FILE")).also { check(it.isFile) { "Beta keystore missing" } }
+            storePassword = requiredEnv("CORDIACT_BETA_STORE_PASSWORD")
+            keyAlias = requiredEnv("CORDIACT_BETA_KEY_ALIAS")
+            keyPassword = requiredEnv("CORDIACT_BETA_KEY_PASSWORD")
+        }
         // Checked-in debug key so CI builds keep one signature across runs and
         // `adb install -r` upgrades the app instead of demanding an uninstall.
         getByName("debug") {
@@ -34,6 +60,12 @@ android { namespace = "com.cordiact.app"; compileSdk = 35
             keyPassword = "android"
         }
     }
+    buildTypes {
+        release {
+            if (betaBuild) signingConfig = signingConfigs.getByName("beta")
+        }
+    }
+
     testOptions { unitTests.isIncludeAndroidResources = true }
 }
 

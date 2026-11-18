@@ -12,7 +12,7 @@
         <intent><action android:name="android.media.action.IMAGE_CAPTURE" /></intent>
     </queries>
 
-    <application android:name=".CordiActApplication" android:theme="@style/Theme.CordiAct" android:label="CordiAct" android:allowBackup="false">
+    <application android:name=".CordiActApplication" android:theme="@style/Theme.CordiAct" android:label="${cordiactLabel}" android:allowBackup="false">
         <!-- WorkManager uses CordiActApplication.Configuration.Provider on demand. -->
         <provider
             android:name="androidx.startup.InitializationProvider"
