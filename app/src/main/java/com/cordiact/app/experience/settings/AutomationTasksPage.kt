@@ -1,5 +1,8 @@
 package com.cordiact.app.experience.settings
 
+import com.cordiact.app.service.ExecutionPresenceHost
+import com.cordiact.core.jobs.ForegroundExecutionState
+import com.cordiact.core.automation.UnconfirmedAutomationResultException
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -34,13 +37,15 @@ internal fun AutomationTasksPage(workspaceId: String) {
     var error by remember { mutableStateOf<String?>(null) }
     var editing by remember(workspaceId) { mutableStateOf<AutomationTask?>(null) }
     var creating by remember(workspaceId) { mutableStateOf(false) }
+    var retryAfterUnknown by remember(workspaceId) { mutableStateOf<Pair<AutomationTask, Set<String>>?>(null) }
+    val conditions by ExecutionPresenceHost.conditions.collectAsState()
     var deleting by remember { mutableStateOf<AutomationTask?>(null) }
     val scope = rememberCoroutineScope()
     fun refresh() { tasks = runtime.service.tasks(workspaceId); runs = runtime.service.runs(workspaceId) }
     fun change(action: () -> Unit) {
         scope.launch {
             val result = withContext(Dispatchers.IO) { runCatching { action(); runtime.kick() } }
-            result.onSuccess { error = null; refresh() }.onFailure { error = it.message ?: "操作失败" }
+            result.onSuccess { error = null; refresh() }.onFailure { error = if (it is UnconfirmedAutomationResultException) "发现未确认的工具结果，请重新检查后确认。" else it.message ?: "操作失败" }
         }
     }
     LaunchedEffect(workspaceId) {
@@ -54,6 +59,22 @@ internal fun AutomationTasksPage(workspaceId: String) {
     Text("按工作区隔离 · 系统尽力准时，省电状态可能延后 · 任务权限沿用现有审批，不自动提权。", style = MaterialTheme.typography.bodySmall)
     if (!runtime.enabled(workspaceId)) Text("插件或工作区能力已停用；恢复后才会执行排队任务。", color = MaterialTheme.colorScheme.error)
     error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+    // These are device-wide observations, not a verdict about this run or the model endpoint.
+    if (runs.any { it.state == TaskRunState.RUNNING } && conditions.sampledAtMillis > 0) {
+        val notices = buildList {
+            if (conditions.networkValidated == false) add("系统暂未验证互联网连接")
+            if (conditions.deviceLocked == true) add("设备锁定")
+            if (conditions.powerSave == true) add("已开启省电模式")
+            if (conditions.backgroundRestricted == true) add("系统限制应用后台运行")
+            if (!conditions.notificationsAllowed) add("任务通知不可用，请在运行收件箱查看进度")
+            when (conditions.foreground) {
+                ForegroundExecutionState.REJECTED -> add("系统拒绝启动前台服务")
+                ForegroundExecutionState.START_TIMEOUT, ForegroundExecutionState.TIMED_OUT -> add("前台服务启动或运行超时")
+                else -> Unit
+            }
+        }
+        if (notices.isNotEmpty()) Text("设备状态：${notices.joinToString(" · ")}", style = MaterialTheme.typography.bodySmall)
+    }
     FilledTonalButton(onClick = { creating = true }) { Text("新建任务") }
     if (tasks.isEmpty()) Text("暂无任务。可设置一次运行、固定间隔、每日或每周。")
     tasks.forEach { task ->
@@ -66,7 +87,17 @@ internal fun AutomationTasksPage(workspaceId: String) {
                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     TextButton(onClick = { editing = task }) { Text("编辑") }
                     TextButton(onClick = { change { runtime.service.setEnabled(workspaceId, task.id, !task.enabled) } }) { Text(if (task.enabled) "暂停" else "恢复") }
-                    TextButton(enabled = runtime.enabled(workspaceId), onClick = { change { runtime.service.runNow(workspaceId, task.id) } }) { Text("立即运行") }
+                    TextButton(enabled = runtime.enabled(workspaceId), onClick = {
+                        scope.launch {
+                            val unknownRuns = withContext(Dispatchers.IO) {
+                                runCatching { runtime.service.runs(workspaceId, task.id).filter { it.externalResultUnknown }.map { it.id }.toSet() }
+                            }
+                            unknownRuns.onSuccess {
+                                if (it.isNotEmpty()) retryAfterUnknown = task to it
+                                else change { runtime.service.runNow(workspaceId, task.id) }
+                            }.onFailure { error = "无法检查历史运行，未启动新任务。" }
+                        }
+                    }) { Text("立即运行") }
                     TextButton(onClick = { deleting = task }) { Text("删除") }
                 }
             }
@@ -79,12 +110,29 @@ internal fun AutomationTasksPage(workspaceId: String) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text("${run.taskSnapshot.name} · ${runStateLabel(run.state)}", style = MaterialTheme.typography.titleSmall)
                 Text("计划 ${formatTaskTime(run.scheduledAt)} · 开始 ${formatTaskTime(run.startedAt)}", style = MaterialTheme.typography.bodySmall)
+                if (run.externalResultUnknown) {
+                    Text("工具可能已经执行，结果未知。本次运行不会自动重放；请先核对目标端，再决定是否另开一次运行。", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                } else if (run.state == TaskRunState.INTERRUPTED) {
+                    Text("本次运行已中断，不会自动续跑。请查看关联会话和已完成的工具步骤。", style = MaterialTheme.typography.bodySmall)
+                }
                 run.diagnostic?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
                 run.summary?.let { Text(it.take(1200), style = MaterialTheme.typography.bodySmall) }
                 run.sessionId?.let { Text("会话：$it", style = MaterialTheme.typography.labelSmall) }
                 if (run.state == TaskRunState.QUEUED || run.state == TaskRunState.RUNNING) TextButton(onClick = { change { runtime.cancel(workspaceId, run.id) } }) { Text("取消本次运行") }
             }
         }
+    }
+    retryAfterUnknown?.let { (task, runIds) ->
+        AlertDialog(
+            onDismissRequest = { retryAfterUnknown = null },
+            title = { Text("确认开启一次新运行") },
+            text = { Text("历史运行有未确认的工具结果。新运行可能重复执行外部操作，请先核对目标端。") },
+            confirmButton = { TextButton(onClick = {
+                retryAfterUnknown = null
+                change { runtime.service.runNow(workspaceId, task.id, acknowledgedUnknownRunIds = runIds) }
+            }) { Text("已核对，开始新运行") } },
+            dismissButton = { TextButton(onClick = { retryAfterUnknown = null }) { Text("取消") } },
+        )
     }
     if (creating || editing != null) TaskEditor(editing, workspaceId,
         onDismiss = { creating = false; editing = null },

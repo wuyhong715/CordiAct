@@ -1,0 +1,82 @@
+name: Signed beta APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Beta version, e.g. 0.1.0-beta.1'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  beta:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+          persist-credentials: false
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Install Android SDK packages
+        run: >-
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          "platform-tools" "platforms;android-36" "build-tools;36.0.0"
+          "ndk;27.2.12479018" "cmake;3.22.1"
+      - name: Assemble signed beta
+        shell: bash
+        env:
+          BETA_VERSION: ${{ inputs.version }}
+          CORDIACT_BETA_KEYSTORE_BASE64: ${{ secrets.CORDIACT_BETA_KEYSTORE_BASE64 }}
+          CORDIACT_BETA_STORE_PASSWORD: ${{ secrets.CORDIACT_BETA_STORE_PASSWORD }}
+          CORDIACT_BETA_KEY_ALIAS: ${{ secrets.CORDIACT_BETA_KEY_ALIAS }}
+          CORDIACT_BETA_KEY_PASSWORD: ${{ secrets.CORDIACT_BETA_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          [[ "$BETA_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+-beta\.[0-9]+$ ]]
+          : "${CORDIACT_BETA_KEYSTORE_BASE64:?Configure the beta signing secret first}"
+          umask 077
+          export CORDIACT_BETA_KEYSTORE_FILE
+          CORDIACT_BETA_KEYSTORE_FILE=$(mktemp "$RUNNER_TEMP/cordiact-beta.XXXXXXXX")
+          trap 'rm -f -- "$CORDIACT_BETA_KEYSTORE_FILE"' EXIT
+          printf '%s' "$CORDIACT_BETA_KEYSTORE_BASE64" | base64 --decode > "$CORDIACT_BETA_KEYSTORE_FILE"
+          unset CORDIACT_BETA_KEYSTORE_BASE64
+          ./gradlew :app:assembleRelease --no-daemon -PcordiactBeta=true \
+            "-PcordiactBetaVersionCode=$((GITHUB_RUN_NUMBER + 1))" "-PcordiactBetaVersionName=$BETA_VERSION"
+      - name: Verify signer, package identity, and release manifest
+        shell: bash
+        env:
+          BETA_CERT_SHA256: ${{ vars.CORDIACT_BETA_CERT_SHA256 }}
+        run: |
+          set -euo pipefail
+          tools="$ANDROID_HOME/build-tools/36.0.0"
+          apk=app/build/outputs/apk/release/app-release.apk
+          expected=$(printf '%s' "$BETA_CERT_SHA256" | tr -d '[:space:]:' | tr '[:upper:]' '[:lower:]')
+          [[ "$expected" =~ ^[a-f0-9]{64}$ ]] || { echo 'Set CORDIACT_BETA_CERT_SHA256'; exit 1; }
+          actual=$("$tools/apksigner" verify --print-certs "$apk" | sed -n 's/^Signer #[0-9]* certificate SHA-256 digest: //p')
+          [[ "$actual" == "$expected" ]] || { echo 'Unexpected beta signing certificate'; exit 1; }
+          debug=$(keytool -exportcert -keystore keystore/debug.keystore -storepass android -alias androiddebugkey | sha256sum | cut -d ' ' -f 1)
+          [[ "$actual" != "$debug" ]] || { echo 'The debug signing key cannot sign beta releases'; exit 1; }
+          badging=$("$tools/aapt" dump badging "$apk")
+          grep -F "package: name='com.cordiact.app.beta' versionCode='$((GITHUB_RUN_NUMBER + 1))'" <<< "$badging"
+          grep -Fx "targetSdkVersion:'36'" <<< "$badging"
+          manifest=$("$tools/aapt" dump xmltree "$apk" AndroidManifest.xml)
+          if grep -Eq 'AutomationProbeReceiver|WebProbeActivity|application-debuggable' <<< "$manifest" ||
+            grep -Fq 'application-debuggable' <<< "$badging"; then
+            echo 'Debug-only capability in beta APK'; exit 1
+          fi
+          mkdir -p beta-artifacts
+          cp "$apk" beta-artifacts/CordiAct-Beta.apk
+          (cd beta-artifacts && sha256sum CordiAct-Beta.apk > SHA256SUMS)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cordiact-beta-${{ inputs.version }}-${{ github.run_number }}
+          path: beta-artifacts/
+          if-no-files-found: error

@@ -31,6 +31,11 @@ class AutomationServiceTest {
         assertTrue(recovered.diagnostic.orEmpty().contains("external effects unknown"))
         assertNull(reopened.claim(run.id))
         assertNull(reopened.beginTool(run.id))
+        assertTrue(recovered.externalResultUnknown)
+        assertFailsWith<UnconfirmedAutomationResultException> { reopened.runNow("w1", definition.id) }
+        val confirmed = reopened.runNow("w1", definition.id, setOf(recovered.id))
+        assertTrue(confirmed.id != recovered.id)
+        assertEquals(2, reopened.runs("w1", definition.id).size)
     }
 
     @Test fun completedDispatchClearsBoundaryButDoesNotReviveCancelledRun() {

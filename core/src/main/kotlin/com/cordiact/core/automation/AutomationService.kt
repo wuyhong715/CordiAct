@@ -179,10 +179,14 @@ class AutomationService(
         runs = nextRuns
     }
 
-    fun runNow(workspaceId: String, id: String): AutomationRun = synchronized(lock) {
+    fun runNow(workspaceId: String, id: String, acknowledgedUnknownRunIds: Set<String> = emptySet()): AutomationRun = synchronized(lock) {
         val task = tasks[taskKey(workspaceId, id)]
             ?: throw IllegalArgumentException("Task not found: $id")
         activeRunFor(task)?.let { return it }
+
+        if (runs.values.any { it.workspaceId == workspaceId && it.taskId == id && it.externalResultUnknown && it.id !in acknowledgedUnknownRunIds }) {
+            throw UnconfirmedAutomationResultException()
+        }
 
         val current = now()
         val run = newRun(task, scheduledAt = current, createdAt = current)

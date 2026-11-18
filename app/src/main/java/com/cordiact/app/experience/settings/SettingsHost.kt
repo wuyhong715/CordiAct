@@ -174,7 +174,7 @@ fun SettingsHost(vm: SettingsViewModel, initialLink: String? = null, onBack: () 
                         onState = { changed, working -> dirty = changed; securityBusy = working },
                         onBack = { back() })
                     SettingsRoute.INPUT_VARIABLES -> InputVariablesPage()
-                    SettingsRoute.ABOUT -> AboutSettingsPage()
+                    SettingsRoute.ABOUT -> AboutSettingsPage(onOpenProviders = { navigate(SettingsRoute.PROVIDERS) })
                     SettingsRoute.ROLES -> ModelRoles(state, vm, busy)
                     SettingsRoute.CREDENTIALS -> CredentialSettingsPage(vm) { securityBusy = it }
                     SettingsRoute.ATTACHMENTS -> AttachmentSettingsPage(state.attachmentLimits, busy, { dirty = it }) { value -> vm.saveAttachments(value) { dirty = false } }

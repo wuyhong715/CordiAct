@@ -40,7 +40,10 @@ jobs:
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
-          java-version: '17'
+          # Robolectric's Android 16 sandbox requires Java 21; JVM modules still use a Java 17 toolchain.
+          java-version: |
+            17
+            21
       - uses: gradle/actions/setup-gradle@v4
       - name: Verify preinstalled Android SDK
         run: |
@@ -49,7 +52,7 @@ jobs:
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
       - name: Install Android SDK packages
         run: |
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platform-tools" "platforms;android-35" "build-tools;35.0.0" "ndk;27.2.12479018" "cmake;3.22.1"
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platform-tools" "platforms;android-36" "build-tools;36.0.0" "ndk;27.2.12479018" "cmake;3.22.1"
       - name: Build and test
         run: ./gradlew test assembleDebug --no-daemon
       - name: Assemble release and verify debug probe is absent
@@ -119,7 +122,7 @@ jobs:
           df -h "$HOME"
       - name: Install Android native build toolchain
         run: |
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "platform-tools" "platforms;android-35" "build-tools;35.0.0" "ndk;27.2.12479018" "cmake;3.22.1"
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "platform-tools" "platforms;android-36" "build-tools;36.0.0" "ndk;27.2.12479018" "cmake;3.22.1"
       - name: Grant the runner user access to KVM
         run: |
           test -e /dev/kvm

@@ -74,7 +74,15 @@ data class AutomationRun(
     val summary: String? = null,
     val taskSnapshot: AutomationTask,
     val executionCheckpoint: TaskExecutionCheckpoint? = null,
-)
+) {
+    val externalResultUnknown: Boolean
+        get() = when (state) {
+            TaskRunState.INTERRUPTED, TaskRunState.FAILED, TaskRunState.CANCELLED -> executionCheckpoint?.pendingToolToken != null
+            else -> false
+        }
+}
+
+class UnconfirmedAutomationResultException : IllegalStateException("Previous tool result is unknown; confirm in the app before starting a new run")
 
 /** Thrown when a compare-and-set edit is based on a stale task revision. */
 class TaskRevisionConflictException(
