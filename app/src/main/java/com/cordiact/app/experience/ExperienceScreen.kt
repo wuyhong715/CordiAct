@@ -191,6 +191,7 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
                         state, composer, viewModel.composerController, promptToInsert,
                         { promptToInsert = "" }, viewModel::send, viewModel::stop,
                         viewModel::selectModel, { openSettings("settings://models/providers") },
+                        { openSettings("settings://security/permissions") },
                     )
                     },
                 )

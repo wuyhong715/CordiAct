@@ -81,19 +81,8 @@ internal fun CompletionEditor(app: CordiActApplication?, sessionId: String, work
                 }, minLines = 1, maxLines = 6,
             textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface),
             cursorBrush = SolidColor(MaterialTheme.colorScheme.primary), decorationBox = { field ->
-                Box { if (editor.text.isEmpty()) Text("发送消息…", color = MaterialTheme.colorScheme.onSurfaceVariant); field() }
+                Box { if (editor.text.isEmpty()) Text("输入消息，可用 / @ #", color = MaterialTheme.colorScheme.onSurfaceVariant); field() }
             })
-        Row {
-            listOf("/", "@", "#").forEach { trigger ->
-                TextButton(enabled = enabled && editor.composition == null, onClick = {
-                    val at = editor.selection.min
-                    val prefix = if (at > 0 && !editor.text[at - 1].isWhitespace()) " " else ""
-                    val insertion = prefix + trigger
-                    val updated = editor.text.replaceRange(at, editor.selection.max, insertion)
-                    editor = TextFieldValue(updated, TextRange(at + insertion.length))
-                    dismissed = null; onText(updated); focus.requestFocus()
-                }) { Text(trigger) }
-            }
-        }
+
     }
 }

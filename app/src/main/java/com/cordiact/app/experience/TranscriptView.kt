@@ -1,5 +1,6 @@
 package com.cordiact.app.experience
 
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.*
@@ -109,23 +110,26 @@ private fun EmptyConversation(onPrompt: (String) -> Unit, modifier: Modifier = M
             Box(contentAlignment = Alignment.Center) { AppGlyph(GlyphName.Chat, tint = MaterialTheme.colorScheme.primary) }
         }
         Spacer(Modifier.height(8.dp))
-        Text("从一个想法开始。", style = MaterialTheme.typography.headlineLarge)
-        Text("对话保持清晰，执行过程有迹可循。\n把复杂的工作，交给你的 Agent。", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium)
+        Text("今天想做什么？", style = MaterialTheme.typography.headlineLarge)
+        Text("在当前工作区，把一个想法变成下一步。", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium)
         Spacer(Modifier.height(13.dp))
-        Suggestion("了解工作区", "检查当前工作区的文件与项目结构，总结正在进行的工作。", GlyphName.Search, onPrompt)
-        Suggestion("开始一项任务", "先帮我拆解目标和验证标准，再逐步完成。", GlyphName.Trace, onPrompt)
+        Surface(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(16.dp), border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
+            Column {
+            Suggestion("了解工作区", "检查当前工作区的文件与项目结构，总结正在进行的工作。", GlyphName.Search, onPrompt)
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            Suggestion("开始一项任务", "先帮我拆解目标和验证标准，再逐步完成。", GlyphName.Trace, onPrompt)
+            }
+        }
         Text("建议只会填入输入框，不会自动发送", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
 @Composable
 private fun Suggestion(title: String, prompt: String, icon: GlyphName, onPrompt: (String) -> Unit) {
-    Surface(onClick = { onPrompt(prompt) }, color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(16.dp), border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
-        Row(Modifier.fillMaxWidth().padding(15.dp), verticalAlignment = Alignment.CenterVertically) {
+    Row(Modifier.fillMaxWidth().clickable { onPrompt(prompt) }.heightIn(min = 48.dp).padding(horizontal = 14.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             AppGlyph(icon, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
             Text(title, Modifier.weight(1f).padding(start = 12.dp), style = MaterialTheme.typography.bodyMedium)
-            Text("↗", color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
+            AppGlyph(GlyphName.ChevronRight, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(15.dp))
     }
 }
 
@@ -157,14 +161,6 @@ private fun TurnView(turn: TranscriptTurn, onInspect: (ToolActivity) -> Unit) {
                 }
             }
         }
-        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 2.dp)) {
-            Surface(shape = RoundedCornerShape(7.dp), color = MaterialTheme.colorScheme.primary, modifier = Modifier.size(23.dp)) {
-                Box(contentAlignment = Alignment.Center) { Text("c", color = MaterialTheme.colorScheme.onPrimary, fontWeight = FontWeight.Bold, fontSize = 16.sp) }
-            }
-            Text("CordiAct", Modifier.padding(start = 8.dp), style = MaterialTheme.typography.titleSmall)
-            Spacer(Modifier.width(8.dp))
-            Text(when(turn.phase) { RunPhase.RUNNING -> "进行中"; RunPhase.FAILED -> "未完成"; RunPhase.CANCELLED -> "已停止"; else -> "" }, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall)
-        }
         if (turn.reasoning.isNotEmpty()) {
             Surface(color = MaterialTheme.colorScheme.surfaceContainerLow, shape = RoundedCornerShape(13.dp), modifier = Modifier.animateContentSize(spring())) {
                 Column {
@@ -178,21 +174,31 @@ private fun TurnView(turn: TranscriptTurn, onInspect: (ToolActivity) -> Unit) {
             }
         }
         if (turn.tools.isNotEmpty()) {
-            Surface(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(15.dp), border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant), modifier = Modifier.animateContentSize(spring())) {
-                Column {
-                    Row(
-                        Modifier.fillMaxWidth().combinedClickable(onClick = { toolsExpanded = !toolsExpanded }, onDoubleClick = { toolsExpanded = !toolsExpanded }).padding(13.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        AppGlyph(GlyphName.Terminal, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(17.dp))
-                        val live = turn.tools.count { it.phase == ToolPhase.RUNNING }
-                        Column(Modifier.weight(1f).padding(horizontal = 10.dp)) {
-                            Text(if (live > 0) "正在执行 $live 个步骤" else "完成 ${turn.tools.count { it.phase == ToolPhase.SUCCEEDED }} / ${turn.tools.size} 个步骤", style = MaterialTheme.typography.titleSmall)
-                            Text(turn.tools.last().name, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        }
-                        AppGlyph(if (toolsExpanded) GlyphName.Close else GlyphName.ChevronDown, modifier = Modifier.size(16.dp))
+            Column(Modifier.animateContentSize(spring())) {
+                val quiet = MaterialTheme.colorScheme.onSurfaceVariant
+                val live = turn.tools.count { it.phase == ToolPhase.RUNNING }
+                val done = turn.tools.count { it.phase == ToolPhase.SUCCEEDED }
+                Row(Modifier.clickable { toolsExpanded = !toolsExpanded }.heightIn(min = 48.dp).padding(end = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                    AppGlyph(GlyphName.Trace, tint = quiet, modifier = Modifier.size(14.dp))
+                    Text(if (live > 0) "执行过程 · $live 步进行中" else if (done == turn.tools.size) "执行过程 · $done 步完成" else "执行过程 · $done / ${turn.tools.size} 步完成", style = MaterialTheme.typography.labelMedium, color = quiet)
+                    AppGlyph(if (toolsExpanded) GlyphName.Close else GlyphName.ChevronDown, if (toolsExpanded) "收起步骤" else "展开步骤", modifier = Modifier.size(13.dp), tint = quiet)
+                }
+                if (toolsExpanded) turn.tools.forEachIndexed { index, step ->
+                    val line = MaterialTheme.colorScheme.outlineVariant
+                    val node = if (step.phase == ToolPhase.FAILED) MaterialTheme.colorScheme.error else quiet
+                    Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable { onInspect(step) }
+                        .drawBehind {
+                            val x = 7.dp.toPx()
+                            if (index > 0) drawLine(line, Offset(x, 0f), Offset(x, center.y), strokeWidth = 1.dp.toPx())
+                            if (index < turn.tools.lastIndex) drawLine(line, Offset(x, center.y), Offset(x, size.height), strokeWidth = 1.dp.toPx())
+                            drawCircle(node, radius = 2.5.dp.toPx(), center = Offset(x, center.y))
+                        }.padding(start = 19.dp, end = 3.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text(step.name, Modifier.weight(1f), style = MaterialTheme.typography.labelMedium, color = quiet, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(when (step.phase) { ToolPhase.SUCCEEDED -> "完成"; ToolPhase.FAILED -> "失败"; ToolPhase.RUNNING -> "执行中"; else -> "待处理" },
+                            style = MaterialTheme.typography.labelSmall, color = node, modifier = Modifier.padding(horizontal = 6.dp))
+                        AppGlyph(GlyphName.ChevronRight, tint = quiet, modifier = Modifier.size(12.dp))
                     }
-                    if (toolsExpanded) turn.tools.forEach { step -> ToolRow(step) { onInspect(step) } }
                 }
             }
         }

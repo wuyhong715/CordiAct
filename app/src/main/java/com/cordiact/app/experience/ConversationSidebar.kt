@@ -1,5 +1,8 @@
 package com.cordiact.app.experience
 
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.background
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.ui.platform.testTag
@@ -154,16 +157,23 @@ fun ConversationSidebar(
                             Modifier.padding(start = 32.dp, top = 8.dp, bottom = 12.dp),
                             style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
                     }
-                    items(workspace.sessions, key = { "session:${it.id}" }) { session ->
+                    itemsIndexed(workspace.sessions, key = { _, session -> "session:${session.id}" }) { index, session ->
                         val current = activeSessionId == session.id
                         Row(
-                            Modifier.fillMaxWidth().padding(start = 20.dp),
+                            Modifier.fillMaxWidth().drawBehind {
+                                val x = 19.dp.toPx()
+                                val stroke = 1.dp.toPx()
+                                val color = colors.outlineVariant
+                                if (index > 0) drawLine(color, Offset(x, 0f), Offset(x, center.y), stroke)
+                                if (index < workspace.sessions.lastIndex) drawLine(color, Offset(x, center.y), Offset(x, size.height), stroke)
+                                drawLine(color, Offset(x, center.y), Offset(27.dp.toPx(), center.y), stroke)
+                            }.padding(start = 32.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             Surface(
                                 onClick = { onSelectSession(session.id) }, enabled = !busy,
                                 shape = RoundedCornerShape(10.dp),
-                                color = if (current) colors.primaryContainer else colors.surfaceContainerLowest,
+                                color = if (current) colors.primaryContainer else Color.Transparent,
                                 modifier = Modifier.weight(1f)
                                     .semantics { selected = current; if (session.id in runningSessionIds) stateDescription = "执行中" },
                             ) {
