@@ -197,6 +197,33 @@ class ExperienceComponentTest {
         compose.onNodeWithText("预览已暂停").assertIsDisplayed()
     }
 
+    @Test fun keyboardInset_keepsEmptyConversationSuggestionsAboveComposer() {
+        var ime by mutableStateOf(0.dp)
+        var prompt: String? = null
+        content {
+            Box(Modifier.requiredSize(400.dp, 790.dp)) {
+                ExperienceFrame(
+                    insets = WindowInsets(top = 24.dp, bottom = ime),
+                    top = { Box(Modifier.fillMaxWidth().height(100.dp).testTag("empty-top")) },
+                    bottom = { Box(Modifier.fillMaxWidth().height(110.dp).testTag("empty-composer")) },
+                    content = { TranscriptView(ready(), { prompt = it }, {}, it) },
+                )
+            }
+        }
+        val title = compose.onNodeWithText("今天想做什么？")
+        val before = title.getUnclippedBoundsInRoot().top
+        compose.runOnIdle { ime = 300.dp }
+        val topBar = compose.onNodeWithTag("empty-top").getUnclippedBoundsInRoot()
+        val footer = compose.onNodeWithTag("empty-composer").getUnclippedBoundsInRoot()
+        val helper = compose.onNodeWithText("建议只会填入输入框，不会自动发送").assertIsDisplayed()
+        assertTrue(title.getUnclippedBoundsInRoot().top > topBar.bottom)
+        assertTrue(helper.getUnclippedBoundsInRoot().bottom < footer.top)
+        compose.onNodeWithText("开始一项任务").assertIsDisplayed().performClick()
+        compose.runOnIdle { assertNotNull(prompt) }
+        compose.runOnIdle { ime = 0.dp }
+        assertEquals(before.value, title.getUnclippedBoundsInRoot().top.value, 1f)
+    }
+
     @Test fun keyboardInset_movesComposerExactlyOnceAndPreservesTopBar() {
         var ime by mutableStateOf(0.dp)
         content {
