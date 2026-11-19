@@ -22,6 +22,14 @@ class SlidingWindowWakeLedger(
         }
     }
 
+    override fun release(sessionId: String, acquiredAt: Long) {
+        synchronized(lock) {
+            val recent = timestamps[sessionId] ?: return
+            recent.remove(acquiredAt)
+            if (recent.isEmpty()) timestamps.remove(sessionId)
+        }
+    }
+
     override fun recentWakes(sessionId: String, nowMillis: Long): Int = synchronized(lock) {
         prune(sessionId, nowMillis).size
     }

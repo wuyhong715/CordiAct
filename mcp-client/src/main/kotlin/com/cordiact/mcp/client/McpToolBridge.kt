@@ -129,7 +129,10 @@ class McpToolBridge(
             if (result.isError) {
                 errorResult(result.text.ifBlank { "MCP tool '$rawName' reported a failure" })
             } else {
-                ToolResult(values = mapOf("result" to ToolValue.StringValue(result.text)))
+                ToolResult(values = mapOf(
+                    "result" to ToolValue.StringValue(result.text),
+                    "untrusted" to ToolValue.BooleanValue(true),
+                ))
             }
         } catch (failure: McpProtocolException) {
             errorResult(failure.message ?: "MCP call to '$rawName' failed")
@@ -137,7 +140,11 @@ class McpToolBridge(
     }
 
     private fun errorResult(message: String): ToolResult =
-        ToolResult(values = mapOf("error" to ToolValue.StringValue(message)))
+        ToolResult(values = mapOf(
+            "ok" to ToolValue.BooleanValue(false),
+            "error" to ToolValue.StringValue(message),
+            "untrusted" to ToolValue.BooleanValue(true),
+        ))
 
     private fun argumentsToJson(arguments: ToolArguments): String = buildString {
         append('{')

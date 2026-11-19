@@ -57,6 +57,57 @@ class ContextCompactionTurnTest {
     }
 
     @Test
+    fun `overflow retries deliver the same context and acknowledge notices only on success`() {
+        val model = ModelId("deepseek", "deepseek-chat")
+        for (retrySucceeds in listOf(true, false)) {
+            val sessions = FakeSessionManager()
+            repeat(3) {
+                sessions.appendMessage("s1", MessageRole.USER, "Earlier prompt $it")
+                sessions.appendMessage("s1", MessageRole.ASSISTANT, "Earlier answer $it")
+            }
+            val requests = mutableListOf<ModelGenerationRequest>()
+            val acknowledged = mutableListOf<String>()
+            val notices = object : com.cordiact.core.conversation.TurnNoticeSource {
+                override fun pending(sessionId: String) = listOf(
+                    com.cordiact.core.conversation.TurnNotice("receipt-1", "pending receipt marker"),
+                )
+                override fun acknowledge(sessionId: String, ids: List<String>) { acknowledged += ids }
+            }
+            val failure = ModelEvent.Failed("context_length_exceeded", "maximum context length")
+            val adapter = object : ModelAdapterService by FakeModelAdapter(onGenerate = {}) {
+                override fun generate(request: ModelGenerationRequest, onEvent: (ModelEvent) -> Unit): ModelCall {
+                    requests += request
+                    assertTrue(acknowledged.isEmpty())
+                    if (requests.size == 1) {
+                        onEvent(failure)
+                        onEvent(ModelEvent.Delta("discarded attempt"))
+                    } else if (retrySucceeds) {
+                        onEvent(ModelEvent.Delta("retried reply"))
+                        onEvent(ModelEvent.Completed())
+                    } else onEvent(failure)
+                    return ModelCall {}
+                }
+            }
+            val events = mutableListOf<ModelEvent>()
+            ConversationTurnService(sessions, adapter, notices, InMemoryContextCompactionStore()).submit(
+                "s1", model, "continue",
+                transientContext = listOf("reference marker"), systemContext = "skill marker",
+                onEvent = { events += it },
+            )
+            assertEquals(2, requests.size)
+            for (request in requests) {
+                val content = request.messages.joinToString("\n") { it.content }
+                for (marker in listOf("reference marker", "skill marker", "pending receipt marker")) {
+                    assertTrue(content.contains(marker), "Missing $marker")
+                }
+            }
+            assertTrue(events.none { it is ModelEvent.Delta && it.text == "discarded attempt" })
+            assertEquals(if (retrySucceeds) listOf("receipt-1") else emptyList<String>(), acknowledged)
+            assertTrue(if (retrySucceeds) events.last() is ModelEvent.Completed else events.last() is ModelEvent.Failed)
+        }
+    }
+
+    @Test
     fun `test turn service automatically compacts history when compactAtTokens is reached`() {
         val sessions = FakeSessionManager()
         val compactionStore = InMemoryContextCompactionStore()

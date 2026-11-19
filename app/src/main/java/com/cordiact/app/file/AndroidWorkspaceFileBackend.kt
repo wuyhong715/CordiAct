@@ -31,8 +31,7 @@ class AndroidWorkspaceFileBackend : WorkspaceFileBackend {
         val after = cursor?.let { decodeCursor(it, relativeDirectory) }
         val entries = directory.listFiles()?.asSequence()
             ?.filterNot { Files.isSymbolicLink(it.toPath()) }
-            // The Workspace root is a git repository, so .git and other hidden entries must
-            // appear in a listing, since .git contains objects for deleted content.
+            // Match validatePath: dot-prefixed paths, including .git and .env, are private.
             ?.filterNot { it.name.startsWith(".") }
             ?.sortedBy { it.name }
             ?.filter { after == null || it.name > after }
@@ -82,7 +81,7 @@ class AndroidWorkspaceFileBackend : WorkspaceFileBackend {
             }
             buffer.copyOf(count)
         }
-        WorkspaceFileContent(bytes, sha256(file.readBytes()))
+        WorkspaceFileContent(bytes, revision(file, allowCache = true))
     }
 
     override fun write(root: File, relativePath: String, bytes: ByteArray, expectedRevision: String?): WorkspaceFileMutation = synchronized(lock) {
@@ -107,7 +106,16 @@ class AndroidWorkspaceFileBackend : WorkspaceFileBackend {
                 output.fd.sync()
             }
             resolve(root, relativePath, allowRoot = false)
-            moveReplacing(temp, target)
+            if (exists) {
+                verifyRevision(target, expectedRevision)
+                moveReplacing(temp, target)
+            } else {
+                try { Files.move(temp.toPath(), target.toPath()) }
+                catch (_: java.nio.file.FileAlreadyExistsException) {
+                    throw failure(WorkspaceFileException.Code.REVISION_CONFLICT, "File was created by another writer")
+                }
+            }
+            cachedRevisions.remove(target.path)
             WorkspaceFileMutation(sha256(bytes))
         } catch (failure: WorkspaceFileException) {
             throw failure
@@ -188,7 +196,7 @@ class AndroidWorkspaceFileBackend : WorkspaceFileBackend {
         if (file.length() > MAX_FILE_BYTES) {
             throw failure(WorkspaceFileException.Code.SIZE_LIMIT_EXCEEDED, "File size limit exceeded")
         }
-        if (expectedRevision == null || expectedRevision != sha256(file.readBytes())) {
+        if (expectedRevision == null || expectedRevision != revision(file, allowCache = false)) {
             throw failure(WorkspaceFileException.Code.REVISION_CONFLICT, "File revision does not match")
         }
     }
@@ -227,6 +235,41 @@ class AndroidWorkspaceFileBackend : WorkspaceFileBackend {
             Files.move(source.toPath(), destination.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
         } catch (failure: AtomicMoveNotSupportedException) {
             Files.move(source.toPath(), destination.toPath(), StandardCopyOption.REPLACE_EXISTING)
+        }
+    }
+
+    private data class FileStamp(val key: Any?, val size: Long, val changed: Long, val modified: java.nio.file.attribute.FileTime)
+    private val cachedRevisions = object : LinkedHashMap<String, Pair<FileStamp, String>>(16, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Pair<FileStamp, String>>?) = size > 128
+    }
+
+    private fun stamp(file: File): FileStamp {
+        val attrs = Files.readAttributes(file.toPath(), java.nio.file.attribute.BasicFileAttributes::class.java, LinkOption.NOFOLLOW_LINKS)
+        val ctimeNanos = runCatching { android.system.Os.stat(file.path).st_ctim.let { it.tv_sec * 1_000_000_000L + it.tv_nsec } }.getOrDefault(-1)
+        return FileStamp(attrs.fileKey(), attrs.size(), ctimeNanos, attrs.lastModifiedTime())
+    }
+
+    private fun revision(file: File, allowCache: Boolean): String {
+        val before = stamp(file)
+        if (allowCache && before.key != null && before.changed >= 0) {
+            cachedRevisions[file.path]?.takeIf { it.first == before }?.let { return it.second }
+        }
+        val digest = MessageDigest.getInstance("SHA-256")
+        file.inputStream().use { input ->
+            val buffer = ByteArray(64 * 1024)
+            var total = 0L
+            while (true) {
+                val n = input.read(buffer)
+                if (n < 0) break
+                total += n
+                if (total > MAX_FILE_BYTES) throw failure(WorkspaceFileException.Code.SIZE_LIMIT_EXCEEDED, "File size limit exceeded")
+                digest.update(buffer, 0, n)
+            }
+        }
+        val after = stamp(file)
+        if (before != after) throw failure(WorkspaceFileException.Code.REVISION_CONFLICT, "File changed while reading")
+        return digest.digest().joinToString("") { "%02x".format(it) }.also {
+            cachedRevisions[file.path] = before to it
         }
     }
 

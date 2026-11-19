@@ -56,6 +56,22 @@ class ContextToolsTest {
         val text2 = (res2.values["content"] as ToolValue.StringValue).value
         assertTrue(text2.contains("LINE2:"))
         assertTrue(text2.contains("EOF reached"))
+        assertEquals(ToolValue.BooleanValue(true), res1.values["untrusted"])
+
+        val otherSession = toolDef.executor.invoke(
+            ToolInvocationContext(workspaceId = "ws1", sessionId = "session_2"), args1,
+        )
+        assertEquals(ToolValue.BooleanValue(false), otherSession.values["ok"])
+        assertTrue((otherSession.values["error"] as ToolValue.StringValue).value.contains("different session"))
+
+        // UTF-8 code points and supplementary characters paginate without splitting.
+        val unicodeStore = StandardSpillStore(tempDir)
+        val unicode = "甲乙😀丙丁"
+        val unicodeUri = unicodeStore.saveSpill("session_unicode", "utf8", unicode)
+        val firstPage = requireNotNull(unicodeStore.readSpill(unicodeUri, 0, 3))
+        assertEquals("甲乙😀", firstPage.content)
+        assertEquals(3, firstPage.charsRead)
+        assertEquals("丙丁", requireNotNull(unicodeStore.readSpill(unicodeUri, 3, 3)).content)
 
         // Missing argument
         val errRes = toolDef.executor.invoke(context, ToolArguments())

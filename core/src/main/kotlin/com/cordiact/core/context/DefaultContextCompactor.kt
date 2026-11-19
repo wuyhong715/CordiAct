@@ -41,13 +41,16 @@ class DefaultContextCompactor(
         rawMessages: List<ConversationMessage>,
         reason: CompactionReason = CompactionReason.AUTO,
         force: Boolean = false,
+        modelId: String? = null,
     ): CompactionResult? {
         val compactionStore = store ?: return null
         if (!policy.enabled) return null
 
         val budget = policy.createBudget(windowTokens)
         val active = compactionStore.listActive(sessionId)
-        val projectedTokens = estimator.estimateMessages(projector.project(sessionId, rawMessages, active))
+        val projected = projector.project(sessionId, rawMessages, active)
+        val projectedTokens = if (modelId == null) estimator.estimateMessages(projected)
+            else estimator.estimateForModel(projected, modelId)
 
         if (!force && projectedTokens < budget.compactAtTokens) return null
 

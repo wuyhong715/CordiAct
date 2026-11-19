@@ -60,13 +60,14 @@ data class ContextPolicy(
     val toolHeadChars: Int = 4_096,
     val toolTailChars: Int = 2_048,
     val foldAfterRounds: Int = 2,
-    val summaryModelId: String? = null,
     val summaryTimeoutMs: Long = 20_000,
     val spillRetentionDays: Int = 7,
 ) {
     init {
         require(maxOutputTokens > 0) { "maxOutputTokens must be positive" }
         require(minRetainTurns >= 1) { "minRetainTurns must be >= 1" }
+        require(spillRetentionDays > 0)
+        require(foldAfterRounds >= 0)
         require(maxInlineToolChars > 0) { "maxInlineToolChars must be positive" }
         require(toolHeadChars >= 0) { "toolHeadChars must be non-negative" }
         require(toolTailChars >= 0) { "toolTailChars must be non-negative" }
@@ -115,6 +116,7 @@ object DefaultContextWindows {
 interface TokenEstimator {
     fun estimate(text: String): Int
     fun estimateMessages(messages: List<ModelMessage>, toolsJson: String? = null): Int
+    fun estimateForModel(messages: List<ModelMessage>, modelId: String): Int = estimateMessages(messages)
     fun calibrate(actualInputTokens: Long, estimatedInputTokens: Int, modelId: String)
 }
 
@@ -132,14 +134,22 @@ interface SpillStore {
      * Reads a slice from a spill file.
      * Returns null if not found or unauthorized.
      */
+    fun appendSpill(sessionId: String, toolName: String, uri: String?, content: String): SpillAppend
+
+    fun readSpillBytes(spillUri: String, offset: Long, limitBytes: Int): SpillByteRead?
+
     fun readSpill(spillUri: String, offset: Long = 0, limitChars: Int = 8_000): SpillReadResult?
 }
+
+data class SpillAppend(val uri: String, val bytesWritten: Long, val truncated: Boolean)
+data class SpillByteRead(val content: String, val nextOffset: Long, val hasMore: Boolean)
 
 data class SpillReadResult(
     val content: String,
     val offset: Long,
     val bytesRead: Int,
     val totalChars: Long,
+    val charsRead: Int,
     val hasMore: Boolean,
 )
 

@@ -28,6 +28,8 @@ class ComposerController(
     // A fair per-draft queue keeps SQLite insertion order identical to chip order.
     private val importQueues = mutableMapOf<String, Mutex>()
     private val writes = Channel<() -> Unit>(Channel.UNLIMITED)
+    private val ownerScope = scope
+    private var pendingSave: Job? = null
     private var active: String? = null
     private var workspace: String? = null
     private var last = drafts.lastUsed()
@@ -53,6 +55,7 @@ class ComposerController(
     }
 
     suspend fun open(session: String, workspaceId: String, models: List<ModelDescriptor>, fallback: ModelId?) {
+        if (pendingSave != null) save()
         active?.let { snapshots[it] = mutable.value.copy(popover = null) }
         active = session; workspace = workspaceId
         val cached = snapshots[session]
@@ -103,7 +106,15 @@ class ComposerController(
         }
         save()
     }
-    fun text(value: String) { update { it.copy(text = value, banner = null) }; save() }
+    fun text(value: String) {
+        update { it.copy(text = value, banner = null) }
+        pendingSave?.cancel()
+        pendingSave = ownerScope.launch {
+            delay(500)
+            pendingSave = null
+            save()
+        }
+    }
     fun effort(value: ReasoningEffort) {
         if (value == ReasoningEffort.AUTO || value in mutable.value.capabilities.reasoningEfforts) {
             update { it.copy(effort = value, banner = null) }; save()
@@ -120,6 +131,8 @@ class ComposerController(
     }
 
     private fun save() {
+        pendingSave?.cancel()
+        pendingSave = null
         val session = active ?: return
         val s = mutable.value
         val draft = ComposerDraft(s.text, s.model, s.effort, s.speed)
@@ -226,6 +239,18 @@ class ComposerController(
         val chip = mutable.value.attachments.find { it.id == id } ?: return
         val uri = chip.sourceUri ?: return banner("原文件授权已失效，请重新选择")
         remove(id, discardSource = false); import(listOf(uri))
+    }
+
+    fun flushOnClose() {
+        if (pendingSave == null) return
+        pendingSave?.cancel()
+        pendingSave = null
+        val session = active ?: return
+        val state = mutable.value
+        val draft = ComposerDraft(state.text, state.model, state.effort, state.speed)
+        // SharedPreferences.apply updates its in-process snapshot synchronously; disk writes remain async.
+        drafts.save(session, draft)
+        drafts.saveLastUsed(draft)
     }
 
     fun clearSubmittedText(session: String, text: String) {

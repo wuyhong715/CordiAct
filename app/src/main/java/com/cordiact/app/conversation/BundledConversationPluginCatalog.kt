@@ -406,7 +406,7 @@ class BundledConversationPlugins private constructor(
         searchUsageStore = searchUsage
         searchRegistry = searchProviders
         searchPlugin = SearchPlugin(searchService, pluginKernel)
-        registerSearchTools(registry, searchService)
+        registerSearchTools(registry, searchService, spillStore)
         registry.registerVisibility(SEARCH_TOOL_ID) { context ->
             searchService.shouldExposeSearch(context.workspaceId, context.searchRoute())
         }

@@ -131,6 +131,15 @@ interface ToolLoopService {
         initialMessages: List<ModelMessage>,
         dispatcher: ToolDispatcher,
         send: (List<ModelMessage>) -> ToolLoopRound,
+    ): ToolLoopOutcome = run(context, initialMessages, dispatcher, null, send)
+
+    /** Optional, single extra round after the tool budget is reached; must not advertise tools. */
+    fun run(
+        context: ToolInvocationContext,
+        initialMessages: List<ModelMessage>,
+        dispatcher: ToolDispatcher,
+        finalizeWithoutTools: ((List<ModelMessage>) -> ToolLoopRound)?,
+        send: (List<ModelMessage>) -> ToolLoopRound,
     ): ToolLoopOutcome
 }
 
@@ -179,6 +188,7 @@ class ToolLoopPlugin(
         context: ToolInvocationContext,
         initialMessages: List<ModelMessage>,
         dispatcher: ToolDispatcher,
+        finalizeWithoutTools: ((List<ModelMessage>) -> ToolLoopRound)?,
         send: (List<ModelMessage>) -> ToolLoopRound,
     ): ToolLoopOutcome {
         check(enabled) { "Tool loop plugin is not enabled" }
@@ -250,6 +260,7 @@ class ToolLoopPlugin(
                     messages += ModelMessage(
                         role = com.cordiact.core.conversation.MessageRole.TOOL,
                         content = "Tool call limit reached; no further tools will run this turn.",
+                        toolSuccess = false,
                         toolCallId = call.id,
                         toolName = call.name,
                     )
@@ -266,7 +277,8 @@ class ToolLoopPlugin(
                 val startMs = System.currentTimeMillis()
                 val result = dispatcher.dispatch(context, call)
                 val duration = System.currentTimeMillis() - startMs
-                val isSuccess = !result.content.startsWith("Error:") && !result.content.startsWith("{\"error\"")
+                val isSuccess = result.toolSuccess ?:
+                    (!result.content.startsWith("Error:") && !result.content.startsWith("{\"error\""))
                 context.onEvent?.invoke(
                     com.cordiact.core.conversation.ModelEvent.ToolCallCompleted(
                         callId = call.id,
@@ -288,11 +300,29 @@ class ToolLoopPlugin(
                 messages += gatedResult
             }
 
-            if (calls >= limits.maxToolCalls) {
-                return ToolLoopOutcome.Stopped(ToolLoopStop.CALL_LIMIT, rounds, lastText, evidence.toList())
+            val limit = when {
+                calls >= limits.maxToolCalls -> ToolLoopStop.CALL_LIMIT
+                rounds >= limits.maxRounds -> ToolLoopStop.ROUND_LIMIT
+                else -> continue
             }
+            if (finalizeWithoutTools != null) {
+                rounds++
+                val finalRound = try {
+                    finalizeWithoutTools(messages.toList())
+                } catch (cancelled: java.util.concurrent.CancellationException) {
+                    throw cancelled
+                } catch (interrupted: InterruptedException) {
+                    throw interrupted
+                } catch (_: Exception) {
+                    return ToolLoopOutcome.Stopped(limit, rounds, lastText, evidence.toList())
+                }
+                if (finalRound.calls.isEmpty() && finalRound.text.isNotBlank()) {
+                    return ToolLoopOutcome.Completed(finalRound.text, rounds, evidence.toList())
+                }
+                lastText = finalRound.text.ifBlank { lastText }
+            }
+            return ToolLoopOutcome.Stopped(limit, rounds, lastText, evidence.toList())
         }
-
-        return ToolLoopOutcome.Stopped(ToolLoopStop.ROUND_LIMIT, rounds, lastText, evidence.toList())
+        error("Tool loop exited without a terminal outcome")
     }
 }

@@ -4,6 +4,7 @@ package com.cordiact.core.inbox
 enum class WakeDecision {
     /** A new turn was started for this Session. */
     WOKE,
+    QUEUED_NOT_STARTED,
 
     /** The Session is already running a turn; the item waits for its next round boundary. */
     QUEUED_SESSION_BUSY,
@@ -34,19 +35,25 @@ class AsyncTurnCoordinator(
     private val activity: SessionActivity,
     private val startTurn: (sessionId: String) -> Unit,
     private val clockMillis: () -> Long = System::currentTimeMillis,
+    private val tryStartTurn: ((String) -> Boolean)? = null,
 ) {
 
     fun onEnqueued(item: InboxItem): WakeDecision {
         if (!policy.enabled) return WakeDecision.QUEUED_DISABLED
         if (item.kind !in policy.wakeOnKinds) return WakeDecision.QUEUED_KIND
         if (activity.isRunning(item.sessionId)) return WakeDecision.QUEUED_SESSION_BUSY
-        if (!ledger.tryAcquire(item.sessionId, clockMillis())) return WakeDecision.QUEUED_QUOTA
+        val acquiredAt = clockMillis()
+        if (!ledger.tryAcquire(item.sessionId, acquiredAt)) return WakeDecision.QUEUED_QUOTA
 
         // Re-check after taking the budget: the user may have sent a message in between, and a
         // turn that started on its own while the user was typing is exactly the wrong outcome.
-        if (activity.isRunning(item.sessionId)) return WakeDecision.QUEUED_SESSION_BUSY
-
-        startTurn(item.sessionId)
-        return WakeDecision.WOKE
+        var started = false
+        try {
+            if (activity.isRunning(item.sessionId)) return WakeDecision.QUEUED_SESSION_BUSY
+            started = tryStartTurn?.invoke(item.sessionId) ?: run { startTurn(item.sessionId); true }
+            return if (started) WakeDecision.WOKE else WakeDecision.QUEUED_NOT_STARTED
+        } finally {
+            if (!started) ledger.release(item.sessionId, acquiredAt)
+        }
     }
 }

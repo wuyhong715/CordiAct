@@ -53,7 +53,7 @@ object PreviewInbox {
         origin: PreviewOrigin = PreviewOrigin.USER,
     ): PreviewItem {
         val item = PreviewItem(
-            id = "pv-${System.currentTimeMillis()}-${_items.size}",
+            id = "pv-${java.util.UUID.randomUUID()}",
             sessionId = keyOf(sessionId),
             title = title.ifBlank { "未命名预览" },
             html = html,

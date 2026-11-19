@@ -456,6 +456,7 @@ class ConfigurableModelBackend(
                     var streamedTextChars = 0
                     var inputTokens: Long? = null
                     var outputTokens: Long? = null
+                    var outputLimitReached = false
                     var eventName = ""
                     var data = StringBuilder()
                     // OpenAI streams tool calls as fragments keyed by index: the name arrives on
@@ -501,8 +502,9 @@ class ConfigurableModelBackend(
                             when (config.protocol) {
                                 ModelProtocol.OPENAI_IMAGES -> error("Use generate_image for image models")
                                 ModelProtocol.OPENAI_CHAT_COMPLETIONS -> {
-                                    val deltaObject = json.getAsJsonArray("choices")?.firstOrNull()?.asJsonObject
-                                        ?.getAsJsonObject("delta")
+                                    val choice = json.getAsJsonArray("choices")?.firstOrNull()?.asJsonObject
+                                    if (choice?.string("finish_reason") == "length") outputLimitReached = true
+                                    val deltaObject = choice?.getAsJsonObject("delta")
                                     val delta = deltaObject?.get("content")
                                     if (delta?.isJsonPrimitive == true && delta.asJsonPrimitive.isString) {
                                         delta.asString.takeIf(String::isNotEmpty)?.let(::emitDelta)
@@ -545,6 +547,17 @@ class ConfigurableModelBackend(
                                             }
                                         }
                                     }
+                                    "message_start" -> json.getAsJsonObject("message")?.getAsJsonObject("usage")?.let { usage ->
+                                        usage.longOrNull("output_tokens")?.let { outputTokens = it }
+                                        // Anthropic splits cached and uncached prompt tokens into separate counts.
+                                        val input = listOf("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
+                                            .mapNotNull { usage.longOrNull(it) }
+                                        if (input.isNotEmpty()) inputTokens = input.sum()
+                                    }
+                                    "message_delta" -> {
+                                        if (json.getAsJsonObject("delta")?.string("stop_reason") == "max_tokens") outputLimitReached = true
+                                        json.getAsJsonObject("usage")?.longOrNull("output_tokens")?.let { outputTokens = it }
+                                    }
                                     "message_stop" -> completed = true
                                     "error" -> {
                                         failed = true
@@ -552,6 +565,12 @@ class ConfigurableModelBackend(
                                     }
                                 }
                                 ModelProtocol.GEMINI_GENERATE_CONTENT -> {
+                                    json.getAsJsonObject("usageMetadata")?.let { usage ->
+                                        usage.longOrNull("promptTokenCount")?.let { inputTokens = it }
+                                        usage.longOrNull("candidatesTokenCount")?.let { count ->
+                                            outputTokens = count + (usage.longOrNull("thoughtsTokenCount") ?: 0L)
+                                        }
+                                    }
                                     json.getAsJsonArray("candidates")?.forEach { candidate ->
                                         val candidateObject = candidate.asJsonObject
                                         candidateObject.getAsJsonObject("content")?.getAsJsonArray("parts")?.forEach { part ->
@@ -572,7 +591,10 @@ class ConfigurableModelBackend(
                                                 }
                                             }
                                         }
-                                        if (candidateObject.get("finishReason")?.isJsonNull == false) completed = true
+                                        candidateObject.string("finishReason")?.let { reason ->
+                                            if (reason == "MAX_TOKENS") outputLimitReached = true
+                                            if (reason != "FINISH_REASON_UNSPECIFIED") completed = true
+                                        }
                                     }
                                     if (json.has("error") && !json.get("error").isJsonNull) {
                                         failed = true
@@ -602,8 +624,25 @@ class ConfigurableModelBackend(
                                                 .arguments.append(it)
                                         }
                                     }
-                                    "response.completed" -> completed = true
-                                    "response.failed", "response.incomplete", "error" -> {
+                                    "response.completed", "response.incomplete" -> {
+                                        val response = json.getAsJsonObject("response")
+                                        response?.getAsJsonObject("usage")?.let { usage ->
+                                            inputTokens = usage.longOrNull("input_tokens")
+                                            outputTokens = usage.longOrNull("output_tokens")
+                                        }
+                                        when {
+                                            type == "response.completed" -> completed = true
+                                            response?.getAsJsonObject("incomplete_details")?.string("reason") == "max_output_tokens" -> {
+                                                outputLimitReached = true
+                                                completed = true
+                                            }
+                                            else -> {
+                                                failed = true
+                                                emitEvent(ModelEvent.Failed("provider_stream_error", "${config.displayName} reported an incomplete response", true))
+                                            }
+                                        }
+                                    }
+                                    "response.failed", "error" -> {
                                         failed = true
                                         emitEvent(ModelEvent.Failed("provider_stream_error", "${config.displayName} reported a stream error", true))
                                     }
@@ -611,16 +650,14 @@ class ConfigurableModelBackend(
                             }
                         }
                         while (!running.cancelled.get() && !completed && !failed) {
-                            val line = readBoundedLine(reader, MAX_SSE_EVENT_CHARS) ?: break
-                            if (data.length + line.length > MAX_SSE_EVENT_CHARS) {
-                                failed = true
-                                emitEvent(ModelEvent.Failed("stream_limit_exceeded", "${config.displayName} sent an oversized stream event"))
-                                break
-                            }
+                            val line = readBoundedLine(reader, MAX_SSE_EVENT_CHARS + "data: ".length + 1) ?: break
                             if (line.isEmpty()) dispatch()
                             else if (line.startsWith("data:")) {
-                                if (data.isNotEmpty()) data.append('\n')
-                                data.append(line.substringAfter(':').trimStart())
+                                val payload = line.substring(5).removePrefix(" ")
+                                val separator = if (data.isEmpty()) 0 else 1
+                                if (data.length + separator + payload.length > MAX_SSE_EVENT_CHARS) throw StreamLimitException()
+                                if (separator != 0) data.append('\n')
+                                data.append(payload)
                             } else if (line.startsWith("event:")) eventName = line.substringAfter(':').trim()
                         }
                         if (data.isNotEmpty() && !completed && !failed) dispatch()
@@ -632,12 +669,15 @@ class ConfigurableModelBackend(
                                 // Emit before Completed: the loop must learn what to run before
                                 // the round is considered finished, otherwise it would treat a
                                 // tool request as a final answer.
-                                emitToolCalls(pendingCalls, ::emitEvent)
-                                emitEvent(ModelEvent.Completed(inputTokens, outputTokens))
+                                if (!outputLimitReached) emitToolCalls(pendingCalls, ::emitEvent)
+                                emitEvent(ModelEvent.Completed(inputTokens, outputTokens, outputLimitReached))
                                 terminal = true
                             }
                             else -> {
-                                emitEvent(ModelEvent.Failed("incomplete_stream", "${config.displayName} stream ended before completion", true))
+                                val dropped = pendingCalls.size
+                                val detail = if (dropped == 0) "stream ended before completion"
+                                else "stream ended before completion; $dropped incomplete tool call(s) were not executed"
+                                emitEvent(ModelEvent.Failed("incomplete_stream", "${config.displayName} $detail", true))
                                 terminal = true
                             }
                         }
@@ -1160,7 +1200,7 @@ class ConfigurableModelBackend(
             val next = reader.read()
             if (next < 0) return if (line.isEmpty()) null else line.toString()
             if (next == '\n'.code) return line.toString().removeSuffix(13.toChar().toString())
-            if (line.length == maxChars) throw StreamLimitException()
+            if (line.length >= maxChars) throw StreamLimitException()
             line.append(next.toChar())
         }
     }
@@ -1172,7 +1212,7 @@ class ConfigurableModelBackend(
     companion object {
         /** Bumped when the attachment policy (limits, interpretations) changes materially. */
         private const val ATTACHMENT_POLICY_REVISION = "p0-1"
-        private const val DEFAULT_MAX_OUTPUT_TOKENS = 1024
+        private const val DEFAULT_MAX_OUTPUT_TOKENS = 8192
         private const val MAX_SSE_EVENT_CHARS = 4 * 1024 * 1024
         private const val MAX_RESPONSE_CHARS = 4 * 1024 * 1024
         private const val MAX_STREAM_TEXT_CHARS = 16 * 1024 * 1024

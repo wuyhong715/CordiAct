@@ -266,6 +266,37 @@ class ConfigurableModelBackendTest {
     }
 
     @Test
+    fun anthropicOutputLimitKeepsPartialTextAndUsage() {
+        val server = startServer("""
+            data: {"type":"message_start","message":{"usage":{"input_tokens":3,"cache_read_input_tokens":7,"output_tokens":1}}}
+
+            data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"partial"}}
+
+            data: {"type":"message_delta","delta":{"stop_reason":"max_tokens"},"usage":{"output_tokens":13}}
+
+            data: {"type":"message_stop"}
+
+        """.trimIndent() + "\n\n")
+        val provider = config(ModelProtocol.ANTHROPIC_MESSAGES, "anthropic-test", "${server.baseUrl}/v1/messages", allowInsecureLoopbackForTests = true)
+        val events = java.util.concurrent.CopyOnWriteArrayList<ModelEvent>()
+        val done = CountDownLatch(1)
+        try {
+            ConfigurableModelBackend(provider, ApiKeyProvider { "key" }).use { backend ->
+                backend.generate(requestWithoutParameters("anthropic-test", "model")) { event ->
+                    events += event
+                    if (event is ModelEvent.Completed || event is ModelEvent.Failed) done.countDown()
+                }
+                assertTrue(done.await(5, TimeUnit.SECONDS))
+                assertEquals(8192, JsonParser.parseString(server.requestBody).asJsonObject.get("max_tokens").asInt)
+                assertEquals(ModelEvent.Completed(10, 13, outputLimitReached = true), events.last())
+                assertTrue(events.any { it is ModelEvent.Delta && it.text == "partial" })
+            }
+        } finally {
+            server.close()
+        }
+    }
+
+    @Test
     fun providerDefaultsApplyWhenTheRequestCarriesNoParameters() {
         val server = startServer("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
         val config = ModelProviderConfig.forLoopbackTest(

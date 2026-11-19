@@ -49,7 +49,23 @@ data class ExperienceState(
 class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
     private val mutable = MutableStateFlow(ExperienceState())
     val state = mutable.asStateFlow()
-    private val cache = mutableMapOf<String, List<TranscriptTurn>>()
+    private val cache = LinkedHashMap<String, List<TranscriptTurn>>(16, 0.75f, true)
+    private val stored = mutableMapOf<String, List<StoredMessage>>()
+
+    private fun reconcile(session: String, messages: List<StoredMessage>): List<TranscriptTurn> {
+        val current = cache[session]
+        if (calls.containsKey(session) && current != null) return current
+        if (current != null && stored[session] == messages) return current
+        val restored = restoreTranscript(messages)
+        cache[session] = restored
+        stored[session] = messages
+        while (cache.size > 12) {
+            val eldest = cache.keys.firstOrNull { it != session && !calls.containsKey(it) } ?: break
+            cache.remove(eldest)
+            stored.remove(eldest)
+        }
+        return restored
+    }
     private val calls = mutableMapOf<String, OwnedCall>()
     private val events = Channel<OwnedEvent>(Channel.UNLIMITED)
     private val selectionMutex = Mutex()
@@ -89,6 +105,22 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
                 val pending = withContext(Dispatchers.IO) { runCatching { app.approvalGateway.pendingRequests() }.getOrDefault(emptyList()) }
                 mutable.update { it.copy(approvals = pending) }
                 delay(400)
+            }
+        }
+        viewModelScope.launch {
+            app.transcriptChanges.collect {
+                val state = mutable.value
+                val session = state.sessionId ?: return@collect
+                val workspace = state.workspace ?: return@collect
+                if (calls.containsKey(session)) return@collect
+                val version = selectionVersion
+                val messages = try { withContext(Dispatchers.IO) { readTranscript(workspace.id, session) } }
+                catch (cancel: CancellationException) { throw cancel }
+                catch (_: Exception) { return@collect }
+                if (version == selectionVersion && mutable.value.sessionId == session && !calls.containsKey(session)) {
+                    val turns = reconcile(session, messages)
+                    mutable.update { it.copy(turns = turns) }
+                }
             }
         }
         refresh()
@@ -199,6 +231,23 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
             sessions = if (current.workspace?.id == workspaceId) sessions else current.sessions) }
     }
 
+    private fun readTranscript(workspaceId: String, sessionId: String): List<StoredMessage> =
+        app.sessions.messages(sessionId).map { StoredMessage(it.id, it.role.name, it.content, it.createdAtMillis,
+                            it.parts.filterIsInstance<com.cordiact.core.attachment.MessagePart.Attachment>().mapNotNull { part ->
+                                app.attachments.find(workspaceId, part.id)?.let { descriptor ->
+                                    TranscriptAttachment(descriptor, part.interpretation, part.renditionId)
+                                }
+                            }, phase = it.metadataJson?.let { metadata ->
+                                runCatching {
+                                    val status = org.json.JSONObject(metadata)
+                                    when {
+                                        status.optBoolean("outputLimitReached") -> RunPhase.TRUNCATED
+                                        status.optBoolean("toolLimitReached") -> RunPhase.PARTIAL
+                                        else -> RunPhase.COMPLETE
+                                    }
+                                }.getOrDefault(RunPhase.COMPLETE)
+                            } ?: RunPhase.COMPLETE) }
+
     private fun loadSession(
         sessionId: String?, workspaceId: String?, create: Boolean = false,
         newWorkspaceName: String? = null, onSelected: () -> Unit = {},
@@ -241,12 +290,7 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
                             })
                     }
                     Loaded(workspace, workspaces, app.sessions.listSessions(workspace.id).filter { it.kind == SessionKind.USER }, selected,
-                        app.modelAdapter.models(), app.sessions.messages(selected.id).map { StoredMessage(it.id, it.role.name, it.content, it.createdAtMillis,
-                            it.parts.filterIsInstance<com.cordiact.core.attachment.MessagePart.Attachment>().mapNotNull { part ->
-                                app.attachments.find(workspace.id, part.id)?.let { descriptor ->
-                                    TranscriptAttachment(descriptor, part.interpretation, part.renditionId)
-                                }
-                            }) }, sidebar)
+                        app.modelAdapter.models(), readTranscript(workspace.id, selected.id), sidebar)
                 }
                 if (version != selectionVersion) return@launch
                 selectionMutex.withLock {
@@ -261,7 +305,7 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
                         }
                     }
                 }
-                cache.getOrPut(snapshot.selected.id) { restoreTranscript(snapshot.messages) }
+                reconcile(snapshot.selected.id, snapshot.messages)
                 val preferred = composer.value.model ?: mutable.value.model ?: app.getSharedPreferences("cordiact.settings.models", android.content.Context.MODE_PRIVATE).let { prefs ->
                     snapshot.models.firstOrNull { it.id.providerId == prefs.getString("provider", null) && it.id.modelId == prefs.getString("model", null) }?.id
                 }
@@ -356,7 +400,14 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
                         is ModelEvent.Thinking -> TranscriptEvent.Reasoning(event.text)
                         is ModelEvent.ToolCallStarted -> TranscriptEvent.ToolStarted(event.callId, event.toolName, event.argumentsJson, now)
                         is ModelEvent.ToolCallCompleted -> TranscriptEvent.ToolFinished(event.callId, event.toolName, event.success, event.summary, event.durationMillis, now)
-                        is ModelEvent.Completed -> TranscriptEvent.Finished(RunPhase.COMPLETE, now, input = event.inputTokens, output = event.outputTokens)
+                        is ModelEvent.Completed -> TranscriptEvent.Finished(
+                            when {
+                                event.outputLimitReached -> RunPhase.TRUNCATED
+                                event.toolLimitReached -> RunPhase.PARTIAL
+                                else -> RunPhase.COMPLETE
+                            },
+                            now, input = event.inputTokens, output = event.outputTokens,
+                        )
                         is ModelEvent.Failed -> TranscriptEvent.Finished(RunPhase.FAILED, now, "${event.code}: ${event.message}")
                         else -> null
                     }
@@ -408,12 +459,20 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
 
     fun decide(requestId: String, approved: Boolean) {
         viewModelScope.launch {
-            try { withContext(Dispatchers.IO) { app.approvalGateway.respond(requestId, ApprovalDecision(approved = approved, rememberChoice = false)) } }
+            try {
+                val accepted = withContext(Dispatchers.IO) {
+                    app.approvalGateway.respond(requestId, ApprovalDecision(approved = approved, rememberChoice = false))
+                }
+                if (!accepted) mutable.update { state ->
+                    state.copy(approvals = state.approvals.filterNot { it.id == requestId }, error = "该审批已失效或已处理")
+                }
+            }
             catch (cancel: CancellationException) { throw cancel }
             catch (error: Exception) { mutable.update { it.copy(error = error.message ?: "审批提交失败") } }
         }
     }
     override fun onCleared() {
+        composerController.flushOnClose()
         // Cancel the session-level controller, including calls whose submitter hasn't returned yet.
         calls.forEach { (session, call) -> runCatching { call.cancel(); app.turnService.cancelTurn(session) } }
         events.close()

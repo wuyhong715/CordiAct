@@ -68,6 +68,8 @@ class AndroidToolDispatcher(
             toolName = call.name,
             // Host-only: never serialised to a provider, only persisted for replay.
             metadataJson = renderMetadata(call.name, result.metadata),
+            toolSuccess = (result.values["ok"] as? ToolValue.BooleanValue)?.value != false &&
+                !result.values.containsKey("error"),
         )
     }
 
@@ -76,6 +78,7 @@ class AndroidToolDispatcher(
         content = """{"error":{"code":"$code","message":${JSONObject.quote(message)}}}""",
         toolCallId = call.id,
         toolName = call.name,
+        toolSuccess = false,
     )
 
     private fun parseArguments(json: String): ToolArguments {

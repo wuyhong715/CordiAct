@@ -49,6 +49,7 @@ fun interface HumanApprovalChannel {
  * exactly once through [respond]. Late, duplicate and unknown request ids are rejected.
  */
 class QueueingHumanApprovalChannel(
+    private val humanApprovalTtlMillis: Long = 120_000L,
     private val clock: SecurityClock = SecurityClock.system(),
     private val timeoutMillis: Long = 120_000L,
 ) : HumanApprovalChannel {
@@ -158,16 +159,18 @@ class SecurityApprovalCoordinator(
     private val reviewerClient: ReviewerClient? = null,
     private val clock: SecurityClock = SecurityClock.system(),
     private val grantTtlMillis: Long = 30_000L,
+    private val humanApprovalTtlMillis: Long = 120_000L,
 ) {
     private val grants = ConcurrentHashMap<String, OneShotGrant>()
 
     fun requestHuman(context: SecurityContext, intent: SensitiveIntent, approvalId: String): SecurityApprovalResult {
+        val now = clock.now()
         val ticket = PendingSecurityApproval(
             requestId = approvalId,
             intent = intent,
             kind = ApprovalKind.HUMAN,
-            createdAt = clock.now(),
-            expiresAt = clock.now().plusMillis(120_000L),
+            createdAt = now,
+            expiresAt = now.plusMillis(humanApprovalTtlMillis),
         )
         return humanChannel.request(ticket)
     }
@@ -253,14 +256,14 @@ class SecurityApprovalCoordinator(
     /** Atomic remove-and-check: duplicate or late consumers see false. */
     fun consume(context: SecurityContext, intent: SensitiveIntent, grant: OneShotGrant): Boolean {
         val stored = grants.remove(grant.grantId) ?: return false
+        if (grant != stored) return false
         return stored.intentDigest == intent.digest() &&
             stored.workspaceId == context.workspaceId &&
             stored.profileRevision == context.profile.profileRevision &&
             stored.policyEpoch == context.profile.policyEpoch &&
             stored.reviewerConfigRevision == context.profile.reviewer?.revision &&
             stored.reviewerCredentialRevision == context.profile.reviewer?.credentialRevision &&
-            stored.expiresAt.isAfter(clock.now()) &&
-            grant.intentDigest == stored.intentDigest
+            stored.expiresAt.isAfter(clock.now())
     }
 
     fun revokeAll() {

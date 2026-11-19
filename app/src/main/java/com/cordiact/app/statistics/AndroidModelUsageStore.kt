@@ -36,8 +36,9 @@ internal class AndroidModelUsageStore(
         scope.launch {
             for (usage in pending) {
                 val written = runCatching {
-                    val workspace = (usage.workspaceId ?: workspaceOf(usage.sessionId))
-                        ?.takeUnless(String::isBlank) ?: return@runCatching
+                    val workspace = usage.workspaceId?.takeUnless(String::isBlank)
+                        ?: workspaceOf(usage.sessionId)?.takeUnless(String::isBlank)
+                        ?: error("Could not resolve workspace for model usage")
                     writableDatabase.insertWithOnConflict("calls", null, ContentValues().apply {
                         put("id", usage.requestId)
                         put("workspace", workspace)
@@ -64,7 +65,11 @@ internal class AndroidModelUsageStore(
         db.execSQL("CREATE INDEX calls_scope ON calls(workspace, started DESC, id DESC)")
     }
 
-    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) = error("Missing usage migration")
+    // Version 1 is the initial schema. A missing migration must never crash startup, so an
+    // unknown older version falls back to recreating the table and reporting the loss as a gap.
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        if (oldVersion < 1) onCreate(db)
+    }
 
     fun report(workspace: String, from: Long, until: Long, limit: Int): Report {
         require(workspace.isNotBlank() && limit in 1..500)

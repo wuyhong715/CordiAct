@@ -107,6 +107,7 @@ class AutomationService(
 
         val triggerChanged = existing.trigger != task.trigger
         val enabling = !existing.enabled && task.enabled
+        if (task.enabled && (triggerChanged || enabling)) requireFutureOneTimeTrigger(task.trigger, current)
         val nextFireAt = when {
             triggerChanged -> computeNext(task.trigger, current)
             enabling -> computeNext(task.trigger, current)
@@ -143,6 +144,7 @@ class AutomationService(
         if (existing.enabled == enabled) return existing
 
         val current = now()
+        if (enabled) requireFutureOneTimeTrigger(existing.trigger, current)
         val saved = existing.copy(
             enabled = enabled,
             nextFireAt = if (enabled) computeNext(existing.trigger, current) else existing.nextFireAt,
@@ -369,16 +371,24 @@ class AutomationService(
             TriggerKind.DAILY, TriggerKind.WEEKLY -> computeNext(trigger, current)
         }
         return task.copy(
-            enabled = if (trigger.kind == TriggerKind.ONCE) false else task.enabled,
+            enabled = task.enabled && next != null,
             nextFireAt = next,
             revision = task.revision + 1,
             updatedAt = current,
         )
     }
 
+    private fun requireFutureOneTimeTrigger(trigger: TaskTrigger, from: Long) {
+        require(trigger.kind != TriggerKind.ONCE || trigger.atMillis!! > from) {
+            "请选择新的未来时间，再启用一次性任务"
+        }
+    }
+
     private fun computeNext(trigger: TaskTrigger, from: Long): Long = when (trigger.kind) {
         TriggerKind.ONCE -> trigger.atMillis!!
-        TriggerKind.INTERVAL -> safeAdd(from, safeMultiply(trigger.intervalMinutes!!, 60_000L))
+        TriggerKind.INTERVAL -> requireNotNull(nextIntervalOccurrence(from, trigger.intervalMinutes!!, from)) {
+            "自动化任务间隔过大，无法计算下次执行时间"
+        }
         TriggerKind.DAILY -> nextLocalOccurrence(trigger, from, weekly = false)
         TriggerKind.WEEKLY -> nextLocalOccurrence(trigger, from, weekly = true)
     }
@@ -397,22 +407,17 @@ class AutomationService(
     }
 
     /** Jumps from the last scheduled occurrence to the first one strictly after now. */
-    private fun nextIntervalOccurrence(anchor: Long, intervalMinutes: Long, current: Long): Long {
-        val step = safeMultiply(intervalMinutes, 60_000L)
+    private fun nextIntervalOccurrence(anchor: Long, intervalMinutes: Long, current: Long): Long? {
         if (anchor > current) return anchor
-        val delta = current - anchor
-        val periods = if (delta < 0L) 1L else delta / step + 1L
-        val candidate = safeAdd(anchor, safeMultiply(periods, step))
-        return if (candidate > current) candidate else safeAdd(current, step)
+        return try {
+            val step = Math.multiplyExact(intervalMinutes, 60_000L)
+            val elapsed = Math.subtractExact(current, anchor)
+            // Compute relative to current; multiplying the number of missed periods can overflow.
+            Math.addExact(current, step - elapsed % step)
+        } catch (_: ArithmeticException) {
+            null // Overflow after a fire disables the schedule, rather than storing a fake date.
+        }
     }
-
-    private fun safeAdd(a: Long, b: Long): Long =
-        if (b > 0L && a > Long.MAX_VALUE - b) Long.MAX_VALUE else a + b
-
-    private fun safeMultiply(a: Long, b: Long): Long =
-        if (a != 0L && b > Long.MAX_VALUE / a) Long.MAX_VALUE else a * b
-
-    // ------------------------------------------------------------------ runs
 
     private fun newRun(task: AutomationTask, scheduledAt: Long, createdAt: Long): AutomationRun {
         val sessionId = when (task.destination) {

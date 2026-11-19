@@ -49,7 +49,7 @@ fun TranscriptView(state: ExperienceState, onPrompt: (String) -> Unit, onInspect
             override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
                 if (source == NestedScrollSource.UserInput) {
                     // Positive finger motion reveals earlier content in a normal LazyColumn.
-                    if (pinned && !pinPolicy.userDrag(available.y)) pinned = false
+                    if (pinned && list.canScrollBackward && !pinPolicy.userDrag(available.y)) pinned = false
                 }
                 return Offset.Zero
             }
@@ -59,8 +59,17 @@ fun TranscriptView(state: ExperienceState, onPrompt: (String) -> Unit, onInspect
     var lastRevision by remember(state.sessionId) { mutableIntStateOf(revision) }
     LaunchedEffect(revision, state.sessionId) {
         if (latestPinned && state.turns.isNotEmpty()) list.scrollToItem(state.turns.size)
-        else if (revision != lastRevision) unread++
+        else if (revision != lastRevision && list.canScrollForward) unread++
         lastRevision = revision
+    }
+    LaunchedEffect(list, state.sessionId) {
+        snapshotFlow { !list.isScrollInProgress && !list.canScrollForward }.collect { bottom ->
+            if (bottom && !pinned) {
+                pinPolicy.pin()
+                pinned = true
+                unread = 0
+            }
+        }
     }
     LaunchedEffect(list, state.sessionId) {
         snapshotFlow {
@@ -234,7 +243,13 @@ private fun TurnView(turn: TranscriptTurn, onInspect: (ToolActivity) -> Unit) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     buildString {
-                        append(if (turn.phase == RunPhase.CANCELLED) "已停止" else if (turn.phase == RunPhase.FAILED) "执行中断" else "已完成")
+                        append(when (turn.phase) {
+                            RunPhase.CANCELLED -> "已停止"
+                            RunPhase.FAILED -> "执行中断"
+                            RunPhase.TRUNCATED -> "已截断 · 达到模型输出上限"
+                            RunPhase.PARTIAL -> "部分完成 · 达到工具执行上限"
+                            else -> "已完成"
+                        })
                         turn.finishedAt?.let { append(" · "); append(durationLabel(it - turn.startedAt)) }
                         turn.outputTokens?.let { append(" · $it tokens") }
                     }, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f),

@@ -364,6 +364,20 @@ private fun ProviderDetail(p: ProviderSummary, state: SettingsSnapshot, vm: Sett
                 listOf("AUTO") + capability.responseSpeedValues.keys.sortedBy { it.ordinal }.map { it.name }, busy) { selected ->
                 defaults = defaults + (model to value.copy(responseSpeed = com.cordiact.core.conversation.ResponseSpeed.valueOf(selected)))
             }
+            OutlinedTextField(
+                value = value.maxOutputTokens?.toString().orEmpty(),
+                onValueChange = { raw ->
+                    val tokens = raw.filter(Char::isDigit).take(7).toIntOrNull()
+                    defaults = defaults + (model to value.copy(maxOutputTokens = tokens?.takeIf { it in 1..com.cordiact.core.conversation.GenerationParameters.MAX_OUTPUT_TOKENS }))
+                },
+                label = { Text("最大输出 Token（留空为默认）") },
+                enabled = !busy,
+                singleLine = true,
+                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                    keyboardType = androidx.compose.ui.text.input.KeyboardType.Number,
+                ),
+                modifier = Modifier.fillMaxWidth(),
+            )
         }
     }
     Button({ vm.perform(success = { secret = ""; changingKey = false; dirty(false) }) {

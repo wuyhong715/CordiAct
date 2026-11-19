@@ -81,6 +81,8 @@ data class WakePolicy(
 interface WakeLedger {
     /** True when a wake is allowed and has been recorded. */
     fun tryAcquire(sessionId: String, nowMillis: Long = System.currentTimeMillis()): Boolean
+    /** Refund an admission that did not start a turn. Equal timestamps are interchangeable. */
+    fun release(sessionId: String, acquiredAt: Long)
     fun recentWakes(sessionId: String, nowMillis: Long = System.currentTimeMillis()): Int
 }
 
