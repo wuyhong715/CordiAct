@@ -73,7 +73,18 @@ fun TranscriptView(state: ExperienceState, onPrompt: (String) -> Unit, onInspect
         if (state.loading && state.turns.isEmpty()) {
             CircularProgressIndicator(Modifier.align(Alignment.Center).size(25.dp), strokeWidth = 2.dp)
         } else if (state.turns.isEmpty()) {
-            EmptyConversation(onPrompt, Modifier.align(Alignment.Center).padding(LocalChromePadding.current).padding(horizontal = 27.dp))
+            BoxWithConstraints(
+                Modifier.fillMaxSize().padding(LocalChromeBoundsPadding.current)
+                    .padding(horizontal = 27.dp, vertical = 16.dp),
+            ) {
+                val viewportHeight = maxHeight
+                EmptyConversation(
+                    onPrompt = onPrompt,
+                    compact = viewportHeight < 320.dp,
+                    modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState())
+                        .heightIn(min = viewportHeight),
+                )
+            }
         } else {
             LazyColumn(
                 state = list, contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = LocalChromePadding.current.calculateTopPadding(), bottom = LocalChromePadding.current.calculateBottomPadding()),
@@ -104,15 +115,17 @@ fun TranscriptView(state: ExperienceState, onPrompt: (String) -> Unit, onInspect
 }
 
 @Composable
-private fun EmptyConversation(onPrompt: (String) -> Unit, modifier: Modifier = Modifier) {
-    Column(modifier, verticalArrangement = Arrangement.spacedBy(13.dp)) {
-        Surface(color = MaterialTheme.colorScheme.primaryContainer, shape = RoundedCornerShape(17.dp), modifier = Modifier.size(48.dp)) {
-            Box(contentAlignment = Alignment.Center) { AppGlyph(GlyphName.Chat, tint = MaterialTheme.colorScheme.primary) }
+private fun EmptyConversation(onPrompt: (String) -> Unit, compact: Boolean, modifier: Modifier = Modifier) {
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(if (compact) 8.dp else 13.dp, Alignment.CenterVertically)) {
+        if (!compact) {
+            Surface(color = MaterialTheme.colorScheme.primaryContainer, shape = RoundedCornerShape(17.dp), modifier = Modifier.size(48.dp)) {
+                Box(contentAlignment = Alignment.Center) { AppGlyph(GlyphName.Chat, tint = MaterialTheme.colorScheme.primary) }
+            }
+            Spacer(Modifier.height(8.dp))
         }
-        Spacer(Modifier.height(8.dp))
         Text("今天想做什么？", style = MaterialTheme.typography.headlineLarge)
         Text("在当前工作区，把一个想法变成下一步。", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium)
-        Spacer(Modifier.height(13.dp))
+        if (!compact) Spacer(Modifier.height(13.dp))
         Surface(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(16.dp), border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
             Column {
             Suggestion("了解工作区", "检查当前工作区的文件与项目结构，总结正在进行的工作。", GlyphName.Search, onPrompt)

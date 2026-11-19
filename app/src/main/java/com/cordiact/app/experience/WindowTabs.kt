@@ -64,8 +64,11 @@ internal fun ExperienceFrame(
     val density = androidx.compose.ui.platform.LocalDensity.current
     val topPadding = with(density) { topHeight.toDp() }
     val bottomPadding = with(density) { bottomHeight.toDp() }
-    CompositionLocalProvider(LocalBackdrop provides backdrop,
-        LocalChromePadding provides PaddingValues(top = topPadding + 56.dp, bottom = bottomPadding + 56.dp)) {
+    CompositionLocalProvider(
+        LocalBackdrop provides backdrop,
+        LocalChromeBoundsPadding provides PaddingValues(top = topPadding, bottom = bottomPadding),
+        LocalChromePadding provides PaddingValues(top = topPadding + 56.dp, bottom = bottomPadding + 56.dp),
+    ) {
         Box(modifier.fillMaxSize().windowInsetsPadding(insets).testTag("experience-frame")) {
             content(Modifier.fillMaxSize().hazeSource(backdrop))
             ViewportFade(backdrop, top = true, Modifier.align(Alignment.TopCenter).fillMaxWidth().height(topPadding + 48.dp))

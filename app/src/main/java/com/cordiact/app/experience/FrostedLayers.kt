@@ -22,6 +22,8 @@ import dev.chrisbanes.haze.*
 /** One source per viewport; never capture the controls that consume it. */
 internal val LocalBackdrop = staticCompositionLocalOf<HazeState?> { null }
 internal val LocalChromePadding = staticCompositionLocalOf { PaddingValues() }
+// Actual floating chrome bounds, without the extra fade clearance used by full-bleed viewports.
+internal val LocalChromeBoundsPadding = staticCompositionLocalOf { PaddingValues() }
 
 /** The background alone is filtered. Input text, cursor and icons stay sharp. */
 @Composable
