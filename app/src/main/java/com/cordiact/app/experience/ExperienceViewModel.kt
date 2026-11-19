@@ -268,7 +268,7 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
                 val model = snapshot.models.find { it.id == preferred }?.id
                     ?: snapshot.models.firstOrNull()?.id
                 composerController.open(snapshot.selected.id, snapshot.workspace.id, snapshot.models, model)
-                model?.let { selected -> withContext(Dispatchers.IO) {
+                composer.value.model?.let { selected -> withContext(Dispatchers.IO) {
                     com.cordiact.app.model.ConversationModelSelectionStore(app).setForSession(snapshot.selected.id, selected)
                 } }
                 if (version != selectionVersion) return@launch

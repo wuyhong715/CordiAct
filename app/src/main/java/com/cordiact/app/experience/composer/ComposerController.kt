@@ -9,6 +9,7 @@ import com.cordiact.core.conversation.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.sync.Mutex
 import java.util.UUID
 
 /** Owns draft state independently of Compose lifetimes. All mutations happen on the main thread. */
@@ -24,6 +25,8 @@ class ComposerController(
     val state = mutable.asStateFlow()
     private val snapshots = mutableMapOf<String, ComposerState>()
     private val importJobs = mutableMapOf<String, Job>()
+    // A fair per-draft queue keeps SQLite insertion order identical to chip order.
+    private val importQueues = mutableMapOf<String, Mutex>()
     private val writes = Channel<() -> Unit>(Channel.UNLIMITED)
     private var active: String? = null
     private var workspace: String? = null
@@ -137,9 +140,14 @@ class ComposerController(
         val token = "import-${UUID.randomUUID()}"
         val pending = AttachmentDescriptor(AttachmentId(token), ws, "application/octet-stream", "导入中…", 0, "", AttachmentState.IMPORTING, System.currentTimeMillis())
         update(session) { it.copy(attachments = it.attachments + AttachmentChip(pending, AttachmentState.IMPORTING, sourceUri = uri)) }
-        importJobs[token] = scope.launch {
+        val queue = importQueues.getOrPut(session) { Mutex() }
+        importJobs[token] = scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            var locked = false
+            var keepSourceForRetry = false
             var imported: com.cordiact.app.attachment.ImportedAttachmentResult? = null
             try {
+                queue.lock()
+                locked = true
                 // This synchronous importer is confined to IO. Cancellation is checked before a
                 // result is published; abandoned output is removed in finally.
                 val importContext = currentCoroutineContext()
@@ -169,15 +177,17 @@ class ComposerController(
             } catch (failure: CancellationException) { throw failure }
             catch (failure: Exception) {
                 ensureActive()
+                keepSourceForRetry = true
                 update(session) { s -> s.copy(attachments = s.attachments.map { chip -> if (chip.id.value == token)
                     chip.copy(state = AttachmentState.FAILED, errorCode = (failure as? AttachmentException)?.code ?: AttachmentErrorCode.STORAGE_FAILURE) else chip }) }
             } finally {
+                if (locked) queue.unlock()
                 val orphan = imported
                 if (orphan != null) withContext(NonCancellable + Dispatchers.IO) {
                     catalogue().removeDraftAttachment(key(session), orphan.descriptor.id)
                     if (!catalogue().isReferenced(ws, orphan.descriptor.id)) catalogue().delete(ws, orphan.descriptor.id)
                 }
-                if (uri.authority == "${app.packageName}.attachments") {
+                if (!keepSourceForRetry && uri.authority == "${app.packageName}.attachments") {
                     withContext(NonCancellable + Dispatchers.IO) { runCatching { app.contentResolver.delete(uri, null, null) } }
                 }
                 importJobs.remove(token)
@@ -194,12 +204,19 @@ class ComposerController(
             mimeType = rendition.mimeType, width = width ?: result.descriptor.width, height = height ?: result.descriptor.height)
     }
 
-    fun remove(id: AttachmentId) {
+    fun remove(id: AttachmentId) = remove(id, discardSource = true)
+
+    private fun remove(id: AttachmentId, discardSource: Boolean) {
         val session = active ?: return
         val chip = mutable.value.attachments.find { it.id == id } ?: return
         importJobs[id.value]?.cancel()
         update { it.copy(attachments = it.attachments.filterNot { a -> a.id == id }) }
         writes.trySend {
+            if (discardSource && chip.state == AttachmentState.FAILED) {
+                chip.sourceUri?.takeIf { it.authority == "${app.packageName}.attachments" }?.let {
+                    runCatching { app.contentResolver.delete(it, null, null) }
+                }
+            }
             catalogue().removeDraftAttachment(key(session), id)
             if (!id.value.startsWith("import-") && !catalogue().isReferenced(chip.descriptor.workspaceId, id))
                 catalogue().delete(chip.descriptor.workspaceId, id)
@@ -208,12 +225,13 @@ class ComposerController(
     fun retry(id: AttachmentId) {
         val chip = mutable.value.attachments.find { it.id == id } ?: return
         val uri = chip.sourceUri ?: return banner("原文件授权已失效，请重新选择")
-        remove(id); import(listOf(uri))
+        remove(id, discardSource = false); import(listOf(uri))
     }
 
     fun clearSubmittedText(session: String, text: String) {
         update(session) { it.copy(text = if (it.text == text) "" else it.text) }
-        if (active == session) save()
+        val next = snapshots.getValue(session)
+        writes.trySend { drafts.save(session, ComposerDraft(next.text, next.model, next.effort, next.speed)) }
     }
 
     /** Call only after submitOrdinary has synchronously persisted the user message parts. */

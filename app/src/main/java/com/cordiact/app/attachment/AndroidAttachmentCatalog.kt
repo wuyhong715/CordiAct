@@ -384,20 +384,27 @@ class AndroidAttachmentCatalog(
                 "Attachment ${attachmentId.value} is not stored in this Workspace",
             )
         }
-        val nextOrdinal = db.rawQuery(
-            "SELECT COALESCE(MAX(${AttachmentDatabaseSchema.COL_ORDINAL}), -1) + 1 FROM " +
-                "${AttachmentDatabaseSchema.TABLE_DRAFT_ATTACHMENTS} WHERE ${AttachmentDatabaseSchema.COL_DRAFT_ID} = ?",
-            arrayOf(draftId),
-        ).use { cursor -> if (cursor.moveToFirst()) cursor.getInt(0) else 0 }
-        val values = ContentValues().apply {
-            put(AttachmentDatabaseSchema.COL_DRAFT_ID, draftId)
-            put(AttachmentDatabaseSchema.COL_WORKSPACE_ID, workspaceId)
-            sessionId?.let { put(AttachmentDatabaseSchema.COL_SESSION_ID, it) }
-            put(COL_ATTACHMENT_ID, attachmentId.value)
-            put(AttachmentDatabaseSchema.COL_ORDINAL, nextOrdinal)
-            put(AttachmentDatabaseSchema.COL_CREATED_AT, nowMillis)
+        db.beginTransaction()
+        try {
+            val nextOrdinal = db.rawQuery(
+                "SELECT COALESCE(MAX(${AttachmentDatabaseSchema.COL_ORDINAL}), -1) + 1 FROM " +
+                    "${AttachmentDatabaseSchema.TABLE_DRAFT_ATTACHMENTS} WHERE ${AttachmentDatabaseSchema.COL_DRAFT_ID} = ?",
+                arrayOf(draftId),
+            ).use { cursor -> if (cursor.moveToFirst()) cursor.getInt(0) else 0 }
+            val values = ContentValues().apply {
+                put(AttachmentDatabaseSchema.COL_DRAFT_ID, draftId)
+                put(AttachmentDatabaseSchema.COL_WORKSPACE_ID, workspaceId)
+                sessionId?.let { put(AttachmentDatabaseSchema.COL_SESSION_ID, it) }
+                put(COL_ATTACHMENT_ID, attachmentId.value)
+                put(AttachmentDatabaseSchema.COL_ORDINAL, nextOrdinal)
+                put(AttachmentDatabaseSchema.COL_CREATED_AT, nowMillis)
+            }
+            val inserted = db.insertOrThrow(AttachmentDatabaseSchema.TABLE_DRAFT_ATTACHMENTS, null, values) != -1L
+            db.setTransactionSuccessful()
+            return inserted
+        } finally {
+            db.endTransaction()
         }
-        return db.insertOrThrow(AttachmentDatabaseSchema.TABLE_DRAFT_ATTACHMENTS, null, values) != -1L
     }
 
     fun draftAttachments(draftId: String): List<AttachmentDescriptor> = database().query(
