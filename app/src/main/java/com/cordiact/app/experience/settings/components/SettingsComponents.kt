@@ -31,6 +31,15 @@ fun SettingsGroup(content: @Composable ColumnScope.() -> Unit) {
 }
 
 @Composable
+internal fun SettingsPanel(content: @Composable ColumnScope.() -> Unit) {
+    SettingsGroup {
+        Surface(color = MaterialTheme.colorScheme.surfaceContainerLowest) {
+            Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp), content = content)
+        }
+    }
+}
+
+@Composable
 fun SettingsRow(title: String, summary: String, icon: GlyphName? = null, enabled: Boolean = true, onClick: () -> Unit) {
     Surface(shape = RoundedCornerShape(0.dp), color = MaterialTheme.colorScheme.surfaceContainerLowest) {
         Row(Modifier.fillMaxWidth().clickable(enabled = enabled, onClick = onClick).heightIn(min = 58.dp).padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {

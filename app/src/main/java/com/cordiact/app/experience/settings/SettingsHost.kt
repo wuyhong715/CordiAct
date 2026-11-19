@@ -73,7 +73,31 @@ fun SettingsHost(vm: SettingsViewModel, initialLink: String? = null, onBack: () 
         else applyNavigation(target)
     }
     fun navigate(target: SettingsRoute) = requestNavigation(navigation.push(target))
-    fun back() = requestNavigation(navigation.pop())
+    var requestSearchFocus by remember { mutableStateOf(false) }
+    var searchActive by rememberSaveable { mutableStateOf(false) }
+    var settingsQuery by rememberSaveable { mutableStateOf("") }
+    var sectionFromSearch by rememberSaveable { mutableStateOf<String?>(null) }
+    val searchFocus = remember { androidx.compose.ui.focus.FocusRequester() }
+    val keyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
+    val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
+    fun leaveSearch() {
+        focusManager.clearFocus()
+        keyboard?.hide()
+        requestSearchFocus = false
+        searchActive = false
+        settingsQuery = ""
+    }
+    fun back() {
+        if (route == SettingsRoute.HOME && searchActive) leaveSearch()
+        else requestNavigation(navigation.pop())
+    }
+    fun openResult(hit: SettingsSearchHit) {
+        if (busy || securityBusy || dirty || discardBusy) return
+        focusManager.clearFocus()
+        keyboard?.hide()
+        sectionFromSearch = hit.section
+        navigate(hit.entry.route)
+    }
     val context = androidx.compose.ui.platform.LocalContext.current
     val termuxPermission = androidx.activity.compose.rememberLauncherForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.RequestPermission()) { vm.reload() }
@@ -119,12 +143,22 @@ fun SettingsHost(vm: SettingsViewModel, initialLink: String? = null, onBack: () 
     var toolbarHeight by remember { mutableIntStateOf(0) }
     val toolbarDp = with(LocalDensity.current) { toolbarHeight.toDp() }
     val sections = settingsSections(route)
+    val showSearch = route == SettingsRoute.HOME
+    val showResults = showSearch && searchActive
+    val homeScroll = rememberScrollState()
+    val resultsScroll = androidx.compose.runtime.saveable.rememberSaveable(saver = androidx.compose.foundation.ScrollState.Saver) { androidx.compose.foundation.ScrollState(0) }
+
     var selectedSection by rememberSaveable(route.name) { mutableStateOf(sections.firstOrNull()?.id.orEmpty()) }
+    LaunchedEffect(route, sectionFromSearch) {
+        val target = sectionFromSearch
+        if (target != null && sections.any { it.id == target }) selectedSection = target
+        if (route != SettingsRoute.HOME) sectionFromSearch = null
+    }
     val editor = remember(route) { SettingsEditorState() }
     val keyboardVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
     val showSections = sections.isNotEmpty() && !editor.active && !keyboardVisible
     var sectionBarHeight by remember { mutableIntStateOf(0) }
-    val sectionBottom = with(LocalDensity.current) { if (showSections) sectionBarHeight.toDp() else 0.dp }
+    val sectionBottom = with(LocalDensity.current) { if (showSections || showSearch) sectionBarHeight.toDp() else 0.dp }
     // Keep a separate scroll position per section without discarding the page's draft state.
     val firstScroll = rememberSaveable(route.name, saver = androidx.compose.foundation.ScrollState.Saver) { androidx.compose.foundation.ScrollState(0) }
     val secondScroll = rememberSaveable(route.name, saver = androidx.compose.foundation.ScrollState.Saver) { androidx.compose.foundation.ScrollState(0) }
@@ -135,32 +169,25 @@ fun SettingsHost(vm: SettingsViewModel, initialLink: String? = null, onBack: () 
         contentWindowInsets = WindowInsets.systemBars.union(WindowInsets.ime),
         snackbarHost = { SnackbarHost(snackbar) }) { inset ->
       CompositionLocalProvider(LocalBackdrop provides backdrop, LocalSettingsSection provides selectedSection, LocalSettingsEditor provides editor) {
-        Box(Modifier.padding(inset).fillMaxSize()) {
+        Box(Modifier.padding(inset).consumeWindowInsets(inset).fillMaxSize()) {
         Row(Modifier.fillMaxSize().hazeSource(backdrop)) {
             val wide = LocalConfiguration.current.screenWidthDp >= 600
-            if (wide) {
-                Column(Modifier.width(300.dp).fillMaxHeight().verticalScroll(rememberScrollState()).padding(start = 16.dp, end = 16.dp, top = toolbarDp + 56.dp, bottom = sectionBottom + 56.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            if (wide && !showResults) {
+                Column(Modifier.width(300.dp).fillMaxHeight().verticalScroll(if (showSearch) homeScroll else firstScroll).padding(start = 16.dp, end = 16.dp, top = toolbarDp + 20.dp, bottom = sectionBottom + 24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     SettingsMenu(state, ::navigate, ::openLink)
                 }
                 VerticalDivider()
             }
             Box(Modifier.weight(1f).fillMaxHeight(), contentAlignment = Alignment.TopCenter) {
             key(route, providerId) {
-            Column(Modifier.widthIn(max = 640.dp).fillMaxWidth().fillMaxHeight().verticalScroll(sectionScroll).padding(start = 16.dp, end = 16.dp, top = toolbarDp + 56.dp, bottom = sectionBottom + 56.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                if (route != SettingsRoute.HOME) Text(when (route) {
-                    SettingsRoute.HOME -> "全局与工作区设置"
-                    SettingsRoute.PERMISSIONS -> "按工作区设置"
-                    SettingsRoute.CONNECTIONS -> "全局连接状态 · 工作区能力开关"
-                    SettingsRoute.SEARCH -> "工作区模式与排序 · 全局服务配置"
-                    SettingsRoute.PRIVILEGE -> "全局开关 · 按工作区权限生效"
-                    SettingsRoute.AUDIT -> "按工作区筛选"
-                    else -> "全局设置"
-                }, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Column(Modifier.widthIn(max = 640.dp).fillMaxWidth().fillMaxHeight().verticalScroll(when { showResults && settingsQuery.isNotBlank() -> resultsScroll; showSearch && (!wide || showResults) -> homeScroll; else -> sectionScroll }).padding(start = 16.dp, end = 16.dp, top = toolbarDp + 20.dp, bottom = sectionBottom + 24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
                 notice?.let { Text(it, color = MaterialTheme.colorScheme.secondary) }
                 error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                 when(route) {
-                    SettingsRoute.HOME -> if (wide) {
+                    SettingsRoute.HOME -> if (showResults && settingsQuery.isNotBlank()) {
+                        SettingsSearchResults(settingsQuery, ::openResult)
+                    } else if (wide && !showResults) {
                         Text("选择左侧设置项", style = MaterialTheme.typography.titleMedium)
                         Text("模型、凭据和连接为全局设置；权限、搜索策略和能力开关作用于选定工作区。")
                     } else SettingsMenu(state, ::navigate, ::openLink)
@@ -196,16 +223,24 @@ fun SettingsHost(vm: SettingsViewModel, initialLink: String? = null, onBack: () 
                             if (result == SnackbarResult.ActionPerformed) vm.setCapability(workspaceId, capability.id, previous)
                         }
                     }
+                    SettingsRoute.USAGE -> UsageSettingsPage(state)
                     SettingsRoute.AUDIT -> SecurityAuditPage(androidx.compose.ui.platform.LocalContext.current.applicationContext as com.cordiact.app.CordiActApplication)
                 }
             }
             }
             }
         }
-        ViewportFade(backdrop, true, Modifier.align(Alignment.TopCenter).fillMaxWidth().height(toolbarDp + 48.dp))
-        ViewportFade(backdrop, false, Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(sectionBottom + 48.dp))
+        ViewportFade(backdrop, true, Modifier.align(Alignment.TopCenter).fillMaxWidth().height(toolbarDp + 16.dp))
+        ViewportFade(backdrop, false, Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(sectionBottom + 16.dp))
         if (showSections) SettingsSectionBar(sections, selectedSection, { selectedSection = it },
-            Modifier.align(Alignment.BottomCenter).padding(horizontal = 20.dp, vertical = 12.dp).onSizeChanged { sectionBarHeight = it.height })
+            Modifier.align(Alignment.BottomCenter).onSizeChanged { sectionBarHeight = it.height }.padding(horizontal = 20.dp, vertical = 12.dp))
+        if (showSearch) SettingsSearchBar(searchActive, settingsQuery, searchFocus, requestSearchFocus,
+            onFocused = { requestSearchFocus = false }, activate = { requestSearchFocus = true; searchActive = true }, edit = {
+                settingsQuery = it
+                navigationScope.launch { resultsScroll.scrollTo(0) }
+            }, dismiss = ::leaveSearch,
+            modifier = Modifier.align(Alignment.BottomCenter).widthIn(max = 640.dp).fillMaxWidth()
+                .onSizeChanged { sectionBarHeight = it.height }.padding(horizontal = 20.dp, vertical = 10.dp))
         Row(Modifier.align(Alignment.TopCenter).fillMaxWidth().onSizeChanged { toolbarHeight = it.height }
             .padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             FrostedSurface(radius = 24.dp) {

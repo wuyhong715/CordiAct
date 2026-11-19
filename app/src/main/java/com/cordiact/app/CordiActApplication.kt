@@ -474,6 +474,12 @@ class CordiActApplication : Application(), androidx.work.Configuration.Provider 
     }
     val workspaceFiles: WorkspaceFileService get() = conversationCatalog.fileManager
 
+    internal val modelUsageStore by lazy {
+        com.cordiact.app.statistics.AndroidModelUsageStore(this) { sessionId ->
+            sessionManagerPlugin.getSession(sessionId)?.workspaceId
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
         if (Process.isIsolated()) {
@@ -550,6 +556,10 @@ class CordiActApplication : Application(), androidx.work.Configuration.Provider 
             com.cordiact.model.providers.ModelReviewerClient { modelAdapter },
         )
         sessionManagerPlugin = plugins.filterIsInstance<SessionManagerPlugin>().single()
+        // Accounting is observational: the store queues the record and resolves the
+        // workspace on its own IO worker, so no lookup runs on the model callback thread.
+        modelAdapterPlugin.usageObserver = modelUsageStore::enqueue
+
         turnService = ConversationTurnService(
             sessions = sessionManagerPlugin,
             models = modelAdapterPlugin,
