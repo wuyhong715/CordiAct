@@ -39,12 +39,13 @@ object ToolResultFolder {
 
     private fun stubFor(message: ModelMessage): String {
         val name = message.toolName ?: "tool"
+        val status = when (message.toolSuccess) { true -> "ok"; false -> "failed"; null -> "result" }
         val spill = SPILL_PATTERN.find(message.content)?.value
         return if (spill != null) {
-            "[$name ok · ${message.content.length} chars folded · full text: $spill · " +
+            "[$name $status · ${message.content.length} chars folded · full text: $spill · " +
                 "call tool_output_read with that URI if it matters again]"
         } else {
-            "[$name ok · ${message.content.length} chars folded · this result was already used " +
+            "[$name $status · ${message.content.length} chars folded · this result was already used " +
                 "and is no longer in context]"
         }
     }

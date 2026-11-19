@@ -3,10 +3,10 @@ package com.cordiact.app.settings
 import android.content.Context
 import com.cordiact.core.attachment.*
 
-/** Missing data uses safe defaults; malformed stored values fail closed. */
+/** Missing or malformed stored values use validated defaults. */
 class AttachmentSettingsStore(context: Context) : AttachmentPolicyProvider {
     private val prefs = context.getSharedPreferences("attachment_policy_v1", Context.MODE_PRIVATE)
-    @Synchronized override fun limits(): AttachmentLimits = AttachmentPolicy.validate(AttachmentLimits(
+    @Synchronized override fun limits(): AttachmentLimits = runCatching { AttachmentPolicy.validate(AttachmentLimits(
         maxAttachmentsPerMessage = prefs.getInt("count", 10),
         maxImageBytes = prefs.getLong("imageBytes", 10L * 1024 * 1024),
         maxImagePixels = prefs.getLong("pixels", 20_000_000),
@@ -15,8 +15,8 @@ class AttachmentSettingsStore(context: Context) : AttachmentPolicyProvider {
         maxPdfPages = prefs.getInt("pages", 100),
         maxTextBytes = prefs.getLong("textBytes", 256L * 1024),
         maxTextTotalBytes = prefs.getLong("textTotal", 512L * 1024),
-    ))
-    @Synchronized fun revision(): Long = prefs.getLong("revision", 0)
+    )) }.getOrElse { AttachmentLimits() }
+    @Synchronized fun revision(): Long = runCatching { prefs.getLong("revision", 0) }.getOrDefault(0)
     @Synchronized fun save(value: AttachmentLimits) {
         AttachmentPolicy.validate(value)
         check(prefs.edit().putInt("count", value.maxAttachmentsPerMessage)

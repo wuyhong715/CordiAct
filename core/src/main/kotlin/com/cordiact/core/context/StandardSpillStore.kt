@@ -1,110 +1,128 @@
 package com.cordiact.core.context
 
 import java.io.File
+import java.io.PushbackReader
 import java.io.RandomAccessFile
-import java.security.MessageDigest
+import java.util.UUID
 
-/**
- * Standard filesystem-backed implementation of [SpillStore].
- *
- * Implements strict path traversal prevention via canonical path validation.
- */
+/** Private UTF-8 spill files, with distinct character and byte paging contracts. */
 class StandardSpillStore(
     private val rootDir: File,
-    private val maxFileSizeBytes: Long = 8 * 1024 * 1024L, // 8MB limit
+    private val maxFileSizeBytes: Long = 8 * 1024 * 1024L,
 ) : SpillStore {
-
     init {
+        require(maxFileSizeBytes in 128..Int.MAX_VALUE.toLong())
         rootDir.mkdirs()
     }
 
-    override fun saveSpill(sessionId: String, toolName: String, content: String): String {
-        val safeSessionId = sanitizePathSegment(sessionId)
-        val safeToolName = sanitizePathSegment(toolName)
-        val sessionDir = File(rootDir, safeSessionId)
-        sessionDir.mkdirs()
+    @Synchronized
+    override fun saveSpill(sessionId: String, toolName: String, content: String): String =
+        appendSpill(sessionId, toolName, null, content).uri
 
-        val sha8 = hashPrefix(content)
-        val fileName = "${System.currentTimeMillis()}-$safeToolName-$sha8.txt"
-        val targetFile = File(sessionDir, fileName)
-
-        // Prevent symlink or escape
-        validateContained(targetFile)
-
-        val bytes = content.toByteArray(Charsets.UTF_8)
-        if (bytes.size > maxFileSizeBytes) {
-            targetFile.outputStream().use { out ->
-                out.write(bytes, 0, maxFileSizeBytes.toInt())
-                out.write("\n...[file truncated at 8MB limit]...\n".toByteArray(Charsets.UTF_8))
-            }
-        } else {
-            targetFile.writeBytes(bytes)
+    @Synchronized
+    override fun appendSpill(sessionId: String, toolName: String, uri: String?, content: String): SpillAppend {
+        val owner = sanitizePathSegment(sessionId)
+        val output = uri ?: "spill://$owner/${sanitizePathSegment(toolName).take(23)}-${UUID.randomUUID()}.txt"
+        require(output.startsWith("spill://$owner/"))
+        val file = requireNotNull(resolveFile(output))
+        file.parentFile?.mkdirs()
+        val marker = "\n...[spill reached its size limit]...\n".toByteArray()
+        val capacity = maxFileSizeBytes - marker.size
+        val size = file.length()
+        if (size >= capacity) return SpillAppend(output, size, true)
+        val data = content.toByteArray(Charsets.UTF_8)
+        val truncated = size + data.size >= capacity
+        var count = minOf(data.size.toLong(), capacity - size).toInt()
+        while (count in 1 until data.size && isContinuation(data[count].toInt())) count--
+        file.outputStreamAppend().use {
+            it.write(data, 0, count)
+            if (truncated) it.write(marker)
         }
-
-        return "spill://$safeSessionId/$fileName"
+        return SpillAppend(output, file.length(), truncated)
     }
 
+    @Synchronized
     override fun readSpill(spillUri: String, offset: Long, limitChars: Int): SpillReadResult? {
-        val file = resolveFile(spillUri) ?: return null
-        if (!file.exists() || !file.isFile) return null
-
-        val safeOffset = offset.coerceAtLeast(0)
-        val safeLimit = limitChars.coerceIn(1, 65_536)
-
-        RandomAccessFile(file, "r").use { raf ->
-            val fileLength = raf.length()
-            if (safeOffset >= fileLength) {
-                return SpillReadResult(
-                    content = "",
-                    offset = safeOffset,
-                    bytesRead = 0,
-                    totalChars = fileLength,
-                    hasMore = false,
-                )
+        val file = resolveFile(spillUri)?.takeIf(File::isFile) ?: return null
+        val start = offset.coerceAtLeast(0)
+        val limit = limitChars.coerceIn(1, 20_000)
+        val page = StringBuilder()
+        var total = 0L
+        PushbackReader(file.reader(Charsets.UTF_8).buffered(), 1).use { reader ->
+            while (true) {
+                val first = reader.read().takeIf { it >= 0 }?.toChar() ?: break
+                val include = total >= start && total - start < limit
+                if (include) page.append(first)
+                if (first.isHighSurrogate()) {
+                    val next = reader.read()
+                    if (next >= 0 && next.toChar().isLowSurrogate()) {
+                        if (include) page.append(next.toChar())
+                    } else if (next >= 0) reader.unread(next)
+                }
+                total++
             }
+        }
+        val text = page.toString()
+        val chars = text.codePointCount(0, text.length)
+        return SpillReadResult(text, start.coerceAtMost(total), text.toByteArray().size, total, chars,
+            start < total && chars.toLong() < total - start)
+    }
 
-            raf.seek(safeOffset)
-            val toRead = ((fileLength - safeOffset).coerceAtMost(safeLimit.toLong())).toInt()
-            val buffer = ByteArray(toRead)
-            val bytesRead = raf.read(buffer)
-            if (bytesRead <= 0) {
-                return SpillReadResult(
-                    content = "",
-                    offset = safeOffset,
-                    bytesRead = 0,
-                    totalChars = fileLength,
-                    hasMore = false,
-                )
+    @Synchronized
+    override fun readSpillBytes(spillUri: String, offset: Long, limitBytes: Int): SpillByteRead? {
+        val file = resolveFile(spillUri)?.takeIf(File::isFile) ?: return null
+        return RandomAccessFile(file, "r").use { reader ->
+            val end = reader.length()
+            var start = offset.coerceIn(0, end)
+            // Arbitrary legacy offsets may point into a UTF-8 sequence. Resume at the next boundary.
+            while (start < end) {
+                reader.seek(start)
+                if (!isContinuation(reader.read())) break
+                start++
             }
-
-            val readContent = String(buffer, 0, bytesRead, Charsets.UTF_8)
-            val hasMore = (safeOffset + bytesRead) < fileLength
-
-            return SpillReadResult(
-                content = readContent,
-                offset = safeOffset,
-                bytesRead = bytesRead,
-                totalChars = fileLength,
-                hasMore = hasMore,
-            )
+            var next = start + minOf(end - start, limitBytes.coerceIn(4, 64_000).toLong())
+            while (next in (start + 1) until end) {
+                reader.seek(next)
+                if (!isContinuation(reader.read())) break
+                next--
+            }
+            val bytes = ByteArray((next - start).toInt())
+            reader.seek(start)
+            reader.readFully(bytes)
+            SpillByteRead(String(bytes, Charsets.UTF_8), next, next < end)
         }
     }
 
+    @Synchronized
     fun cleanupSession(sessionId: String) {
-        val safeSessionId = sanitizePathSegment(sessionId)
-        val sessionDir = File(rootDir, safeSessionId)
-        if (sessionDir.exists()) {
-            sessionDir.deleteRecursively()
+        val dir = File(rootDir, sanitizePathSegment(sessionId))
+        validateContained(dir)
+        if (!java.nio.file.Files.isSymbolicLink(dir.toPath())) dir.deleteRecursively()
+    }
+
+    @Synchronized
+    fun pruneOlderThan(cutoff: Long, preserve: Set<String> = emptySet()) {
+        for (dir in rootDir.listFiles().orEmpty()) {
+            if (!dir.isDirectory || java.nio.file.Files.isSymbolicLink(dir.toPath())) continue
+            for (file in dir.listFiles().orEmpty()) {
+                if (file.isFile && file.name.endsWith(".txt") && file.lastModified() < cutoff &&
+                    !java.nio.file.Files.isSymbolicLink(file.toPath()) && "spill://${dir.name}/${file.name}" !in preserve) file.delete()
+            }
+            dir.delete() // only succeeds when empty
         }
     }
+
+    private fun isContinuation(byte: Int) = byte and 0xc0 == 0x80
+    private fun File.outputStreamAppend() = java.io.FileOutputStream(this, true)
 
     private fun resolveFile(spillUri: String): File? {
         if (!spillUri.startsWith("spill://")) return null
         val path = spillUri.removePrefix("spill://")
         val parts = path.split('/', limit = 2)
         if (parts.size != 2) return null
-        val safeSessionId = sanitizePathSegment(parts[0])
-        val safeFileName = sanitizePathSegment(parts[1])
+        if (parts.any { it.isBlank() || it == "." || it == ".." || it != sanitizePathSegment(it) }) return null
+        val safeSessionId = parts[0]
+        val safeFileName = parts[1]
 
         val target = File(File(rootDir, safeSessionId), safeFileName)
         return try {
@@ -118,18 +136,13 @@ class StandardSpillStore(
     private fun validateContained(file: File) {
         val canonicalRoot = rootDir.canonicalPath
         val canonicalFile = file.canonicalPath
-        if (!canonicalFile.startsWith(canonicalRoot + File.separator) && canonicalFile != canonicalRoot) {
+        if (!canonicalFile.startsWith(canonicalRoot + File.separator)) {
             throw SecurityException("Path traversal attempt detected: $file escapes root $rootDir")
         }
     }
 
     private fun sanitizePathSegment(segment: String): String {
-        return segment.replace(Regex("[^a-zA-Z0-9_.-]"), "_").take(64).ifBlank { "unknown" }
+        return segment.replace(Regex("[^a-zA-Z0-9_.-]"), "_").take(64).takeUnless { it.isBlank() || it == "." || it == ".." } ?: "unknown"
     }
 
-    private fun hashPrefix(text: String): String {
-        val digest = MessageDigest.getInstance("SHA-256")
-        val hash = digest.digest(text.toByteArray(Charsets.UTF_8))
-        return hash.take(4).joinToString("") { "%02x".format(it) }
-    }
 }

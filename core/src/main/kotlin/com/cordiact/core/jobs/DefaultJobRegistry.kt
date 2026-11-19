@@ -16,7 +16,11 @@ class DefaultJobRegistry(
 ) : JobRegistry {
 
     private val activeHandles = ConcurrentHashMap<String, DefaultJobHandle>()
-    private val completedSnapshots = ConcurrentHashMap<String, JobSnapshot>()
+    private val completedSnapshots = java.util.Collections.synchronizedMap(
+        object : LinkedHashMap<String, JobSnapshot>(16, 0.75f, true) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, JobSnapshot>?) = size > 256
+        },
+    )
     private val startedListeners = CopyOnWriteArrayList<(JobSnapshot) -> Unit>()
     private val settledListeners = CopyOnWriteArrayList<(JobSnapshot) -> Unit>()
     private val probeHandlers = ConcurrentHashMap<JobKind, (JobSnapshot) -> JobSnapshot>()
@@ -73,7 +77,7 @@ class DefaultJobRegistry(
                 jobStore = jobStore,
                 clockMillis = clockMillis,
                 onSettled = { settledSnapshot ->
-                    completedSnapshots[settledSnapshot.id] = settledSnapshot
+                    if (jobStore == null) completedSnapshots[settledSnapshot.id] = settledSnapshot
                     activeHandles.remove(settledSnapshot.id)
                     settledListeners.forEach { it.invoke(settledSnapshot) }
                 },
@@ -94,7 +98,7 @@ class DefaultJobRegistry(
     }
 
     override fun list(ownerSessionId: String): List<JobSnapshot> {
-        val memorySnapshots = (activeHandles.values.map { it.snapshot } + completedSnapshots.values)
+        val memorySnapshots = (activeHandles.values.map { it.snapshot } + synchronized(completedSnapshots) { completedSnapshots.values.toList() })
             .filter { it.ownerSessionId == ownerSessionId }
 
         if (jobStore == null) return memorySnapshots.sortedByDescending { it.startedAtMillis }
@@ -123,7 +127,7 @@ class DefaultJobRegistry(
             )
         }
 
-        val result = spillStore.readSpill(uri, offset, limitBytes)
+        val result = spillStore.readSpillBytes(uri, offset, limitBytes)
         if (result == null) {
             return JobRead(
                 snapshot = snapshot,
@@ -133,7 +137,7 @@ class DefaultJobRegistry(
             )
         }
 
-        val nextOffset = result.offset + result.bytesRead
+        val nextOffset = result.nextOffset
         val eof = snapshot.isTerminal && !result.hasMore
 
         return JobRead(
@@ -204,19 +208,19 @@ class DefaultJobRegistry(
             private set
 
         private val settled = AtomicBoolean(false)
-        private val outputBuffer = StringBuilder()
+        private var outputCapped = false
 
         @Synchronized
         override fun append(text: String) {
-            if (settled.get()) return
-            outputBuffer.append(text)
-
-            // Flush to spill storage
-            val uri = spillStore.saveSpill(ownerSessionId, "${spec.kind.name.lowercase()}-$id", outputBuffer.toString())
+            if (settled.get() || text.isEmpty()) return
+            val output = if (outputCapped) null else spillStore.appendSpill(
+                ownerSessionId, "${spec.kind.name.lowercase()}-$id", snapshot.outputPath, text,
+            )
+            if (output != null) outputCapped = output.truncated
             val now = clockMillis()
             snapshot = snapshot.copy(
-                outputPath = uri,
-                outputBytes = outputBuffer.length.toLong(),
+                outputPath = output?.uri ?: snapshot.outputPath,
+                outputBytes = output?.bytesWritten ?: snapshot.outputBytes,
                 lastHeartbeatAtMillis = now,
             )
             jobStore?.update(snapshot)
@@ -254,13 +258,25 @@ class DefaultJobRegistry(
         }
 
         fun cancel(reason: String) {
-            if (settled.get()) return
-            snapshot = snapshot.copy(state = JobState.STOPPING, diagnostic = reason)
-            jobStore?.update(snapshot)
+            val previous = synchronized(this) {
+                if (settled.get() || snapshot.state == JobState.STOPPING) return
+                snapshot.also {
+                    snapshot = it.copy(state = JobState.STOPPING, diagnostic = reason)
+                    jobStore?.update(snapshot)
+                }
+            }
             try {
+                // A concurrent worker settlement wins; cancellation has no observed exit code.
                 spec.cancel(reason)
-            } finally {
-                settle(JobState.KILLED, exitCode = -1, diagnostic = "Cancelled: $reason")
+                settle(JobState.KILLED, exitCode = null, diagnostic = reason)
+            } catch (failure: Exception) {
+                synchronized(this) {
+                    if (!settled.get()) {
+                        snapshot = snapshot.copy(state = previous.state, diagnostic = "Cancellation request failed")
+                        jobStore?.update(snapshot)
+                    }
+                }
+                throw failure
             }
         }
 

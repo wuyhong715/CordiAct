@@ -63,7 +63,7 @@ fun SafeMarkdown(
         snapshotFlow { current }.conflate().collect { input ->
             value = withContext(Dispatchers.Default) { renderer.toMarkdown(input) }
             // Do not restart on each token: sustained streams still get frames.
-            if (streaming) delay(40)
+            if (streaming) delay(if (input.length > 20_000) 250 else 75)
         }
     }
     val primary = MaterialTheme.colorScheme.primary.toArgb()
@@ -80,7 +80,12 @@ fun SafeMarkdown(
             textView.setLineSpacing(0f, 1.25f)
             textView.setTextIsSelectable(isTextSelectable)
             textView.movementMethod = LinkMovementMethod.getInstance()
-            parsed?.let { renderer.setParsedMarkdown(textView, it) }
+            parsed?.let {
+                if (textView.tag !== it) {
+                    renderer.setParsedMarkdown(textView, it)
+                    textView.tag = it
+                }
+            }
         },
     )
 }

@@ -287,13 +287,4 @@ class InteractionParser(
         return end
     }
 
-    private fun isEscaped(text: String, index: Int): Boolean {
-        var slashes = 0
-        var cursor = index - 1
-        while (cursor >= 0 && text[cursor] == '\\') {
-            slashes++
-            cursor--
-        }
-        return slashes % 2 == 1
-    }
 }

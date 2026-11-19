@@ -41,6 +41,9 @@ class AndroidModelProviderConfigStore(context: Context) : ModelProviderConfigSto
                         entries.keys().asSequence().associateWith { id ->
                             val value = entries.getJSONObject(id)
                             GenerationParameters(
+                                temperature = value.optDouble("temperature").takeIf { it.isFinite() },
+                                maxOutputTokens = value.optInt("maxOutputTokens").takeIf { it > 0 },
+                                topP = value.optDouble("topP").takeIf { it.isFinite() },
                                 reasoningEffort = value.optString("reasoningEffort").takeIf { it.isNotBlank() }?.let(ReasoningEffort::valueOf),
                                 responseSpeed = value.optString("responseSpeed").takeIf { it.isNotBlank() }?.let(ResponseSpeed::valueOf),
                             )
@@ -121,6 +124,9 @@ class AndroidModelProviderConfigStore(context: Context) : ModelProviderConfigSto
                 put("discoveredModels", JSONArray().apply { config.discoveredModels.forEach { put(it) } })
                 put("modelDefaults", JSONObject().apply {
                     config.modelDefaults.forEach { (id, value) -> put(id, JSONObject().apply {
+                        value.temperature?.let { put("temperature", it) }
+                        value.maxOutputTokens?.let { put("maxOutputTokens", it) }
+                        value.topP?.let { put("topP", it) }
                         value.reasoningEffort?.let { put("reasoningEffort", it.name) }
                         value.responseSpeed?.let { put("responseSpeed", it.name) }
                     }) }

@@ -34,7 +34,7 @@ fun toolOutputReadDescriptor(): ToolDescriptor = ToolDescriptor(
                 name = "offset",
                 type = ToolValueType.INTEGER,
                 required = false,
-                description = "Character offset to start reading from. Defaults to 0.",
+                description = "Unicode code-point offset to start reading from. Defaults to 0.",
             ),
             ToolParameter(
                 name = "limit_chars",
@@ -54,7 +54,7 @@ fun registerContextTools(registry: InMemoryToolDefinitionRegistry, spillStore: S
     registry.register(
         ToolDefinition(
             toolOutputReadDescriptor(),
-            ToolExecutor { _, arguments ->
+            ToolExecutor { context, arguments ->
                 val file = (arguments.values["file"] as? ToolValue.StringValue)?.value
                     ?: return@ToolExecutor ToolResult(
                         values = mapOf(
@@ -66,6 +66,13 @@ fun registerContextTools(registry: InMemoryToolDefinitionRegistry, spillStore: S
                 val offset = (arguments.values["offset"] as? ToolValue.NumberValue)?.value?.toLong() ?: 0L
                 val limit = (arguments.values["limit_chars"] as? ToolValue.NumberValue)?.value?.toInt() ?: 8_000
 
+                val ownerSession = file.removePrefix("spill://").substringBefore('/')
+                if (context.sessionId == null || ownerSession != context.sessionId) {
+                    return@ToolExecutor ToolResult(values = mapOf(
+                        "ok" to ToolValue.BooleanValue(false),
+                        "error" to ToolValue.StringValue("Spill file belongs to a different session"),
+                    ))
+                }
                 val readResult = spillStore.readSpill(file, offset, limit)
                     ?: return@ToolExecutor ToolResult(
                         values = mapOf(
@@ -75,7 +82,7 @@ fun registerContextTools(registry: InMemoryToolDefinitionRegistry, spillStore: S
                     )
 
                 val summaryText = if (readResult.hasMore) {
-                    val nextOffset = readResult.offset + readResult.bytesRead
+                    val nextOffset = readResult.offset + readResult.charsRead
                     "${readResult.content}\n\n[has_more: true, next_offset: $nextOffset, total_chars: ${readResult.totalChars}]"
                 } else {
                     "${readResult.content}\n\n[EOF reached, total_chars: ${readResult.totalChars}]"
@@ -84,14 +91,17 @@ fun registerContextTools(registry: InMemoryToolDefinitionRegistry, spillStore: S
                 ToolResult(
                     values = mapOf(
                         "ok" to ToolValue.BooleanValue(true),
+                        "untrusted" to ToolValue.BooleanValue(true),
                         "content" to ToolValue.StringValue(summaryText),
                         "offset" to ToolValue.NumberValue(readResult.offset.toDouble()),
+                        "next_offset" to ToolValue.NumberValue((readResult.offset + readResult.charsRead).toDouble()),
                         "bytes_read" to ToolValue.NumberValue(readResult.bytesRead.toDouble()),
                         "total_chars" to ToolValue.NumberValue(readResult.totalChars.toDouble()),
                         "has_more" to ToolValue.BooleanValue(readResult.hasMore),
                     ),
                     metadata = mapOf(
                         "offset" to ToolValue.NumberValue(readResult.offset.toDouble()),
+                        "next_offset" to ToolValue.NumberValue((readResult.offset + readResult.charsRead).toDouble()),
                         "bytes_read" to ToolValue.NumberValue(readResult.bytesRead.toDouble()),
                         "total_chars" to ToolValue.NumberValue(readResult.totalChars.toDouble()),
                         "has_more" to ToolValue.BooleanValue(readResult.hasMore),

@@ -529,6 +529,7 @@ private fun actionResult(result: ActionResult): ToolResult {
 
 private fun errorResult(error: ScreenError): ToolResult = ToolResult(
     values = linkedMapOf(
+        "untrusted" to ToolValue.BooleanValue(true),
         "ok" to ToolValue.BooleanValue(false),
         "error" to ToolValue.ObjectValue(
             linkedMapOf(

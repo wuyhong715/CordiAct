@@ -90,7 +90,14 @@ class AutomationTaskRuntime(private val app: CordiActApplication) {
             val security = app.credentialVaultRuntime.newSecurityContext(run.workspaceId, sessionId, model.providerId, model.modelId)
             val context = ToolInvocationContext(workspaceId = run.workspaceId, sessionId = sessionId,
                 modelProviderId = model.providerId, modelId = model.modelId, securityContext = security)
-            val loop = ToolLoopPlugin(ToolLoopLimits(maxRounds = task.maxToolRounds)).also { it.onEnable() }
+            val loop = ToolLoopPlugin(
+                ToolLoopLimits(
+                    maxRounds = task.maxToolRounds,
+                    maxResultChars = app.contextPolicy.maxInlineToolChars,
+                    foldToolResultsAfter = app.contextPolicy.foldAfterRounds,
+                ),
+                gate = app.toolOutputGate,
+            ).also { it.onEnable() }
             val timeout = java.util.concurrent.Executors.newSingleThreadScheduledExecutor()
             active[run.id] = sessionId
             val expired = java.util.concurrent.atomic.AtomicBoolean(false)

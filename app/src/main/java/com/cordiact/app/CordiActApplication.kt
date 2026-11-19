@@ -237,7 +237,8 @@ class CordiActApplication : Application(), androidx.work.Configuration.Provider 
             policy = wakePolicy,
             ledger = com.cordiact.core.inbox.SlidingWindowWakeLedger(wakePolicy),
             activity = com.cordiact.core.inbox.SessionActivity { sessionId -> turnService.isTurnActive(sessionId) },
-            startTurn = { sessionId -> wakeSession(sessionId) },
+            startTurn = {},
+            tryStartTurn = ::wakeSession,
         )
     }
 
@@ -263,10 +264,19 @@ class CordiActApplication : Application(), androidx.work.Configuration.Provider 
     val summaryModelSelection: com.cordiact.app.context.SummaryModelSelectionStore
         get() = summaryModelStore
 
+    internal val contextPolicy = com.cordiact.core.context.ContextPolicy()
+    internal val toolOutputGate by lazy {
+        com.cordiact.core.context.DefaultToolOutputGate(
+            conversationCatalog.spillStore, headChars = contextPolicy.toolHeadChars, tailChars = contextPolicy.toolTailChars,
+        )
+    }
+
     private val toolLoopPlugin by lazy {
-        val gate = com.cordiact.core.context.DefaultToolOutputGate(conversationCatalog.spillStore)
         ToolLoopPlugin(
-            gate = gate,
+            limits = com.cordiact.core.toolloop.ToolLoopLimits(
+                maxResultChars = contextPolicy.maxInlineToolChars, foldToolResultsAfter = contextPolicy.foldAfterRounds,
+            ),
+            gate = toolOutputGate,
             inbox = asyncTurnInbox,
             onReportsDelivered = { items ->
                 // Mid-turn delivery consumed the report; the durable queue must drop it or the
@@ -434,25 +444,27 @@ class CordiActApplication : Application(), androidx.work.Configuration.Provider 
      * Refuses when no background model is configured rather than picking one: an automatic wake
      * that quietly runs on an unexpected model would be a surprising bill.
      */
-    private fun wakeSession(sessionId: String) {
+    internal val transcriptChanges = kotlinx.coroutines.flow.MutableStateFlow(0L)
+
+    private fun wakeSession(sessionId: String): Boolean {
         if (turnService.isTurnActive(sessionId)) {
             Log.d(TAG, "Session $sessionId is already active; report stays queued for in-flight/subsequent round")
-            return
+            return false
         }
         val model = runCatching {
             com.cordiact.app.memory.ExtractionModelSelectionStore(this).selectedModel()
         }.getOrNull()
         if (model == null) {
             Log.d(TAG, "No background model configured; report for $sessionId stays queued")
-            return
+            return false
         }
-        runCatching {
+        return runCatching {
             turnService.submitWoken(
                 sessionId = sessionId,
                 model = model,
                 systemContext = null,
             ) { }
-        }.onFailure { Log.e(TAG, "Woken turn for $sessionId failed to start", it) }
+        }.onFailure { Log.e(TAG, "Woken turn for $sessionId failed to start", it) }.isSuccess
     }
 
     /**
@@ -502,6 +514,19 @@ class CordiActApplication : Application(), androidx.work.Configuration.Provider 
         // that no message and no draft reference and that are at least a day old.
         kotlin.concurrent.thread(name = "attachment-gc", isDaemon = true) {
             runCatching { conversationCatalog.runAttachmentGc() }
+            runCatching {
+                val cameraDir = java.io.File(cacheDir, "composer_camera")
+                val cutoff = System.currentTimeMillis() - java.util.concurrent.TimeUnit.DAYS.toMillis(1)
+                cameraDir.listFiles().orEmpty().filter {
+                    it.isFile && it.name.startsWith("capture-") && it.name.endsWith(".jpg") && it.lastModified() < cutoff
+                }.forEach { it.delete() }
+            }
+            runCatching {
+                (conversationCatalog.spillStore as? com.cordiact.core.context.StandardSpillStore)?.pruneOlderThan(
+                    System.currentTimeMillis() - java.util.concurrent.TimeUnit.DAYS.toMillis(contextPolicy.spillRetentionDays.toLong()),
+                    conversationCatalog.jobRegistry.listActive().mapNotNull { it.outputPath }.toSet(),
+                )
+            }
         }
         automationRuntime = AutomationRuntime(this)
         automationRuntime.registerTools(conversationCatalog.toolRegistry, conversationCatalog.jobRegistry)
@@ -565,6 +590,7 @@ class CordiActApplication : Application(), androidx.work.Configuration.Provider 
             models = modelAdapterPlugin,
             notices = backgroundSubagents,
             compactionStore = conversationCatalog.conversationStore,
+            contextPolicy = contextPolicy,
             inbox = asyncTurnInbox,
             summaryModelResolver = { conversation ->
                 when (val result = summaryModelStore.resolve(modelAdapterPlugin.models().map { it.id }.toSet(), conversation)) {
@@ -578,6 +604,7 @@ class CordiActApplication : Application(), androidx.work.Configuration.Provider 
         // A finished turn is the cheapest moment to think about the next one: the summary can be
         // prepared while nobody is waiting, and installed only if it still applies.
         turnService.onTurnCompleted = { sessionId ->
+            synchronized(transcriptChanges) { transcriptChanges.value++ }
             com.cordiact.app.context.ContextCompactionWorker.enqueue(this, sessionId)
         }
         // Registered here because the tool list is built from the shared registry, and the

@@ -171,6 +171,8 @@ class AutomationServiceTest {
         assertNull(after.nextFireAt)
         assertEquals(0, service.enqueueDue().size)
         assertNull(service.nextWakeAt())
+        assertFailsWith<IllegalArgumentException> { service.setEnabled("w1", saved.id, true) }
+        assertTrue(service.enqueueDue().isEmpty())
     }
 
     @Test

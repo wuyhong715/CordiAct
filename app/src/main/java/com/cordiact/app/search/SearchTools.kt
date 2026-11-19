@@ -76,12 +76,12 @@ fun fetchToolDescriptor(): ToolDescriptor = ToolDescriptor(
     concurrencySafe = true,
 )
 
-fun registerSearchTools(registry: ToolDefinitionRegistry, service: SearchService) {
+fun registerSearchTools(registry: ToolDefinitionRegistry, service: SearchService, spillStore: com.cordiact.core.context.SpillStore? = null) {
     registry.register(ToolDefinition(searchToolDescriptor(), ToolExecutor { context, arguments ->
         executeSearch(service, context, arguments)
     }))
     registry.register(ToolDefinition(fetchToolDescriptor(), ToolExecutor { context, arguments ->
-        executeFetch(service, context, arguments)
+        executeFetch(service, context, arguments, spillStore)
     }))
 }
 
@@ -140,6 +140,7 @@ private fun executeFetch(
     service: SearchService,
     context: ToolInvocationContext,
     arguments: ToolArguments,
+    spillStore: com.cordiact.core.context.SpillStore?,
 ): ToolResult {
     val url = (arguments.values["url"] as? ToolValue.StringValue)?.value
         ?: return failureResult(SearchException(SearchException.Code.INVALID_URL, "A URL is required"))
@@ -151,13 +152,21 @@ private fun executeFetch(
             timeoutMs = TIMEOUT_MS,
         )
         val truncated = result.truncated || result.content.length > MAX_FETCH_CHARS
-        val content = result.content.take(MAX_FETCH_CHARS)
+        var end = minOf(result.content.length, MAX_FETCH_CHARS)
+        if (end in 1 until result.content.length && result.content[end].isLowSurrogate() && result.content[end - 1].isHighSurrogate()) end--
+        val content = result.content.substring(0, end)
+        val spill = if (end < result.content.length) context.sessionId?.let { session ->
+            runCatching { spillStore?.appendSpill(session, "web_fetch", null, result.content) }.getOrNull()
+        } else null
         ToolResult(
             values = linkedMapOf(
                 "ok" to ToolValue.BooleanValue(true),
                 "url" to ToolValue.StringValue(result.url),
                 "status" to ToolValue.NumberValue(result.statusCode.toDouble()),
                 "content" to ToolValue.StringValue(content),
+                "spill_uri" to (spill?.let { ToolValue.StringValue(it.uri) } ?: ToolValue.NullValue),
+                "spill_truncated" to ToolValue.BooleanValue(spill?.truncated == true),
+                "provider_truncated" to ToolValue.BooleanValue(result.truncated),
                 "truncated" to ToolValue.BooleanValue(truncated),
                 "untrusted" to ToolValue.BooleanValue(true),
             ),
@@ -191,7 +200,8 @@ private fun failureResult(failure: SearchException): ToolResult = ToolResult(
                 "retryable" to ToolValue.BooleanValue(failure.retryable),
             ),
         ),
-        "untrusted" to ToolValue.BooleanValue(true),
+        // The error text is produced by this tool, not by the page: fencing it would make the
+        // model read a tool failure as untrusted web content.
     ),
     metadata = mapOf(
         "error" to ToolValue.StringValue(failure.code.name),

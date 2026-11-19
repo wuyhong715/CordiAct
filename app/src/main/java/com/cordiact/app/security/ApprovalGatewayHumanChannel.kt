@@ -15,7 +15,7 @@ import com.cordiact.core.security.SecurityApprovalResult
  */
 class ApprovalGatewayHumanChannel(
     private val gateway: ApprovalGateway,
-    private val timeoutMillis: Long = 120_000L,
+    private val now: () -> java.time.Instant = java.time.Instant::now,
 ) : HumanApprovalChannel {
     override fun request(ticket: PendingSecurityApproval): SecurityApprovalResult {
         val intent = ticket.intent
@@ -40,7 +40,8 @@ class ApprovalGatewayHumanChannel(
                 CredentialOperation.TOOL_EXECUTION -> ApprovalRequest.RiskLevel.HIGH
             },
         )
-        val decision = gateway.requestApproval(request, timeoutMillis)
+        val remaining = java.time.Duration.between(now(), ticket.expiresAt).toMillis().coerceAtLeast(0)
+        val decision = gateway.requestApproval(request, remaining)
         return if (decision.approved) {
             SecurityApprovalResult(SecurityApprovalDecision.ALLOW, "HUMAN_ALLOWED")
         } else {

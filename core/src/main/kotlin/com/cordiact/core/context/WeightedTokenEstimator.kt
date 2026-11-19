@@ -1,6 +1,8 @@
 package com.cordiact.core.context
 
 import com.cordiact.core.conversation.ModelMessage
+import com.cordiact.core.attachment.MessagePart
+import com.cordiact.core.attachment.Interpretation
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.ceil
 
@@ -34,7 +36,17 @@ class WeightedTokenEstimator(
         for (msg in messages) {
             // Per-message framing overhead (role delimiter, header tokens)
             total += 4
-            total += estimate(msg.content)
+            total += if (msg.parts.isEmpty()) estimate(msg.content) else msg.parts.sumOf { part ->
+                when (part) {
+                    is MessagePart.Text -> estimate(part.text)
+                    is MessagePart.Attachment -> when (part.interpretation) {
+                        Interpretation.VISION -> 1_500
+                        Interpretation.NATIVE_DOCUMENT -> 8_000
+                        Interpretation.TEXT_EXTRACT -> 4_000
+                        Interpretation.LOCAL_ONLY -> 0
+                    }
+                }
+            }
             for (call in msg.toolCalls) {
                 total += 4
                 total += estimate(call.name)
@@ -46,6 +58,9 @@ class WeightedTokenEstimator(
         }
         return total
     }
+
+    override fun estimateForModel(messages: List<ModelMessage>, modelId: String): Int =
+        ceil(estimateMessages(messages) * currentFactor(modelId)).toInt()
 
     override fun calibrate(actualInputTokens: Long, estimatedInputTokens: Int, modelId: String) {
         if (actualInputTokens <= 0 || estimatedInputTokens <= 0) return

@@ -18,7 +18,7 @@ data class TranscriptTurn(
     val isRunning: Boolean get() = phase == RunPhase.RUNNING
 }
 
-enum class RunPhase { RUNNING, COMPLETE, FAILED, CANCELLED }
+enum class RunPhase { RUNNING, COMPLETE, TRUNCATED, PARTIAL, FAILED, CANCELLED }
 enum class ToolPhase { RUNNING, SUCCEEDED, FAILED, INTERRUPTED }
 data class ToolActivity(
     val id: String,
@@ -72,8 +72,11 @@ fun restoreTranscript(messages: List<StoredMessage>): List<TranscriptTurn> {
         when (message.role) {
             "USER" -> result += TranscriptTurn(message.id, message.content, startedAt = message.at, attachments = message.attachments)
             "ASSISTANT" -> {
-                if (result.isEmpty()) result += TranscriptTurn(message.id, "", answer = message.content, startedAt = message.at)
-                else result[result.lastIndex] = result.last().let { it.copy(answer = listOf(it.answer, message.content).filter(String::isNotBlank).joinToString("\n\n")) }
+                val phase = message.phase
+                if (result.isEmpty()) result += TranscriptTurn(message.id, "", answer = message.content, startedAt = message.at, phase = phase)
+                else result[result.lastIndex] = result.last().let {
+                    it.copy(phase = phase, answer = listOf(it.answer, message.content).filter(String::isNotBlank).joinToString("\n\n"))
+                }
             }
             // TOOL/SYSTEM rows aren't conversation prose. Runtime metadata is not invented.
         }
@@ -86,7 +89,7 @@ data class TranscriptAttachment(
     val renditionId: String? = null,
 )
 data class StoredMessage(val id: String, val role: String, val content: String, val at: Long,
-    val attachments: List<TranscriptAttachment> = emptyList())
+    val attachments: List<TranscriptAttachment> = emptyList(), val phase: RunPhase = RunPhase.COMPLETE)
 
 fun durationLabel(millis: Long): String = when {
     millis < 1000 -> "${millis.coerceAtLeast(0)} ms"

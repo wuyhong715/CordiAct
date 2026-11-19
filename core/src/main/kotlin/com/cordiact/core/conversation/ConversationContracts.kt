@@ -105,6 +105,8 @@ data class ModelMessage(
      * for search, previews and old readers. Providers must encode [parts], never [content] alone.
      */
     val parts: List<MessagePart> = emptyList(),
+    /** Host-only execution status; null for legacy dispatchers or non-tool messages. */
+    val toolSuccess: Boolean? = null,
 ) {
     init {
         require(role != MessageRole.TOOL || toolCallId != null) {
@@ -195,7 +197,12 @@ sealed interface ModelEvent {
      * that only care about text.
      */
     data class ToolCallsRequested(val calls: List<ModelToolCall>) : ModelEvent
-    data class Completed(val inputTokens: Long? = null, val outputTokens: Long? = null) : ModelEvent
+    data class Completed(
+        val inputTokens: Long? = null,
+        val outputTokens: Long? = null,
+        val outputLimitReached: Boolean = false,
+        val toolLimitReached: Boolean = false,
+    ) : ModelEvent
     data class Failed(val code: String, val message: String, val retryable: Boolean = false) : ModelEvent
 
     /** DeepSeek-R1 / reasoning model chain-of-thought streaming chunk. */
@@ -698,10 +705,8 @@ interface TurnNoticeSource {
     fun pending(sessionId: String): List<TurnNotice>
 
     /**
-     * Called once the turn's first model request has been issued.
-     *
-     * Deliberately not called when the turn fails to start: a notice that was never put in front
-     * of the model must stay pending, or the parent silently loses the child's outcome.
+     * Called once the model successfully completes a request carrying these notices.
+     * A failed request leaves them pending so overflow recovery or a later turn can still deliver them.
      */
     fun acknowledge(sessionId: String, ids: List<String>)
 }

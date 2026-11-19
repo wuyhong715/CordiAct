@@ -126,6 +126,24 @@ class ToolLoopPluginTest {
     }
 
     @Test
+    fun limitDeliversLastToolResultInOneFinalRound() {
+        var finalRounds = 0
+        val outcome = loop(ToolLoopLimits(maxRounds = 1, maxToolCalls = 1)).run(
+            CONTEXT,
+            listOf(ModelMessage(MessageRole.USER, "go")),
+            dispatcher(),
+            finalizeWithoutTools = { messages ->
+                finalRounds++
+                assertEquals(MessageRole.TOOL, messages.last().role)
+                assertEquals("c1", messages.last().toolCallId)
+                round("summary")
+            },
+        ) { round("", call("c1")) }
+        assertEquals(1, finalRounds)
+        assertEquals("summary", (outcome as ToolLoopOutcome.Completed).text)
+    }
+
+    @Test
     fun stopsAtTheRoundLimit() {
         // A model that keeps asking for tools must not run forever.
         val outcome = loop(ToolLoopLimits(maxRounds = 3, maxToolCalls = 100)).run(
