@@ -51,27 +51,32 @@ internal fun SettingsOverview(state: SettingsSnapshot, navigate: (SettingsRoute)
             }
         }
     }
-    OverviewGroup("输入", listOf(OverviewEntry("预设变量", GlyphName.Code, SettingsRoute.INPUT_VARIABLES)), navigate)
-    OverviewGroup("模型与服务", listOf(
+    settingsCatalog.forEach { group -> OverviewGroup(group.title, group.entries, navigate) }
+}
+
+internal data class OverviewEntry(val title: String, val glyph: GlyphName, val route: SettingsRoute)
+internal data class OverviewCategory(val title: String, val entries: List<OverviewEntry>)
+internal val settingsCatalog = listOf(
+    OverviewCategory("输入", listOf(OverviewEntry("预设变量", GlyphName.Code, SettingsRoute.INPUT_VARIABLES))),
+    OverviewCategory("模型与服务", listOf(
         OverviewEntry("模型提供商", GlyphName.Link, SettingsRoute.PROVIDERS),
         OverviewEntry("模型角色", GlyphName.Sparkle, SettingsRoute.ROLES),
         OverviewEntry("搜索服务", GlyphName.Search, SettingsRoute.SEARCH),
-        OverviewEntry("MCP 服务器", GlyphName.Code, SettingsRoute.MCP)), navigate)
-    OverviewGroup("连接与执行", listOf(
+        OverviewEntry("MCP 服务器", GlyphName.Code, SettingsRoute.MCP),
+        OverviewEntry("用量与统计", GlyphName.Trace, SettingsRoute.USAGE))),
+    OverviewCategory("连接与执行", listOf(
         OverviewEntry("连接与能力", GlyphName.Link, SettingsRoute.CONNECTIONS),
         OverviewEntry("SSH 主机", GlyphName.Terminal, SettingsRoute.SSH),
         OverviewEntry("自动化任务", GlyphName.Bolt, SettingsRoute.TASKS),
-        OverviewEntry("特权执行", GlyphName.Bolt, SettingsRoute.PRIVILEGE)), navigate)
-    OverviewGroup("安全与权限", listOf(
+        OverviewEntry("特权执行", GlyphName.Bolt, SettingsRoute.PRIVILEGE))),
+    OverviewCategory("安全与权限", listOf(
         OverviewEntry("权限档位", GlyphName.Settings, SettingsRoute.PERMISSIONS),
         OverviewEntry("已存凭据", GlyphName.Pin, SettingsRoute.CREDENTIALS),
-        OverviewEntry("审计日志", GlyphName.Trace, SettingsRoute.AUDIT)), navigate)
-    OverviewGroup("应用", listOf(
+        OverviewEntry("审计日志", GlyphName.Trace, SettingsRoute.AUDIT))),
+    OverviewCategory("应用", listOf(
         OverviewEntry("附件限制", GlyphName.File, SettingsRoute.ATTACHMENTS),
-        OverviewEntry("关于", GlyphName.More, SettingsRoute.ABOUT)), navigate)
-}
-
-private data class OverviewEntry(val title: String, val glyph: GlyphName, val route: SettingsRoute)
+        OverviewEntry("关于", GlyphName.More, SettingsRoute.ABOUT))),
+)
 @Composable
 private fun OverviewGroup(title: String, entries: List<OverviewEntry>, navigate: (SettingsRoute) -> Unit) {
     Text(title, Modifier.padding(start = 8.dp, top = 12.dp, bottom = 2.dp),

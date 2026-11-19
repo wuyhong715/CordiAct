@@ -422,6 +422,8 @@ fun sessionManagerPluginSpec() = PluginSpec(
 
 /** Lifecycle-managed, protected system plugin. Provider plugins register backends through the host. */
 class ModelAdapterPlugin : ManagedPlugin, ModelAdapterService {
+    /** Optional local accounting observer. Must not throw or block model delivery. */
+    @Volatile var usageObserver: ((ModelUsage) -> Unit)? = null
     override val spec = modelAdapterPluginSpec()
     private data class OwnedBackend(val ownerPluginId: String, val backend: ModelBackend)
     private val backends = linkedMapOf<String, OwnedBackend>()
@@ -490,28 +492,35 @@ class ModelAdapterPlugin : ManagedPlugin, ModelAdapterService {
             return ModelCall {}
         }
         val callId = UUID.randomUUID().toString()
+        val startedAt = System.currentTimeMillis()
+        val observer = usageObserver
         val terminal = AtomicBoolean(false)
+        fun finish(status: ModelUsage.Status, completed: ModelEvent.Completed? = null): Boolean {
+            if (!terminal.compareAndSet(false, true)) return false
+            synchronized(this) { activeCalls.remove(callId) }
+            if (observer != null) runCatching {
+                observer(ModelUsage(callId, request.workspaceId, request.sessionId, request.model, startedAt, status,
+                    completed?.inputTokens?.takeIf { it >= 0 }, completed?.outputTokens?.takeIf { it >= 0 }))
+            }
+            return true
+        }
         return try {
             val delegate = backend.generate(request) { event ->
-                if (!terminal.get()) {
-                    onEvent(event)
-                    if (event is ModelEvent.Completed || event is ModelEvent.Failed) {
-                        terminal.set(true)
-                        synchronized(this) { activeCalls.remove(callId) }
-                    }
+                when (event) {
+                    is ModelEvent.Completed -> if (finish(ModelUsage.Status.COMPLETED, event)) onEvent(event)
+                    is ModelEvent.Failed -> if (finish(ModelUsage.Status.FAILED)) onEvent(event)
+                    else -> if (!terminal.get()) onEvent(event)
                 }
             }
-            val tracked = ModelCall {
-                if (terminal.compareAndSet(false, true)) delegate.cancel()
-                synchronized(this) { activeCalls.remove(callId) }
+            val tracked = ModelCall { if (finish(ModelUsage.Status.CANCELLED)) delegate.cancel() }
+            val cancel = synchronized(this) {
+                if (enabled && !terminal.get()) { activeCalls[callId] = request.model.providerId to tracked; false }
+                else !terminal.get()
             }
-            synchronized(this) {
-                if (enabled && !terminal.get()) activeCalls[callId] = request.model.providerId to tracked
-                else if (!terminal.get()) tracked.cancel()
-            }
+            if (cancel) tracked.cancel()
             tracked
         } catch (failure: Exception) {
-            if (terminal.compareAndSet(false, true)) {
+            if (finish(ModelUsage.Status.FAILED)) {
                 onEvent(ModelEvent.Failed("provider_error", failure.message ?: "Model request failed", retryable = true))
             }
             ModelCall {}
