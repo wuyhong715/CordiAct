@@ -43,7 +43,6 @@ fun ConversationSidebar(
     activeWorkspaceId: String?,
     activeSessionId: String?,
     runningSessionIds: Set<String>,
-    approvalOwners: Set<com.cordiact.core.action.ApprovalOwner> = emptySet(),
     busy: Boolean,
     error: String?,
     onClose: () -> Unit,
@@ -60,6 +59,7 @@ fun ConversationSidebar(
     onArchiveSession: (String) -> Unit = {},
     onRestoreSession: (String) -> Unit = {},
     onPinSession: (String, Boolean) -> Unit = { _, _ -> },
+    approvalOwners: Set<com.cordiact.core.action.ApprovalOwner> = emptySet(),
 ) {
     var query by rememberSaveable { mutableStateOf("") }
     var searchOpen by rememberSaveable { mutableStateOf(false) }

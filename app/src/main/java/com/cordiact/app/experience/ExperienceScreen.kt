@@ -171,7 +171,7 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
                     ApprovalDecisionDialog(sortedRequests, state.decidingApprovals, state.approvalErrors,
                         ownerLabel = { owner ->
                             val group = owner?.let { key -> state.sidebar.firstOrNull { it.id == key.workspaceId } }
-                            val title = group?.sessions?.firstOrNull { it.id == owner?.sessionId }?.title
+                            val title = group?.sessions?.firstOrNull { it.id == owner.sessionId }?.title
                             when {
                                 owner == null -> "全局请求"
                                 group == null -> "工作区审批"
