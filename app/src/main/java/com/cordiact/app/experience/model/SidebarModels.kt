@@ -78,3 +78,31 @@ fun sidebarSessionNameError(name: String): String? {
         else -> null
     }
 }
+
+internal enum class OverviewStatus(val label: String) { ALL("全部"), RUNNING("运行中"), PENDING("待确认") }
+
+internal data class OverviewSession(
+    val workspace: SidebarWorkspace,
+    val session: SidebarConversation,
+    val running: Boolean,
+    val pending: Boolean,
+)
+
+/** A flat index projection. Filters do not change the active workspace or request transcripts. */
+internal fun overviewSessions(
+    workspaces: List<SidebarWorkspace>, query: String, workspaceId: String?, status: OverviewStatus,
+    archived: Boolean, running: Set<String>, approvalOwners: Set<com.cordiact.core.action.ApprovalOwner>,
+): List<OverviewSession> {
+    val search = query.trim()
+    return workspaces.asSequence().filter { workspaceId == null || it.id == workspaceId }
+        .flatMap { group ->
+            group.sessions.asSequence().filter {
+                it.isArchived == archived && (search.isEmpty() || group.name.contains(search, true) ||
+                    it.title.ifBlank { "新对话" }.contains(search, true))
+            }.map { OverviewSession(group, it, it.id in running,
+                com.cordiact.core.action.ApprovalOwner(group.id, it.id) in approvalOwners) }
+        }.filter { status == OverviewStatus.ALL || if (status == OverviewStatus.RUNNING) it.running else it.pending }
+        .sortedWith(compareByDescending<OverviewSession> { !archived && it.session.isPinned }
+            .thenByDescending { if (archived) it.session.archivedAtMillis ?: it.session.updatedAtMillis else it.session.updatedAtMillis }
+            .thenBy { it.session.id }).toList()
+}

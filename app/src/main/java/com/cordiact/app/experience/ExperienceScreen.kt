@@ -86,7 +86,6 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
             override fun openSession(sessionId: String) { tabs.open(com.cordiact.app.experience.tabs.WorkTab.Session(sessionId)) }
         }
     }
-    val closeSidebar: () -> Unit = { overview = false }
     val ownerLabel: (com.cordiact.core.action.ApprovalOwner?) -> String = { owner ->
         val group = owner?.let { key -> state.sidebar.firstOrNull { it.id == key.workspaceId } }
         val title = group?.sessions?.firstOrNull { it.id == owner.sessionId }?.title
@@ -107,33 +106,6 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
     val closeAfterSelection: () -> Unit = { overview = false; inspected = null }
     BackHandler(overview) { overview = false }
     BackHandler(inspected != null && !overview) { inspected = null }
-    val sidebar: @Composable () -> Unit = {
-        saveable.SaveableStateProvider("navigation-sidebar") {
-            androidx.compose.runtime.CompositionLocalProvider(LocalApprovalOwners provides state.approvalOwners) {
-                ConversationSidebar(
-                    groups = state.sidebar, activeWorkspaceId = state.workspace?.id, activeSessionId = state.sessionId,
-                    runningSessionIds = state.runningSessionIds, busy = state.loading, error = state.error,
-                    onClose = closeSidebar,
-                    onNewSession = { workspace -> viewModel.newSession(workspace ?: state.workspace?.id, closeAfterSelection) },
-                    onSelectWorkspace = { viewModel.selectWorkspace(it, closeAfterSelection) },
-                    onSelectSession = { viewModel.selectSession(it, closeAfterSelection) },
-                    onCreateWorkspace = { name, onSuccess -> viewModel.createWorkspace(name) { closeAfterSelection(); onSuccess() } },
-                    onRenameWorkspace = { id, name, onSuccess -> viewModel.renameWorkspace(id, name, onSuccess) },
-                    onRenameSession = { id, title, done -> viewModel.renameSession(id, title, done) },
-                    onArchiveSession = viewModel::archiveSession,
-                    onRestoreSession = { viewModel.restoreSession(it) },
-                    onPinSession = viewModel::pinSession,
-                    onRetry = viewModel::refresh,
-                    onSettings = { closeAfterSelection(); settingsVm.reload(); openSettings() },
-                    onAutomationTasks = {
-                        closeAfterSelection()
-                        settingsVm.reload()
-                        openSettings("settings://tasks")
-                    },
-                )
-            }
-        }
-    }
     val workbench: @Composable () -> Unit = {
         Surface(color = MaterialTheme.colorScheme.background, modifier = Modifier.fillMaxSize()) {
             Box(Modifier.fillMaxSize()) {
@@ -232,7 +204,23 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
                 onDismiss = { overview = false },
                 onNewSession = { viewModel.newSession(state.workspace?.id, closeAfterSelection) },
                 onSettings = { closeAfterSelection(); settingsVm.reload(); openSettings() },
-            ) { m -> Box(m) { sidebar() } }
+            ) { m ->
+                AllSessionsPane(
+                    state, viewModel,
+                    onOpenSession = { id ->
+                        if (state.sessionId == id) {
+                            tabs.open(com.cordiact.app.experience.tabs.WorkTab.Session(id))
+                            closeAfterSelection()
+                        } else viewModel.selectSession(id) {
+                            tabs.open(com.cordiact.app.experience.tabs.WorkTab.Session(id))
+                            closeAfterSelection()
+                        }
+                    },
+                    onWorkspaceOpened = closeAfterSelection,
+                    onAutomationTasks = { closeAfterSelection(); settingsVm.reload(); openSettings("settings://tasks") },
+                    modifier = m,
+                )
+            }
         }
     }
 
