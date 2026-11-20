@@ -15,24 +15,30 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.cordiact.app.experience.model.ToolPhase
+import com.cordiact.core.action.ApprovalOwner
 import com.cordiact.core.action.ApprovalRequest
 
 @Composable
 internal fun WorkbenchDock(state: ExperienceState, onApprovals: () -> Unit, onTrace: () -> Unit) {
-    val approvals = state.approvals.size
+    val approvals = state.currentApprovals.size
+    val other = state.approvals.size - approvals
     val progress = state.turns.lastOrNull()?.tools?.count { it.phase == ToolPhase.SUCCEEDED } ?: 0
     val label = when {
         approvals > 0 -> "待确认 $approvals 项"
         state.stopping -> "正在停止"
         state.running -> if (progress > 0) "正在运行 · 已完成 $progress 步" else "正在运行"
-        else -> return
+        else -> null
     }
+    if (label == null && other == 0) return
     Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.Center) {
-        TextButton(onClick = if (approvals > 0) onApprovals else onTrace, modifier = Modifier.heightIn(min = 48.dp)) {
+        if (label != null) TextButton(onClick = if (approvals > 0) onApprovals else onTrace, modifier = Modifier.heightIn(min = 48.dp)) {
             if (approvals > 0) AppGlyph(GlyphName.Warning, modifier = Modifier.size(16.dp))
             else AppGlyph(GlyphName.Trace, modifier = Modifier.size(16.dp))
             Spacer(Modifier.width(8.dp))
             Text(label)
+        }
+        if (other > 0 && approvals == 0) TextButton(onClick = onApprovals, modifier = Modifier.heightIn(min = 48.dp)) {
+            Text("其他审批 $other 项")
         }
     }
 }
@@ -40,6 +46,7 @@ internal fun WorkbenchDock(state: ExperienceState, onApprovals: () -> Unit, onTr
 @Composable
 internal fun ApprovalDecisionDialog(
     requests: List<ApprovalRequest>, deciding: Set<String>, errors: Map<String, String>, selected: String,
+    ownerLabel: (ApprovalOwner?) -> String,
     onSelect: (String) -> Unit, onDismiss: () -> Unit, onDecide: (String, Boolean) -> Unit,
 ) {
     val request = requests.firstOrNull { it.id == selected }
@@ -47,16 +54,16 @@ internal fun ApprovalDecisionDialog(
         Surface(shape = MaterialTheme.shapes.large) {
             Column(Modifier.fillMaxWidth().padding(20.dp)) {
                 Text("待处理审批", Modifier.semantics { heading() }, style = MaterialTheme.typography.titleLarge)
-                Text("显示所有待处理请求，不限当前会话。", style = MaterialTheme.typography.bodySmall)
                 Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     if (requests.size > 1) requests.forEach { item ->
-                        Text(item.toolName, Modifier.fillMaxWidth().heightIn(min = 48.dp)
+                        Text("${item.toolName} · ${ownerLabel(item.owner)}", Modifier.fillMaxWidth().heightIn(min = 48.dp)
                             .selectable(selected = item.id == selected, onClick = { onSelect(item.id) }).padding(vertical = 10.dp),
                             color = if (item.id == selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
                     }
                     if (request == null) Text(errors[selected] ?: "该请求已处理或不再可用。")
                     if (request != null) {
                         Text(request.toolName, style = MaterialTheme.typography.titleMedium)
+                        Text(ownerLabel(request.owner), style = MaterialTheme.typography.bodySmall)
                         val risk = when (request.riskLevel) {
                             ApprovalRequest.RiskLevel.LOW -> "低"
                             ApprovalRequest.RiskLevel.MEDIUM -> "中"

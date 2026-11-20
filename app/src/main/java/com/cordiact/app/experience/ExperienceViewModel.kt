@@ -41,6 +41,11 @@ data class ExperienceState(
     val stoppingSessions: Set<String> = emptySet(),
     val undoArchivedSessionId: String? = null,
 ) {
+    val approvalOwners get() = approvals.mapNotNull { request -> request.owner?.takeIf { it.sessionId != null } }.toSet()
+    val currentApprovals get() = approvals.filter { request ->
+        val owner = request.owner ?: return@filter false
+        workspace?.id == owner.workspaceId && sessionId != null && sessionId == owner.sessionId
+    }
     val running get() = turns.any { it.isRunning }
     val stopping get() = sessionId in stoppingSessions
     val archived get() = sessions.any { it.id == sessionId && it.archivedAtMillis != null }
@@ -105,8 +110,11 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
         }
         viewModelScope.launch {
             while (isActive) {
-                val pending = withContext(Dispatchers.IO) { runCatching { app.approvalGateway.pendingRequests() }.getOrDefault(emptyList()) }
-                mutable.update { current -> current.copy(approvals = pending.filterNot { it.id in settledApprovals }) }
+                val pending = withContext(Dispatchers.IO) { try { app.approvalGateway.pendingRequests() } catch (cancel: CancellationException) { throw cancel } catch (_: Exception) { null } }
+                if (pending != null) mutable.update { current ->
+                    val active = pending.filterNot { it.id in settledApprovals }
+                    current.copy(approvals = active, approvalErrors = current.approvalErrors.filterKeys { id -> active.any { it.id == id } })
+                }
                 delay(400)
             }
         }
@@ -467,14 +475,14 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
         mutable.update { it.copy(decidingApprovals = it.decidingApprovals + requestId, approvalErrors = it.approvalErrors - requestId) }
         viewModelScope.launch {
             try {
-                val accepted = withContext(Dispatchers.IO) {
+                withContext(Dispatchers.IO) {
                     app.approvalGateway.respond(requestId, ApprovalDecision(approved = approved, rememberChoice = false))
                 }
                 settledApprovals.add(requestId)
                 if (settledApprovals.size > 128) settledApprovals.remove(settledApprovals.first())
                 mutable.update { state -> state.copy(
                     approvals = state.approvals.filterNot { it.id == requestId },
-                    approvalErrors = if (accepted) state.approvalErrors else state.approvalErrors + (requestId to "该审批已失效或已处理"),
+                    approvalErrors = state.approvalErrors - requestId,
                 ) }
             } catch (cancel: CancellationException) {
                 throw cancel

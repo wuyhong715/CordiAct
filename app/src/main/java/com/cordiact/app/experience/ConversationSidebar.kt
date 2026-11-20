@@ -37,11 +37,13 @@ import com.cordiact.app.experience.model.*
  * view rather than a separate screen: the same header, search, list and edge fades are reused.
  */
 @Composable
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 fun ConversationSidebar(
     groups: List<SidebarWorkspace>,
     activeWorkspaceId: String?,
     activeSessionId: String?,
     runningSessionIds: Set<String>,
+    approvalOwners: Set<com.cordiact.core.action.ApprovalOwner> = emptySet(),
     busy: Boolean,
     error: String?,
     onClose: () -> Unit,
@@ -74,12 +76,18 @@ fun ConversationSidebar(
     var sessionEditingId by rememberSaveable { mutableStateOf<String?>(null) }
     var sessionEditorOpen by rememberSaveable { mutableStateOf(false) }
     var sessionName by rememberSaveable { mutableStateOf("") }
-    var runningOnly by rememberSaveable { mutableStateOf(false) }
-    val visible = remember(groups, query, includeArchived, archiveMode, runningOnly, runningSessionIds) {
+    var filter by rememberSaveable { mutableStateOf("all") }
+    var filteredCollapsed by remember(filter) { mutableStateOf(emptySet<String>()) }
+    val visible = remember(groups, query, includeArchived, archiveMode, filter, runningSessionIds, approvalOwners) {
         if (archiveMode) sidebarGroups(groups, query, archivedOnly = true)
         else sidebarGroups(groups, query, includeArchived = includeArchived).let { result ->
-            if (!runningOnly) result else result.mapNotNull { group ->
-                val sessions = group.sessions.filter { it.id in runningSessionIds }
+            if (filter == "all") result else result.mapNotNull { group ->
+                val sessions = group.sessions.filter { session ->
+                    when (filter) {
+                        "approval" -> com.cordiact.core.action.ApprovalOwner(group.id, session.id) in approvalOwners
+                        else -> session.id in runningSessionIds
+                    }
+                }
                 if (sessions.isEmpty()) null else group.copy(sessions = sessions)
             }
         }
@@ -109,7 +117,8 @@ fun ConversationSidebar(
                 val emptyText = when {
                     archiveMode && query.isBlank() -> "暂无归档会话"
                     archiveMode -> "没有匹配的归档会话"
-                    runningOnly -> "没有匹配的运行中会话"
+                    filter == "running" -> "没有匹配的运行中会话"
+                    filter == "approval" -> "没有匹配的待确认会话"
                     query.isBlank() -> "暂无工作区"
                     else -> "没有匹配的对话或工作区"
                 }
@@ -119,6 +128,7 @@ fun ConversationSidebar(
             visible.forEach { workspace ->
                 val isExpanded = when {
                     archiveMode -> workspace.id !in collapsed
+                    filter != "all" -> workspace.id !in filteredCollapsed
                     query.isNotBlank() -> true
                     else -> workspace.id in expanded ||
                         (workspace.id == activeWorkspaceId && workspace.id !in collapsed)
@@ -126,7 +136,9 @@ fun ConversationSidebar(
                 item(key = "workspace:${workspace.id}") {
                     Row(Modifier.fillMaxWidth().padding(top = 2.dp), verticalAlignment = Alignment.CenterVertically) {
                         IconButton(onClick = {
-                            if (isExpanded) { expanded = expanded - workspace.id; collapsed = collapsed + workspace.id }
+                            if (filter != "all" && !archiveMode) {
+                                filteredCollapsed = if (isExpanded) filteredCollapsed + workspace.id else filteredCollapsed - workspace.id
+                            } else if (isExpanded) { expanded = expanded - workspace.id; collapsed = collapsed + workspace.id }
                             else { expanded = expanded + workspace.id; collapsed = collapsed - workspace.id }
                         }, modifier = Modifier.size(48.dp)) {
                             AppGlyph(GlyphName.ChevronDown, modifier = Modifier.rotate(if (isExpanded) 0f else -90f),
@@ -199,7 +211,9 @@ fun ConversationSidebar(
                                         remember(session.updatedAtMillis) { java.text.SimpleDateFormat("MM-dd", java.util.Locale.getDefault()).format(java.util.Date(session.updatedAtMillis)) },
                                         Modifier.padding(start = 8.dp), style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant,
                                         maxLines = 1)
-                                    if (session.id in runningSessionIds) {
+                                    if (com.cordiact.core.action.ApprovalOwner(workspace.id, session.id) in approvalOwners) {
+                                        Text("待确认", Modifier.padding(start = 8.dp), color = colors.primary, style = MaterialTheme.typography.labelSmall)
+                                    } else if (session.id in runningSessionIds) {
                                         Text("运行中", Modifier.padding(start = 8.dp), color = colors.primary, style = MaterialTheme.typography.labelSmall)
                                     }
                                 }
@@ -326,9 +340,10 @@ fun ConversationSidebar(
                 Text("包含归档会话", style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant)
             }
         }
-        if (!archiveMode) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            FilterChip(selected = !runningOnly, onClick = { runningOnly = false }, label = { Text("全部") })
-            FilterChip(selected = runningOnly, onClick = { runningOnly = true }, label = { Text("运行中") })
+        if (!archiveMode) FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip(selected = filter == "all", onClick = { filter = "all" }, label = { Text("全部") })
+            FilterChip(selected = filter == "running", onClick = { filter = "running" }, label = { Text("运行中") })
+            FilterChip(selected = filter == "approval", onClick = { filter = "approval" }, label = { Text("待确认") })
         }
         if (!archiveMode) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {

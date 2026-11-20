@@ -80,7 +80,7 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
         saveable.SaveableStateProvider("navigation-sidebar") {
                 ConversationSidebar(
                     groups = state.sidebar, activeWorkspaceId = state.workspace?.id, activeSessionId = state.sessionId,
-                    runningSessionIds = state.runningSessionIds, busy = state.loading, error = state.error,
+                    runningSessionIds = state.runningSessionIds, approvalOwners = state.approvalOwners, busy = state.loading, error = state.error,
                     onClose = closeSidebar,
                     onNewSession = { workspace -> viewModel.newSession(workspace ?: state.workspace?.id, closeAfterSelection) },
                     onSelectWorkspace = { viewModel.selectWorkspace(it, closeAfterSelection) },
@@ -140,7 +140,7 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
                     WorkbenchDock(state,
                         onApprovals = {
                             viewModel.composerController.popover(null)
-                            approvalId = state.approvals.firstOrNull()?.id
+                            approvalId = (state.currentApprovals.firstOrNull() ?: state.approvals.firstOrNull())?.id
                         },
                         onTrace = { scope.launch { pager.animateScrollToPage(1) } },
                     )
@@ -166,8 +166,21 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
                     },
                 )
                 approvalId?.let { id ->
-                    ApprovalDecisionDialog(state.approvals, state.decidingApprovals, state.approvalErrors,
-                        id, { approvalId = it }, { approvalId = null }, viewModel::decide)
+                    val currentIds = state.currentApprovals.mapTo(hashSetOf()) { it.id }
+                    val sortedRequests = state.approvals.sortedBy { it.id !in currentIds }
+                    ApprovalDecisionDialog(sortedRequests, state.decidingApprovals, state.approvalErrors,
+                        ownerLabel = { owner ->
+                            val group = owner?.let { key -> state.sidebar.firstOrNull { it.id == key.workspaceId } }
+                            val title = group?.sessions?.firstOrNull { it.id == owner?.sessionId }?.title
+                            when {
+                                owner == null -> "全局请求"
+                                group == null -> "工作区审批"
+                                title != null -> "${group.name} / $title"
+                                owner.sessionId != null -> "${group.name} / 其他会话"
+                                else -> "${group.name} / 工作区请求"
+                            }
+                        },
+                        selected = id, onSelect = { approvalId = it }, onDismiss = { approvalId = null }, onDecide = viewModel::decide)
                 }
                 inspected?.let { step ->
                     CompactInspector(step = step, onClose = { inspected = null }, onSettings = { link -> openSettings(link) }, modifier = Modifier.align(Alignment.BottomCenter).windowInsetsPadding(WindowInsets.systemBars.union(WindowInsets.ime)))
