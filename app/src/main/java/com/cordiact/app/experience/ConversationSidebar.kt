@@ -189,24 +189,27 @@ fun ConversationSidebar(
                             }.padding(start = 32.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
+                            val pending = ApprovalOwner(workspace.id, session.id) in approvalOwners
+                            val running = session.id in runningSessionIds
+                            val status = when {
+                                pending -> "待审批"
+                                running -> "执行中"
+                                session.archivedAtMillis != null -> "已归档"
+                                else -> null
+                            }
                             Surface(
                                 onClick = { onSelectSession(session.id) }, enabled = !busy,
                                 shape = RoundedCornerShape(10.dp),
                                 color = if (current) colors.primaryContainer else Color.Transparent,
                                 modifier = Modifier.weight(1f)
-                                    .semantics { selected = current },
+                                    .semantics {
+                                        selected = current
+                                        status?.let { stateDescription = it }
+                                    },
                             ) {
                                 Row(Modifier.heightIn(min = 48.dp).padding(horizontal = 12.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                                     if (session.pinnedAtMillis != null) {
                                         AppGlyph(GlyphName.Pin, description = "已置顶", modifier = Modifier.size(14.dp), tint = colors.primary)
-                                    }
-                                    val pending = ApprovalOwner(workspace.id, session.id) in approvalOwners
-                                    val running = session.id in runningSessionIds
-                                    val status = when {
-                                        pending -> "待审批"
-                                        running -> "执行中"
-                                        session.archivedAtMillis != null -> "已归档"
-                                        else -> null
                                     }
                                     Column(Modifier.weight(1f).padding(start = if (session.pinnedAtMillis != null) 8.dp else 0.dp)) {
                                         Text(session.title.ifBlank { "新对话" },
@@ -214,6 +217,7 @@ fun ConversationSidebar(
                                             fontWeight = if (current) FontWeight.Medium else FontWeight.Normal,
                                             maxLines = 1, overflow = TextOverflow.Ellipsis)
                                         if (status != null) Text(status,
+                                            modifier = Modifier.clearAndSetSemantics {},
                                             color = if (pending || running) colors.primary else colors.onSurfaceVariant,
                                             style = MaterialTheme.typography.labelSmall)
                                     }
