@@ -33,7 +33,9 @@ internal fun StudioPaneMenu(pane: StudioPane, tools: Int, previews: Int, onSelec
                 }
                 DropdownMenuItem(
                     text = { Text(if (count > 0) "${item.label} · $count" else item.label) },
-                    trailingIcon = if (item == pane) {{ AppGlyph(GlyphName.Check) }} else null,
+                    trailingIcon = if (item == pane) {
+                        { AppGlyph(GlyphName.Check) }
+                    } else null,
                     modifier = Modifier.testTag("studio-pane-${item.name.lowercase()}").semantics { selected = item == pane },
                     onClick = { expanded = false; onSelect(item) },
                 )
