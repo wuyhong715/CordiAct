@@ -74,9 +74,15 @@ fun ConversationSidebar(
     var sessionEditingId by rememberSaveable { mutableStateOf<String?>(null) }
     var sessionEditorOpen by rememberSaveable { mutableStateOf(false) }
     var sessionName by rememberSaveable { mutableStateOf("") }
-    val visible = remember(groups, query, includeArchived, archiveMode) {
+    var runningOnly by rememberSaveable { mutableStateOf(false) }
+    val visible = remember(groups, query, includeArchived, archiveMode, runningOnly, runningSessionIds) {
         if (archiveMode) sidebarGroups(groups, query, archivedOnly = true)
-        else sidebarGroups(groups, query, includeArchived = includeArchived)
+        else sidebarGroups(groups, query, includeArchived = includeArchived).let { result ->
+            if (!runningOnly) result else result.mapNotNull { group ->
+                val sessions = group.sessions.filter { it.id in runningSessionIds }
+                if (sessions.isEmpty()) null else group.copy(sessions = sessions)
+            }
+        }
     }
     val colors = MaterialTheme.colorScheme
     val backdrop = remember { HazeState() }
@@ -103,6 +109,7 @@ fun ConversationSidebar(
                 val emptyText = when {
                     archiveMode && query.isBlank() -> "暂无归档会话"
                     archiveMode -> "没有匹配的归档会话"
+                    runningOnly -> "没有匹配的运行中会话"
                     query.isBlank() -> "暂无工作区"
                     else -> "没有匹配的对话或工作区"
                 }
@@ -193,7 +200,7 @@ fun ConversationSidebar(
                                         Modifier.padding(start = 8.dp), style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant,
                                         maxLines = 1)
                                     if (session.id in runningSessionIds) {
-                                        Text("●", Modifier.padding(start = 8.dp), color = colors.primary, style = MaterialTheme.typography.labelSmall)
+                                        Text("运行中", Modifier.padding(start = 8.dp), color = colors.primary, style = MaterialTheme.typography.labelSmall)
                                     }
                                 }
                             }
@@ -273,14 +280,14 @@ fun ConversationSidebar(
                     Row(Modifier.heightIn(min = 48.dp).padding(start = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                         BasicTextField(query, { query = it }, Modifier.weight(1f).testTag("sidebar-search"), singleLine = true,
                             textStyle = MaterialTheme.typography.bodyMedium.copy(color = colors.onSurface),
-                            decorationBox = { field -> Box { if (query.isEmpty()) Text(if (archiveMode) "搜索归档…" else "搜索…", color = colors.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium); field() } })
+                            decorationBox = { field -> Box { if (query.isEmpty()) Text(if (archiveMode) "搜索归档…" else "搜索对话与工作区…", color = colors.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium); field() } })
                         IconButton(onClick = { query = ""; searchOpen = false }) { AppGlyph(GlyphName.Close, "收起搜索", Modifier.size(18.dp)) }
                     }
                 }
             } else Surface(onClick = { searchOpen = true }, color = colors.surfaceContainerLow, shape = RoundedCornerShape(10.dp), modifier = Modifier.weight(1f).testTag("sidebar-search-open")) {
                 Row(Modifier.heightIn(min = 48.dp).padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                     AppGlyph(GlyphName.Search, "搜索对话与工作区", Modifier.size(18.dp), tint = colors.onSurfaceVariant)
-                    Text(if (archiveMode) "搜索归档…" else "搜索…", Modifier.padding(start = 8.dp), style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant)
+                    Text(if (archiveMode) "搜索归档…" else "搜索对话与工作区…", Modifier.padding(start = 8.dp), style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant)
                 }
             }
             if (!archiveMode) {
@@ -319,12 +326,17 @@ fun ConversationSidebar(
                 Text("包含归档会话", style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant)
             }
         }
+        if (!archiveMode) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip(selected = !runningOnly, onClick = { runningOnly = false }, label = { Text("全部") })
+            FilterChip(selected = runningOnly, onClick = { runningOnly = true }, label = { Text("运行中") })
+        }
         if (!archiveMode) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text("工作区", Modifier.weight(1f).padding(start = 4.dp), style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant)
                 IconButton(onClick = { editingId = null; name = ""; editorOpen = true }, enabled = !busy) { AppGlyph(GlyphName.Plus, "新建工作区", Modifier.size(18.dp)) }
             }
         }
+
       }
       Row(Modifier.align(Alignment.BottomCenter).fillMaxWidth().onSizeChanged { footerHeight = it.height }
           .padding(horizontal = 12.dp, vertical = 4.dp).heightIn(min = 56.dp).testTag("sidebar-footer"), verticalAlignment = Alignment.CenterVertically) {

@@ -67,12 +67,12 @@ internal fun ExperienceFrame(
     CompositionLocalProvider(
         LocalBackdrop provides backdrop,
         LocalChromeBoundsPadding provides PaddingValues(top = topPadding, bottom = bottomPadding),
-        LocalChromePadding provides PaddingValues(top = topPadding + 56.dp, bottom = bottomPadding + 56.dp),
+        LocalChromePadding provides PaddingValues(top = topPadding + 12.dp, bottom = bottomPadding + 12.dp),
     ) {
         Box(modifier.fillMaxSize().windowInsetsPadding(insets).testTag("experience-frame")) {
             content(Modifier.fillMaxSize().hazeSource(backdrop))
-            ViewportFade(backdrop, top = true, Modifier.align(Alignment.TopCenter).fillMaxWidth().height(topPadding + 48.dp))
-            ViewportFade(backdrop, top = false, Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(bottomPadding + 48.dp))
+            ViewportFade(backdrop, top = true, Modifier.align(Alignment.TopCenter).fillMaxWidth().height(topPadding + 12.dp))
+            ViewportFade(backdrop, top = false, Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(bottomPadding + 12.dp))
             Column(Modifier.align(Alignment.TopCenter).fillMaxWidth().onSizeChanged { topHeight = it.height }) { top() }
             Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().onSizeChanged { bottomHeight = it.height }) { bottom() }
         }

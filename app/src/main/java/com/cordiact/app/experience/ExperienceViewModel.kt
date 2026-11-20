@@ -35,6 +35,8 @@ data class ExperienceState(
     val model: ModelId? = null,
     val turns: List<TranscriptTurn> = emptyList(),
     val approvals: List<ApprovalRequest> = emptyList(),
+    val decidingApprovals: Set<String> = emptySet(),
+    val approvalErrors: Map<String, String> = emptyMap(),
     val error: String? = null,
     val stoppingSessions: Set<String> = emptySet(),
     val undoArchivedSessionId: String? = null,
@@ -49,6 +51,7 @@ data class ExperienceState(
 class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
     private val mutable = MutableStateFlow(ExperienceState())
     val state = mutable.asStateFlow()
+    private val settledApprovals = linkedSetOf<String>()
     private val cache = LinkedHashMap<String, List<TranscriptTurn>>(16, 0.75f, true)
     private val stored = mutableMapOf<String, List<StoredMessage>>()
 
@@ -103,7 +106,7 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
         viewModelScope.launch {
             while (isActive) {
                 val pending = withContext(Dispatchers.IO) { runCatching { app.approvalGateway.pendingRequests() }.getOrDefault(emptyList()) }
-                mutable.update { it.copy(approvals = pending) }
+                mutable.update { current -> current.copy(approvals = pending.filterNot { it.id in settledApprovals }) }
                 delay(400)
             }
         }
@@ -457,18 +460,29 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
         }
     }
 
+
     fun decide(requestId: String, approved: Boolean) {
+        val current = mutable.value
+        if (requestId in current.decidingApprovals || current.approvals.none { it.id == requestId }) return
+        mutable.update { it.copy(decidingApprovals = it.decidingApprovals + requestId, approvalErrors = it.approvalErrors - requestId) }
         viewModelScope.launch {
             try {
                 val accepted = withContext(Dispatchers.IO) {
                     app.approvalGateway.respond(requestId, ApprovalDecision(approved = approved, rememberChoice = false))
                 }
-                if (!accepted) mutable.update { state ->
-                    state.copy(approvals = state.approvals.filterNot { it.id == requestId }, error = "该审批已失效或已处理")
-                }
+                settledApprovals.add(requestId)
+                if (settledApprovals.size > 128) settledApprovals.remove(settledApprovals.first())
+                mutable.update { state -> state.copy(
+                    approvals = state.approvals.filterNot { it.id == requestId },
+                    approvalErrors = if (accepted) state.approvalErrors else state.approvalErrors + (requestId to "该审批已失效或已处理"),
+                ) }
+            } catch (cancel: CancellationException) {
+                throw cancel
+            } catch (error: Exception) {
+                mutable.update { it.copy(approvalErrors = it.approvalErrors + (requestId to "审批提交失败，可以重试")) }
+            } finally {
+                mutable.update { it.copy(decidingApprovals = it.decidingApprovals - requestId) }
             }
-            catch (cancel: CancellationException) { throw cancel }
-            catch (error: Exception) { mutable.update { it.copy(error = error.message ?: "审批提交失败") } }
         }
     }
     override fun onCleared() {

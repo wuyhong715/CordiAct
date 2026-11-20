@@ -3,6 +3,7 @@ package com.cordiact.app.experience
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.*
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
@@ -31,6 +32,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.cordiact.app.experience.composer.Motion
+import com.cordiact.app.experience.composer.motionDuration
 import com.cordiact.app.experience.model.*
 import kotlinx.coroutines.launch
 
@@ -39,44 +42,60 @@ fun TranscriptView(state: ExperienceState, onPrompt: (String) -> Unit, onInspect
     val list = rememberLazyListState()
     val scope = rememberCoroutineScope()
     var pinned by rememberSaveable(state.sessionId) { mutableStateOf(true) }
-    var unread by rememberSaveable(state.sessionId) { mutableIntStateOf(0) }
-    val pinPolicy = remember(state.sessionId) { PinnedScrollPolicy() }
+    var newContent by rememberSaveable { mutableStateOf(false) }
+    val pinPolicy = remember { PinnedScrollPolicy() }
     val latestPinned by rememberUpdatedState(pinned)
     val latestCount by rememberUpdatedState(state.turns.size)
-    val latestRunning by rememberUpdatedState(state.running)
-    val connection = remember(pinPolicy) {
+    val connection = remember(list) {
         object : NestedScrollConnection {
             override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
-                if (source == NestedScrollSource.UserInput) {
-                    // Positive finger motion reveals earlier content in a normal LazyColumn.
-                    if (pinned && list.canScrollBackward && !pinPolicy.userDrag(available.y)) pinned = false
+                if (source == NestedScrollSource.UserInput && pinned && list.canScrollBackward && !pinPolicy.userDrag(available.y)) {
+                    pinned = false
+                    newContent = false
                 }
                 return Offset.Zero
             }
         }
     }
-    val revision = state.turns.sumOf { it.answer.length + it.reasoning.length + it.tools.sumOf { step -> step.summary?.length ?: 1 } } + state.turns.size
-    var lastRevision by remember(state.sessionId) { mutableIntStateOf(revision) }
-    LaunchedEffect(revision, state.sessionId) {
-        if (latestPinned && state.turns.isNotEmpty()) list.scrollToItem(state.turns.size)
-        else if (revision != lastRevision && list.canScrollForward) unread++
-        lastRevision = revision
+    var readingKey by rememberSaveable { mutableStateOf<String?>(null) }
+    var readingOffset by rememberSaveable { mutableIntStateOf(0) }
+    val restoredKey = remember { readingKey }
+    var anchorReady by remember { mutableStateOf(restoredKey == null) }
+    LaunchedEffect(state.loading, state.turns.isNotEmpty()) {
+        if (!anchorReady && state.turns.isNotEmpty()) {
+            val index = state.turns.indexOfFirst { it.id == restoredKey }
+            list.scrollToItem(if (index >= 0) index else list.firstVisibleItemIndex.coerceAtMost(state.turns.lastIndex),
+                if (index >= 0) readingOffset else 0)
+            anchorReady = true
+        }
     }
-    LaunchedEffect(list, state.sessionId) {
-        snapshotFlow { !list.isScrollInProgress && !list.canScrollForward }.collect { bottom ->
-            if (bottom && !pinned) {
-                pinPolicy.pin()
-                pinned = true
-                unread = 0
+    LaunchedEffect(list, anchorReady) {
+        if (!anchorReady) return@LaunchedEffect
+        snapshotFlow {
+            val index = list.firstVisibleItemIndex
+            val key = list.layoutInfo.visibleItemsInfo.firstOrNull { it.index == index }?.key as? String
+            Triple(latestPinned, key, list.firstVisibleItemScrollOffset)
+        }.collect { (following, key, offset) ->
+            if (following) readingKey = null
+            else if (key != null && key != "generated-images" && key != "transcript-end") {
+                readingKey = key
+                readingOffset = offset
             }
         }
     }
-    LaunchedEffect(list, state.sessionId) {
-        snapshotFlow {
-            val layout = list.layoutInfo
-            val footer = layout.visibleItemsInfo.lastOrNull { it.key == "transcript-end" }
-            latestPinned && latestRunning && latestCount > 0 && (footer == null || footer.offset + footer.size > layout.viewportEndOffset - layout.afterContentPadding)
-        }.collect { shouldFollow -> if (shouldFollow) list.scrollToItem(latestCount) }
+    val tail = state.turns.lastOrNull()
+    val tailMarker = listOf(tail?.id, tail?.answer?.length, tail?.reasoning?.length, tail?.tools, tail?.isRunning)
+    var observedTail by remember { mutableStateOf<List<Any?>?>(null) }
+    LaunchedEffect(tailMarker) {
+        if (observedTail != null && tail != null && !latestPinned) newContent = true
+        if (tail != null) observedTail = tailMarker
+    }
+    // Measured layout, not token activity, triggers a single correction when the tail is clipped.
+    LaunchedEffect(list) {
+        snapshotFlow { latestPinned && latestCount > 0 && list.canScrollForward && !list.isScrollInProgress }
+            .collect { follow ->
+                if (follow && latestPinned) list.scrollToItem((list.layoutInfo.totalItemsCount - 1).coerceAtLeast(0))
+            }
     }
     Box(modifier.fillMaxSize()) {
         if (state.loading && state.turns.isEmpty()) {
@@ -96,8 +115,8 @@ fun TranscriptView(state: ExperienceState, onPrompt: (String) -> Unit, onInspect
             }
         } else {
             LazyColumn(
-                state = list, contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = LocalChromePadding.current.calculateTopPadding(), bottom = LocalChromePadding.current.calculateBottomPadding()),
-                verticalArrangement = Arrangement.spacedBy(28.dp),
+                state = list, contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = LocalChromePadding.current.calculateTopPadding(), bottom = LocalChromePadding.current.calculateBottomPadding()),
+                verticalArrangement = Arrangement.spacedBy(20.dp),
                 modifier = Modifier.fillMaxSize().nestedScroll(connection).testTag("transcript"),
             ) {
                 items(state.turns, key = { it.id }, contentType = { "turn" }) { turn ->
@@ -111,13 +130,46 @@ fun TranscriptView(state: ExperienceState, onPrompt: (String) -> Unit, onInspect
                 item(key = "transcript-end") { Spacer(Modifier.height(1.dp)) }
             }
         }
-        if (!pinned) {
+        if (state.turns.size >= 12) {
+            TurnDirectory(state.turns, Modifier.align(Alignment.TopEnd).padding(top = LocalChromeBoundsPadding.current.calculateTopPadding(), end = 12.dp)) { turnId ->
+                val index = state.turns.indexOfFirst { it.id == turnId }
+                if (index >= 0) {
+                    pinned = false
+                    newContent = false
+                    scope.launch { list.scrollToItem(index) }
+                }
+            }
+        }
+        if (!pinned && state.turns.isNotEmpty()) {
             FrostedSurface(Modifier.align(Alignment.BottomEnd).padding(end = 16.dp,
                 bottom = maxOf(8.dp, LocalChromePadding.current.calculateBottomPadding() - 12.dp)), radius = 20.dp) {
                 TextButton(
-                    onClick = { pinPolicy.pin(); pinned = true; unread = 0; scope.launch { if (state.turns.isNotEmpty()) list.animateScrollToItem(state.turns.size) } },
+                    onClick = { pinPolicy.pin(); pinned = true; newContent = false; scope.launch { list.scrollToItem((list.layoutInfo.totalItemsCount - 1).coerceAtLeast(0)) } },
                     modifier = Modifier.testTag("jump-to-latest"),
-                ) { AppGlyph(GlyphName.ArrowDown, modifier = Modifier.size(15.dp)); Spacer(Modifier.width(6.dp)); Text(if (unread == 0) "最新" else "$unread 次新动态") }
+                ) { AppGlyph(GlyphName.ArrowDown, modifier = Modifier.size(15.dp)); Spacer(Modifier.width(6.dp)); Text(if (!list.canScrollForward) "跟随最新" else if (newContent) "有新内容 · 回到最新" else "回到最新") }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TurnDirectory(turns: List<TranscriptTurn>, modifier: Modifier, onSelect: (String) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    Box(modifier) {
+        FrostedSurface(radius = 20.dp) { TextButton(onClick = { open = true }) { Text("回合目录") } }
+        if (open) androidx.compose.ui.window.Dialog(onDismissRequest = { open = false }) {
+            Surface(shape = MaterialTheme.shapes.large) {
+                Column(Modifier.padding(16.dp)) {
+                    Text("回合目录", Modifier.semantics { heading() }, style = MaterialTheme.typography.titleMedium)
+                    LazyColumn(Modifier.heightIn(max = 420.dp)) {
+                        items(turns, key = { it.id }) { turn ->
+                            TextButton(onClick = { open = false; onSelect(turn.id) }, modifier = Modifier.fillParentMaxWidth()) {
+                                Text(turn.prompt.ifBlank { "无用户文本的回合" }, Modifier.fillMaxWidth(), maxLines = 2, overflow = TextOverflow.Ellipsis)
+                            }
+                        }
+                    }
+                    TextButton(onClick = { open = false }, modifier = Modifier.align(Alignment.End)) { Text("关闭") }
+                }
             }
         }
     }
@@ -196,14 +248,15 @@ private fun TurnView(turn: TranscriptTurn, onInspect: (ToolActivity) -> Unit) {
             }
         }
         if (turn.tools.isNotEmpty()) {
-            Column(Modifier.animateContentSize(spring())) {
+            Column(Modifier.animateContentSize(tween(motionDuration(Motion.Standard)))) {
                 val quiet = MaterialTheme.colorScheme.onSurfaceVariant
                 val live = turn.tools.count { it.phase == ToolPhase.RUNNING }
+                val failed = turn.tools.count { it.phase == ToolPhase.FAILED }
                 val done = turn.tools.count { it.phase == ToolPhase.SUCCEEDED }
                 Row(Modifier.clickable { toolsExpanded = !toolsExpanded }.heightIn(min = 48.dp).padding(end = 8.dp),
                     verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(7.dp)) {
                     AppGlyph(GlyphName.Trace, tint = quiet, modifier = Modifier.size(14.dp))
-                    Text(if (live > 0) "执行过程 · $live 步进行中" else if (done == turn.tools.size) "执行过程 · $done 步完成" else "执行过程 · $done / ${turn.tools.size} 步完成", style = MaterialTheme.typography.labelMedium, color = quiet)
+                    Text(if (failed > 0) "执行过程 · $failed 步失败" else if (live > 0) "执行过程 · $live 步进行中" else if (done == turn.tools.size) "执行过程 · $done 步完成" else "执行过程 · $done / ${turn.tools.size} 步完成", style = MaterialTheme.typography.labelMedium, color = quiet)
                     AppGlyph(if (toolsExpanded) GlyphName.Close else GlyphName.ChevronDown, if (toolsExpanded) "收起步骤" else "展开步骤", modifier = Modifier.size(13.dp), tint = quiet)
                 }
                 if (toolsExpanded) turn.tools.forEachIndexed { index, step ->

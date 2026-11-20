@@ -24,7 +24,7 @@ import com.cordiact.app.experience.settings.components.SettingsGroup
 import com.cordiact.app.experience.settings.components.SettingsRow
 import java.util.Locale
 
-internal data class SettingsSearchHit(val entry: OverviewEntry, val path: String, val section: String? = null)
+internal data class SettingsSearchHit(val entry: OverviewEntry, val path: String, val section: String? = null, val field: String? = null)
 
 private val aliases = mapOf(
     SettingsRoute.USAGE to "token 令牌 费用 计费 调用次数 输入输出 使用量", SettingsRoute.PROVIDERS to "api 模型地址 供应商",
@@ -41,6 +41,14 @@ internal fun searchSettings(query: String): List<SettingsSearchHit> {
         val base = "${group.title} ${entry.title} ${aliases[entry.route].orEmpty()}".lowercase(Locale.ROOT)
         buildList {
             if (terms.all(base::contains)) add(SettingsSearchHit(entry, group.title))
+            if (entry.route == SettingsRoute.USAGE) listOf(
+                Triple("usage-overview", "调用概览", "输入 输出 token 令牌 调用次数 失败 取消"),
+                Triple("usage-models", "按模型", "提供商 模型 汇总"),
+                Triple("usage-recent", "最近调用", "历史 明细 查询时间"),
+            ).forEach { (id, label, keywords) ->
+                val match = "$label $keywords".lowercase()
+                if (terms.all(match::contains)) add(SettingsSearchHit(entry.copy(title = label), "${group.title} › ${entry.title}", field = id))
+            }
             settingsSections(entry.route).forEach { sec ->
                 val label = "${sec.label} ${sec.id}".lowercase(Locale.ROOT)
                 if (terms.all { it in base || it in label } && terms.any { it in label }) {
