@@ -9,26 +9,39 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.shape.RoundedCornerShape
 
+// v3 "Lumen": warm parchment neutrals (Claude-like); pale honey is the brand signal,
+// reserved for agent activity. Pale yellow never carries text: onPrimary is dark ink.
+internal object Lumen {
+    val Signal = Color(0xFFE9B949)        // honey: dots, beads, running send button
+    val SignalDark = Color(0xFFF2CC6B)
+    val Pale = Color(0xFFFBEFC8)          // brand container / highlights
+    val Ink = Color(0xFF2B2416)           // text/icons on brand
+    val Aurora = listOf(Color(0xFFF2CC6B), Color(0xFFE9B949), Color(0xFFF7E2A4))
+    val Approve = Color(0xFFD9653B)       // approvals: coral, clearly apart from honey
+    val Ok = Color(0xFF3F9B5A)
+    val Error = Color(0xFFD13B2E)
+}
 private val LightPalette = lightColorScheme(
-    primary = Color(0xFF6658C7), onPrimary = Color.White,
-    primaryContainer = Color(0xFFEEEBFA), onPrimaryContainer = Color(0xFF373F97),
-    secondary = Color(0xFF54655D), secondaryContainer = Color(0xFFE1EEE6),
-    tertiary = Color(0xFF99682E), tertiaryContainer = Color(0xFFFFEACD),
-    background = Color(0xFFF8F9FB), onBackground = Color(0xFF20212A),
-    surface = Color(0xFFFEFEFF), onSurface = Color(0xFF20212A),
-    surfaceVariant = Color(0xFFEEEFF4), onSurfaceVariant = Color(0xFF737582),
-    surfaceContainerLowest = Color.White, surfaceContainerLow = Color(0xFFF3F3F8),
-    surfaceContainer = Color(0xFFEEEFF5), surfaceContainerHigh = Color(0xFFE8EAF1),
-    surfaceContainerHighest = Color(0xFFE2E4EC),
-    outline = Color(0xFF8A8F9D), outlineVariant = Color(0xFFE7E8EE),
-    error = Color(0xFFAD4544), errorContainer = Color(0xFFFFEAE7),
+    primary = Color(0xFF8A6510), onPrimary = Color.White,  // readable honey for text/icons on cream
+    primaryContainer = Color(0xFFF7EFD9), onPrimaryContainer = Color(0xFF5A4410),  // cream accent
+    secondary = Color(0xFF5E5C57), secondaryContainer = Color(0xFFF7EFD9), onSecondaryContainer = Color(0xFF2A2721),
+    tertiary = Lumen.Approve, tertiaryContainer = Color(0xFFFBE4DA), onTertiaryContainer = Color(0xFF6B2A12),
+    background = Color(0xFFFFFFFF), onBackground = Color(0xFF1C1C1A),
+    surface = Color(0xFFFFFFFF), onSurface = Color(0xFF1C1C1A),
+    surfaceVariant = Color(0xFFF2F2F0), onSurfaceVariant = Color(0xFF76746E),
+    surfaceContainerLowest = Color.White, surfaceContainerLow = Color(0xFFF8F8F6),
+    surfaceContainer = Color(0xFFF3F3F1), surfaceContainerHigh = Color(0xFFEBEBE8),
+    surfaceContainerHighest = Color(0xFFE0DFDB),
+    outline = Color(0xFFB4B2AC), outlineVariant = Color(0xFFE7E6E2),
+    error = Lumen.Error, errorContainer = Color(0xFFFBE3E0),
 )
 private val DarkPalette = darkColorScheme(
-    primary = Color(0xFFAAA7FF), primaryContainer = Color(0xFF343B73),
-    background = Color(0xFF141419), surface = Color(0xFF1D1D24),
-    surfaceContainerLow = Color(0xFF1C202C), surfaceContainer = Color(0xFF232837),
-    surfaceContainerHigh = Color(0xFF2B3141), outlineVariant = Color(0xFF353C4E),
-    onSurface = Color(0xFFE7EAF3), onSurfaceVariant = Color(0xFFA3ADC0),
+    primary = Lumen.SignalDark, onPrimary = Lumen.Ink, primaryContainer = Color(0xFF4A3B14), onPrimaryContainer = Lumen.Pale,
+    tertiary = Color(0xFFE8825E), tertiaryContainer = Color(0xFF4F2312),
+    background = Color(0xFF1A1915), onBackground = Color(0xFFF2EFE6), surface = Color(0xFF24231E), onSurface = Color(0xFFF2EFE6),
+    surfaceVariant = Color(0xFF302E28), surfaceContainerLow = Color(0xFF22211C), surfaceContainer = Color(0xFF2B2A24),
+    surfaceContainerHigh = Color(0xFF35332C), surfaceContainerHighest = Color(0xFF403E36),
+    outlineVariant = Color(0xFF3D3B33), onSurfaceVariant = Color(0xFFADA796), error = Color(0xFFF26B5E),
 )
 
 /** Explicit light default. Surface translucency never blurs its foreground content. */
@@ -37,20 +50,21 @@ fun ExperienceTheme(darkTheme: Boolean = false, content: @Composable () -> Unit)
     MaterialTheme(
         colorScheme = if (darkTheme) DarkPalette else LightPalette,
         typography = Typography(
-            headlineLarge = TextStyle(fontSize = 27.sp, lineHeight = 34.sp, fontWeight = FontWeight.SemiBold),
-            headlineSmall = TextStyle(fontSize = 23.sp, lineHeight = 30.sp, fontWeight = FontWeight.SemiBold),
-            titleLarge = TextStyle(fontSize = 20.sp, lineHeight = 26.sp, fontWeight = FontWeight.SemiBold),
-            titleMedium = TextStyle(fontSize = 17.sp, lineHeight = 23.sp, fontWeight = FontWeight.SemiBold),
-            titleSmall = TextStyle(fontSize = 14.sp, lineHeight = 20.sp, fontWeight = FontWeight.Medium),
-            bodyLarge = TextStyle(fontSize = 16.sp, lineHeight = 25.sp),
-            bodyMedium = TextStyle(fontSize = 14.sp, lineHeight = 21.sp),
-            bodySmall = TextStyle(fontSize = 12.sp, lineHeight = 18.sp),
-            labelLarge = TextStyle(fontSize = 14.sp, lineHeight = 20.sp, fontWeight = FontWeight.Medium),
-            labelMedium = TextStyle(fontSize = 12.sp, lineHeight = 17.sp, fontWeight = FontWeight.Medium),
-            labelSmall = TextStyle(fontSize = 11.sp, lineHeight = 15.sp, fontWeight = FontWeight.Medium),
+            displaySmall = TextStyle(fontSize = 34.sp, lineHeight = 41.sp, fontWeight = FontWeight.Bold),
+            headlineLarge = TextStyle(fontSize = 34.sp, lineHeight = 41.sp, fontWeight = FontWeight.Bold),
+            headlineSmall = TextStyle(fontSize = 22.sp, lineHeight = 28.sp, fontWeight = FontWeight.Bold),
+            titleLarge = TextStyle(fontSize = 20.sp, lineHeight = 25.sp, fontWeight = FontWeight.SemiBold),
+            titleMedium = TextStyle(fontSize = 17.sp, lineHeight = 22.sp, fontWeight = FontWeight.SemiBold),
+            titleSmall = TextStyle(fontSize = 15.sp, lineHeight = 20.sp, fontWeight = FontWeight.SemiBold),
+            bodyLarge = TextStyle(fontSize = 17.sp, lineHeight = 27.sp),
+            bodyMedium = TextStyle(fontSize = 15.sp, lineHeight = 22.sp),
+            bodySmall = TextStyle(fontSize = 13.sp, lineHeight = 18.sp),
+            labelLarge = TextStyle(fontSize = 15.sp, lineHeight = 20.sp, fontWeight = FontWeight.SemiBold),
+            labelMedium = TextStyle(fontSize = 13.sp, lineHeight = 18.sp, fontWeight = FontWeight.Medium),
+            labelSmall = TextStyle(fontSize = 12.sp, lineHeight = 16.sp, fontWeight = FontWeight.Medium),
         ),
-        shapes = Shapes(extraSmall = RoundedCornerShape(8.dp), small = RoundedCornerShape(12.dp),
-            medium = RoundedCornerShape(18.dp), large = RoundedCornerShape(24.dp), extraLarge = RoundedCornerShape(30.dp)),
+        shapes = Shapes(extraSmall = RoundedCornerShape(8.dp), small = RoundedCornerShape(14.dp),
+            medium = RoundedCornerShape(18.dp), large = RoundedCornerShape(28.dp), extraLarge = RoundedCornerShape(34.dp)),
         content = content,
     )
 }

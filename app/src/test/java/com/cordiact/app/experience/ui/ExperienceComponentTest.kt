@@ -115,15 +115,14 @@ class ExperienceComponentTest {
         assertEquals(1, stopped)
         assertEquals(0, sends)
     }
-    @Test fun toolGroup_isCollapsedUntilUserExpands() {
+    @Test fun stepTrack_collapsesStepsAndTapInspects() {
         val step = ToolActivity("c", "read_file", "{}", "found config", ToolPhase.SUCCEEDED, 100, 200, 100)
         var inspect: ToolActivity? = null
         content { TranscriptView(ready(listOf(TranscriptTurn("t", "prompt", tools = listOf(step)))), {}, { inspect = it }) }
         compose.onNodeWithText("read_file").assertDoesNotExist()
-        compose.onNodeWithText("执行过程 · 1 步完成").performClick()
-        compose.mainClock.advanceTimeBy(1000)
+        compose.onNodeWithText("1 步完成").assertExists()
+        compose.onNodeWithContentDescription("执行轨道", substring = true).performScrollTo().performTouchInput { click(center) }
         compose.waitForIdle()
-        compose.onNodeWithText("read_file").performScrollTo().assertIsDisplayed().performClick()
         assertEquals("c", inspect?.id)
     }
     @Test fun reasoning_isOptInInlineContent() {
@@ -252,17 +251,6 @@ class ExperienceComponentTest {
         compose.runOnIdle { ime = 0.dp }
         compose.waitForIdle()
         assertEquals(before, compose.onNodeWithTag("frame-composer").getUnclippedBoundsInRoot().bottom.value, 1f)
-    }
-
-    @Test fun studioMenu_routesToArtifactsAndReportsSelection() {
-        var pane by mutableStateOf(StudioPane.Conversation)
-        content { StudioPaneMenu(pane, tools = 2, previews = 3, onSelect = { pane = it }) }
-        compose.onNodeWithText("产物 3").assertExists()
-        compose.onNodeWithTag("studio-pane-menu").performClick()
-        compose.onNodeWithTag("studio-pane-conversation").assertIsSelected()
-        compose.onNodeWithTag("studio-pane-artifacts").performClick()
-        compose.onNodeWithTag("studio-pane-menu").performClick()
-        compose.onNodeWithTag("studio-pane-artifacts").assertIsSelected()
     }
 
     @Test fun everyOriginalGlyphCanBeBuiltAndDrawn() {

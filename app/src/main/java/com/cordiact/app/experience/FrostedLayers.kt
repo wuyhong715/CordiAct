@@ -39,7 +39,7 @@ internal fun FrostedSurface(
         val refraction = if (Build.VERSION.SDK_INT >= 33) Modifier.edgeRefraction() else Modifier
         Box(Modifier.matchParentSize().then(refraction).hazeEffect(source) {
             backgroundColor = colors.background
-            blurRadius = 16.dp
+            blurRadius = 24.dp
             inputScale = HazeInputScale.Auto
             noiseFactor = .018f
             tints = listOf(HazeTint(colors.surface.copy(alpha = .62f)))

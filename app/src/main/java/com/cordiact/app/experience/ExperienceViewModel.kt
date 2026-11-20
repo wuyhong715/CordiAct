@@ -143,6 +143,10 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
     }
 
     fun selectSession(id: String, onSelected: () -> Unit = {}) = loadSession(id, null, onSelected = onSelected)
+    /** Used by landscape navigation: no speculative controller selection or silent failure. */
+    internal fun selectWorkbenchSession(id: String, shouldCommit: () -> Boolean, complete: () -> Unit) =
+        loadSession(id, null, onSelected = complete, onFailed = complete, shouldCommit = shouldCommit)
+
     fun selectWorkspace(id: String, onSelected: () -> Unit = {}) = loadSession(null, id, onSelected = onSelected)
     fun newSession(workspaceId: String? = mutable.value.workspace?.id, onSelected: () -> Unit = {}) =
         loadSession(null, workspaceId, create = true, onSelected = onSelected)
@@ -261,10 +265,11 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
 
     private fun loadSession(
         sessionId: String?, workspaceId: String?, create: Boolean = false,
-        newWorkspaceName: String? = null, onSelected: () -> Unit = {},
+        newWorkspaceName: String? = null, onSelected: () -> Unit = {}, onFailed: () -> Unit = {},
+        shouldCommit: () -> Boolean = { true },
     ) {
         // Serialize user navigation and mutations: a rapid double tap must not create two sessions.
-        if (loadingSession) return
+        if (loadingSession) { onFailed(); return }
         if (newWorkspaceName != null) {
             val error = sidebarNameError(newWorkspaceName)
             if (error != null) { mutable.update { it.copy(error = error) }; return }
@@ -304,6 +309,19 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
                         app.modelAdapter.models(), readTranscript(workspace.id, selected.id), sidebar)
                 }
                 if (version != selectionVersion) return@launch
+                reconcile(snapshot.selected.id, snapshot.messages)
+                val preferred = composer.value.model ?: mutable.value.model ?: app.getSharedPreferences("cordiact.settings.models", android.content.Context.MODE_PRIVATE).let { prefs ->
+                    snapshot.models.firstOrNull { it.id.providerId == prefs.getString("provider", null) && it.id.modelId == prefs.getString("model", null) }?.id
+                }
+                val model = snapshot.models.find { it.id == preferred }?.id
+                    ?: snapshot.models.firstOrNull()?.id
+                val prepared = composerController.prepareSession(snapshot.selected.id, snapshot.workspace.id, snapshot.models, model)
+                if (version != selectionVersion || !shouldCommit()) {
+                    mutable.update { it.copy(loading = false) }
+                    loadingSession = false
+                    onFailed()
+                    return@launch
+                }
                 selectionMutex.withLock {
                     withContext(Dispatchers.IO) {
                         val previous = app.workspaceManager.activeWorkspace().id
@@ -316,24 +334,24 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
                         }
                     }
                 }
-                reconcile(snapshot.selected.id, snapshot.messages)
-                val preferred = composer.value.model ?: mutable.value.model ?: app.getSharedPreferences("cordiact.settings.models", android.content.Context.MODE_PRIVATE).let { prefs ->
-                    snapshot.models.firstOrNull { it.id.providerId == prefs.getString("provider", null) && it.id.modelId == prefs.getString("model", null) }?.id
-                }
-                val model = snapshot.models.find { it.id == preferred }?.id
-                    ?: snapshot.models.firstOrNull()?.id
-                composerController.open(snapshot.selected.id, snapshot.workspace.id, snapshot.models, model)
-                composer.value.model?.let { selected -> withContext(Dispatchers.IO) {
-                    com.cordiact.app.model.ConversationModelSelectionStore(app).setForSession(snapshot.selected.id, selected)
-                } }
-                if (version != selectionVersion) return@launch
+                composerController.bindSession(snapshot.selected.id, snapshot.workspace.id, prepared)
                 mutable.update { it.copy(loading = false, workspace = snapshot.workspace, workspaces = snapshot.workspaces,
                     sessions = snapshot.sessions, sidebar = snapshot.sidebar, sessionId = snapshot.selected.id, models = snapshot.models, providerNames = app.modelProviders.providers().associate { it.providerId to it.displayName }, model = composer.value.model,
                     turns = cache[snapshot.selected.id].orEmpty(), error = null) }
+                val selected = prepared.model
+                if (selected != null) viewModelScope.launch(Dispatchers.IO) {
+                    runCatching { com.cordiact.app.model.ConversationModelSelectionStore(app).setForSession(snapshot.selected.id, selected) }
+                }
+                loadingSession = false
                 onSelected()
             } catch (cancel: CancellationException) { throw cancel }
-            catch (error: Exception) { if (version == selectionVersion) mutable.update { it.copy(loading = false, error = error.message ?: "读取会话失败") } }
-            finally { if (version == selectionVersion) loadingSession = false }
+            catch (error: Exception) {
+                if (version == selectionVersion) {
+                    mutable.update { it.copy(loading = false, error = error.message ?: "读取会话失败") }
+                    loadingSession = false
+                    onFailed()
+                }
+            } finally { if (version == selectionVersion) loadingSession = false }
         }
     }
 
@@ -468,6 +486,47 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
         }
     }
 
+
+    // Command deck (landscape): every open conversation plus its sub-agents, as lanes of one tree.
+    private val graphState = MutableStateFlow<List<GraphLane>>(emptyList())
+    val graph = graphState.asStateFlow()
+    private var graphJob: Job? = null
+
+    fun refreshGraph(sessionIds: List<String>) {
+        if (sessionIds.isEmpty()) return
+        val current = mutable.value
+        // Cache is access-ordered: read it on the main thread only.
+        val known = sessionIds.associateWith { id -> if (id == current.sessionId) current.turns else cache[id] }
+        graphJob?.cancel()
+        graphJob = viewModelScope.launch {
+            val lanes = try {
+                withContext(Dispatchers.IO) {
+                    val out = mutableListOf<GraphLane>()
+                    val seen = hashSetOf<String>()
+                    fun lane(session: ConversationSession, turns: List<TranscriptTurn>?) {
+                        if (!seen.add(session.id)) return
+                        val resolved = turns ?: restoreTranscript(readTranscript(session.workspaceId, session.id))
+                        out += GraphLane(session.id, session.agentLabel ?: session.title.ifBlank { "新对话" }, session.kind,
+                            session.parentSessionId, session.createdAtMillis,
+                            resolved.mapIndexed { i, turn -> GraphNode(session.id, turn, i) },
+                            session.id in current.runningSessionIds || resolved.any { it.isRunning })
+                    }
+                    val roots = sessionIds.mapNotNull { app.sessions.getSession(it) }
+                    roots.forEach { lane(it, known[it.id]) }
+                    // Two levels of delegation are enough for a phone; deeper agents fold into their parent.
+                    var parents = roots.map { it.id }.toSet()
+                    repeat(2) {
+                        val children = roots.map { it.workspaceId }.distinct().flatMap { ws -> app.sessions.listSessions(ws) }
+                            .filter { it.parentSessionId in parents && it.kind != SessionKind.USER }
+                        children.forEach { lane(it, null) }
+                        parents = children.map { it.id }.toSet()
+                    }
+                    out
+                }
+            } catch (cancel: CancellationException) { throw cancel } catch (_: Exception) { return@launch }
+            graphState.value = lanes
+        }
+    }
 
     fun decide(requestId: String, approved: Boolean) {
         val current = mutable.value
