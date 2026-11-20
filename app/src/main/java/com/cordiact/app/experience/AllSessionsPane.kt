@@ -32,7 +32,6 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
 /** Owns the body only. The overview still owns system bars, header, settings and footer. */
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun AllSessionsPane(
     state: ExperienceState,
@@ -150,11 +149,16 @@ internal fun AllSessionsPane(
                             }
                             Text("会话状态", Modifier.padding(top = 10.dp, bottom = 2.dp).semantics { heading() },
                                 style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            // Use stable Row/Column APIs: the packaged Compose lacks the FlowRow overflow overload.
+                            val compactLabels = LocalConfiguration.current.fontScale <= 1.15f
+                            val statusChips: @Composable () -> Unit = {
                                 OverviewStatus.entries.forEach { item ->
                                     FilterChip(status == item, { changeStatus(item) }, { Text(item.label) })
                                 }
                             }
+                            if (compactLabels && railWidth >= 204.dp) {
+                                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) { statusChips() }
+                            } else Column { statusChips() }
                         }
                     }
                     VerticalDivider()
@@ -165,9 +169,12 @@ internal fun AllSessionsPane(
                 }
             } else {
                 searchBox()
-                FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    if (!archived) {
-                        ScopeMenu(selectedWorkspace?.name ?: "所有工作区", selectedWorkspace != null) { dismiss ->
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    if (!archived) Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically) {
+                        ScopeMenu(selectedWorkspace?.name ?: "所有工作区", selectedWorkspace != null,
+                            modifier = Modifier.weight(1f, fill = false)) { dismiss ->
                             DropdownMenuItem(text = { Text("所有工作区") }, onClick = { changeWorkspace(null); dismiss() },
                                 trailingIcon = if (selectedWorkspace == null) ({ AppGlyph(GlyphName.Check) }) else null)
                             state.sidebar.forEach { group ->
@@ -175,14 +182,14 @@ internal fun AllSessionsPane(
                                     trailingIcon = if (selectedWorkspace?.id == group.id) ({ AppGlyph(GlyphName.Check) }) else null)
                             }
                         }
-                        ScopeMenu(if (status == OverviewStatus.ALL) "全部状态" else status.label, status != OverviewStatus.ALL) { dismiss ->
+                        ScopeMenu(if (status == OverviewStatus.ALL) "全部状态" else status.label, status != OverviewStatus.ALL,
+                            modifier = Modifier.weight(1f, fill = false)) { dismiss ->
                             OverviewStatus.entries.forEach { item ->
                                 DropdownMenuItem(text = { Text(item.label) }, onClick = { changeStatus(item); dismiss() },
                                     trailingIcon = if (status == item) ({ AppGlyph(GlyphName.Check) }) else null)
                             }
                         }
-                    }
-                    Spacer(Modifier.weight(1f))
+                    } else Spacer(Modifier.weight(1f))
                     manage()
                 }
                 resultList(Modifier.weight(1f))
@@ -230,9 +237,11 @@ internal fun AllSessionsPane(
 }
 
 @Composable
-private fun ScopeMenu(label: String, active: Boolean, content: @Composable ColumnScope.(() -> Unit) -> Unit) {
+private fun ScopeMenu(label: String, active: Boolean, modifier: Modifier = Modifier,
+    content: @Composable ColumnScope.(() -> Unit) -> Unit,
+) {
     var open by remember { mutableStateOf(false) }
-    Box {
+    Box(modifier) {
         FilterChip(active, { open = true }, { Text(label, Modifier.widthIn(max = 120.dp), maxLines = 1, overflow = TextOverflow.Ellipsis) },
             trailingIcon = { AppGlyph(GlyphName.ChevronDown, modifier = Modifier.size(14.dp)) })
         DropdownMenu(open, { open = false }) { content { open = false } }
