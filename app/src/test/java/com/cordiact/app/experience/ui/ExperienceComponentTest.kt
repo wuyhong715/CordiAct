@@ -115,15 +115,14 @@ class ExperienceComponentTest {
         assertEquals(1, stopped)
         assertEquals(0, sends)
     }
-    @Test fun toolGroup_isCollapsedUntilUserExpands() {
+    @Test fun stepTrack_collapsesStepsAndTapInspects() {
         val step = ToolActivity("c", "read_file", "{}", "found config", ToolPhase.SUCCEEDED, 100, 200, 100)
         var inspect: ToolActivity? = null
         content { TranscriptView(ready(listOf(TranscriptTurn("t", "prompt", tools = listOf(step)))), {}, { inspect = it }) }
         compose.onNodeWithText("read_file").assertDoesNotExist()
-        compose.onNodeWithText("执行过程 · 1 步完成").performClick()
-        compose.mainClock.advanceTimeBy(1000)
+        compose.onNodeWithText("1 步完成").assertExists()
+        compose.onNodeWithContentDescription("执行轨道", substring = true).performScrollTo().performTouchInput { click(center) }
         compose.waitForIdle()
-        compose.onNodeWithText("read_file").performScrollTo().assertIsDisplayed().performClick()
         assertEquals("c", inspect?.id)
     }
     @Test fun reasoning_isOptInInlineContent() {

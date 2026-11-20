@@ -82,7 +82,7 @@ internal fun ComposerBar(state: ExperienceState, composer: ComposerState, contro
                 if (composer.localOnlyCount > 0) TextButton(onClick = { controller.popover(ComposerPopover.Model) }) { Text("换模型") }
             }
         }
-        com.cordiact.app.experience.FrostedSurface(
+        com.cordiact.app.experience.FrostedSurface(radius = 28.dp,
             modifier = Modifier.fillMaxWidth().animateContentSize(tween(duration))) {
             Column(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp)) {
                 AnimatedVisibility(composer.attachments.isNotEmpty(), enter = expandVertically(tween(duration)) + fadeIn(), exit = shrinkVertically(tween(duration)) + fadeOut()) {
@@ -156,14 +156,14 @@ internal fun ComposerBar(state: ExperienceState, composer: ComposerState, contro
 private fun SendAction(state: ExperienceState, composer: ComposerState, waiting: Boolean, onClick: () -> Unit) {
     val duration = motionDuration(Motion.Standard)
     val enabled = !state.loading && !state.stopping && (state.running || waiting || (composer.model != null && composer.sendAvailability in setOf(ComposerRules.SendAvailability.READY, ComposerRules.SendAvailability.WAIT_FOR_ATTACHMENTS)))
-    val color by animateColorAsState(if (enabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceContainerHigh, tween(duration))
+    val color by animateColorAsState(when { !enabled -> MaterialTheme.colorScheme.surfaceContainerHigh; state.running -> MaterialTheme.colorScheme.primary; else -> MaterialTheme.colorScheme.onSurface }, tween(duration))
     IconButton(onClick, enabled = enabled, modifier = Modifier.size(48.dp).testTag(if (state.running) "stop-generation" else "send-message")) {
         Surface(color = color, shape = CircleShape) {
             Box(Modifier.size(36.dp), contentAlignment = Alignment.Center) {
                 if (waiting || state.stopping) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
                 else AnimatedContent(state.running, label = "send-stop", transitionSpec = { fadeIn(tween(duration)) togetherWith fadeOut(tween(duration)) }) { running ->
                     AppGlyph(if (running) GlyphName.Stop else GlyphName.Send, if (running) "停止当前回合" else "发送消息",
-                        tint = if (enabled) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant)
+                        tint = if (!enabled) MaterialTheme.colorScheme.onSurfaceVariant else if (state.running) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.surface)
                 }
             }
         }

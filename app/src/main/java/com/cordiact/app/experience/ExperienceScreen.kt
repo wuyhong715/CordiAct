@@ -107,12 +107,19 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
             Box(Modifier.fillMaxSize()) {
                 ExperienceFrame(
                     top = {
-                    Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
-                        FrostedSurface(radius = 24.dp) { IconButton(onClick = { if (wide) showWideSidebar = !showWideSidebar else scope.launch { drawer.open() } }, modifier = Modifier.testTag("open-navigation")) { AppGlyph(GlyphName.Menu, if (wide && showWideSidebar) "收起会话侧栏" else "打开工作区和会话") } }
-                        Column(Modifier.weight(1f).padding(horizontal = 6.dp)) {
-                            Text(state.workspace?.name ?: "CordiAct", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            Text(state.sessions.find { it.id == state.sessionId }?.title?.ifBlank { "新对话" } ?: "新对话", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        }
+                    val openApprovals = {
+                        viewModel.composerController.popover(null)
+                        approvalId = (state.currentApprovals.firstOrNull() ?: state.approvals.firstOrNull())?.id
+                    }
+                    LumenTopChrome(
+                        workspace = state.workspace?.name ?: "CordiAct",
+                        session = state.sessions.find { it.id == state.sessionId }?.title?.ifBlank { "新对话" } ?: "新对话",
+                        mode = state.islandMode(),
+                        menuLabel = "打开会话",
+                        onMenu = { if (wide) showWideSidebar = !showWideSidebar else scope.launch { drawer.open() } },
+                        onIsland = { pane = if (pane == StudioPane.Conversation && state.turns.any { it.tools.isNotEmpty() }) StudioPane.Activity else StudioPane.Conversation },
+                        onApprovals = openApprovals,
+                    ) {
                         StudioPaneMenu(pane, state.activeTools,
                             com.cordiact.app.render.PreviewInbox.unseenCount(state.sessionId),
                             onSelect = { pane = it })
@@ -133,13 +140,6 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
                     }
                     },
                     bottom = {
-                    WorkbenchDock(state,
-                        onApprovals = {
-                            viewModel.composerController.popover(null)
-                            approvalId = (state.currentApprovals.firstOrNull() ?: state.approvals.firstOrNull())?.id
-                        },
-                        onTrace = { pane = StudioPane.Activity },
-                    )
                     if (state.undoArchivedSessionId != null) {
                         Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp), verticalAlignment = Alignment.CenterVertically) {
                             Text("会话已归档，运行任务不受影响", Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
