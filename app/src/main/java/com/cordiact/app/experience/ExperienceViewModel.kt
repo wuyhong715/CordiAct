@@ -469,6 +469,47 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
     }
 
 
+    // Command deck (landscape): every open conversation plus its sub-agents, as lanes of one tree.
+    private val graphState = MutableStateFlow<List<GraphLane>>(emptyList())
+    val graph = graphState.asStateFlow()
+    private var graphJob: Job? = null
+
+    fun refreshGraph(sessionIds: List<String>) {
+        if (sessionIds.isEmpty()) return
+        val current = mutable.value
+        // Cache is access-ordered: read it on the main thread only.
+        val known = sessionIds.associateWith { id -> if (id == current.sessionId) current.turns else cache[id] }
+        graphJob?.cancel()
+        graphJob = viewModelScope.launch {
+            val lanes = try {
+                withContext(Dispatchers.IO) {
+                    val out = mutableListOf<GraphLane>()
+                    val seen = hashSetOf<String>()
+                    fun lane(session: ConversationSession, turns: List<TranscriptTurn>?) {
+                        if (!seen.add(session.id)) return
+                        val resolved = turns ?: restoreTranscript(readTranscript(session.workspaceId, session.id))
+                        out += GraphLane(session.id, session.agentLabel ?: session.title.ifBlank { "新对话" }, session.kind,
+                            session.parentSessionId, session.createdAtMillis,
+                            resolved.mapIndexed { i, turn -> GraphNode(session.id, turn, i) },
+                            session.id in current.runningSessionIds || resolved.any { it.isRunning })
+                    }
+                    val roots = sessionIds.mapNotNull { app.sessions.getSession(it) }
+                    roots.forEach { lane(it, known[it.id]) }
+                    // Two levels of delegation are enough for a phone; deeper agents fold into their parent.
+                    var parents = roots.map { it.id }.toSet()
+                    repeat(2) {
+                        val children = roots.map { it.workspaceId }.distinct().flatMap { ws -> app.sessions.listSessions(ws) }
+                            .filter { it.parentSessionId in parents && it.kind != SessionKind.USER }
+                        children.forEach { lane(it, null) }
+                        parents = children.map { it.id }.toSet()
+                    }
+                    out
+                }
+            } catch (cancel: CancellationException) { throw cancel } catch (_: Exception) { return@launch }
+            graphState.value = lanes
+        }
+    }
+
     fun decide(requestId: String, approved: Boolean) {
         val current = mutable.value
         if (requestId in current.decidingApprovals || current.approvals.none { it.id == requestId }) return

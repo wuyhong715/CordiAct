@@ -87,6 +87,23 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
         }
     }
     val closeSidebar: () -> Unit = { overview = false }
+    val ownerLabel: (com.cordiact.core.action.ApprovalOwner?) -> String = { owner ->
+        val group = owner?.let { key -> state.sidebar.firstOrNull { it.id == key.workspaceId } }
+        val title = group?.sessions?.firstOrNull { it.id == owner.sessionId }?.title
+        when {
+            owner == null -> "全局请求"
+            group == null -> "工作区审批"
+            title != null -> "${group.name} / $title"
+            owner.sessionId != null -> "${group.name} / 其他会话"
+            else -> "${group.name} / 工作区请求"
+        }
+    }
+    val configuration = LocalConfiguration.current
+    // Phone held sideways: the transcript becomes a three-pane command deck.
+    val deckMode = configuration.screenWidthDp > configuration.screenHeightDp && configuration.screenWidthDp >= 720
+    val graph by viewModel.graph.collectAsStateWithLifecycle()
+    // Hoisted above the per-tab saveable scope: focusing a node in another session switches tabs.
+    var deckFocus by rememberSaveable { mutableStateOf<String?>(null) }
     val closeAfterSelection: () -> Unit = { overview = false; inspected = null }
     BackHandler(overview) { overview = false }
     BackHandler(inspected != null && !overview) { inspected = null }
@@ -154,7 +171,15 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
                                     if (contributor != null) contributor.Content(state, tabHost)
                                     else Text("该插件已卸载", Modifier.padding(LocalChromePadding.current).padding(24.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
-                                else -> TranscriptView(state, onPrompt = { promptToInsert = it }, onInspect = { inspected = it })
+                                else -> if (deckMode) {
+                                    val openIds = tabs.tabs.filterIsInstance<com.cordiact.app.experience.tabs.WorkTab.Session>().map { it.sessionId }
+                                        .ifEmpty { listOfNotNull(state.sessionId) }
+                                    LaunchedEffect(openIds, state.sessionId, state.turns.size, state.running, state.activeTools) { viewModel.refreshGraph(openIds) }
+                                    CommandDeck(state, graph, deckFocus, { deckFocus = it },
+                                        onFocusSession = { id -> tabs.open(com.cordiact.app.experience.tabs.WorkTab.Session(id)) },
+                                        onInspect = { inspected = it }, onDecide = viewModel::decide,
+                                        onOpenApproval = { approvalId = it }, ownerLabel = ownerLabel)
+                                } else TranscriptView(state, onPrompt = { promptToInsert = it }, onInspect = { inspected = it })
                             }
                         }
                     }
@@ -186,17 +211,7 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
                     val currentIds = state.currentApprovals.mapTo(hashSetOf()) { it.id }
                     val sortedRequests = state.approvals.sortedBy { it.id !in currentIds }
                     ApprovalDecisionDialog(sortedRequests, state.decidingApprovals, state.approvalErrors,
-                        ownerLabel = { owner ->
-                            val group = owner?.let { key -> state.sidebar.firstOrNull { it.id == key.workspaceId } }
-                            val title = group?.sessions?.firstOrNull { it.id == owner.sessionId }?.title
-                            when {
-                                owner == null -> "全局请求"
-                                group == null -> "工作区审批"
-                                title != null -> "${group.name} / $title"
-                                owner.sessionId != null -> "${group.name} / 其他会话"
-                                else -> "${group.name} / 工作区请求"
-                            }
-                        },
+                        ownerLabel = ownerLabel,
                         selected = id, onSelect = { approvalId = it }, onDismiss = { approvalId = null }, onDecide = viewModel::decide)
                 }
                 inspected?.let { step ->

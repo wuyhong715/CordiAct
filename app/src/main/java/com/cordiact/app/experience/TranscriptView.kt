@@ -212,7 +212,7 @@ private fun Suggestion(title: String, prompt: String, icon: GlyphName, onPrompt:
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun TurnView(turn: TranscriptTurn, onInspect: (ToolActivity) -> Unit) {
+internal fun TurnView(turn: TranscriptTurn, onInspect: (ToolActivity) -> Unit) {
     var thoughtsExpanded by rememberSaveable(turn.id) { mutableStateOf(false) }
     var menu by remember { mutableStateOf(false) }
     val clipboard = LocalClipboardManager.current
