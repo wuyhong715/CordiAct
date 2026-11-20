@@ -2,6 +2,10 @@ package com.cordiact.app.experience
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
@@ -18,7 +22,11 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.dp
 import com.cordiact.app.experience.model.OverviewSession
 import com.cordiact.app.experience.model.OverviewStatus
@@ -83,21 +91,7 @@ internal fun AllSessionsPane(
         name = initial
     }
     val searchBox: @Composable () -> Unit = {
-        OutlinedTextField(
-            value = search, onValueChange = ::changeSearch,
-            modifier = Modifier.fillMaxWidth().testTag("all-sessions-search"),
-            placeholder = { Text(if (archived) "搜索已归档会话" else "搜索会话或工作区", maxLines = 1, overflow = TextOverflow.Ellipsis) },
-            leadingIcon = { AppGlyph(GlyphName.Search) },
-            trailingIcon = if (search.isNotEmpty()) ({
-                IconButton(onClick = { changeSearch("") }) { AppGlyph(GlyphName.Close, "清除搜索") }
-            }) else null,
-            singleLine = true, shape = RoundedCornerShape(12.dp),
-            colors = OutlinedTextFieldDefaults.colors(
-                unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-                focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-                unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = .6f),
-            ),
-        )
+        SessionSearch(search, if (archived) "搜索已归档会话" else "搜索会话或工作区", ::changeSearch)
     }
     val manage: @Composable () -> Unit = {
         SessionManagementMenu(archived, onArchive = { archived = !archived },
@@ -153,7 +147,7 @@ internal fun AllSessionsPane(
                             val compactLabels = LocalConfiguration.current.fontScale <= 1.15f
                             val statusChips: @Composable () -> Unit = {
                                 OverviewStatus.entries.forEach { item ->
-                                    FilterChip(status == item, { changeStatus(item) }, { Text(item.label) })
+                                    SessionFilterChip(item.label, status == item) { changeStatus(item) }
                                 }
                             }
                             if (compactLabels && railWidth >= 204.dp) {
@@ -237,13 +231,53 @@ internal fun AllSessionsPane(
 }
 
 @Composable
+private fun SessionSearch(value: String, hint: String, onChange: (String) -> Unit) {
+    val colors = MaterialTheme.colorScheme
+    val style = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp, lineHeight = 20.sp)
+    val interaction = remember { MutableInteractionSource() }
+    val focused by interaction.collectIsFocusedAsState()
+    BasicTextField(value, onChange, modifier = Modifier.fillMaxWidth().testTag("all-sessions-search")
+        .semantics { contentDescription = hint }, singleLine = true, textStyle = style.copy(color = colors.onSurface),
+        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+        interactionSource = interaction, cursorBrush = SolidColor(colors.primary), decorationBox = { field ->
+            Surface(shape = RoundedCornerShape(12.dp), color = colors.surfaceContainerLow,
+                border = if (focused) BorderStroke(1.dp, colors.primary) else null) {
+                Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(start = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    AppGlyph(GlyphName.Search, tint = colors.onSurfaceVariant, modifier = Modifier.size(17.dp))
+                    Box(Modifier.weight(1f).padding(vertical = 8.dp)) {
+                        if (value.isEmpty()) Text(hint, style = style, color = colors.onSurfaceVariant,
+                            maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        field()
+                    }
+                    if (value.isNotEmpty()) IconButton(onClick = { onChange("") }) {
+                        AppGlyph(GlyphName.Close, "清除搜索", modifier = Modifier.size(16.dp))
+                    } else Spacer(Modifier.width(4.dp))
+                }
+            }
+        })
+}
+
+@Composable
+private fun SessionFilterChip(label: String, active: Boolean, dropdown: Boolean = false, onClick: () -> Unit) {
+    val colors = MaterialTheme.colorScheme
+    FilterChip(selected = active, onClick = onClick, shape = RoundedCornerShape(9.dp),
+        label = { Text(label, Modifier.widthIn(max = 120.dp), style = MaterialTheme.typography.labelMedium,
+            maxLines = 1, overflow = TextOverflow.Ellipsis) },
+        trailingIcon = if (dropdown) ({ AppGlyph(GlyphName.ChevronDown,
+            modifier = Modifier.size(12.dp), tint = colors.onSurfaceVariant) }) else null,
+        border = FilterChipDefaults.filterChipBorder(enabled = true, selected = active,
+            borderColor = colors.outlineVariant, selectedBorderColor = colors.outlineVariant,
+            borderWidth = .65.dp, selectedBorderWidth = .65.dp))
+}
+
+@Composable
 private fun ScopeMenu(label: String, active: Boolean, modifier: Modifier = Modifier,
     content: @Composable ColumnScope.(() -> Unit) -> Unit,
 ) {
     var open by remember { mutableStateOf(false) }
     Box(modifier) {
-        FilterChip(active, { open = true }, { Text(label, Modifier.widthIn(max = 120.dp), maxLines = 1, overflow = TextOverflow.Ellipsis) },
-            trailingIcon = { AppGlyph(GlyphName.ChevronDown, modifier = Modifier.size(14.dp)) })
+        SessionFilterChip(label, active, dropdown = true) { open = true }
         DropdownMenu(open, { open = false }) { content { open = false } }
     }
 }
@@ -267,8 +301,9 @@ private fun WorkspaceScopeRow(label: String, active: Boolean, onClick: () -> Uni
 private fun SessionManagementMenu(archived: Boolean, onArchive: () -> Unit, onWorkspaces: () -> Unit, onAutomationTasks: () -> Unit) {
     var expanded by remember { mutableStateOf(false) }
     Box {
-        TextButton(onClick = { if (archived) onArchive() else expanded = true }) {
-            Text(if (archived) "返回全部" else "管理", maxLines = 1)
+        TextButton(onClick = { if (archived) onArchive() else expanded = true },
+            colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.onSurfaceVariant)) {
+            Text(if (archived) "返回全部" else "管理", style = MaterialTheme.typography.labelMedium, maxLines = 1)
             if (!archived) AppGlyph(GlyphName.More, modifier = Modifier.padding(start = 3.dp).size(15.dp))
         }
         DropdownMenu(expanded, { expanded = false }) {
@@ -323,7 +358,8 @@ private fun SessionResults(
                         val top = if (index == 0) 14.dp else 0.dp
                         val bottom = if (index == items.lastIndex) 14.dp else 0.dp
                         Surface(color = if (!archived && row.session.id == current) colors.primaryContainer.copy(alpha = .40f) else colors.surface,
-                            shape = RoundedCornerShape(top, top, bottom, bottom), border = BorderStroke(.65.dp, colors.outlineVariant)) {
+                            shape = RoundedCornerShape(top, top, bottom, bottom),
+                            border = BorderStroke(.5.dp, colors.outlineVariant.copy(alpha = .70f))) {
                             OverviewSessionRow(row, row.session.id == current, archived, busy,
                                 sessionTime(if (archived) row.session.archivedAtMillis ?: row.session.updatedAtMillis else row.session.updatedAtMillis, timezone, today),
                                 onOpen = { onOpen(row.session.id) }, onRename = { onRename(row) }, onPin = { onPin(row) },
@@ -353,7 +389,7 @@ private fun OverviewSessionRow(
                 horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text(title, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text(row.workspace.name + if (current && !archived) " · 当前" else "", style = MaterialTheme.typography.bodySmall,
+                    Text(row.workspace.name + if (current && !archived) " · 当前" else "", style = MaterialTheme.typography.labelSmall.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Normal),
                         color = colors.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
                 val hasState = !archived && (row.pending || row.running)

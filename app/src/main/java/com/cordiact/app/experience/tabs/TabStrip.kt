@@ -1,6 +1,5 @@
 package com.cordiact.app.experience.tabs
 
-import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -113,7 +112,7 @@ fun TabStrip(state: ExperienceState, controller: TabsController, onClose: (Strin
 @Composable
 private fun TabChip(face: TabFace, selected: Boolean, modifier: Modifier, onClick: () -> Unit, onClose: () -> Unit) {
     val colors = MaterialTheme.colorScheme
-    val width by animateDpAsState(if (selected) 168.dp else 120.dp, label = "tabw")
+    val width = if (selected) 168.dp else 120.dp
     Row(
         modifier.width(width).height(34.dp).clip(CircleShape)
             .background(if (selected) colors.surface else colors.surfaceContainer.copy(alpha = .7f))

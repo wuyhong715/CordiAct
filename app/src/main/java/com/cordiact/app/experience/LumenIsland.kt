@@ -1,11 +1,6 @@
 package com.cordiact.app.experience
 
-import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.*
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
@@ -99,38 +94,34 @@ private fun LumenIsland(workspace: String, session: String, mode: IslandMode, on
             .clickable { haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove); onTap() }
             .pointerInput(Unit) {
                 detectVerticalDragGestures(onDragEnd = { if (pulled > 48f) onPull(); pulled = 0f }) { _, dy -> pulled = (pulled + dy).coerceAtLeast(0f) }
-            }
-            .animateContentSize(spring(dampingRatio = .82f, stiffness = 380f)),
+            },
     ) {
-        AnimatedContent(mode::class, transitionSpec = { fadeIn(tween(180)) togetherWith fadeOut(tween(120)) }, label = "island") { kind ->
-            Row(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                when (kind) {
-                    IslandMode.Running::class -> {
-                        val running = mode as? IslandMode.Running
-                        SignalDot()
-                        Spacer(Modifier.width(10.dp))
-                        Text(running?.step ?: "思考中", style = MaterialTheme.typography.labelLarge, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
-                        Spacer(Modifier.width(8.dp))
-                        if (running != null) Elapsed(running.startedAt, running.done)
-                    }
-                    IslandMode.Stopping::class -> {
-                        SignalDot(Lumen.Error)
-                        Spacer(Modifier.width(10.dp))
-                        Text("正在停止", style = MaterialTheme.typography.labelLarge)
-                    }
-                    IslandMode.Approval::class -> {
-                        val approval = mode as? IslandMode.Approval
-                        AppGlyph(GlyphName.Shield, tint = Lumen.Approve, modifier = Modifier.size(16.dp))
-                        Spacer(Modifier.width(8.dp))
-                        Text(if (approval?.here != false) "待审批 ${approval?.count ?: 0} 项" else "其他会话待审批 ${approval.count} 项",
-                            style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurface)
-                        Spacer(Modifier.width(6.dp))
-                        AppGlyph(GlyphName.ChevronRight, tint = Lumen.Approve, modifier = Modifier.size(14.dp))
-                    }
-                    else -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(session, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Text(workspace, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    }
+        // Draw one mode at a time: the outgoing title must not use the incoming session's state.
+        Row(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            when (mode) {
+                is IslandMode.Running -> {
+                    SignalDot()
+                    Spacer(Modifier.width(10.dp))
+                    Text(mode.step ?: "思考中", style = MaterialTheme.typography.labelLarge, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                    Spacer(Modifier.width(8.dp))
+                    Elapsed(mode.startedAt, mode.done)
+                }
+                IslandMode.Stopping -> {
+                    SignalDot(Lumen.Error)
+                    Spacer(Modifier.width(10.dp))
+                    Text("正在停止", style = MaterialTheme.typography.labelLarge)
+                }
+                is IslandMode.Approval -> {
+                    AppGlyph(GlyphName.Shield, tint = Lumen.Approve, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text(if (mode.here) "待审批 ${mode.count} 项" else "其他会话待审批 ${mode.count} 项",
+                        style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurface)
+                    Spacer(Modifier.width(6.dp))
+                    AppGlyph(GlyphName.ChevronRight, tint = Lumen.Approve, modifier = Modifier.size(14.dp))
+                }
+                IslandMode.Idle -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(session, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(workspace, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             }
         }

@@ -6,6 +6,8 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -39,6 +41,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
@@ -75,6 +79,8 @@ internal fun CommandDeck(
     onOpenApproval: (String) -> Unit,
     ownerLabel: (ApprovalOwner?) -> String,
     modifier: Modifier = Modifier,
+    /** Bottom slot of the centre column only — never spans the side panes. */
+    composer: @Composable () -> Unit = {},
 ) {
     val timeline = remember(lanes) { lanes.chronological() }
     // Default focus: newest node of the current session; follows it while the user has not picked one.
@@ -92,28 +98,94 @@ internal fun CommandDeck(
 
     val chrome = LocalChromePadding.current
     val dir = LocalLayoutDirection.current
+    val chromeTop = chrome.calculateTopPadding()
     val pane = PaddingValues(
         start = chrome.calculateStartPadding(dir), end = chrome.calculateEndPadding(dir),
-        top = chrome.calculateTopPadding(), bottom = chrome.calculateBottomPadding(),
+        top = chromeTop, bottom = 0.dp,
     )
-    Row(modifier.fillMaxSize().testTag("command-deck")) {
-        TreePane(lanes, timeline, focused?.key, ::focus, Modifier.width(260.dp).fillMaxHeight(), pane)
-        PaneDivider()
-        Box(Modifier.weight(1f).fillMaxHeight()) {
-            if (focused == null || focusedTurn == null) {
-                Text("还没有可展示的轮次", Modifier.align(Alignment.Center), color = MaterialTheme.colorScheme.onSurfaceVariant)
-            } else Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(pane).padding(horizontal = 16.dp)) {
-                val lane = lanes.firstOrNull { it.sessionId == focused.sessionId }
-                Text(
-                    listOfNotNull(lane?.title, "第 ${focused.index + 1} 轮").joinToString(" · "),
-                    style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(bottom = 8.dp),
+    val lane = focused?.let { node -> lanes.firstOrNull { it.sessionId == node.sessionId } }
+    val roundTitle = focused?.let { node -> listOfNotNull(lane?.title, "第 ${node.index + 1} 轮").joinToString(" · ") }
+    BoxWithConstraints(modifier.fillMaxSize().testTag("command-deck")) {
+        // Three columns need real room: the approved board is 845 × 384 dp with a 485 dp centre.
+        if (maxWidth >= 720.dp) {
+            Row(Modifier.fillMaxSize()) {
+                TreePane(lanes, timeline, focused?.key, ::focus, Modifier.width(174.dp).fillMaxHeight(), pane)
+                PaneDivider()
+                FocusPane(Modifier.weight(1f), chromeTop, roundTitle, state.running, focusedTurn == null,
+                    content = { TurnView(focusedTurn!!, onInspect) },
+                    composer = composer,
                 )
-                TurnView(focusedTurn, onInspect)
+                PaneDivider()
+                QueuePane(state, timeline, onDecide, onOpenApproval, ownerLabel, ::focus, onInspect, Modifier.width(186.dp).fillMaxHeight(), pane)
+            }
+        } else {
+            // Narrow landscape: content keeps the width, the tray and the queue stay one tap away.
+            var narrowPane by rememberSaveable { mutableStateOf(1) }
+            val narrowPaneInsets = PaddingValues(
+                start = pane.calculateStartPadding(dir), end = pane.calculateEndPadding(dir),
+                top = 0.dp, bottom = 0.dp,
+            )
+            Column(Modifier.fillMaxSize().padding(top = chromeTop)) {
+                Row(Modifier.fillMaxWidth().height(48.dp).padding(horizontal = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    listOf("轨迹", "正文", "待处理").forEachIndexed { index, label ->
+                        TextButton(onClick = { narrowPane = index }, modifier = Modifier.heightIn(min = 48.dp)) {
+                            Text(label, maxLines = 1,
+                                color = if (narrowPane == index) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                    Spacer(Modifier.weight(1f))
+                    if (state.currentApprovals.isNotEmpty()) Text("${state.currentApprovals.size} 项待处理", maxLines = 1,
+                        style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                }
+                Box(Modifier.weight(1f).fillMaxWidth()) {
+                    when (narrowPane) {
+                        0 -> TreePane(lanes, timeline, focused?.key, ::focus, Modifier.fillMaxSize(), narrowPaneInsets)
+                        2 -> QueuePane(state, timeline, onDecide, onOpenApproval, ownerLabel, ::focus, onInspect, Modifier.fillMaxSize(), narrowPaneInsets)
+                        else -> FocusPane(Modifier.fillMaxSize(), 0.dp, roundTitle, state.running, focusedTurn == null,
+                            content = { TurnView(focusedTurn!!, onInspect) },
+                            composer = composer,
+                        )
+                    }
+                }
             }
         }
-        PaneDivider()
-        QueuePane(state, timeline, onDecide, onOpenApproval, ownerLabel, ::focus, onInspect, Modifier.width(280.dp).fillMaxHeight(), pane)
+    }
+}
+
+/** Centre column: one 40dp round header, its own scroll, and the command line pinned to this column only. */
+@Composable
+private fun FocusPane(
+    modifier: Modifier,
+    topPadding: androidx.compose.ui.unit.Dp,
+    title: String?,
+    running: Boolean,
+    empty: Boolean,
+    content: @Composable () -> Unit,
+    composer: @Composable () -> Unit,
+) {
+    Column(modifier.fillMaxHeight().padding(top = topPadding)) {
+        Row(Modifier.fillMaxWidth().height(40.dp).padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                title ?: "正文",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1, overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f, fill = false).semantics { contentDescription = title ?: "正文" },
+            )
+            if (running) {
+                Spacer(Modifier.width(8.dp))
+                Text("运行中", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary, maxLines = 1)
+            }
+        }
+        Box(Modifier.weight(1f).fillMaxWidth()) {
+            if (empty) {
+                Text("还没有可展示的轮次", Modifier.align(Alignment.Center), color = MaterialTheme.colorScheme.onSurfaceVariant)
+            } else Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
+                content()
+            }
+        }
+        Box(Modifier.fillMaxWidth().padding(bottom = 6.dp)) { composer() }
     }
 }
 
