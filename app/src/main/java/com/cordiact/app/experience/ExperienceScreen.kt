@@ -78,9 +78,10 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
     BackHandler(enabled = wide && showWideSidebar && inspected == null) { showWideSidebar = false }
     val sidebar: @Composable () -> Unit = {
         saveable.SaveableStateProvider("navigation-sidebar") {
+            androidx.compose.runtime.CompositionLocalProvider(LocalApprovalOwners provides state.approvalOwners) {
                 ConversationSidebar(
                     groups = state.sidebar, activeWorkspaceId = state.workspace?.id, activeSessionId = state.sessionId,
-                    runningSessionIds = state.runningSessionIds, approvalOwners = state.approvalOwners, busy = state.loading, error = state.error,
+                    runningSessionIds = state.runningSessionIds, busy = state.loading, error = state.error,
                     onClose = closeSidebar,
                     onNewSession = { workspace -> viewModel.newSession(workspace ?: state.workspace?.id, closeAfterSelection) },
                     onSelectWorkspace = { viewModel.selectWorkspace(it, closeAfterSelection) },
@@ -99,6 +100,7 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
                         openSettings("settings://tasks")
                     },
                 )
+            }
         }
     }
     val workbench: @Composable () -> Unit = {

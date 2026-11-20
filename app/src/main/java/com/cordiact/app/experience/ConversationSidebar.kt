@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import com.cordiact.core.action.ApprovalOwner
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -59,7 +60,6 @@ fun ConversationSidebar(
     onArchiveSession: (String) -> Unit = {},
     onRestoreSession: (String) -> Unit = {},
     onPinSession: (String, Boolean) -> Unit = { _, _ -> },
-    approvalOwners: Set<com.cordiact.core.action.ApprovalOwner> = emptySet(),
 ) {
     var query by rememberSaveable { mutableStateOf("") }
     var searchOpen by rememberSaveable { mutableStateOf(false) }
@@ -76,6 +76,7 @@ fun ConversationSidebar(
     var sessionEditingId by rememberSaveable { mutableStateOf<String?>(null) }
     var sessionEditorOpen by rememberSaveable { mutableStateOf(false) }
     var sessionName by rememberSaveable { mutableStateOf("") }
+    val approvalOwners = LocalApprovalOwners.current
     var filter by rememberSaveable { mutableStateOf("all") }
     var filteredCollapsed by remember(filter) { mutableStateOf(emptySet<String>()) }
     val visible = remember(groups, query, includeArchived, archiveMode, filter, runningSessionIds, approvalOwners) {
@@ -84,7 +85,7 @@ fun ConversationSidebar(
             if (filter == "all") result else result.mapNotNull { group ->
                 val sessions = group.sessions.filter { session ->
                     when (filter) {
-                        "approval" -> com.cordiact.core.action.ApprovalOwner(group.id, session.id) in approvalOwners
+                        "approval" -> ApprovalOwner(group.id, session.id) in approvalOwners
                         else -> session.id in runningSessionIds
                     }
                 }
@@ -211,7 +212,7 @@ fun ConversationSidebar(
                                         remember(session.updatedAtMillis) { java.text.SimpleDateFormat("MM-dd", java.util.Locale.getDefault()).format(java.util.Date(session.updatedAtMillis)) },
                                         Modifier.padding(start = 8.dp), style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant,
                                         maxLines = 1)
-                                    if (com.cordiact.core.action.ApprovalOwner(workspace.id, session.id) in approvalOwners) {
+                                    if (ApprovalOwner(workspace.id, session.id) in approvalOwners) {
                                         Text("待确认", Modifier.padding(start = 8.dp), color = colors.primary, style = MaterialTheme.typography.labelSmall)
                                     } else if (session.id in runningSessionIds) {
                                         Text("运行中", Modifier.padding(start = 8.dp), color = colors.primary, style = MaterialTheme.typography.labelSmall)
