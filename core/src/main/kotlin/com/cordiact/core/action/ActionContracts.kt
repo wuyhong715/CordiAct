@@ -38,9 +38,13 @@ data class ApprovalRequest(
     val details: Map<String, String> = emptyMap(),
     val riskLevel: RiskLevel = RiskLevel.MEDIUM,
     val createdAtMillis: Long = System.currentTimeMillis(),
+    /** Display/routing metadata from the trusted caller, never inferred from tool arguments. */
+    val owner: ApprovalOwner? = null,
 ) {
     enum class RiskLevel { LOW, MEDIUM, HIGH, CRITICAL }
 }
+
+data class ApprovalOwner(val workspaceId: String, val sessionId: String? = null)
 
 data class ApprovalDecision(
     val approved: Boolean,

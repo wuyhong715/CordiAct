@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import com.cordiact.core.action.ApprovalOwner
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -74,9 +75,22 @@ fun ConversationSidebar(
     var sessionEditingId by rememberSaveable { mutableStateOf<String?>(null) }
     var sessionEditorOpen by rememberSaveable { mutableStateOf(false) }
     var sessionName by rememberSaveable { mutableStateOf("") }
-    val visible = remember(groups, query, includeArchived, archiveMode) {
+    val approvalOwners = LocalApprovalOwners.current
+    var filter by rememberSaveable { mutableStateOf("all") }
+    var filteredCollapsed by remember(filter) { mutableStateOf(emptySet<String>()) }
+    val visible = remember(groups, query, includeArchived, archiveMode, filter, runningSessionIds, approvalOwners) {
         if (archiveMode) sidebarGroups(groups, query, archivedOnly = true)
-        else sidebarGroups(groups, query, includeArchived = includeArchived)
+        else sidebarGroups(groups, query, includeArchived = includeArchived).let { result ->
+            if (filter == "all") result else result.mapNotNull { group ->
+                val sessions = group.sessions.filter { session ->
+                    when (filter) {
+                        "approval" -> ApprovalOwner(group.id, session.id) in approvalOwners
+                        else -> session.id in runningSessionIds
+                    }
+                }
+                if (sessions.isEmpty()) null else group.copy(sessions = sessions)
+            }
+        }
     }
     val colors = MaterialTheme.colorScheme
     val backdrop = remember { HazeState() }
@@ -103,6 +117,8 @@ fun ConversationSidebar(
                 val emptyText = when {
                     archiveMode && query.isBlank() -> "暂无归档会话"
                     archiveMode -> "没有匹配的归档会话"
+                    filter == "running" -> "没有匹配的运行中会话"
+                    filter == "approval" -> "没有匹配的待确认会话"
                     query.isBlank() -> "暂无工作区"
                     else -> "没有匹配的对话或工作区"
                 }
@@ -112,6 +128,7 @@ fun ConversationSidebar(
             visible.forEach { workspace ->
                 val isExpanded = when {
                     archiveMode -> workspace.id !in collapsed
+                    filter != "all" -> workspace.id !in filteredCollapsed
                     query.isNotBlank() -> true
                     else -> workspace.id in expanded ||
                         (workspace.id == activeWorkspaceId && workspace.id !in collapsed)
@@ -119,7 +136,9 @@ fun ConversationSidebar(
                 item(key = "workspace:${workspace.id}") {
                     Row(Modifier.fillMaxWidth().padding(top = 2.dp), verticalAlignment = Alignment.CenterVertically) {
                         IconButton(onClick = {
-                            if (isExpanded) { expanded = expanded - workspace.id; collapsed = collapsed + workspace.id }
+                            if (filter != "all" && !archiveMode) {
+                                filteredCollapsed = if (isExpanded) filteredCollapsed + workspace.id else filteredCollapsed - workspace.id
+                            } else if (isExpanded) { expanded = expanded - workspace.id; collapsed = collapsed + workspace.id }
                             else { expanded = expanded + workspace.id; collapsed = collapsed - workspace.id }
                         }, modifier = Modifier.size(48.dp)) {
                             AppGlyph(GlyphName.ChevronDown, modifier = Modifier.rotate(if (isExpanded) 0f else -90f),
@@ -192,8 +211,10 @@ fun ConversationSidebar(
                                         remember(session.updatedAtMillis) { java.text.SimpleDateFormat("MM-dd", java.util.Locale.getDefault()).format(java.util.Date(session.updatedAtMillis)) },
                                         Modifier.padding(start = 8.dp), style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant,
                                         maxLines = 1)
-                                    if (session.id in runningSessionIds) {
-                                        Text("●", Modifier.padding(start = 8.dp), color = colors.primary, style = MaterialTheme.typography.labelSmall)
+                                    if (ApprovalOwner(workspace.id, session.id) in approvalOwners) {
+                                        Text("待确认", Modifier.padding(start = 8.dp), color = colors.primary, style = MaterialTheme.typography.labelSmall)
+                                    } else if (session.id in runningSessionIds) {
+                                        Text("运行中", Modifier.padding(start = 8.dp), color = colors.primary, style = MaterialTheme.typography.labelSmall)
                                     }
                                 }
                             }
@@ -273,14 +294,14 @@ fun ConversationSidebar(
                     Row(Modifier.heightIn(min = 48.dp).padding(start = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                         BasicTextField(query, { query = it }, Modifier.weight(1f).testTag("sidebar-search"), singleLine = true,
                             textStyle = MaterialTheme.typography.bodyMedium.copy(color = colors.onSurface),
-                            decorationBox = { field -> Box { if (query.isEmpty()) Text(if (archiveMode) "搜索归档…" else "搜索…", color = colors.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium); field() } })
+                            decorationBox = { field -> Box { if (query.isEmpty()) Text(if (archiveMode) "搜索归档…" else "搜索对话与工作区…", color = colors.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium); field() } })
                         IconButton(onClick = { query = ""; searchOpen = false }) { AppGlyph(GlyphName.Close, "收起搜索", Modifier.size(18.dp)) }
                     }
                 }
             } else Surface(onClick = { searchOpen = true }, color = colors.surfaceContainerLow, shape = RoundedCornerShape(10.dp), modifier = Modifier.weight(1f).testTag("sidebar-search-open")) {
                 Row(Modifier.heightIn(min = 48.dp).padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                     AppGlyph(GlyphName.Search, "搜索对话与工作区", Modifier.size(18.dp), tint = colors.onSurfaceVariant)
-                    Text(if (archiveMode) "搜索归档…" else "搜索…", Modifier.padding(start = 8.dp), style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant)
+                    Text(if (archiveMode) "搜索归档…" else "搜索对话与工作区…", Modifier.padding(start = 8.dp), style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant)
                 }
             }
             if (!archiveMode) {
@@ -319,12 +340,19 @@ fun ConversationSidebar(
                 Text("包含归档会话", style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant)
             }
         }
+        // Single row: the three filters fit any supported width and avoid the newer FlowRow overload.
+        if (!archiveMode) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip(selected = filter == "all", onClick = { filter = "all" }, label = { Text("全部") })
+            FilterChip(selected = filter == "running", onClick = { filter = "running" }, label = { Text("运行中") })
+            FilterChip(selected = filter == "approval", onClick = { filter = "approval" }, label = { Text("待确认") })
+        }
         if (!archiveMode) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text("工作区", Modifier.weight(1f).padding(start = 4.dp), style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant)
                 IconButton(onClick = { editingId = null; name = ""; editorOpen = true }, enabled = !busy) { AppGlyph(GlyphName.Plus, "新建工作区", Modifier.size(18.dp)) }
             }
         }
+
       }
       Row(Modifier.align(Alignment.BottomCenter).fillMaxWidth().onSizeChanged { footerHeight = it.height }
           .padding(horizontal = 12.dp, vertical = 4.dp).heightIn(min = 56.dp).testTag("sidebar-footer"), verticalAlignment = Alignment.CenterVertically) {

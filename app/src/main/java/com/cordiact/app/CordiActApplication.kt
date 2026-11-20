@@ -743,6 +743,7 @@ class CordiActApplication : Application(), androidx.work.Configuration.Provider 
                 id = java.util.UUID.randomUUID().toString(), toolName = "mcp.install",
                 summary = "安装 MCP ${config.serverName}：${java.net.URI(config.url).host}。服务器将提供可由模型调用的工具。",
                 details = mapOf("workspace" to context.workspaceId, "server" to config.serverName),
+                owner = com.cordiact.core.action.ApprovalOwner(context.workspaceId, context.sessionId),
                 riskLevel = com.cordiact.core.action.ApprovalRequest.RiskLevel.HIGH,
             )).approved
         }

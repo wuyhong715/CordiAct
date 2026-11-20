@@ -1,6 +1,7 @@
 package com.cordiact.app.security
 
 import com.cordiact.core.action.ApprovalGateway
+import com.cordiact.core.action.ApprovalOwner
 import com.cordiact.core.action.ApprovalRequest
 import com.cordiact.core.security.CredentialOperation
 import com.cordiact.core.security.HumanApprovalChannel
@@ -22,6 +23,7 @@ class ApprovalGatewayHumanChannel(
         val request = ApprovalRequest(
             id = ticket.requestId,
             toolName = "credential_vault",
+            owner = ApprovalOwner(intent.workspaceId, intent.sessionId.takeIf { it.isNotBlank() }),
             summary = summary(intent.operation),
             details = buildMap {
                 put("操作", intent.operation.name)

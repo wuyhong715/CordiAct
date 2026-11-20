@@ -2,6 +2,7 @@ package com.cordiact.core.tool
 
 import com.cordiact.core.action.ApprovalDecision
 import com.cordiact.core.action.ApprovalGateway
+import com.cordiact.core.action.ApprovalOwner
 import com.cordiact.core.action.ApprovalRequest
 import com.cordiact.core.plugin.PluginState
 import com.cordiact.core.workspace.Workspace
@@ -62,10 +63,10 @@ class ToolExecutionAuthorizationTest {
         val gateway = FakeGateway { ApprovalDecision(approved = true) }
         val plugin = plugin(executionDescriptor(), ToolExecutionAuthorizationPolicy(gateway)) { invocations++ }
 
-        plugin.invoke(context(), "priv_exec", commandArgs("id"))
+        plugin.invoke(context().copy(sessionId = "caller-session"), "priv_exec", commandArgs("id"))
         plugin.invoke(context(), "priv_exec", commandArgs("id"))
         assertEquals(2, invocations)
-        assertEquals(2, gateway.requests.size)
+        assertEquals(listOf(ApprovalOwner(WORKSPACE, "caller-session"), ApprovalOwner(WORKSPACE)), gateway.requests.map { it.owner })
     }
 
     @Test

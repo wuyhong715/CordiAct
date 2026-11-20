@@ -1,5 +1,11 @@
 package com.cordiact.app.experience.settings
 
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -18,7 +24,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 @Composable
-internal fun UsageSettingsPage(state: SettingsSnapshot) {
+internal fun UsageSettingsPage(state: SettingsSnapshot, field: String? = null) {
     val store = (LocalContext.current.applicationContext as CordiActApplication).modelUsageStore
     val health by store.health.collectAsState()
     var selected by rememberSaveable { mutableStateOf<String?>(null) }
@@ -66,14 +72,15 @@ internal fun UsageSettingsPage(state: SettingsSnapshot) {
         TextButton(onClick = { refresh++ }) { Text("重试") }
         return
     }
-    if (report.total.calls == 0L) { Text("当前范围暂无调用记录"); return }
-    UsageSection("概览") {
+    if (report.total.calls == 0L) { Text(if (field == null) "当前范围暂无调用记录" else "当前范围暂无调用记录，无法定位该结果"); return }
+    UsageSection("概览", field == "usage-overview") {
         val total = report.total
         Text("${total.calls} 次调用 · ${total.failed} 次失败 · ${total.cancelled} 次取消")
         Text("输入 ${total.input.display(total.calls)} · 输出 ${total.output.display(total.calls)} Token")
     }
+    LaunchedEffect(field) { if (field == "usage-models") modelsOpen = true }
     TextButton(onClick = { modelsOpen = !modelsOpen }) { Text(if (modelsOpen) "按模型收起" else "按模型展开") }
-    if (modelsOpen) UsageSection("提供商与模型") {
+    if (modelsOpen) UsageSection("提供商与模型", field == "usage-models") {
         report.models.forEachIndexed { index, model ->
             if (index > 0) HorizontalDivider()
             Text("${model.provider} / ${model.model}", style = MaterialTheme.typography.titleSmall)
@@ -82,12 +89,12 @@ internal fun UsageSettingsPage(state: SettingsSnapshot) {
         }
     }
     val time = remember { DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT) }
-    UsageSection("最近调用") {
+    UsageSection("最近调用", field == "usage-recent") {
         report.calls.forEachIndexed { index, call ->
             if (index > 0) HorizontalDivider()
             val status = when (call.status) { "COMPLETED" -> "完成"; "FAILED" -> "失败"; else -> "取消" }
             Text("${call.provider} / ${call.model}", style = MaterialTheme.typography.titleSmall)
-            Text("${time.format(Date(call.time))} · $status · 输入 ${call.input ?: "未知"} · 输出 ${call.output ?: "未知"}",
+            Text("${time.format(Date(call.time))} · $status · 输入 ${call.input ?: "未上报"} · 输出 ${call.output ?: "未上报"}",
                 style = MaterialTheme.typography.bodySmall)
         }
         if (report.more && size < 500) TextButton(onClick = { size += 20 }) { Text("加载更多") }
@@ -96,7 +103,22 @@ internal fun UsageSettingsPage(state: SettingsSnapshot) {
 }
 
 @Composable
-private fun UsageSection(title: String, body: @Composable ColumnScope.() -> Unit) {
-    Text(title, style = MaterialTheme.typography.titleMedium)
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+private fun UsageSection(title: String, target: Boolean, body: @Composable ColumnScope.() -> Unit) {
+    val requester = remember { BringIntoViewRequester() }
+    var placed by remember { mutableStateOf(false) }
+    var highlight by remember(target) { mutableStateOf(target) }
+    LaunchedEffect(target, placed) {
+        if (target && placed) {
+            requester.bringIntoView()
+            kotlinx.coroutines.delay(1800)
+            highlight = false
+        }
+    }
+    Text(title, Modifier.bringIntoViewRequester(requester).onGloballyPositioned { placed = true }.semantics {
+        heading()
+        if (highlight) stateDescription = "搜索定位结果"
+    }, color = if (highlight) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+        style = MaterialTheme.typography.titleMedium)
     com.cordiact.app.experience.settings.components.SettingsPanel(body)
 }

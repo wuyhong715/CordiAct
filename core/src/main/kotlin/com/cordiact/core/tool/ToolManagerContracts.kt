@@ -545,7 +545,9 @@ class ToolManagerPlugin(
         // Human authorization is enforced here, after schema/capability checks and
         // before the real executor. Every caller (model, sub-agent, tool-to-tool,
         // SSH/Termux background start) goes through this single path.
-        when (val authorization = executionPolicy.authorize(descriptor, arguments)) {
+        when (val authorization = executionPolicy.authorize(
+            descriptor, arguments, com.cordiact.core.action.ApprovalOwner(context.workspaceId, context.sessionId),
+        )) {
             is ToolExecutionAuthorization.Denied -> throw failure(
                 ToolManagerException.Code.APPROVAL_DENIED,
                 authorization.reason,

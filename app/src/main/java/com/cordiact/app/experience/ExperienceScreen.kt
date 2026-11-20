@@ -55,6 +55,7 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
     val scope = rememberCoroutineScope()
     val pager = rememberPagerState(pageCount = { windows.size })
     val saveable = rememberSaveableStateHolder()
+    var approvalId by rememberSaveable { mutableStateOf<String?>(null) }
     var inspected by remember { mutableStateOf<ToolActivity?>(null) }
     var promptToInsert by remember { mutableStateOf("") }
     var settingsLink by remember { mutableStateOf<String?>(null) }
@@ -70,18 +71,18 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
         com.cordiact.app.experience.settings.SettingsHost(settingsVm, initialLink = settingsLink) { manageModels = false; settingsLink = null; viewModel.refreshSettingsModels() }
         return
     }
-    ModalNavigationDrawer(
-        drawerState = drawer,
-        gesturesEnabled = drawer.isOpen || pager.currentPage == 0,
-        drawerContent = {
-            val drawerWidth = minOf(LocalConfiguration.current.screenWidthDp.dp * .84f, 360.dp)
-            val context = LocalContext.current
-            val closeAfterSelection: () -> Unit = { scope.launch { drawer.close() } }
-            ModalDrawerSheet(modifier = Modifier.width(drawerWidth), drawerContainerColor = MaterialTheme.colorScheme.surfaceContainerLowest) {
+    val wide = LocalConfiguration.current.screenWidthDp >= 840
+    var showWideSidebar by rememberSaveable { mutableStateOf(true) }
+    val closeSidebar: () -> Unit = { if (wide) showWideSidebar = false else scope.launch { drawer.close() } }
+    val closeAfterSelection: () -> Unit = { if (!wide) closeSidebar() }
+    BackHandler(enabled = wide && showWideSidebar && inspected == null) { showWideSidebar = false }
+    val sidebar: @Composable () -> Unit = {
+        saveable.SaveableStateProvider("navigation-sidebar") {
+            androidx.compose.runtime.CompositionLocalProvider(LocalApprovalOwners provides state.approvalOwners) {
                 ConversationSidebar(
                     groups = state.sidebar, activeWorkspaceId = state.workspace?.id, activeSessionId = state.sessionId,
                     runningSessionIds = state.runningSessionIds, busy = state.loading, error = state.error,
-                    onClose = { scope.launch { drawer.close() } },
+                    onClose = closeSidebar,
                     onNewSession = { workspace -> viewModel.newSession(workspace ?: state.workspace?.id, closeAfterSelection) },
                     onSelectWorkspace = { viewModel.selectWorkspace(it, closeAfterSelection) },
                     onSelectSession = { viewModel.selectSession(it, closeAfterSelection) },
@@ -92,30 +93,28 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
                     onRestoreSession = { viewModel.restoreSession(it) },
                     onPinSession = viewModel::pinSession,
                     onRetry = viewModel::refresh,
-                    onSettings = { scope.launch { drawer.close() }; settingsVm.reload(); openSettings() },
+                    onSettings = { closeAfterSelection(); settingsVm.reload(); openSettings() },
                     onAutomationTasks = {
-                        scope.launch { drawer.close() }
+                        closeAfterSelection()
                         settingsVm.reload()
                         openSettings("settings://tasks")
                     },
                 )
             }
-        },
-    ) {
+        }
+    }
+    val workbench: @Composable () -> Unit = {
         Surface(color = MaterialTheme.colorScheme.background, modifier = Modifier.fillMaxSize()) {
             Box(Modifier.fillMaxSize()) {
                 ExperienceFrame(
                     top = {
                     Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
-                        FrostedSurface(radius = 24.dp) { IconButton(onClick = { scope.launch { drawer.open() } }, modifier = Modifier.testTag("open-navigation")) { AppGlyph(GlyphName.Menu, "打开工作区和会话") } }
+                        FrostedSurface(radius = 24.dp) { IconButton(onClick = { if (wide) showWideSidebar = !showWideSidebar else scope.launch { drawer.open() } }, modifier = Modifier.testTag("open-navigation")) { AppGlyph(GlyphName.Menu, "打开工作区和会话") } }
                         Column(Modifier.weight(1f).padding(horizontal = 4.dp)) {
                             Text(state.workspace?.name ?: "CordiAct", style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             Text(state.sessions.find { it.id == state.sessionId }?.title ?: "你的智能工作空间", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
-                        if (state.running) Row(Modifier.padding(end = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Box(Modifier.size(6.dp).background(if (state.running) MaterialTheme.colorScheme.primary else Color(0xFF5B927C), CircleShape))
-                            Text(if (state.running) "运行中" else "就绪", style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(start = 6.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
+
                     }
                     WindowTabs(
                         selected = pager.settledPage,
@@ -128,52 +127,25 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
                     content = { viewportModifier ->
                     Column(viewportModifier) {
                     if (state.error != null) Box(Modifier.padding(horizontal = 18.dp, vertical = 5.dp)) { ErrorStrip(state.error!!, viewModel::dismissError, { openSettings() }) }
-                    HorizontalPager(state = pager, beyondViewportPageCount = 2, key = { windows[it].id }, modifier = Modifier.weight(1f).fillMaxWidth()) { page ->
+                    HorizontalPager(state = pager, userScrollEnabled = false, beyondViewportPageCount = 2, key = { windows[it].id }, modifier = Modifier.weight(1f).fillMaxWidth()) { page ->
+                        saveable.SaveableStateProvider("${state.workspace?.id}:${state.sessionId}:${windows[page].id}") {
                         when (windows[page].id) {
                             "chat" -> TranscriptView(state, onPrompt = { promptToInsert = it }, onInspect = { inspected = it })
                             "trace" -> TrajectoryView(state, onInspect = { inspected = it })
                             "preview" -> PreviewView(state, visible = pager.settledPage == 2, modifier = Modifier.padding(LocalChromePadding.current))
                         }
+                        }
                     }
                     }
                     },
                     bottom = {
-                    var approvalIndex by remember { mutableStateOf(0) }
-                    val visibleApprovalIndex = approvalIndex.coerceIn(0, (state.approvals.size - 1).coerceAtLeast(0))
-                    state.approvals.getOrNull(visibleApprovalIndex)?.let { request ->
-                        Surface(Modifier.padding(horizontal = 16.dp, vertical = 5.dp).fillMaxWidth(), shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.tertiaryContainer) {
-                            Column(Modifier.padding(13.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    AppGlyph(GlyphName.Warning, modifier = Modifier.size(17.dp))
-                                    Text("需要确认 · ${request.toolName}", Modifier.padding(start = 7.dp).weight(1f), style = MaterialTheme.typography.titleSmall)
-                                    if (state.approvals.size > 1) TextButton(onClick = {
-                                        approvalIndex = (visibleApprovalIndex + 1) % state.approvals.size
-                                    }) { Text("${visibleApprovalIndex + 1} / ${state.approvals.size} · 下一项", style = MaterialTheme.typography.labelSmall) }
-                                }
-                                Text(request.summary, style = MaterialTheme.typography.bodySmall, maxLines = 5, overflow = TextOverflow.Ellipsis)
-                                request.details.takeIf { it.isNotEmpty() }?.let { details ->
-                                    var expanded by remember(request.id) { mutableStateOf(false) }
-                                    TextButton(onClick = { expanded = !expanded }, contentPadding = PaddingValues(0.dp)) { Text(if (expanded) "收起参数" else "查看参数") }
-                                    if (expanded) SelectionContainer { Text(details.entries.joinToString("\n") { "${it.key}: ${it.value}" }, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall) }
-                                }
-                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                                    TextButton(onClick = { viewModel.decide(request.id, false) }) { Text("拒绝") }
-                                    Spacer(Modifier.width(8.dp))
-                                    FilledTonalButton(onClick = { viewModel.decide(request.id, true) }) { Text("仅本次允许") }
-                                }
-                            }
-                        }
-                    }
-                    AnimatedVisibility(state.running, enter = fadeIn(spring()) + expandVertically(spring()), exit = fadeOut() + shrinkVertically(spring())) {
-                        Row(Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 5.dp), horizontalArrangement = Arrangement.Center) {
-                            Surface(onClick = { scope.launch { pager.animateScrollToPage(1) } }, shape = CircleShape, color = MaterialTheme.colorScheme.inverseSurface) {
-                                Row(Modifier.padding(horizontal = 13.dp, vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
-                                    CircularProgressIndicator(Modifier.size(7.dp), color = MaterialTheme.colorScheme.inverseOnSurface, strokeWidth = 1.5.dp)
-                                    Text(state.turns.lastOrNull()?.tools?.lastOrNull { it.phase == ToolPhase.RUNNING }?.name ?: "Agent 正在响应", Modifier.padding(start = 8.dp).widthIn(max = 240.dp), color = MaterialTheme.colorScheme.inverseOnSurface, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                }
-                            }
-                        }
-                    }
+                    WorkbenchDock(state,
+                        onApprovals = {
+                            viewModel.composerController.popover(null)
+                            approvalId = (state.currentApprovals.firstOrNull() ?: state.approvals.firstOrNull())?.id
+                        },
+                        onTrace = { scope.launch { pager.animateScrollToPage(1) } },
+                    )
                     if (state.undoArchivedSessionId != null) {
                         Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp), verticalAlignment = Alignment.CenterVertically) {
                             Text("会话已归档，运行任务不受影响", Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
@@ -195,6 +167,23 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
                     )
                     },
                 )
+                approvalId?.let { id ->
+                    val currentIds = state.currentApprovals.mapTo(hashSetOf()) { it.id }
+                    val sortedRequests = state.approvals.sortedBy { it.id !in currentIds }
+                    ApprovalDecisionDialog(sortedRequests, state.decidingApprovals, state.approvalErrors,
+                        ownerLabel = { owner ->
+                            val group = owner?.let { key -> state.sidebar.firstOrNull { it.id == key.workspaceId } }
+                            val title = group?.sessions?.firstOrNull { it.id == owner.sessionId }?.title
+                            when {
+                                owner == null -> "全局请求"
+                                group == null -> "工作区审批"
+                                title != null -> "${group.name} / $title"
+                                owner.sessionId != null -> "${group.name} / 其他会话"
+                                else -> "${group.name} / 工作区请求"
+                            }
+                        },
+                        selected = id, onSelect = { approvalId = it }, onDismiss = { approvalId = null }, onDecide = viewModel::decide)
+                }
                 inspected?.let { step ->
                     CompactInspector(step = step, onClose = { inspected = null }, onSettings = { link -> openSettings(link) }, modifier = Modifier.align(Alignment.BottomCenter).windowInsetsPadding(WindowInsets.systemBars.union(WindowInsets.ime)))
                 }
@@ -202,6 +191,22 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
             }
         }
     }
+    if (wide) {
+        Row(Modifier.fillMaxSize()) {
+            if (showWideSidebar) {
+                Box(Modifier.width(300.dp).fillMaxHeight().windowInsetsPadding(WindowInsets.systemBars)) { sidebar() }
+                VerticalDivider()
+            }
+            Box(Modifier.weight(1f).fillMaxHeight()) { workbench() }
+        }
+    } else {
+        ModalNavigationDrawer(drawerState = drawer, gesturesEnabled = drawer.isOpen || pager.currentPage == 0,
+            drawerContent = {
+                ModalDrawerSheet(Modifier.width(minOf(LocalConfiguration.current.screenWidthDp.dp * .84f, 360.dp)),
+                    drawerContainerColor = MaterialTheme.colorScheme.surfaceContainerLowest) { sidebar() }
+            }, content = workbench)
+    }
+
 }
 
 @Composable

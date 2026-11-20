@@ -88,11 +88,17 @@ internal fun ComposerBar(state: ExperienceState, composer: ComposerState, contro
                 AnimatedVisibility(composer.attachments.isNotEmpty(), enter = expandVertically(tween(duration)) + fadeIn(), exit = shrinkVertically(tween(duration)) + fadeOut()) {
                     AttachmentTray(composer.attachments, if (state.running) null else controller::remove, if (state.running) null else controller::retry)
                 }
+                if (state.running && composer.text.isNotBlank()) {
+                    Text("本轮运行中，草稿已保留", Modifier.padding(horizontal = 10.dp),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall)
+                }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Box(Modifier.weight(1f)) {
                         CompletionEditor(context.applicationContext as? com.cordiact.app.CordiActApplication,
                             state.sessionId.orEmpty(), state.workspace?.id, composer.text,
-                            !state.loading && !waiting, controller::text)
+                            !state.loading && !waiting, controller::text,
+                            onSubmit = { if (!state.loading && !state.running && !state.stopping && !waiting &&
+                                composer.model != null && composer.sendAvailability == ComposerRules.SendAvailability.READY) submit() })
                     }
 
                 }

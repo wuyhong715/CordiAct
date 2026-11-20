@@ -76,6 +76,7 @@ fun SettingsHost(vm: SettingsViewModel, initialLink: String? = null, onBack: () 
     var requestSearchFocus by remember { mutableStateOf(false) }
     var searchActive by rememberSaveable { mutableStateOf(false) }
     var settingsQuery by rememberSaveable { mutableStateOf("") }
+    var fieldFromSearch by rememberSaveable { mutableStateOf<String?>(null) }
     var sectionFromSearch by rememberSaveable { mutableStateOf<String?>(null) }
     val searchFocus = remember { androidx.compose.ui.focus.FocusRequester() }
     val keyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
@@ -95,6 +96,7 @@ fun SettingsHost(vm: SettingsViewModel, initialLink: String? = null, onBack: () 
         if (busy || securityBusy || dirty || discardBusy) return
         focusManager.clearFocus()
         keyboard?.hide()
+        fieldFromSearch = hit.field
         sectionFromSearch = hit.section
         navigate(hit.entry.route)
     }
@@ -153,6 +155,7 @@ fun SettingsHost(vm: SettingsViewModel, initialLink: String? = null, onBack: () 
         val target = sectionFromSearch
         if (target != null && sections.any { it.id == target }) selectedSection = target
         if (route != SettingsRoute.HOME) sectionFromSearch = null
+        if (route == SettingsRoute.HOME) fieldFromSearch = null
     }
     val editor = remember(route) { SettingsEditorState() }
     val keyboardVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
@@ -223,7 +226,7 @@ fun SettingsHost(vm: SettingsViewModel, initialLink: String? = null, onBack: () 
                             if (result == SnackbarResult.ActionPerformed) vm.setCapability(workspaceId, capability.id, previous)
                         }
                     }
-                    SettingsRoute.USAGE -> UsageSettingsPage(state)
+                    SettingsRoute.USAGE -> UsageSettingsPage(state, fieldFromSearch)
                     SettingsRoute.AUDIT -> SecurityAuditPage(androidx.compose.ui.platform.LocalContext.current.applicationContext as com.cordiact.app.CordiActApplication)
                 }
             }

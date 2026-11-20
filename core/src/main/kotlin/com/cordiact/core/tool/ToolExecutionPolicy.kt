@@ -1,6 +1,7 @@
 package com.cordiact.core.tool
 
 import com.cordiact.core.action.ApprovalGateway
+import com.cordiact.core.action.ApprovalOwner
 import com.cordiact.core.action.ApprovalRequest
 import java.security.MessageDigest
 import java.util.UUID
@@ -154,7 +155,7 @@ class ToolExecutionAuthorizationPolicy(
     private val approvalTimeoutMillis: Long = 60_000L,
 ) {
 
-    fun authorize(descriptor: ToolDescriptor, arguments: ToolArguments): ToolExecutionAuthorization {
+    fun authorize(descriptor: ToolDescriptor, arguments: ToolArguments, owner: ApprovalOwner? = null): ToolExecutionAuthorization {
         val metadata = descriptor.execution ?: return ToolExecutionAuthorization.Allowed
         val action = resolveAction(metadata, arguments)
         if (action == null) {
@@ -192,6 +193,7 @@ class ToolExecutionAuthorizationPolicy(
                     toolName = descriptor.id,
                     summary = approvalSummary(request),
                     details = approvalDetails(request),
+                    owner = owner,
                     riskLevel = when (request.privilege) {
                         ToolExecutionPrivilege.ROOT -> ApprovalRequest.RiskLevel.CRITICAL
                         else -> ApprovalRequest.RiskLevel.HIGH

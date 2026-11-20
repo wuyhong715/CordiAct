@@ -20,7 +20,7 @@ import kotlinx.coroutines.withContext
 
 @Composable
 internal fun CompletionEditor(app: CordiActApplication?, sessionId: String, workspaceId: String?, text: String,
-    enabled: Boolean, onText: (String) -> Unit) {
+    enabled: Boolean, onText: (String) -> Unit, onSubmit: () -> Unit) {
     var editor by remember(sessionId, workspaceId) { mutableStateOf(TextFieldValue(text, TextRange(text.length))) }
     var candidates by remember(sessionId, workspaceId) { mutableStateOf(emptyList<InputCompletionCandidate>()) }
     var candidateOwner by remember(sessionId, workspaceId) { mutableStateOf<TextFieldValue?>(null) }
@@ -70,7 +70,13 @@ internal fun CompletionEditor(app: CordiActApplication?, sessionId: String, work
             modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 12.dp)
                 .heightIn(min = 24.dp, max = 160.dp).testTag("composer-input").focusRequester(focus)
                 .onPreviewKeyEvent { event ->
-                    if (editor.composition != null || candidateOwner != editor || candidates.isEmpty() || event.type != KeyEventType.KeyDown) false
+                    if (editor.composition != null || event.type != KeyEventType.KeyDown) false
+                    else if ((event.key == Key.Enter || event.key == Key.NumPadEnter) && (event.isCtrlPressed || event.isMetaPressed)) {
+                        if (candidateOwner == editor && candidates.isNotEmpty()) {
+                            if (event.nativeKeyEvent.repeatCount == 0) apply(candidates[selected.coerceIn(candidates.indices)])
+                        } else if (enabled && event.nativeKeyEvent.repeatCount == 0) onSubmit()
+                        true
+                    } else if (candidateOwner != editor || candidates.isEmpty()) false
                     else when (event.key) {
                         Key.DirectionDown -> { selected = (selected + 1) % candidates.size; true }
                         Key.DirectionUp -> { selected = (selected - 1 + candidates.size) % candidates.size; true }
