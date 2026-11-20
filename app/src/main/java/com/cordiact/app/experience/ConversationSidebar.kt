@@ -194,28 +194,33 @@ fun ConversationSidebar(
                                 shape = RoundedCornerShape(10.dp),
                                 color = if (current) colors.primaryContainer else Color.Transparent,
                                 modifier = Modifier.weight(1f)
-                                    .semantics { selected = current; if (session.id in runningSessionIds) stateDescription = "执行中" },
+                                    .semantics { selected = current },
                             ) {
                                 Row(Modifier.heightIn(min = 48.dp).padding(horizontal = 12.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                                     if (session.pinnedAtMillis != null) {
                                         AppGlyph(GlyphName.Pin, description = "已置顶", modifier = Modifier.size(14.dp), tint = colors.primary)
                                     }
-                                    Text(session.title.ifBlank { "新对话" },
-                                        Modifier.weight(1f).padding(start = if (session.pinnedAtMillis != null) 6.dp else 0.dp),
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        fontWeight = if (current) FontWeight.Medium else FontWeight.Normal, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                    if (session.archivedAtMillis != null) Text(
-                                        "已归档", Modifier.padding(start = 6.dp), style = MaterialTheme.typography.labelSmall,
-                                        color = colors.tertiary, maxLines = 1)
-                                    if (session.updatedAtMillis > 0) Text(
-                                        remember(session.updatedAtMillis) { java.text.SimpleDateFormat("MM-dd", java.util.Locale.getDefault()).format(java.util.Date(session.updatedAtMillis)) },
-                                        Modifier.padding(start = 8.dp), style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant,
-                                        maxLines = 1)
-                                    if (ApprovalOwner(workspace.id, session.id) in approvalOwners) {
-                                        Text("待确认", Modifier.padding(start = 8.dp), color = colors.primary, style = MaterialTheme.typography.labelSmall)
-                                    } else if (session.id in runningSessionIds) {
-                                        Text("运行中", Modifier.padding(start = 8.dp), color = colors.primary, style = MaterialTheme.typography.labelSmall)
+                                    val pending = ApprovalOwner(workspace.id, session.id) in approvalOwners
+                                    val running = session.id in runningSessionIds
+                                    val status = when {
+                                        pending -> "待审批"
+                                        running -> "执行中"
+                                        session.archivedAtMillis != null -> "已归档"
+                                        else -> null
                                     }
+                                    Column(Modifier.weight(1f).padding(start = if (session.pinnedAtMillis != null) 8.dp else 0.dp)) {
+                                        Text(session.title.ifBlank { "新对话" },
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            fontWeight = if (current) FontWeight.Medium else FontWeight.Normal,
+                                            maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                        if (status != null) Text(status,
+                                            color = if (pending || running) colors.primary else colors.onSurfaceVariant,
+                                            style = MaterialTheme.typography.labelSmall)
+                                    }
+                                    if (status == null && session.updatedAtMillis > 0) Text(
+                                        remember(session.updatedAtMillis) { java.text.SimpleDateFormat("MM-dd", java.util.Locale.getDefault()).format(java.util.Date(session.updatedAtMillis)) },
+                                        Modifier.padding(start = 8.dp), style = MaterialTheme.typography.labelSmall,
+                                        color = colors.onSurfaceVariant, maxLines = 1)
                                 }
                             }
                             Box {

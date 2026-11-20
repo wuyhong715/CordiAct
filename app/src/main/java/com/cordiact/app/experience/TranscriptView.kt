@@ -189,9 +189,9 @@ private fun EmptyConversation(onPrompt: (String) -> Unit, compact: Boolean, modi
         if (!compact) Spacer(Modifier.height(13.dp))
         Surface(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(16.dp), border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
             Column {
-            Suggestion("了解工作区", "检查当前工作区的文件与项目结构，总结正在进行的工作。", GlyphName.Search, onPrompt)
+                Suggestion("了解工作区", "检查当前工作区的文件与项目结构，总结正在进行的工作。", GlyphName.Search, onPrompt)
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-            Suggestion("开始一项任务", "先帮我拆解目标和验证标准，再逐步完成。", GlyphName.Trace, onPrompt)
+                Suggestion("开始一项任务", "先帮我拆解目标和验证标准，再逐步完成。", GlyphName.Trace, onPrompt)
             }
         }
         Text("建议只会填入输入框，不会自动发送", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -211,7 +211,7 @@ private fun Suggestion(title: String, prompt: String, icon: GlyphName, onPrompt:
 @Composable
 private fun TurnView(turn: TranscriptTurn, onInspect: (ToolActivity) -> Unit) {
     var thoughtsExpanded by rememberSaveable(turn.id) { mutableStateOf(false) }
-    var toolsExpanded by rememberSaveable(turn.id) { mutableStateOf(false) }
+    var expandedOverride by rememberSaveable(turn.id) { mutableStateOf<Boolean?>(null) }
     var menu by remember { mutableStateOf(false) }
     val clipboard = LocalClipboardManager.current
     Column(verticalArrangement = Arrangement.spacedBy(13.dp)) {
@@ -253,7 +253,8 @@ private fun TurnView(turn: TranscriptTurn, onInspect: (ToolActivity) -> Unit) {
                 val live = turn.tools.count { it.phase == ToolPhase.RUNNING }
                 val failed = turn.tools.count { it.phase == ToolPhase.FAILED }
                 val done = turn.tools.count { it.phase == ToolPhase.SUCCEEDED }
-                Row(Modifier.clickable { toolsExpanded = !toolsExpanded }.heightIn(min = 48.dp).padding(end = 8.dp),
+                val toolsExpanded = expandedOverride ?: (failed > 0 || live > 0)
+                Row(Modifier.clickable { expandedOverride = !toolsExpanded }.heightIn(min = 48.dp).padding(end = 8.dp),
                     verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(7.dp)) {
                     AppGlyph(GlyphName.Trace, tint = quiet, modifier = Modifier.size(14.dp))
                     Text(if (failed > 0) "执行过程 · $failed 步失败" else if (live > 0) "执行过程 · $live 步进行中" else if (done == turn.tools.size) "执行过程 · $done 步完成" else "执行过程 · $done / ${turn.tools.size} 步完成", style = MaterialTheme.typography.labelMedium, color = quiet)

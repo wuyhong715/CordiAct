@@ -23,22 +23,29 @@ internal fun WorkbenchDock(state: ExperienceState, onApprovals: () -> Unit, onTr
     val approvals = state.currentApprovals.size
     val other = state.approvals.size - approvals
     val progress = state.turns.lastOrNull()?.tools?.count { it.phase == ToolPhase.SUCCEEDED } ?: 0
-    val label = when {
-        approvals > 0 -> "待确认 $approvals 项"
+    val status = when {
         state.stopping -> "正在停止"
-        state.running -> if (progress > 0) "正在运行 · 已完成 $progress 步" else "正在运行"
+        state.running -> if (progress > 0) "执行中 · 已完成 $progress 步" else "执行中"
         else -> null
     }
-    if (label == null && other == 0) return
+    if (status == null && approvals == 0 && other == 0) return
     Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.Center) {
-        if (label != null) TextButton(onClick = if (approvals > 0) onApprovals else onTrace, modifier = Modifier.heightIn(min = 48.dp)) {
-            if (approvals > 0) AppGlyph(GlyphName.Warning, modifier = Modifier.size(16.dp))
-            else AppGlyph(GlyphName.Trace, modifier = Modifier.size(16.dp))
-            Spacer(Modifier.width(8.dp))
-            Text(label)
-        }
-        if (other > 0 && approvals == 0) TextButton(onClick = onApprovals, modifier = Modifier.heightIn(min = 48.dp)) {
-            Text("其他审批 $other 项")
+        if (approvals > 0 || other > 0) {
+            val label = when {
+                approvals > 0 -> "本对话待审批 $approvals 项"
+                else -> "其他待审批 $other 项"
+            }
+            FilledTonalButton(onClick = onApprovals, modifier = Modifier.heightIn(min = 48.dp)) {
+                AppGlyph(GlyphName.Shield, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(8.dp))
+                Text(label)
+            }
+        } else if (status != null) {
+            TextButton(onClick = onTrace, modifier = Modifier.heightIn(min = 48.dp)) {
+                AppGlyph(GlyphName.Trace, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(8.dp))
+                Text(status)
+            }
         }
     }
 }

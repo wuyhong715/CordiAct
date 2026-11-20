@@ -254,20 +254,15 @@ class ExperienceComponentTest {
         assertEquals(before, compose.onNodeWithTag("frame-composer").getUnclippedBoundsInRoot().bottom.value, 1f)
     }
 
-    @Test fun browserTabRail_isCompactAndChangesSelectionWithoutResizingGlyphs() {
-        var page by mutableIntStateOf(0)
-        content { WindowTabs(page, page.toFloat(), 0, 0, onSelect = { page = it }) }
-        val rail = compose.onNodeWithTag("window-tabs").getUnclippedBoundsInRoot()
-        assertEquals(48f, (rail.bottom - rail.top).value, 1f)
-        val widths = listOf("chat", "trace", "preview").map { id ->
-            val bounds = compose.onNodeWithTag("window-" + id).getUnclippedBoundsInRoot()
-            (bounds.right - bounds.left).value
-        }
-        assertTrue(widths.all { it <= 105f })
-        repeat(3) {
-            compose.onNodeWithTag("window-trace").performClick().assertIsSelected()
-            compose.onNodeWithTag("window-chat").performClick().assertIsSelected()
-        }
+    @Test fun studioMenu_routesToArtifactsAndReportsSelection() {
+        var pane by mutableStateOf(StudioPane.Conversation)
+        content { StudioPaneMenu(pane, tools = 2, previews = 3, onSelect = { pane = it }) }
+        compose.onNodeWithText("产物 3").assertExists()
+        compose.onNodeWithTag("studio-pane-menu").performClick()
+        compose.onNodeWithTag("studio-pane-conversation").assertIsSelected()
+        compose.onNodeWithTag("studio-pane-artifacts").performClick()
+        compose.onNodeWithTag("studio-pane-menu").performClick()
+        compose.onNodeWithTag("studio-pane-artifacts").assertIsSelected()
     }
 
     @Test fun everyOriginalGlyphCanBeBuiltAndDrawn() {
