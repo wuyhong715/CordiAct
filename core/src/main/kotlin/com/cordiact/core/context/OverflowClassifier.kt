@@ -19,7 +19,7 @@ sealed interface ModelFailure {
 object OverflowClassifier {
 
     fun classify(providerCode: String?, message: String, providerId: String? = null): ModelFailure {
-        val code = providerCode.orEmpty()
+        val code = providerCode.orEmpty().removePrefix("http_")
         val text = message.lowercase()
         val provider = providerId.orEmpty().lowercase()
 

@@ -22,6 +22,8 @@ import com.cordiact.core.conversation.ModelBackend
 import com.cordiact.core.conversation.ModelCall
 import com.cordiact.core.conversation.ModelDescriptor
 import com.cordiact.core.conversation.ModelEvent
+import com.cordiact.core.conversation.ModelToolSpec
+import com.cordiact.core.context.OverflowClassifier
 import com.cordiact.core.conversation.ModelToolCall
 import com.cordiact.core.conversation.ModelGenerationRequest
 import com.cordiact.core.conversation.ModelId
@@ -67,27 +69,51 @@ private class MutableToolCallFragment {
     var id: String = ""
     var name: String = ""
     val arguments = StringBuilder()
+    var providerCallId: String? = null
+    var thoughtSignature: String? = null
 }
 
-/**
- * Emits the gathered tool calls, dropping incomplete ones.
- *
- * A fragment without a name or without an id cannot be dispatched and cannot be answered, so
- * including it would produce a request the model cannot match results to. Dropping is reported
- * by the absent call rather than silently answered with an error, because a fabricated result
- * would be worse than a missing one.
- */
+private val publicErrorCodes = setOf(
+    "context_length_exceeded", "invalid_request_error", "invalid_api_key", "authentication_error",
+    "permission_error", "not_found_error", "rate_limit_error", "rate_limit_exceeded",
+    "insufficient_quota", "overloaded_error", "api_error", "unknown_parameter", "unsupported_parameter",
+    "INVALID_ARGUMENT", "RESOURCE_EXHAUSTED", "UNAUTHENTICATED", "PERMISSION_DENIED", "NOT_FOUND",
+    "UNAVAILABLE", "FAILED_PRECONDITION", "INTERNAL",
+)
+private val publicErrorField = Regex(
+    "(?:tools|functionDeclarations|function_declarations|function|name|parameters|parametersJsonSchema|" +
+        "parameters_json_schema|additionalProperties|input_schema|messages|input|contents|content|parts|" +
+        "role|model|stream_options|include_usage|max_tokens|max_output_tokens|store|temperature|top_p|generationConfig)" +
+        "(?:\\[\\d{1,5}])?(?:\\.(?:function|name|parameters|parametersJsonSchema|parameters_json_schema|" +
+        "additionalProperties|functionDeclarations|function_declarations|input_schema|content|parts|role|" +
+        "include_usage|maxOutputTokens|temperature|topP)(?:\\[\\d{1,5}])?)*",
+)
+
+private val portableName = Regex("[A-Za-z_][A-Za-z0-9_-]{0,63}")
+
+// Reserve the alias prefix even for legal internal IDs so aliases cannot shadow a tool.
+internal fun wireName(id: String): String {
+    if (portableName.matches(id) && !id.startsWith("ca_")) return id
+    val hash = MessageDigest.getInstance("SHA-256").digest(id.toByteArray(StandardCharsets.UTF_8))
+    return "ca_" + hash.take(24).joinToString("") { "%02x".format(it) }
+}
+
+/** Validate the whole batch before emitting it; never dispatch a partial or undeclared call. */
 private fun emitToolCalls(
     pending: Map<Int, MutableToolCallFragment>,
+    tools: List<ModelToolSpec>,
     emit: (ModelEvent) -> Unit,
 ) {
     if (pending.isEmpty()) return
+    val names = tools.distinctBy { it.name }.associate { wireName(it.name) to it.name }
+    require(names.size == tools.map { it.name }.distinct().size) { "Ambiguous provider tool alias" }
     val calls = pending.entries
         .sortedBy { it.key }
-        .mapNotNull { (index, fragment) ->
-            val name = fragment.name.ifBlank { return@mapNotNull null }
+        .map { (index, fragment) ->
+            val name = fragment.name.also { require(it.isNotBlank()) { "Provider tool call has no name" } }
             val id = fragment.id.ifBlank { "call_$index" }
-            ModelToolCall(id = id, name = name, argumentsJson = fragment.arguments.toString().ifBlank { "{}" })
+            ModelToolCall(id = id, name = requireNotNull(names[name]) { "Undeclared tool in provider response" }, argumentsJson = fragment.arguments.toString().ifBlank { "{}" },
+                geminiCallId = fragment.providerCallId, geminiThoughtSignature = fragment.thoughtSignature)
         }
     if (calls.isNotEmpty()) emit(ModelEvent.ToolCallsRequested(calls))
 }
@@ -417,9 +443,9 @@ class ConfigurableModelBackend(
                     if (running.cancelled.get()) return@submit
                     val status = connection.responseCode
                     if (status !in 200..299) {
-                        connection.errorStream?.close()
+                        val failure = readHttpFailure(connection, status, key)
                         if (!running.cancelled.get()) {
-                            emitEvent(ModelEvent.Failed("http_$status", "${config.displayName} returned HTTP $status", status == 429 || status >= 500))
+                            emitEvent(failure)
                             terminal = true
                         }
                         return@submit
@@ -434,10 +460,20 @@ class ConfigurableModelBackend(
                                 } else if (json.has("error") && !json.get("error").isJsonNull) {
                                     emitEvent(ModelEvent.Failed("provider_error", "${config.displayName} returned an error"))
                                 } else {
-                                    extractGeminiText(json).takeIf(String::isNotEmpty)?.let { text ->
-                                        emitEvent(ModelEvent.Delta(text))
+                                    val calls = linkedMapOf<Int, MutableToolCallFragment>()
+                                    var hasText = false
+                                    geminiCandidate(json)?.getAsJsonObject("content")?.getAsJsonArray("parts")?.forEach {
+                                        collectGeminiPart(it.asJsonObject, calls) { text ->
+                                            hasText = hasText || text.isNotBlank()
+                                            emitEvent(ModelEvent.Delta(text))
+                                        }
                                     }
-                                    emitEvent(ModelEvent.Completed())
+                                    if (hasText || calls.isNotEmpty()) {
+                                        emitToolCalls(calls, request.tools, ::emitEvent)
+                                        emitEvent(ModelEvent.Completed())
+                                    } else {
+                                        emitEvent(ModelEvent.Failed("empty_completion", "Gemini returned no text or tool calls"))
+                                    }
                                 }
                                 terminal = true
                             }
@@ -452,6 +488,8 @@ class ConfigurableModelBackend(
                     }
 
                     var completed = false
+                    var finishReason: String? = null
+                    var hasVisibleText = false
                     var failed = false
                     var streamedTextChars = 0
                     var inputTokens: Long? = null
@@ -467,6 +505,7 @@ class ConfigurableModelBackend(
                     fun emitDelta(text: String) {
                         if (text.length > MAX_STREAM_TEXT_CHARS - streamedTextChars) throw StreamLimitException()
                         streamedTextChars += text.length
+                        hasVisibleText = hasVisibleText || text.isNotBlank()
                         emitEvent(ModelEvent.Delta(text))
                     }
                     connection.inputStream.bufferedReader(StandardCharsets.UTF_8).use { reader ->
@@ -504,6 +543,7 @@ class ConfigurableModelBackend(
                                 ModelProtocol.OPENAI_CHAT_COMPLETIONS -> {
                                     val choice = json.getAsJsonArray("choices")?.firstOrNull()?.asJsonObject
                                     if (choice?.string("finish_reason") == "length") outputLimitReached = true
+                                    choice?.string("finish_reason")?.let { finishReason = it }
                                     val deltaObject = choice?.getAsJsonObject("delta")
                                     val delta = deltaObject?.get("content")
                                     if (delta?.isJsonPrimitive == true && delta.asJsonPrimitive.isString) {
@@ -555,7 +595,8 @@ class ConfigurableModelBackend(
                                         if (input.isNotEmpty()) inputTokens = input.sum()
                                     }
                                     "message_delta" -> {
-                                        if (json.getAsJsonObject("delta")?.string("stop_reason") == "max_tokens") outputLimitReached = true
+                                        finishReason = json.getAsJsonObject("delta")?.string("stop_reason")
+                                        if (finishReason == "max_tokens") outputLimitReached = true
                                         json.getAsJsonObject("usage")?.longOrNull("output_tokens")?.let { outputTokens = it }
                                     }
                                     "message_stop" -> completed = true
@@ -574,26 +615,12 @@ class ConfigurableModelBackend(
                                     json.getAsJsonArray("candidates")?.forEach { candidate ->
                                         val candidateObject = candidate.asJsonObject
                                         candidateObject.getAsJsonObject("content")?.getAsJsonArray("parts")?.forEach { part ->
-                                            val partObject = part.asJsonObject
-                                            partObject.string("text")?.takeIf(String::isNotEmpty)
-                                                ?.let(::emitDelta)
-                                            // Gemini sends a whole functionCall in one part, so there
-                                            // is nothing to accumulate. It also carries no id, so
-                                            // one is synthesised from the name and position; the
-                                            // response side matches on the name anyway.
-                                            partObject.getAsJsonObject("functionCall")?.let { call ->
-                                                val name = call.string("name") ?: return@let
-                                                val index = pendingCalls.size
-                                                pendingCalls[index] = MutableToolCallFragment().apply {
-                                                    id = "gemini_${name}_$index"
-                                                    this.name = name
-                                                    arguments.append(call.get("args")?.toString() ?: "{}")
-                                                }
-                                            }
+                                            collectGeminiPart(part.asJsonObject, pendingCalls, ::emitDelta)
                                         }
-                                        candidateObject.string("finishReason")?.let { reason ->
-                                            if (reason == "MAX_TOKENS") outputLimitReached = true
-                                            if (reason != "FINISH_REASON_UNSPECIFIED") completed = true
+                                        candidateObject.string("finishReason")?.let {
+                                            finishReason = it
+                                            if (it == "MAX_TOKENS") outputLimitReached = true
+                                            if (it != "FINISH_REASON_UNSPECIFIED") completed = true
                                         }
                                     }
                                     if (json.has("error") && !json.get("error").isJsonNull) {
@@ -649,7 +676,7 @@ class ConfigurableModelBackend(
                                 }
                             }
                         }
-                        while (!running.cancelled.get() && !completed && !failed) {
+                        while (!running.cancelled.get() && !failed && (!completed || config.protocol == ModelProtocol.GEMINI_GENERATE_CONTENT)) {
                             val line = readBoundedLine(reader, MAX_SSE_EVENT_CHARS + "data: ".length + 1) ?: break
                             if (line.isEmpty()) dispatch()
                             else if (line.startsWith("data:")) {
@@ -660,7 +687,7 @@ class ConfigurableModelBackend(
                                 data.append(payload)
                             } else if (line.startsWith("event:")) eventName = line.substringAfter(':').trim()
                         }
-                        if (data.isNotEmpty() && !completed && !failed) dispatch()
+                        if (data.isNotEmpty() && !failed && (!completed || config.protocol == ModelProtocol.GEMINI_GENERATE_CONTENT)) dispatch()
                     }
                     if (!running.cancelled.get()) {
                         when {
@@ -669,8 +696,12 @@ class ConfigurableModelBackend(
                                 // Emit before Completed: the loop must learn what to run before
                                 // the round is considered finished, otherwise it would treat a
                                 // tool request as a final answer.
-                                if (!outputLimitReached) emitToolCalls(pendingCalls, ::emitEvent)
-                                emitEvent(ModelEvent.Completed(inputTokens, outputTokens, outputLimitReached))
+                                if (config.protocol == ModelProtocol.GEMINI_GENERATE_CONTENT && !outputLimitReached && !hasVisibleText && pendingCalls.isEmpty()) {
+                                    emitEvent(ModelEvent.Failed("empty_completion", "Gemini returned no text or tool calls"))
+                                } else {
+                                    if (!outputLimitReached) emitToolCalls(pendingCalls, request.tools, ::emitEvent)
+                                    emitEvent(ModelEvent.Completed(inputTokens, outputTokens, outputLimitReached, finishReason = finishReason))
+                                }
                                 terminal = true
                             }
                             else -> {
@@ -928,6 +959,9 @@ class ConfigurableModelBackend(
         return when (config.protocol) {
         ModelProtocol.OPENAI_IMAGES -> error("Use generate_image for image models")
         ModelProtocol.OPENAI_CHAT_COMPLETIONS -> JsonObject().apply {
+            if (URI(config.endpoint).host.equals("api.openai.com", ignoreCase = true)) {
+                add("stream_options", JsonObject().apply { addProperty("include_usage", true) })
+            }
             addProperty("model", request.model.modelId)
             addProperty("stream", true)
             parameters.temperature?.let { addProperty("temperature", it) }
@@ -943,7 +977,7 @@ class ConfigurableModelBackend(
                     request.tools.forEach { tool -> add(JsonObject().apply {
                         addProperty("type", "function")
                         add("function", JsonObject().apply {
-                            addProperty("name", tool.name)
+                            addProperty("name", wireName(tool.name))
                             addProperty("description", tool.description)
                             add("parameters", JsonParser.parseString(tool.parametersJson))
                         })
@@ -972,7 +1006,7 @@ class ConfigurableModelBackend(
                                         addProperty("id", call.id)
                                         addProperty("type", "function")
                                         add("function", JsonObject().apply {
-                                            addProperty("name", call.name)
+                                            addProperty("name", wireName(call.name))
                                             addProperty("arguments", call.argumentsJson)
                                         })
                                     }) }
@@ -985,7 +1019,7 @@ class ConfigurableModelBackend(
         }
         ModelProtocol.ANTHROPIC_MESSAGES -> JsonObject().apply {
             addProperty("model", request.model.modelId)
-            addProperty("max_tokens", parameters.maxOutputTokens ?: DEFAULT_MAX_OUTPUT_TOKENS)
+            addProperty("max_tokens", parameters.maxOutputTokens ?: request.outputBudgetTokens ?: DEFAULT_MAX_OUTPUT_TOKENS)
             addProperty("stream", true)
             val system = request.messages.filter { it.role == MessageRole.SYSTEM }.joinToString("\n") { it.content }
             if (system.isNotEmpty()) addProperty("system", system)
@@ -994,7 +1028,7 @@ class ConfigurableModelBackend(
             if (request.tools.isNotEmpty()) {
                 add("tools", JsonArray().apply {
                     request.tools.forEach { tool -> add(JsonObject().apply {
-                        addProperty("name", tool.name)
+                        addProperty("name", wireName(tool.name))
                         addProperty("description", tool.description)
                         // Anthropic calls the schema input_schema, not parameters.
                         add("input_schema", JsonParser.parseString(tool.parametersJson))
@@ -1030,7 +1064,7 @@ class ConfigurableModelBackend(
                                 message.toolCalls.forEach { call -> add(JsonObject().apply {
                                     addProperty("type", "tool_use")
                                     addProperty("id", call.id)
-                                    addProperty("name", call.name)
+                                    addProperty("name", wireName(call.name))
                                     add("input", JsonParser.parseString(call.argumentsJson.ifBlank { "{}" }))
                                 }) }
                             })
@@ -1049,48 +1083,57 @@ class ConfigurableModelBackend(
                     add(JsonObject().apply {
                         add("functionDeclarations", JsonArray().apply {
                             request.tools.forEach { tool -> add(JsonObject().apply {
-                                addProperty("name", tool.name)
+                                addProperty("name", wireName(tool.name))
                                 addProperty("description", tool.description)
-                                add("parameters", JsonParser.parseString(tool.parametersJson))
+                                add("parametersJsonSchema", JsonParser.parseString(tool.parametersJson))
                             }) }
                         })
                     })
                 })
             }
+            val historicalCalls = mutableMapOf<String, ModelToolCall>()
             add("contents", JsonArray().apply {
-                request.messages.filter { it.role != MessageRole.SYSTEM }.forEach { message -> add(JsonObject().apply {
-                    // A function result is a user turn here as well, as a functionResponse part.
-                    addProperty("role", if (message.role == MessageRole.ASSISTANT) "model" else "user")
-                    when (message.role) {
-                        MessageRole.TOOL -> add("parts", JsonArray().apply {
-                            add(JsonObject().apply {
-                                add("functionResponse", JsonObject().apply {
-                                    // Gemini matches a result to its call by function *name*, not
-                                    // by id. The dispatcher therefore carries the name on the
-                                    // tool message; falling back to the id would never match.
-                                    addProperty("name", message.toolName ?: "unknown")
-                                    add("response", JsonObject().apply {
-                                        addProperty("content", message.content)
+                request.messages.filter { it.role != MessageRole.SYSTEM }.forEach { message ->
+                    val turn = JsonObject().apply {
+                        message.toolCalls.forEach { historicalCalls[it.id] = it }
+                        // A function result is a user turn here as well, as a functionResponse part.
+                        addProperty("role", if (message.role == MessageRole.ASSISTANT) "model" else "user")
+                        when (message.role) {
+                            MessageRole.TOOL -> add("parts", JsonArray().apply {
+                                add(JsonObject().apply {
+                                    add("functionResponse", JsonObject().apply {
+                                        val call = historicalCalls[message.toolCallId]
+                                        addProperty("name", wireName(requireNotNull(message.toolName ?: call?.name)))
+                                        call?.geminiCallId?.let { addProperty("id", it) }
+                                        add("response", JsonObject().apply {
+                                            addProperty("content", message.content)
+                                        })
                                     })
                                 })
                             })
-                        })
-                        else -> add("parts", JsonArray().apply {
-                            val plan = planFor(attachmentPlans, message)
-                            if (plan != null) {
-                                attachmentBlocks(request, plan).forEach(::add)
-                            } else if (message.content.isNotBlank() || message.toolCalls.isEmpty()) {
-                                add(JsonObject().apply { addProperty("text", message.content) })
-                            }
-                            message.toolCalls.forEach { call -> add(JsonObject().apply {
-                                add("functionCall", JsonObject().apply {
-                                    addProperty("name", call.name)
-                                    add("args", JsonParser.parseString(call.argumentsJson.ifBlank { "{}" }))
-                                })
-                            }) }
-                        })
+                            else -> add("parts", JsonArray().apply {
+                                val plan = planFor(attachmentPlans, message)
+                                if (plan != null) {
+                                    attachmentBlocks(request, plan).forEach(::add)
+                                } else if (message.content.isNotBlank() || message.toolCalls.isEmpty()) {
+                                    add(JsonObject().apply { addProperty("text", message.content) })
+                                }
+                                message.toolCalls.forEach { call -> add(JsonObject().apply {
+                                    call.geminiThoughtSignature?.let { addProperty("thoughtSignature", it) }
+                                    add("functionCall", JsonObject().apply {
+                                        addProperty("name", wireName(call.name))
+                                        call.geminiCallId?.let { addProperty("id", it) }
+                                        add("args", JsonParser.parseString(call.argumentsJson.ifBlank { "{}" }))
+                                    })
+                                }) }
+                            })
+                        }
                     }
-                }) }
+                    val previous = if (size() > 0) get(size() - 1).asJsonObject else null
+                    if (previous != null && previous.get("role") == turn.get("role")) {
+                        previous.getAsJsonArray("parts").addAll(turn.getAsJsonArray("parts"))
+                    } else add(turn)
+                }
             })
             if (parameters.temperature != null || parameters.maxOutputTokens != null || parameters.topP != null) {
                 add("generationConfig", JsonObject().apply {
@@ -1101,8 +1144,12 @@ class ConfigurableModelBackend(
             }
         }
         ModelProtocol.OPENAI_RESPONSES -> JsonObject().apply {
+            addProperty("store", false)
             addProperty("model", request.model.modelId)
             addProperty("stream", true)
+            val instructionPrefix = request.messages.takeWhile { it.role == MessageRole.SYSTEM }
+            val instructions = instructionPrefix.joinToString("\n") { it.content }
+            if (instructions.isNotBlank()) addProperty("instructions", instructions)
             parameters.maxOutputTokens?.let { addProperty("max_output_tokens", it) }
             parameters.temperature?.let { addProperty("temperature", it) }
             parameters.topP?.let { addProperty("top_p", it) }
@@ -1117,14 +1164,14 @@ class ConfigurableModelBackend(
                         // Flat here: type, name and parameters sit at the top level rather than
                         // nested under "function" as in chat completions.
                         addProperty("type", "function")
-                        addProperty("name", tool.name)
+                        addProperty("name", wireName(tool.name))
                         addProperty("description", tool.description)
                         add("parameters", JsonParser.parseString(tool.parametersJson))
                     }) }
                 })
             }
             add("input", JsonArray().apply {
-                request.messages.forEach { message -> when (message.role) {
+                request.messages.drop(instructionPrefix.size).forEach { message -> when (message.role) {
                     // A tool result is its own top-level item, not a message with a role.
                     MessageRole.TOOL -> add(JsonObject().apply {
                         addProperty("type", "function_call_output")
@@ -1150,7 +1197,7 @@ class ConfigurableModelBackend(
                         message.toolCalls.forEach { call -> add(JsonObject().apply {
                             addProperty("type", "function_call")
                             addProperty("call_id", call.id)
-                            addProperty("name", call.name)
+                            addProperty("name", wireName(call.name))
                             addProperty("arguments", call.argumentsJson.ifBlank { "{}" })
                         }) }
                     }
@@ -1175,12 +1222,69 @@ class ConfigurableModelBackend(
         ?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isNumber }
         ?.asLong
 
-    private fun extractGeminiText(json: JsonObject): String = buildString {
-        json.getAsJsonArray("candidates")?.forEach { candidate ->
-            candidate.asJsonObject.getAsJsonObject("content")?.getAsJsonArray("parts")?.forEach { part ->
-                part.asJsonObject.string("text")?.let(::append)
+    private fun geminiCandidate(json: JsonObject): JsonObject? =
+        json.getAsJsonArray("candidates")?.firstOrNull()?.asJsonObject
+
+    private fun collectGeminiPart(
+        part: JsonObject,
+        pending: MutableMap<Int, MutableToolCallFragment>,
+        emitText: (String) -> Unit,
+    ) {
+        if (part.get("thought")?.takeIf { it.isJsonPrimitive }?.asBoolean != true) {
+            part.string("text")?.takeIf(String::isNotEmpty)?.let(emitText)
+        }
+        part.getAsJsonObject("functionCall")?.let { call ->
+            val index = pending.size
+            pending[index] = MutableToolCallFragment().apply {
+                name = requireNotNull(call.string("name")) { "Gemini functionCall has no name" }
+                providerCallId = call.string("id")
+                id = providerCallId ?: "gemini_${name}_$index"
+                thoughtSignature = part.string("thoughtSignature")
+                arguments.append(call.get("args")?.toString() ?: "{}")
             }
         }
+    }
+
+    private fun readHttpFailure(connection: HttpURLConnection, status: Int, credential: String): ModelEvent.Failed {
+        val error = runCatching {
+            val body = connection.errorStream?.bufferedReader(StandardCharsets.UTF_8)?.use {
+                readBoundedBody(it, 64 * 1024)
+            } ?: return@runCatching null
+            JsonParser.parseString(body).asJsonObject.getAsJsonObject("error")
+        }.getOrNull()
+        val providerCode = sequenceOf("code", "type", "status").mapNotNull { error?.string(it) }
+            .firstOrNull { it in publicErrorCodes && (credential.isBlank() || !it.contains(credential)) }
+        // Classify raw prose locally, but never display it: providers can echo prompts, files,
+        // arguments or credentials in both messages and field violation descriptions.
+        val rawMessage = error?.string("message").orEmpty()
+        val overflow = status in setOf(400, 413, 422) &&
+            OverflowClassifier.classify("http_$status", providerCode.orEmpty() + " " + rawMessage) is
+            com.cordiact.core.context.ModelFailure.ContextOverflow
+        val param = sequence {
+            error?.string("param")?.let { yield(it) }
+            error?.get("details")?.takeIf { it.isJsonArray }?.asJsonArray?.forEach { detail ->
+                detail.takeIf { it.isJsonObject }?.asJsonObject?.get("fieldViolations")
+                    ?.takeIf { it.isJsonArray }?.asJsonArray?.forEach { violation ->
+                        violation.takeIf { it.isJsonObject }?.asJsonObject?.string("field")?.let { yield(it) }
+                    }
+            }
+        }.firstOrNull { value ->
+            value.length <= 120 && publicErrorField.matches(value) &&
+                (credential.isBlank() || !value.contains(credential))
+        }
+        val retryAfter = connection.getHeaderField("Retry-After")?.trim()?.let { value ->
+            value.toLongOrNull() ?: runCatching {
+                val deadline = java.time.ZonedDateTime.parse(value, java.time.format.DateTimeFormatter.RFC_1123_DATE_TIME)
+                java.time.Duration.between(java.time.Instant.now(), deadline.toInstant()).seconds
+            }.getOrNull()
+        }?.coerceAtLeast(0)
+        val safeCode = if (overflow) "context_length_exceeded" else providerCode
+        val message = buildString {
+            append("${config.displayName} returned HTTP $status")
+            safeCode?.let { append(" ($it)") }
+            param?.let { append("; field: $it") }
+        }
+        return ModelEvent.Failed("http_$status", message, status == 429 || status >= 500, safeCode, retryAfter)
     }
 
     private fun readBoundedBody(reader: java.io.BufferedReader, maxChars: Int): String {

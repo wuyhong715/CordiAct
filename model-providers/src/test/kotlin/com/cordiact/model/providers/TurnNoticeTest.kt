@@ -98,7 +98,7 @@ class TurnNoticeTest {
     }
 
     @Test
-    fun `a pending notice is put in front of the model as a system block`() {
+    fun `a pending notice is appended without changing the conversation prefix`() {
         val store = RecordingStore()
         val adapter = FakeAdapter()
         val session = store.create("s1", WS, "chat", 1L, null, SessionKind.USER, null, 0)
@@ -110,16 +110,17 @@ class TurnNoticeTest {
         service.submit(session.id, ModelId("p", "m"), "what did they find?", onEvent = {})
 
         val sent = adapter.requests.single().messages
-        val system = sent.first()
-        assertEquals(MessageRole.SYSTEM, system.role)
-        assertTrue(system.content.contains("pricing"), "heading missing: ${system.content}")
-        assertTrue(system.content.contains("three prices"), "body missing: ${system.content}")
+        val report = sent.last()
+        assertEquals("what did they find?", sent.first().content)
+        assertEquals(MessageRole.USER, report.role)
+        assertTrue(report.content.contains("pricing"), "heading missing: ${report.content}")
+        assertTrue(report.content.contains("three prices"), "body missing: ${report.content}")
         // And the notice is consumed exactly once.
         assertEquals(listOf("child-1"), notices.acknowledged)
     }
 
     @Test
-    fun `a notice is a system message, never attributed to the user`() {
+    fun `a notice is marked as a child report and never sent as a host instruction`() {
         val store = RecordingStore()
         val adapter = FakeAdapter()
         val session = store.create("s1", WS, "chat", 1L, null, SessionKind.USER, null, 0)
@@ -130,9 +131,10 @@ class TurnNoticeTest {
 
         val sent = adapter.requests.single().messages
         assertTrue(
-            sent.none { it.role == MessageRole.USER && it.content.contains("child finished") },
-            "a runtime report must not be attributed to the user",
+            sent.none { it.role == MessageRole.SYSTEM && it.content.contains("child finished") },
+            "runtime data must not be promoted to a host instruction",
         )
+        assertTrue(sent.single { it.content.contains("child finished") }.content.contains("<child_report "))
     }
 
     @Test
@@ -205,7 +207,7 @@ class TurnNoticeTest {
         service.submit(session.id, ModelId("p", "m"), "second", onEvent = {})
 
         assertEquals(2, adapter.requests.size)
-        assertTrue(adapter.requests.all { it.messages.first().content.contains("child finished") })
+        assertTrue(adapter.requests.all { it.messages.last().content.contains("child finished") })
     }
 
     @Test

@@ -1,13 +1,33 @@
 package com.cordiact.model.providers
 
+import com.cordiact.core.conversation.ReasoningEffort
 import com.google.gson.JsonParser
 import java.net.HttpURLConnection
 import java.net.URI
 import java.net.URLEncoder
 
+/** Exact, documented model/protocol pairs; a compatible gateway is not the official API. */
+internal fun documentedParameters(protocol: ModelProtocol, endpoint: String, models: List<String>): Map<String, ModelParameterCapabilities> {
+    if (protocol !in setOf(ModelProtocol.OPENAI_CHAT_COMPLETIONS, ModelProtocol.OPENAI_RESPONSES) ||
+        !URI(endpoint).host.equals("api.openai.com", ignoreCase = true)
+    ) return emptyMap()
+    val effort = ModelParameterCapabilities.openAi(
+        setOf(ReasoningEffort.MINIMAL, ReasoningEffort.LOW, ReasoningEffort.MEDIUM, ReasoningEffort.HIGH),
+        supportsFast = false,
+    )
+    // GPT-5 mini: the documented alias and its pinned snapshot. Never infer from a name prefix.
+    return models.filter { it == "gpt-5-mini" || it == "gpt-5-mini-2025-08-07" }.associateWith { effort }
+}
+
 /** Provider-first input; URL may be a base URL or an existing generation endpoint. */
 data class ModelProviderConnection(val providerId: String, val displayName: String, val protocol: ModelProtocol, val url: String) {
-    fun config(models: List<String>): ModelProviderConfig = ModelProviderConfig(providerId, displayName, protocol, generationEndpoint(), models)
+    fun config(models: List<String>): ModelProviderConfig {
+        val endpoint = generationEndpoint()
+        return ModelProviderConfig(
+            providerId, displayName, protocol, endpoint, models,
+            parameterCapabilities = documentedParameters(protocol, endpoint, models),
+        )
+    }
 
     fun generationEndpoint(): String = base().let { base -> when (protocol) {
         ModelProtocol.OPENAI_CHAT_COMPLETIONS -> "$base/chat/completions"
@@ -34,13 +54,20 @@ data class ModelProviderConnection(val providerId: String, val displayName: Stri
             "Model URL must not contain query parameters"
         }
         var path = uri.rawPath.orEmpty().trimEnd('/')
-        path = when (protocol) {
-            ModelProtocol.OPENAI_CHAT_COMPLETIONS -> path.removeSuffix("/chat/completions")
-            ModelProtocol.OPENAI_RESPONSES -> path.removeSuffix("/responses")
-            ModelProtocol.OPENAI_IMAGES -> path.removeSuffix("/images/generations")
-            ModelProtocol.ANTHROPIC_MESSAGES -> path.removeSuffix("/messages")
-            ModelProtocol.GEMINI_GENERATE_CONTENT -> if (path.contains("/models/")) path.substringBeforeLast("/models/") else path.removeSuffix("/models")
-        }.removeSuffix("/models")
+        val generationSuffix = when (protocol) {
+            ModelProtocol.OPENAI_CHAT_COMPLETIONS -> "/chat/completions"
+            ModelProtocol.OPENAI_RESPONSES -> "/responses"
+            ModelProtocol.OPENAI_IMAGES -> "/images/generations"
+            ModelProtocol.ANTHROPIC_MESSAGES -> "/messages"
+            ModelProtocol.GEMINI_GENERATE_CONTENT -> null
+        }
+        // Remove exactly one endpoint suffix. A full generation URL can have a base ending in /models.
+        path = when {
+            generationSuffix != null && path.endsWith(generationSuffix) -> path.removeSuffix(generationSuffix)
+            protocol == ModelProtocol.GEMINI_GENERATE_CONTENT &&
+                Regex("/models/[^/]+:(?:streamGenerateContent|generateContent)$").containsMatchIn(path) -> path.substringBeforeLast("/models/")
+            else -> path.removeSuffix("/models")
+        }
         if (path.isEmpty()) path = if (protocol == ModelProtocol.GEMINI_GENERATE_CONTENT) "/v1beta" else "/v1"
         return "${uri.scheme}://${uri.rawAuthority}$path"
     }
