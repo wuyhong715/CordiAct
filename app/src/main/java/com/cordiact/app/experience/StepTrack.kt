@@ -127,7 +127,7 @@ private fun Beads(tools: List<ToolActivity>, running: Boolean, focused: Int, mod
 @Composable
 private fun StepGlance(step: ToolActivity, ordinal: Int, emphasised: Boolean, onClick: () -> Unit) {
     val colors = MaterialTheme.colorScheme
-    val tone = when (step.phase) { ToolPhase.FAILED -> colors.error; ToolPhase.RUNNING -> colors.primary; else -> colors.onSurfaceVariant }
+    val tone = when (step.phase) { ToolPhase.FAILED -> colors.error; ToolPhase.RUNNING -> colors.onPrimaryContainer; else -> colors.onSurfaceVariant }
     Surface(
         onClick = onClick,
         shape = RoundedCornerShape(14.dp),

@@ -9,36 +9,39 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.shape.RoundedCornerShape
 
-// v3 "Lumen": iOS system grays; the single brand signal is reserved for agent activity.
+// v3 "Lumen": warm parchment neutrals (Claude-like); pale honey is the brand signal,
+// reserved for agent activity. Pale yellow never carries text: onPrimary is dark ink.
 internal object Lumen {
-    val Signal = Color(0xFF5B5BF6)
-    val SignalDark = Color(0xFF7B7BFF)
-    val Aurora = listOf(Color(0xFF5B5BF6), Color(0xFF22C3EE), Color(0xFFA78BFA))
-    val Approve = Color(0xFFFF9F0A)
-    val Ok = Color(0xFF34C759)
-    val Error = Color(0xFFFF3B30)
+    val Signal = Color(0xFFE9B949)        // honey: dots, beads, running send button
+    val SignalDark = Color(0xFFF2CC6B)
+    val Pale = Color(0xFFFBEFC8)          // brand container / highlights
+    val Ink = Color(0xFF2B2416)           // text/icons on brand
+    val Aurora = listOf(Color(0xFFF2CC6B), Color(0xFFE9B949), Color(0xFFF7E2A4))
+    val Approve = Color(0xFFD9653B)       // approvals: coral, clearly apart from honey
+    val Ok = Color(0xFF3F9B5A)
+    val Error = Color(0xFFD13B2E)
 }
 private val LightPalette = lightColorScheme(
-    primary = Lumen.Signal, onPrimary = Color.White,
-    primaryContainer = Color(0xFFECECFE), onPrimaryContainer = Color(0xFF2E2EA8),
-    secondary = Color(0xFF3C3C43), secondaryContainer = Color(0xFFE5E5EA), onSecondaryContainer = Color(0xFF1C1C1E),
-    tertiary = Lumen.Approve, tertiaryContainer = Color(0xFFFFF1DC), onTertiaryContainer = Color(0xFF6B4100),
-    background = Color(0xFFF2F2F7), onBackground = Color(0xFF000000),
-    surface = Color(0xFFFFFFFF), onSurface = Color(0xFF000000),
-    surfaceVariant = Color(0xFFE5E5EA), onSurfaceVariant = Color(0x993C3C43),
-    surfaceContainerLowest = Color.White, surfaceContainerLow = Color(0xFFF7F7FA),
-    surfaceContainer = Color(0xFFEFEFF4), surfaceContainerHigh = Color(0xFFE5E5EA),
-    surfaceContainerHighest = Color(0xFFD1D1D6),
-    outline = Color(0xFFAEAEB2), outlineVariant = Color(0x4A3C3C43),
-    error = Lumen.Error, errorContainer = Color(0xFFFFE5E3),
+    primary = Color(0xFF8A6510), onPrimary = Color.White,  // readable honey for text/icons on cream
+    primaryContainer = Lumen.Pale, onPrimaryContainer = Color(0xFF5A4410),
+    secondary = Color(0xFF5E5A50), secondaryContainer = Color(0xFFEDE9DE), onSecondaryContainer = Color(0xFF2A2721),
+    tertiary = Lumen.Approve, tertiaryContainer = Color(0xFFFBE4DA), onTertiaryContainer = Color(0xFF6B2A12),
+    background = Color(0xFFF7F5EE), onBackground = Color(0xFF1F1E1A),
+    surface = Color(0xFFFFFEFA), onSurface = Color(0xFF1F1E1A),
+    surfaceVariant = Color(0xFFEDE9DE), onSurfaceVariant = Color(0xFF7A7568),
+    surfaceContainerLowest = Color(0xFFFFFEFA), surfaceContainerLow = Color(0xFFF9F7F1),
+    surfaceContainer = Color(0xFFF1EEE5), surfaceContainerHigh = Color(0xFFE9E5DA),
+    surfaceContainerHighest = Color(0xFFDDD8CB),
+    outline = Color(0xFFB3AD9E), outlineVariant = Color(0xFFE4DFD3),
+    error = Lumen.Error, errorContainer = Color(0xFFFBE3E0),
 )
 private val DarkPalette = darkColorScheme(
-    primary = Lumen.SignalDark, onPrimary = Color.White, primaryContainer = Color(0xFF2A2A6B),
-    tertiary = Color(0xFFFFB340), tertiaryContainer = Color(0xFF4A3000),
-    background = Color(0xFF000000), onBackground = Color.White, surface = Color(0xFF1C1C1E), onSurface = Color.White,
-    surfaceVariant = Color(0xFF2C2C2E), surfaceContainerLow = Color(0xFF1C1C1E), surfaceContainer = Color(0xFF2C2C2E),
-    surfaceContainerHigh = Color(0xFF3A3A3C), surfaceContainerHighest = Color(0xFF48484A),
-    outlineVariant = Color(0x99545458), onSurfaceVariant = Color(0x99EBEBF5), error = Color(0xFFFF453A),
+    primary = Lumen.SignalDark, onPrimary = Lumen.Ink, primaryContainer = Color(0xFF4A3B14), onPrimaryContainer = Lumen.Pale,
+    tertiary = Color(0xFFE8825E), tertiaryContainer = Color(0xFF4F2312),
+    background = Color(0xFF1A1915), onBackground = Color(0xFFF2EFE6), surface = Color(0xFF24231E), onSurface = Color(0xFFF2EFE6),
+    surfaceVariant = Color(0xFF302E28), surfaceContainerLow = Color(0xFF22211C), surfaceContainer = Color(0xFF2B2A24),
+    surfaceContainerHigh = Color(0xFF35332C), surfaceContainerHighest = Color(0xFF403E36),
+    outlineVariant = Color(0xFF3D3B33), onSurfaceVariant = Color(0xFFADA796), error = Color(0xFFF26B5E),
 )
 
 /** Explicit light default. Surface translucency never blurs its foreground content. */

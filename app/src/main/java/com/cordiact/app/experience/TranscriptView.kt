@@ -104,18 +104,21 @@ fun TranscriptView(state: ExperienceState, onPrompt: (String) -> Unit, onInspect
             BoxWithConstraints(
                 Modifier.fillMaxSize().padding(LocalChromeBoundsPadding.current)
                     .padding(horizontal = 27.dp, vertical = 16.dp),
+                contentAlignment = Alignment.TopCenter,
             ) {
                 val viewportHeight = maxHeight
                 EmptyConversation(
                     onPrompt = onPrompt,
                     compact = viewportHeight < 320.dp,
-                    modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState())
+                    modifier = Modifier.widthIn(max = 640.dp).fillMaxWidth().verticalScroll(rememberScrollState())
                         .heightIn(min = viewportHeight),
                 )
             }
         } else {
+            // Reading measure: ~720dp column, centred in landscape/tablet; phones keep 16dp gutters.
+            val gutter = with(androidx.compose.ui.platform.LocalDensity.current) { ((androidx.compose.ui.platform.LocalWindowInfo.current.containerSize.width.toDp() - 720.dp) / 2).coerceAtLeast(16.dp) }
             LazyColumn(
-                state = list, contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = LocalChromePadding.current.calculateTopPadding(), bottom = LocalChromePadding.current.calculateBottomPadding()),
+                state = list, contentPadding = PaddingValues(start = gutter, end = gutter, top = LocalChromePadding.current.calculateTopPadding(), bottom = LocalChromePadding.current.calculateBottomPadding()),
                 verticalArrangement = Arrangement.spacedBy(20.dp),
                 modifier = Modifier.fillMaxSize().nestedScroll(connection).testTag("transcript"),
             ) {

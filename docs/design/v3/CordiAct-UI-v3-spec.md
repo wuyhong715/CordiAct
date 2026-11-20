@@ -73,15 +73,16 @@ Space（工作区）
 ### 颜色（浅色为默认）
 | Token | Light | Dark | 用途 |
 |---|---|---|---|
-| `bg.base` | `#F2F2F7` | `#000000` | 页面底（iOS systemGroupedBackground） |
-| `bg.surface` | `#FFFFFF` | `#1C1C1E` | 内容卡、分组 |
+| `bg.base` | `#F7F5EE` 暖米 | `#1A1915` | 页面底（Claude 式纸感） |
+| `bg.surface` | `#FFFEFA` | `#24231E` | 内容卡、分组 |
 | `label.primary` | `#000000` | `#FFFFFF` | |
 | `label.secondary` | `#3C3C43` 60% | `#EBEBF5` 60% | |
 | `label.tertiary` | `#3C3C43` 30% | `#EBEBF5` 30% | |
 | `separator` | `#3C3C43` 29% / 0.5px | `#545458` 60% | 细线 |
-| `brand.signal` | `#5B5BF6` | `#7B7BFF` | 仅「Agent 在做事」 |
-| `brand.aurora` | `#5B5BF6 → #22C3EE → #A78BFA` | 同 | 运行岛/珠串光晕，只做渐变高光 |
-| `state.approve` | `#FF9F0A` | `#FFB340` | 审批 |
+| `brand.signal` | `#E9B949` 蜂蜜黄 | `#F2CC6B` | 仅「Agent 在做事」的填充（光点、珠串、运行按钮），上面的字用 `#2B2416` |
+| `brand.pale` | `#FBEFC8` | `#4A3B14` | 品牌容器/强调底 |
+| `brand.text` | `#8A6510` | `#F2CC6B` | 品牌色文字/图标（淡黄在米白底不可读，故分层） |
+| `state.approve` | `#D9653B` 珊瑚 | `#E8825E` | 审批，与品牌黄区分 |
 | `state.ok` | `#34C759` | `#30D158` | |
 | `state.error` | `#FF3B30` | `#FF453A` | |
 
@@ -159,3 +160,7 @@ interface LensSpec {
 1. 品牌色 `#5B5BF6`（信号靛）是否接受，或指定品牌色。
 2. 名称：交互体系对外是否用「Lumen」叫法。
 3. 「钉板」（§3.5）是否进入一期，还是二期。
+
+## 10. 变更记录
+- 2026-11-20 品牌色定为淡黄（Claude 风格），中性色改暖米纸感；淡黄只做填充，文字用深蜂蜜 `#8A6510`。
+- 2026-11-20 横屏（宣发需求）：Activity 未锁方向；对话阅读列居中限宽 720dp，输入台限宽 760dp，空态限宽 640dp；工具详情在横屏改为右侧面板（≤420dp / 45% 宽），不再压成底部窄条；宽度 ≥840dp 沿用常驻侧栏。

@@ -73,7 +73,8 @@ internal fun ComposerBar(state: ExperienceState, composer: ComposerState, contro
         else if (composer.sendAvailability == ComposerRules.SendAvailability.BLOCKED) waiting = false
     }
     val duration = motionDuration(Motion.Standard)
-    Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
+    Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+    Column(Modifier.widthIn(max = 760.dp).fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
         AnimatedVisibility(composer.banner != null || composer.localOnlyCount > 0 || composer.failedCount > 0) {
             Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                 val message = composer.banner?.text ?: if (composer.failedCount > 0) "${composer.failedCount} 个附件失败，请移除或重试"
@@ -150,20 +151,21 @@ internal fun ComposerBar(state: ExperienceState, composer: ComposerState, contro
         text = { Text("${composer.localOnlyCount} 个附件不会发送给当前模型。可以换模型，或仅发送可读取的内容，其余附件仍保存在本地。") },
         confirmButton = { TextButton(onClick = { confirmLocal = false; onSend(composer.text) }) { Text("仅发送可读取内容") } },
         dismissButton = { TextButton(onClick = { confirmLocal = false; controller.popover(ComposerPopover.Model) }) { Text("换模型") } })
+    }
 }
 
 @Composable
 private fun SendAction(state: ExperienceState, composer: ComposerState, waiting: Boolean, onClick: () -> Unit) {
     val duration = motionDuration(Motion.Standard)
     val enabled = !state.loading && !state.stopping && (state.running || waiting || (composer.model != null && composer.sendAvailability in setOf(ComposerRules.SendAvailability.READY, ComposerRules.SendAvailability.WAIT_FOR_ATTACHMENTS)))
-    val color by animateColorAsState(when { !enabled -> MaterialTheme.colorScheme.surfaceContainerHigh; state.running -> MaterialTheme.colorScheme.primary; else -> MaterialTheme.colorScheme.onSurface }, tween(duration))
+    val color by animateColorAsState(when { !enabled -> MaterialTheme.colorScheme.surfaceContainerHigh; state.running -> com.cordiact.app.experience.Lumen.Signal; else -> MaterialTheme.colorScheme.onSurface }, tween(duration))
     IconButton(onClick, enabled = enabled, modifier = Modifier.size(48.dp).testTag(if (state.running) "stop-generation" else "send-message")) {
         Surface(color = color, shape = CircleShape) {
             Box(Modifier.size(36.dp), contentAlignment = Alignment.Center) {
                 if (waiting || state.stopping) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
                 else AnimatedContent(state.running, label = "send-stop", transitionSpec = { fadeIn(tween(duration)) togetherWith fadeOut(tween(duration)) }) { running ->
                     AppGlyph(if (running) GlyphName.Stop else GlyphName.Send, if (running) "停止当前回合" else "发送消息",
-                        tint = if (!enabled) MaterialTheme.colorScheme.onSurfaceVariant else if (state.running) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.surface)
+                        tint = if (!enabled) MaterialTheme.colorScheme.onSurfaceVariant else if (state.running) com.cordiact.app.experience.Lumen.Ink else MaterialTheme.colorScheme.surface)
                 }
             }
         }

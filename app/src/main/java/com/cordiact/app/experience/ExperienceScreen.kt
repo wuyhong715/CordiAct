@@ -207,8 +207,11 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
 internal fun CompactInspector(step: ToolActivity, onClose: () -> Unit, modifier: Modifier = Modifier, onSettings: ((String?) -> Unit)? = null) {
     val clipboard = LocalClipboardManager.current
     BoxWithConstraints(modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
-        val maxSheet = maxHeight * .45f
-        Surface(Modifier.fillMaxWidth().heightIn(max = maxSheet).padding(horizontal = 8.dp, vertical = 4.dp), shape = RoundedCornerShape(23.dp), shadowElevation = 12.dp, color = MaterialTheme.colorScheme.surface, border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
+        // Landscape: a side panel beside the transcript instead of a sheet squeezed into 360dp of height.
+        val side = maxWidth > maxHeight && maxWidth >= 600.dp
+        val maxSheet = if (side) maxHeight else maxHeight * .45f
+        Surface((if (side) Modifier.align(Alignment.CenterEnd).width(minOf(420.dp, maxWidth * .45f)).fillMaxHeight()
+                else Modifier.fillMaxWidth()).heightIn(max = maxSheet).padding(horizontal = 8.dp, vertical = 4.dp).testTag("tool-inspector"), shape = RoundedCornerShape(23.dp), shadowElevation = 12.dp, color = MaterialTheme.colorScheme.surface, border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
             Column {
                 PeekHandle(onClose)
                 Row(Modifier.padding(start = 17.dp, end = 5.dp), verticalAlignment = Alignment.CenterVertically) {
