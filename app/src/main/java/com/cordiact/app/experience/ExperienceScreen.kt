@@ -106,27 +106,6 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
     val closeAfterSelection: () -> Unit = { overview = false; inspected = null }
     BackHandler(overview) { overview = false }
     BackHandler(inspected != null && !overview) { inspected = null }
-    // Landscape deck: the command line belongs to the centre column, so the side panes keep full height.
-    val deckComposer: @Composable () -> Unit = {
-        ArchiveRows(
-            undoVisible = state.undoArchivedSessionId != null,
-            archived = state.archived,
-            running = state.running,
-            loading = state.loading,
-            horizontal = 16.dp,
-            onUndo = viewModel::undoArchive,
-            onDismiss = viewModel::dismissArchiveUndo,
-            onStop = viewModel::stop,
-            onRestore = { state.sessionId?.let { viewModel.restoreSession(it) } },
-        )
-        if (!state.archived) com.cordiact.app.experience.composer.ComposerBar(
-            state, composer, viewModel.composerController, promptToInsert,
-            { promptToInsert = "" }, viewModel::send, viewModel::stop,
-            viewModel::selectModel, { openSettings("settings://models/providers") },
-            { openSettings("settings://security/permissions") },
-            compact = true,
-        )
-    }
     val workbench: @Composable () -> Unit = {
         Surface(color = MaterialTheme.colorScheme.background, modifier = Modifier.fillMaxSize()) {
             Box(Modifier.fillMaxSize()) {
@@ -136,15 +115,6 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
                         viewModel.composerController.popover(null)
                         approvalId = (state.currentApprovals.firstOrNull() ?: state.approvals.firstOrNull())?.id
                     }
-                    if (deckMode) DeckTopBar(
-                        workspace = state.workspace?.name ?: "CordiAct",
-                        approvalCount = state.currentApprovals.size,
-                        onOverview = { overview = true },
-                        onApprovals = openApprovals,
-                        onNew = { viewModel.newSession(state.workspace?.id) },
-                        enabledNew = !state.loading,
-                        tabs = { stripModifier -> com.cordiact.app.experience.tabs.TabStrip(state, tabs, onClose = { tabs.close(it) }, modifier = stripModifier) },
-                    ) else {
                     LumenTopChrome(
                         workspace = state.workspace?.name ?: "CordiAct",
                         session = state.sessions.find { it.id == state.sessionId }?.title?.ifBlank { "新对话" } ?: "新对话",
@@ -161,7 +131,6 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
                             modifier = Modifier.testTag("new-tab")) { AppGlyph(GlyphName.Plus, "新对话标签") }
                     }
                     com.cordiact.app.experience.tabs.TabStrip(state, tabs, onClose = { tabs.close(it) }, modifier = Modifier.padding(top = 4.dp, bottom = 2.dp))
-                    }
                     },
                     content = { viewportModifier ->
                     Column(viewportModifier) {
@@ -185,8 +154,7 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
                                     CommandDeck(state, graph, deckFocus, { deckFocus = it },
                                         onFocusSession = { id -> tabs.open(com.cordiact.app.experience.tabs.WorkTab.Session(id)) },
                                         onInspect = { inspected = it }, onDecide = viewModel::decide,
-                                        onOpenApproval = { approvalId = it }, ownerLabel = ownerLabel,
-                                        composer = deckComposer)
+                                        onOpenApproval = { approvalId = it }, ownerLabel = ownerLabel)
                                 } else TranscriptView(state, onPrompt = { promptToInsert = it }, onInspect = { inspected = it })
                             }
                         }
@@ -194,24 +162,25 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
                     }
                     },
                     bottom = {
-                    if (!deckMode) {
-                        ArchiveRows(
-                            undoVisible = state.undoArchivedSessionId != null,
-                            archived = state.archived,
-                            running = state.running,
-                            loading = state.loading,
-                            onUndo = viewModel::undoArchive,
-                            onDismiss = viewModel::dismissArchiveUndo,
-                            onStop = viewModel::stop,
-                            onRestore = { state.sessionId?.let { viewModel.restoreSession(it) } },
-                        )
-                        if (!state.archived) com.cordiact.app.experience.composer.ComposerBar(
-                            state, composer, viewModel.composerController, promptToInsert,
-                            { promptToInsert = "" }, viewModel::send, viewModel::stop,
-                            viewModel::selectModel, { openSettings("settings://models/providers") },
-                            { openSettings("settings://security/permissions") },
-                        )
+                    if (state.undoArchivedSessionId != null) {
+                        Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text("会话已归档，运行任务不受影响", Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+                            TextButton(onClick = viewModel::undoArchive, enabled = !state.loading) { Text("撤销") }
+                            TextButton(onClick = viewModel::dismissArchiveUndo) { Text("关闭") }
+                        }
                     }
+                    if (state.archived) {
+                        Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text("此会话已归档", Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+                            if (state.running) TextButton(onClick = viewModel::stop) { Text("停止") }
+                            TextButton(onClick = { state.sessionId?.let { viewModel.restoreSession(it) } }, enabled = !state.loading) { Text("恢复并继续") }
+                        }
+                    } else com.cordiact.app.experience.composer.ComposerBar(
+                        state, composer, viewModel.composerController, promptToInsert,
+                        { promptToInsert = "" }, viewModel::send, viewModel::stop,
+                        viewModel::selectModel, { openSettings("settings://models/providers") },
+                        { openSettings("settings://security/permissions") },
+                    )
                     },
                 )
                 approvalId?.let { id ->
@@ -318,33 +287,4 @@ private fun PeekHandle(onDismiss: () -> Unit) {
             .semantics { contentDescription = "下滑关闭面板" },
         contentAlignment = Alignment.Center,
     ) { Box(Modifier.width(28.dp).height(3.dp).background(MaterialTheme.colorScheme.outlineVariant, CircleShape)) }
-}
-
-/** Archive banners shared by the portrait bottom bar and the landscape centre column. */
-@Composable
-private fun ArchiveRows(
-    undoVisible: Boolean,
-    archived: Boolean,
-    running: Boolean,
-    loading: Boolean,
-    horizontal: androidx.compose.ui.unit.Dp = 18.dp,
-    onUndo: () -> Unit,
-    onDismiss: () -> Unit,
-    onStop: () -> Unit,
-    onRestore: () -> Unit,
-) {
-    if (undoVisible) {
-        Row(Modifier.fillMaxWidth().padding(horizontal = horizontal), verticalAlignment = Alignment.CenterVertically) {
-            Text("会话已归档，运行任务不受影响", Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
-            TextButton(onClick = onUndo, enabled = !loading) { Text("撤销") }
-            TextButton(onClick = onDismiss) { Text("关闭") }
-        }
-    }
-    if (archived) {
-        Row(Modifier.fillMaxWidth().padding(horizontal = horizontal, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text("此会话已归档", Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
-            if (running) TextButton(onClick = onStop) { Text("停止") }
-            TextButton(onClick = onRestore, enabled = !loading) { Text("恢复并继续") }
-        }
-    }
 }

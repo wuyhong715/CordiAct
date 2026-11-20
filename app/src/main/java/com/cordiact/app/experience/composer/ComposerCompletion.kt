@@ -20,8 +20,7 @@ import kotlinx.coroutines.withContext
 
 @Composable
 internal fun CompletionEditor(app: CordiActApplication?, sessionId: String, workspaceId: String?, text: String,
-    enabled: Boolean, onText: (String) -> Unit, onSubmit: () -> Unit,
-    minLines: Int = 1, maxLines: Int = 6) {
+    enabled: Boolean, onText: (String) -> Unit, onSubmit: () -> Unit) {
     var editor by remember(sessionId, workspaceId) { mutableStateOf(TextFieldValue(text, TextRange(text.length))) }
     var candidates by remember(sessionId, workspaceId) { mutableStateOf(emptyList<InputCompletionCandidate>()) }
     var candidateOwner by remember(sessionId, workspaceId) { mutableStateOf<TextFieldValue?>(null) }
@@ -85,7 +84,7 @@ internal fun CompletionEditor(app: CordiActApplication?, sessionId: String, work
                         Key.Escape -> { dismissed = editor; candidates = emptyList(); true }
                         else -> false
                     }
-                }, minLines = minLines, maxLines = maxLines,
+                }, minLines = 1, maxLines = 6,
             textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface),
             cursorBrush = SolidColor(MaterialTheme.colorScheme.primary), decorationBox = { field ->
                 Box { if (editor.text.isEmpty()) Text("输入消息，可用 / @ #", color = MaterialTheme.colorScheme.onSurfaceVariant); field() }

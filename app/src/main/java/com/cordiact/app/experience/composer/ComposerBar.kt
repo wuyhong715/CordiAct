@@ -30,8 +30,7 @@ import kotlin.math.roundToInt
 @Composable
 internal fun ComposerBar(state: ExperienceState, composer: ComposerState, controller: ComposerController,
     insert: String, onInserted: () -> Unit, onSend: (String) -> Boolean, onStop: () -> Unit,
-    onSelect: (ModelId) -> Unit, onManage: () -> Unit, onSecurity: () -> Unit,
-    compact: Boolean = false) {
+    onSelect: (ModelId) -> Unit, onManage: () -> Unit, onSecurity: () -> Unit) {
     var waiting by remember(state.sessionId) { mutableStateOf(false) }
     var confirmLocal by remember { mutableStateOf(false) }
     val context = LocalContext.current
@@ -75,7 +74,7 @@ internal fun ComposerBar(state: ExperienceState, composer: ComposerState, contro
     }
     val duration = motionDuration(Motion.Standard)
     Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-    Column(Modifier.widthIn(max = 760.dp).fillMaxWidth().padding(horizontal = if (compact) 8.dp else 12.dp, vertical = if (compact) 2.dp else 8.dp)) {
+    Column(Modifier.widthIn(max = 760.dp).fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
         AnimatedVisibility(composer.banner != null || composer.localOnlyCount > 0 || composer.failedCount > 0) {
             Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                 val message = composer.banner?.text ?: if (composer.failedCount > 0) "${composer.failedCount} 个附件失败，请移除或重试"
@@ -84,9 +83,9 @@ internal fun ComposerBar(state: ExperienceState, composer: ComposerState, contro
                 if (composer.localOnlyCount > 0) TextButton(onClick = { controller.popover(ComposerPopover.Model) }) { Text("换模型") }
             }
         }
-        com.cordiact.app.experience.FrostedSurface(radius = if (compact) 20.dp else 28.dp,
+        com.cordiact.app.experience.FrostedSurface(radius = 28.dp,
             modifier = Modifier.fillMaxWidth().animateContentSize(tween(duration))) {
-            Column(Modifier.fillMaxWidth().padding(horizontal = if (compact) 4.dp else 10.dp, vertical = if (compact) 0.dp else 6.dp)) {
+            Column(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp)) {
                 AnimatedVisibility(composer.attachments.isNotEmpty(), enter = expandVertically(tween(duration)) + fadeIn(), exit = shrinkVertically(tween(duration)) + fadeOut()) {
                     AttachmentTray(composer.attachments, if (state.running) null else controller::remove, if (state.running) null else controller::retry)
                 }
@@ -94,19 +93,17 @@ internal fun ComposerBar(state: ExperienceState, composer: ComposerState, contro
                     Text("本轮运行中，草稿已保留", Modifier.padding(horizontal = 10.dp),
                         color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall)
                 }
-                val editorSlot: @Composable (Modifier) -> Unit = { slotModifier ->
-                    Box(slotModifier) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.weight(1f)) {
                         CompletionEditor(context.applicationContext as? com.cordiact.app.CordiActApplication,
                             state.sessionId.orEmpty(), state.workspace?.id, composer.text,
                             !state.loading && !waiting, controller::text,
                             onSubmit = { if (!state.loading && !state.running && !state.stopping && !waiting &&
-                                composer.model != null && composer.sendAvailability == ComposerRules.SendAvailability.READY) submit() },
-                            minLines = 1,
-                            // Landscape deck keeps one line until the draft really wraps; portrait is unchanged.
-                            maxLines = if (compact && !composer.text.contains('\n')) 1 else 6)
+                                composer.model != null && composer.sendAvailability == ComposerRules.SendAvailability.READY) submit() })
                     }
+
                 }
-                val attachSlot: @Composable () -> Unit = {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Box {
                         IconButton(onClick = { controller.popover(ComposerPopover.Attach) }, enabled = !state.loading && !state.running && !waiting) { AppGlyph(GlyphName.Plus, "添加附件", tint = if (composer.popover == ComposerPopover.Attach) MaterialTheme.colorScheme.primary else LocalContentColor.current) }
                         AnchoredPopover(composer.popover == ComposerPopover.Attach, { controller.popover(null) }) {
@@ -120,57 +117,32 @@ internal fun ComposerBar(state: ExperienceState, composer: ComposerState, contro
                             if (!composer.capabilities.attachments.declared) Text("当前模型不能读取附件，仅存到工作区", Modifier.padding(8.dp), style = MaterialTheme.typography.bodySmall)
                         }
                     }
-                }
-                val pillSlot: @Composable (Modifier) -> Unit = { slotModifier ->
-                    Box(slotModifier) {
-                        Surface(onClick = { if (composer.model == null) onManage() else controller.popover(ComposerPopover.Effort) }, shape = CircleShape,
-                            color = Color.Transparent, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).semantics { contentDescription = "模型与思考深度：${composer.pillLabel()}" }) {
-                            Row(Modifier.padding(horizontal = 4.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                if (composer.speed != ResponseSpeed.AUTO) AppGlyph(GlyphName.Bolt, size = GlyphSize.Small)
-                                Text(composer.pillLabel(), maxLines = 1, overflow = TextOverflow.Ellipsis,
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.weight(1f, fill = false))
-                                AppGlyph(GlyphName.ChevronDown, size = GlyphSize.Small)
+
+                        Box(Modifier.weight(1f)) {
+                            Surface(onClick = { if (composer.model == null) onManage() else controller.popover(ComposerPopover.Effort) }, shape = CircleShape,
+                                color = Color.Transparent, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).semantics { contentDescription = "模型与思考深度：${composer.pillLabel()}" }) {
+                                Row(Modifier.padding(horizontal = 4.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    if (composer.speed != ResponseSpeed.AUTO) AppGlyph(GlyphName.Bolt, size = GlyphSize.Small)
+                                    Text(composer.pillLabel(), maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.weight(1f, fill = false))
+                                    AppGlyph(GlyphName.ChevronDown, size = GlyphSize.Small)
+                                }
+                            }
+                            AnchoredPopover(composer.popover == ComposerPopover.Effort, { controller.popover(null) }) {
+                                EffortPanel(composer, controller)
+                            }
+                            AnchoredPopover(composer.popover == ComposerPopover.Model, { controller.popover(null) }) {
+                                ModelList(state.models, composer.model, controller.pinned, controller.recent,
+                                    onSelect = { onSelect(it); controller.popover(null) }, onPin = controller::pin,
+                                    onManage = { controller.popover(null); onManage() })
                             }
                         }
-                        AnchoredPopover(composer.popover == ComposerPopover.Effort, { controller.popover(null) }) {
-                            EffortPanel(composer, controller)
-                        }
-                        AnchoredPopover(composer.popover == ComposerPopover.Model, { controller.popover(null) }) {
-                            ModelList(state.models, composer.model, controller.pinned, controller.recent,
-                                onSelect = { onSelect(it); controller.popover(null) }, onPin = controller::pin,
-                                onManage = { controller.popover(null); onManage() })
-                        }
-                    }
-                }
-                val permissionSlot: @Composable () -> Unit = {
                     ComposerPermission(state.workspace?.id, composer.model, !state.running && !state.loading && !state.stopping && !waiting, onSecurity)
-                }
-                val sendSlot: @Composable () -> Unit = {
                     SendAction(state, composer, waiting, {
                         if (state.running) onStop() else if (waiting) waiting = false else if (composer.sendAvailability == ComposerRules.SendAvailability.WAIT_FOR_ATTACHMENTS) waiting = true else submit()
                     })
-                }
-                if (compact) {
-                    // One 48dp band inside the centre column: attach · draft · model · permission · send.
-                    Row(Modifier.fillMaxWidth().heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically) {
-                        attachSlot()
-                        editorSlot(Modifier.weight(1f))
-                        pillSlot(Modifier.widthIn(max = 128.dp))
-                        permissionSlot()
-                        sendSlot()
-                    }
-                } else {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        editorSlot(Modifier.weight(1f))
-                    }
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        attachSlot()
-                        pillSlot(Modifier.weight(1f))
-                        permissionSlot()
-                        sendSlot()
-                    }
                 }
             }
         }
