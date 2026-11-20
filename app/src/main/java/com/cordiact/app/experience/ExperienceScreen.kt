@@ -48,9 +48,7 @@ internal enum class StudioPane(val label: String) { Conversation("对话"), Acti
 @Composable
 fun ExperienceScreen(viewModel: ExperienceViewModel) {
     val state by viewModel.state.collectAsStateWithLifecycle()
-    val drawer = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
-    var pane by rememberSaveable { mutableStateOf(StudioPane.Conversation) }
     val saveable = rememberSaveableStateHolder()
     val saveableKey = "${state.workspace?.id}:${state.sessionId}"
     var approvalId by rememberSaveable { mutableStateOf<String?>(null) }
@@ -68,13 +66,30 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
         com.cordiact.app.experience.settings.SettingsHost(settingsVm, initialLink = settingsLink) { manageModels = false; settingsLink = null; viewModel.refreshSettingsModels() }
         return
     }
-    val wide = LocalConfiguration.current.screenWidthDp >= 840
-    var showWideSidebar by rememberSaveable { mutableStateOf(true) }
-    val closeSidebar: () -> Unit = { if (wide) showWideSidebar = false else scope.launch { drawer.close() } }
-    val closeAfterSelection: () -> Unit = { pane = StudioPane.Conversation; inspected = null; if (!wide) closeSidebar() }
-    BackHandler(wide && showWideSidebar && !manageModels) { showWideSidebar = false }
-    BackHandler(pane != StudioPane.Conversation && !drawer.isOpen) { pane = StudioPane.Conversation }
-    BackHandler(inspected != null && !drawer.isOpen) { inspected = null }
+    val tabContext = LocalContext.current.applicationContext
+    val tabs = remember { com.cordiact.app.experience.tabs.registerBuiltinTabs(); com.cordiact.app.experience.tabs.TabsController(com.cordiact.app.experience.tabs.PrefsTabStore(tabContext)) }
+    var overview by rememberSaveable { mutableStateOf(false) }
+    val activeTab = tabs.active
+    LaunchedEffect(state.sessionId) { tabs.followSession(state.sessionId) }
+    LaunchedEffect(state.sidebar) {
+        val live = state.sidebar.flatMap { it.sessions }.filter { !it.isArchived }.map { it.id }.toSet()
+        if (live.isNotEmpty()) tabs.prune(live + setOfNotNull(state.sessionId), com.cordiact.app.experience.tabs.TabRegistry.contributors.map { it.id }.toSet())
+    }
+    // A session tab is the selection: activating one moves the view model onto that session.
+    LaunchedEffect(activeTab?.key) {
+        val tab = activeTab as? com.cordiact.app.experience.tabs.WorkTab.Session ?: return@LaunchedEffect
+        if (tab.sessionId != state.sessionId) viewModel.selectSession(tab.sessionId)
+    }
+    val tabHost = remember {
+        object : com.cordiact.app.experience.tabs.TabHost {
+            override fun inspect(step: ToolActivity) { inspected = step }
+            override fun openSession(sessionId: String) { tabs.open(com.cordiact.app.experience.tabs.WorkTab.Session(sessionId)) }
+        }
+    }
+    val closeSidebar: () -> Unit = { overview = false }
+    val closeAfterSelection: () -> Unit = { overview = false; inspected = null }
+    BackHandler(overview) { overview = false }
+    BackHandler(inspected != null && !overview) { inspected = null }
     val sidebar: @Composable () -> Unit = {
         saveable.SaveableStateProvider("navigation-sidebar") {
             androidx.compose.runtime.CompositionLocalProvider(LocalApprovalOwners provides state.approvalOwners) {
@@ -115,25 +130,31 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
                         workspace = state.workspace?.name ?: "CordiAct",
                         session = state.sessions.find { it.id == state.sessionId }?.title?.ifBlank { "新对话" } ?: "新对话",
                         mode = state.islandMode(),
-                        menuLabel = "打开会话",
-                        onMenu = { if (wide) showWideSidebar = !showWideSidebar else scope.launch { drawer.open() } },
-                        onIsland = { pane = if (pane == StudioPane.Conversation && state.turns.any { it.tools.isNotEmpty() }) StudioPane.Activity else StudioPane.Conversation },
+                        tabCount = tabs.tabs.size,
+                        onMenu = { overview = true },
+                        onIsland = {
+                            if (state.turns.any { it.tools.isNotEmpty() }) tabs.open(com.cordiact.app.experience.tabs.WorkTab.Plugin(com.cordiact.app.experience.tabs.TraceTab.id))
+                            else overview = true
+                        },
                         onApprovals = openApprovals,
                     ) {
-                        StudioPaneMenu(pane, state.activeTools,
-                            com.cordiact.app.render.PreviewInbox.unseenCount(state.sessionId),
-                            onSelect = { pane = it })
+                        IconButton(onClick = { viewModel.newSession(state.workspace?.id) }, enabled = !state.loading,
+                            modifier = Modifier.testTag("new-tab")) { AppGlyph(GlyphName.Plus, "新对话标签") }
                     }
+                    com.cordiact.app.experience.tabs.TabStrip(state, tabs, onClose = { tabs.close(it) }, modifier = Modifier.padding(top = 4.dp, bottom = 2.dp))
                     },
                     content = { viewportModifier ->
                     Column(viewportModifier) {
                     if (state.error != null) Box(Modifier.padding(horizontal = 18.dp, vertical = 5.dp)) { ErrorStrip(state.error!!, viewModel::dismissError, { openSettings() }) }
                     Box(Modifier.weight(1f).fillMaxWidth()) {
-                        saveable.SaveableStateProvider("$saveableKey:${pane.name}") {
-                            when (pane) {
-                                StudioPane.Conversation -> TranscriptView(state, onPrompt = { promptToInsert = it }, onInspect = { inspected = it })
-                                StudioPane.Activity -> TrajectoryView(state, onInspect = { inspected = it })
-                                StudioPane.Artifacts -> PreviewView(state, modifier = Modifier.padding(LocalChromePadding.current))
+                        saveable.SaveableStateProvider("$saveableKey:${activeTab?.key}") {
+                            when (val tab = activeTab) {
+                                is com.cordiact.app.experience.tabs.WorkTab.Plugin -> {
+                                    val contributor = com.cordiact.app.experience.tabs.TabRegistry.find(tab.pluginId)
+                                    if (contributor != null) contributor.Content(state, tabHost)
+                                    else Text("该插件已卸载", Modifier.padding(LocalChromePadding.current).padding(24.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                                else -> TranscriptView(state, onPrompt = { promptToInsert = it }, onInspect = { inspected = it })
                             }
                         }
                     }
@@ -185,20 +206,19 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
             }
         }
     }
-    if (wide) {
-        Row(Modifier.fillMaxSize()) {
-            if (showWideSidebar) {
-                Box(Modifier.width(300.dp).fillMaxHeight().windowInsetsPadding(WindowInsets.systemBars)) { sidebar() }
-                VerticalDivider()
-            }
-            Box(Modifier.weight(1f).fillMaxHeight()) { workbench() }
+    Box(Modifier.fillMaxSize()) {
+        workbench()
+        androidx.compose.animation.AnimatedVisibility(overview,
+            enter = androidx.compose.animation.fadeIn(tween(com.cordiact.app.experience.composer.motionDuration(220))) + androidx.compose.animation.scaleIn(tween(com.cordiact.app.experience.composer.motionDuration(220)), initialScale = .96f),
+            exit = androidx.compose.animation.fadeOut(tween(com.cordiact.app.experience.composer.motionDuration(160))) + androidx.compose.animation.scaleOut(tween(com.cordiact.app.experience.composer.motionDuration(160)), targetScale = .96f)) {
+            com.cordiact.app.experience.tabs.TabOverview(
+                state, tabs,
+                onClose = { tabs.close(it) },
+                onDismiss = { overview = false },
+                onNewSession = { viewModel.newSession(state.workspace?.id, closeAfterSelection) },
+                onSettings = { closeAfterSelection(); settingsVm.reload(); openSettings() },
+            ) { m -> Box(m) { sidebar() } }
         }
-    } else {
-        ModalNavigationDrawer(drawerState = drawer, gesturesEnabled = drawer.isOpen || pane == StudioPane.Conversation,
-            drawerContent = {
-                ModalDrawerSheet(Modifier.width(minOf(LocalConfiguration.current.screenWidthDp.dp * .84f, 360.dp)),
-                    drawerContainerColor = MaterialTheme.colorScheme.surfaceContainerLowest) { sidebar() }
-            }, content = workbench)
     }
 
 }

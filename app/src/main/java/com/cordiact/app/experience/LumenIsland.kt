@@ -59,7 +59,7 @@ internal fun LumenTopChrome(
     workspace: String,
     session: String,
     mode: IslandMode,
-    menuLabel: String,
+    tabCount: Int,
     onMenu: () -> Unit,
     onIsland: () -> Unit,
     onApprovals: () -> Unit,
@@ -67,7 +67,13 @@ internal fun LumenTopChrome(
 ) {
     Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
         FrostedSurface(radius = 24.dp) {
-            IconButton(onClick = onMenu, modifier = Modifier.testTag("open-navigation")) { AppGlyph(GlyphName.Menu, menuLabel) }
+            IconButton(onClick = onMenu, modifier = Modifier.testTag("open-navigation").semantics { contentDescription = "标签页总览，已打开 $tabCount 个" }) {
+                Box(contentAlignment = Alignment.Center) {
+                    AppGlyph(GlyphName.Tabs, modifier = Modifier.size(22.dp))
+                    Text("$tabCount", style = MaterialTheme.typography.labelSmall.copy(fontSize = androidx.compose.ui.unit.TextUnit(9f, androidx.compose.ui.unit.TextUnitType.Sp)),
+                        modifier = Modifier.padding(top = 3.dp, end = 3.dp))
+                }
+            }
         }
         Box(Modifier.weight(1f).padding(horizontal = 8.dp), contentAlignment = Alignment.Center) {
             LumenIsland(workspace, session, mode, onTap = { if (mode is IslandMode.Approval) onApprovals() else onIsland() }, onPull = onMenu)

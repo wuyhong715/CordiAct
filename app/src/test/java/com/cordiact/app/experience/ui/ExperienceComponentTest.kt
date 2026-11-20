@@ -253,17 +253,6 @@ class ExperienceComponentTest {
         assertEquals(before, compose.onNodeWithTag("frame-composer").getUnclippedBoundsInRoot().bottom.value, 1f)
     }
 
-    @Test fun studioMenu_routesToArtifactsAndReportsSelection() {
-        var pane by mutableStateOf(StudioPane.Conversation)
-        content { StudioPaneMenu(pane, tools = 2, previews = 3, onSelect = { pane = it }) }
-        compose.onNodeWithText("产物 3").assertExists()
-        compose.onNodeWithTag("studio-pane-menu").performClick()
-        compose.onNodeWithTag("studio-pane-conversation").assertIsSelected()
-        compose.onNodeWithTag("studio-pane-artifacts").performClick()
-        compose.onNodeWithTag("studio-pane-menu").performClick()
-        compose.onNodeWithTag("studio-pane-artifacts").assertIsSelected()
-    }
-
     @Test fun everyOriginalGlyphCanBeBuiltAndDrawn() {
         content {
             Column {

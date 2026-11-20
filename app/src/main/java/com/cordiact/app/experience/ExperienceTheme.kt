@@ -23,16 +23,16 @@ internal object Lumen {
 }
 private val LightPalette = lightColorScheme(
     primary = Color(0xFF8A6510), onPrimary = Color.White,  // readable honey for text/icons on cream
-    primaryContainer = Lumen.Pale, onPrimaryContainer = Color(0xFF5A4410),
-    secondary = Color(0xFF5E5A50), secondaryContainer = Color(0xFFEDE9DE), onSecondaryContainer = Color(0xFF2A2721),
+    primaryContainer = Color(0xFFF7EFD9), onPrimaryContainer = Color(0xFF5A4410),  // cream accent
+    secondary = Color(0xFF5E5C57), secondaryContainer = Color(0xFFF7EFD9), onSecondaryContainer = Color(0xFF2A2721),
     tertiary = Lumen.Approve, tertiaryContainer = Color(0xFFFBE4DA), onTertiaryContainer = Color(0xFF6B2A12),
-    background = Color(0xFFF7F5EE), onBackground = Color(0xFF1F1E1A),
-    surface = Color(0xFFFFFEFA), onSurface = Color(0xFF1F1E1A),
-    surfaceVariant = Color(0xFFEDE9DE), onSurfaceVariant = Color(0xFF7A7568),
-    surfaceContainerLowest = Color(0xFFFFFEFA), surfaceContainerLow = Color(0xFFF9F7F1),
-    surfaceContainer = Color(0xFFF1EEE5), surfaceContainerHigh = Color(0xFFE9E5DA),
-    surfaceContainerHighest = Color(0xFFDDD8CB),
-    outline = Color(0xFFB3AD9E), outlineVariant = Color(0xFFE4DFD3),
+    background = Color(0xFFFFFFFF), onBackground = Color(0xFF1C1C1A),
+    surface = Color(0xFFFFFFFF), onSurface = Color(0xFF1C1C1A),
+    surfaceVariant = Color(0xFFF2F2F0), onSurfaceVariant = Color(0xFF76746E),
+    surfaceContainerLowest = Color.White, surfaceContainerLow = Color(0xFFF8F8F6),
+    surfaceContainer = Color(0xFFF3F3F1), surfaceContainerHigh = Color(0xFFEBEBE8),
+    surfaceContainerHighest = Color(0xFFE0DFDB),
+    outline = Color(0xFFB4B2AC), outlineVariant = Color(0xFFE7E6E2),
     error = Lumen.Error, errorContainer = Color(0xFFFBE3E0),
 )
 private val DarkPalette = darkColorScheme(
