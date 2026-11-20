@@ -158,7 +158,8 @@ class ModelProviderRegistryPlugin(
             models = original.models.filter { it in ids },
             discoveredModels = ids,
             modelDefaults = original.modelDefaults.filterKeys { it in ids },
-            parameterCapabilities = original.parameterCapabilities.filterKeys { it in ids },
+            parameterCapabilities = documentedParameters(original.protocol, original.endpoint, ids) +
+                original.parameterCapabilities.filterKeys { it in ids },
             attachmentCapabilities = original.attachmentCapabilities.filterKeys { it in ids },
         )
         synchronized(this) {

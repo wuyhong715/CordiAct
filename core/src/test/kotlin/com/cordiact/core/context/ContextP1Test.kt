@@ -142,7 +142,7 @@ class ContextP1Test {
         assertEquals(5, projected.size)
         assertEquals("System Prompt", projected[0].content)
         assertEquals("First user goal", projected[1].content)
-        assertEquals(MessageRole.SYSTEM, projected[2].role)
+        assertEquals(MessageRole.USER, projected[2].role)
         assertTrue(projected[2].content.contains("模型智能摘要"))
         assertTrue(projected[2].content.contains("Summary of steps 1 to 3"))
         assertEquals("Recent user command", projected[3].content)

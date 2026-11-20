@@ -74,6 +74,9 @@ data class ModelToolCall(
     val id: String,
     val name: String,
     val argumentsJson: String,
+    /** Opaque Gemini continuation data; other protocols must not send it. */
+    val geminiCallId: String? = null,
+    val geminiThoughtSignature: String? = null,
 )
 
 data class ModelMessage(
@@ -184,6 +187,8 @@ data class ModelGenerationRequest(
      * instead of guessing a scope from the session id.
      */
     val workspaceId: String? = null,
+    /** Budget fallback for protocols requiring a maximum; does not override model defaults. */
+    val outputBudgetTokens: Int? = null,
 )
 
 sealed interface ModelEvent {
@@ -202,8 +207,15 @@ sealed interface ModelEvent {
         val outputTokens: Long? = null,
         val outputLimitReached: Boolean = false,
         val toolLimitReached: Boolean = false,
+        val finishReason: String? = null,
     ) : ModelEvent
-    data class Failed(val code: String, val message: String, val retryable: Boolean = false) : ModelEvent
+    data class Failed(
+        val code: String,
+        val message: String,
+        val retryable: Boolean = false,
+        val providerCode: String? = null,
+        val retryAfterSeconds: Long? = null,
+    ) : ModelEvent
 
     /** DeepSeek-R1 / reasoning model chain-of-thought streaming chunk. */
     data class Thinking(val text: String) : ModelEvent

@@ -46,7 +46,7 @@ class DefaultContextProjector : ContextProjector {
             result.add(history[i].toModelMessage())
         }
 
-        // 2. Summary node (injected as SYSTEM context block)
+        // 2. Summary node (conversation data, not a host instruction)
         val fallbackBadge = when (latestRecord.fallbackLevel) {
             0 -> "模型智能摘要"
             1 -> "规则确定性摘要"
@@ -56,7 +56,7 @@ class DefaultContextProjector : ContextProjector {
 [上下文压缩摘要 · $fallbackBadge]
 ${latestRecord.summary}
 """.trimIndent()
-        result.add(ModelMessage(MessageRole.SYSTEM, summaryContent))
+        result.add(ModelMessage(MessageRole.USER, summaryContent))
 
         // 3. Tail (all messages after endIndex)
         for (i in (endIndex + 1) until history.size) {

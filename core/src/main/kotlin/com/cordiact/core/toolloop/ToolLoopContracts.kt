@@ -93,6 +93,8 @@ data class ToolLoopRound(
     val events: List<ModelEvent>,
 )
 
+class ModelRoundFailure(val failure: com.cordiact.core.conversation.ModelEvent.Failed) : Exception(failure.message)
+
 sealed interface ToolLoopOutcome {
     /** Final answer reached after [rounds] round trips. */
     data class Completed(val text: String, val rounds: Int, val evidence: List<ToolEvidence> = emptyList()) : ToolLoopOutcome
@@ -103,6 +105,7 @@ sealed interface ToolLoopOutcome {
         val rounds: Int,
         val lastText: String,
         val evidence: List<ToolEvidence> = emptyList(),
+        val failure: com.cordiact.core.conversation.ModelEvent.Failed? = null,
     ) : ToolLoopOutcome
 }
 
@@ -210,7 +213,7 @@ class ToolLoopPlugin(
                 .orEmpty()
             if (delivered.isNotEmpty()) {
                 com.cordiact.core.inbox.ChildReportRenderer.render(delivered)?.let {
-                    messages += ModelMessage(role = com.cordiact.core.conversation.MessageRole.SYSTEM, content = it)
+                    messages += ModelMessage(role = com.cordiact.core.conversation.MessageRole.USER, content = it)
                 }
             }
 
@@ -230,7 +233,7 @@ class ToolLoopPlugin(
                 // A transport or provider failure ends the turn; retrying inside the loop would
                 // duplicate whatever the model already streamed.
                 if (delivered.isNotEmpty()) inbox?.requeue(delivered)
-                return ToolLoopOutcome.Stopped(ToolLoopStop.FAILED, rounds, lastText, evidence.toList())
+                return ToolLoopOutcome.Stopped(ToolLoopStop.FAILED, rounds, lastText, evidence.toList(), (e as? ModelRoundFailure)?.failure)
             }
 
             // The request left, so the reports are genuinely delivered. Only now may the durable

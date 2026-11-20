@@ -25,6 +25,22 @@ class ModelDiscoveryTest {
         }
     }
 
+    @Test fun keepsModelsPathSegmentInAnExplicitGenerationEndpoint() {
+        val endpoint = "https://example.com/custom/models/chat/completions"
+        val connection = ModelProviderConnection("test", "Test", ModelProtocol.OPENAI_CHAT_COMPLETIONS, endpoint)
+        assertEquals(endpoint, connection.generationEndpoint())
+        assertEquals("https://example.com/custom/models/models", connection.modelsEndpoint())
+    }
+
+    @Test fun onlyDocumentedOfficialModelsGetParameterCapabilities() {
+        val official = ModelProviderConnection("test", "Test", ModelProtocol.OPENAI_RESPONSES, "https://api.openai.com/v1")
+        val models = listOf("gpt-5-mini", "gpt-5-mini-custom", "unknown")
+        val config = official.config(models)
+        assertEquals(setOf("gpt-5-mini"), config.parameterCapabilities.keys)
+        assertTrue(config.attachmentCapabilities.isEmpty())
+        assertTrue(official.copy(url = "https://example.com/v1").config(models).parameterCapabilities.isEmpty())
+    }
+
     @Test fun rejectsInsecureAndCredentialBearingUrls() {
         listOf("http://example.com", "https://user:secret@example.com/v1", "https://example.com/v1?key=secret", "https://example.com/#secret").forEach { url ->
             assertThrows(IllegalArgumentException::class.java) { ModelProviderConnection("p", "P", ModelProtocol.OPENAI_RESPONSES, url).modelsEndpoint() }

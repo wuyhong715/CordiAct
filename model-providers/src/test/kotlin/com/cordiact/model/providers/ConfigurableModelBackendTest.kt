@@ -1,6 +1,7 @@
 package com.cordiact.model.providers
 
 import com.cordiact.core.conversation.GenerationParameters
+import com.cordiact.core.conversation.ModelMessage
 import com.cordiact.core.conversation.MessageRole
 import com.cordiact.core.conversation.ModelAdapterPlugin
 import com.cordiact.core.conversation.ModelEvent
@@ -288,7 +289,7 @@ class ConfigurableModelBackendTest {
                 }
                 assertTrue(done.await(5, TimeUnit.SECONDS))
                 assertEquals(8192, JsonParser.parseString(server.requestBody).asJsonObject.get("max_tokens").asInt)
-                assertEquals(ModelEvent.Completed(10, 13, outputLimitReached = true), events.last())
+                assertEquals(ModelEvent.Completed(10, 13, outputLimitReached = true, finishReason = "max_tokens"), events.last())
                 assertTrue(events.any { it is ModelEvent.Delta && it.text == "partial" })
             }
         } finally {
@@ -622,6 +623,55 @@ class ConfigurableModelBackendTest {
         }
     }
 
+    @Test
+    fun officialChatRequestsUsageAndResponsesDoesNotStore() {
+        val official = config(ModelProtocol.OPENAI_CHAT_COMPLETIONS, "chat", "https://api.openai.com/v1/chat/completions")
+        val gateway = config(ModelProtocol.OPENAI_CHAT_COMPLETIONS, "chat", "https://example.com/v1/chat/completions")
+        val responses = config(ModelProtocol.OPENAI_RESPONSES, "responses", "https://api.openai.com/v1/responses")
+        val keys = ApiKeyProvider { "test-key" }
+        ConfigurableModelBackend(official, keys).use {
+            assertTrue(it.requestBody(request("chat", "model")).getAsJsonObject("stream_options")["include_usage"].asBoolean)
+        }
+        ConfigurableModelBackend(gateway, keys).use {
+            assertFalse(it.requestBody(request("chat", "model")).has("stream_options"))
+        }
+        ConfigurableModelBackend(responses, keys).use {
+            val body = it.requestBody(request("responses", "model"))
+            assertFalse(body["store"].asBoolean)
+            assertEquals("system instruction", body["instructions"].asString)
+            assertEquals("user", body.getAsJsonArray("input").single().asJsonObject["role"].asString)
+        }
+    }
+
+    @Test
+    fun parallelGeminiCallsRoundTripWithSignaturesIdsAndSchema() {
+        val spec = com.cordiact.core.conversation.ModelToolSpec("workspace.files.list", "List", """{"type":"object","additionalProperties":false}""")
+        val alias = wireName(spec.name)
+        val response = """{"candidates":[{"content":{"parts":[{"thoughtSignature":"sig","functionCall":{"name":"$alias","id":"a"}},{"functionCall":{"name":"$alias","id":"b"}}]}}]}"""
+        startServer(response, "application/json").use { server ->
+            val cfg = config(ModelProtocol.GEMINI_GENERATE_CONTENT, "gemini-json", "${server.baseUrl}/models/{model}:generateContent", allowInsecureLoopbackForTests = true)
+            ConfigurableModelBackend(cfg, ApiKeyProvider { "test-secret" }).use { backend ->
+                val req = request("gemini-json", "gemini-test").copy(tools = listOf(spec))
+                val events = Collections.synchronizedList(mutableListOf<ModelEvent>())
+                val done = CountDownLatch(1)
+                backend.generate(req) { events += it; if (it is ModelEvent.Completed || it is ModelEvent.Failed) done.countDown() }
+                assertTrue(done.await(5, TimeUnit.SECONDS))
+                val calls = events.filterIsInstance<ModelEvent.ToolCallsRequested>().single().calls
+                assertEquals(listOf(spec.name, spec.name), calls.map { it.name })
+                val results = calls.map { ModelMessage(MessageRole.TOOL, "ok", toolCallId = it.id, toolName = it.name) }
+                val body = backend.requestBody(req.copy(messages = req.messages + ModelMessage(MessageRole.ASSISTANT, "", calls) + results))
+                val declaration = body.getAsJsonArray("tools")[0].asJsonObject.getAsJsonArray("functionDeclarations")[0].asJsonObject
+                assertFalse(declaration.getAsJsonObject("parametersJsonSchema")["additionalProperties"].asBoolean)
+                val turns = body.getAsJsonArray("contents")
+                val parts = turns[turns.size()-2].asJsonObject.getAsJsonArray("parts")
+                assertEquals("sig", parts[0].asJsonObject["thoughtSignature"].asString)
+                val outputs = turns.last().asJsonObject.getAsJsonArray("parts").map { it.asJsonObject.getAsJsonObject("functionResponse") }
+                assertEquals(listOf("a", "b"), outputs.map { it["id"].asString })
+                assertTrue(outputs.all { it["name"].asString == alias })
+            }
+        }
+    }
+
     private fun requestWithoutParameters(providerId: String, modelId: String) = ModelGenerationRequest(
         sessionId = "session",
         model = ModelId(providerId, modelId),
@@ -650,7 +700,25 @@ class ConfigurableModelBackendTest {
         parameters = GenerationParameters(temperature = 0.3, maxOutputTokens = 512),
     )
 
-    private fun startServer(response: String, contentType: String = "text/event-stream; charset=utf-8"): TestServer {
+    @Test
+    fun preservesSafeHttpDiagnosticsWithoutEchoingProviderProse() {
+        val response = """{"error":{"type":"invalid_request_error","message":"maximum context length exceeded: private prompt","param":"tools[0].function.name"}}"""
+        startServer(response, "application/json", status = 400).use { server ->
+            val cfg = config(ModelProtocol.OPENAI_CHAT_COMPLETIONS, "errors", "${server.baseUrl}/chat/completions", allowInsecureLoopbackForTests = true)
+            ConfigurableModelBackend(cfg, ApiKeyProvider { "test-key" }).use { backend ->
+                val result = java.util.concurrent.CompletableFuture<ModelEvent.Failed>()
+                backend.generate(request("errors", "model")) { if (it is ModelEvent.Failed) result.complete(it) }
+                val failure = result.get(5, TimeUnit.SECONDS)
+                assertEquals("http_400", failure.code)
+                assertTrue(failure.message.contains("context_length_exceeded"))
+                assertTrue(failure.message.contains("tools[0].function.name"))
+                assertFalse(failure.message.contains("private prompt"))
+                assertFalse(failure.retryable)
+            }
+        }
+    }
+
+    private fun startServer(response: String, contentType: String = "text/event-stream; charset=utf-8", status: Int = 200): TestServer {
         val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
         val state = TestServer(server)
         server.createContext("/") { exchange ->
@@ -660,7 +728,7 @@ class ConfigurableModelBackendTest {
             exchange.requestHeaders.forEach { (name, values) -> state.authHeaders[name.lowercase()] = values.firstOrNull().orEmpty() }
             val bytes = response.toByteArray(StandardCharsets.UTF_8)
             exchange.responseHeaders.add("Content-Type", contentType)
-            exchange.sendResponseHeaders(200, bytes.size.toLong())
+            exchange.sendResponseHeaders(status, bytes.size.toLong())
             exchange.responseBody.use { it.write(bytes) }
         }
         server.start()

@@ -5,6 +5,7 @@ import com.cordiact.core.context.CompactionReason
 import com.cordiact.core.context.CompactionRecord
 import com.cordiact.core.context.ContextBudget
 import com.cordiact.core.context.ContextCompactionStore
+import com.cordiact.core.context.createBudget
 import com.cordiact.core.context.ContextPolicy
 import com.cordiact.core.context.ContextProjector
 import com.cordiact.core.context.DefaultContextCompactor
@@ -15,7 +16,6 @@ import com.cordiact.core.context.OverflowClassifier
 import com.cordiact.core.context.SummaryCompactor
 import com.cordiact.core.context.TokenEstimator
 import com.cordiact.core.context.WeightedTokenEstimator
-import com.cordiact.core.context.createBudget
 import com.cordiact.core.conversation.ConversationMessage
 import com.cordiact.core.conversation.GenerationParameters
 import com.cordiact.core.attachment.MessagePart
@@ -204,6 +204,7 @@ class ConversationTurnService(
         var inputTokens: Long? = null
         var outputTokens: Long? = null
         var outputLimitReached = false
+        var finishReason: String? = null
         // A provider's Completed terminates ONE model round, not the entire tool-using turn.
         val roundEvents: (ModelEvent) -> Unit = { event ->
             when (event) {
@@ -211,6 +212,7 @@ class ConversationTurnService(
                     event.inputTokens?.let { inputTokens = (inputTokens ?: 0) + it }
                     event.outputTokens?.let { outputTokens = (outputTokens ?: 0) + it }
                     outputLimitReached = event.outputLimitReached
+                    finishReason = event.finishReason
                 }
                 is ModelEvent.Failed -> Unit // Converted to the single turn-level terminal below.
                 else -> if (!terminal.get()) onEvent(event)
@@ -253,12 +255,13 @@ class ConversationTurnService(
             activeSessions.remove(sessionId)
             when {
                 terminal.get() -> onEvent(ModelEvent.Failed("turn_cancelled", "Turn cancelled"))
+                outcome is ToolLoopOutcome.Stopped && outcome.failure != null -> onEvent(requireNotNull(outcome.failure))
                 outcome is ToolLoopOutcome.Stopped && !outputLimitReached -> {
                     if (finalText.isNotBlank() && toolLimitReached) {
-                        onEvent(ModelEvent.Completed(inputTokens, outputTokens, toolLimitReached = true))
+                        onEvent(ModelEvent.Completed(inputTokens, outputTokens, toolLimitReached = true, finishReason = finishReason))
                     } else onEvent(ModelEvent.Failed("tool_loop_stopped", "Turn ended early: ${outcome.reason}"))
                 }
-                else -> onEvent(ModelEvent.Completed(inputTokens, outputTokens, outputLimitReached))
+                else -> onEvent(ModelEvent.Completed(inputTokens, outputTokens, outputLimitReached, finishReason = finishReason))
             }
             runCatching { onTurnCompleted?.invoke(sessionId) }
         } catch (error: Exception) {
@@ -391,6 +394,7 @@ class ConversationTurnService(
                 sessionId = sessionId,
                 model = model,
                 messages = wireMessages,
+                outputBudgetTokens = contextPolicy.createBudget(windowFor(model)).maxOutputTokens,
                 parameters = parameters,
                 tools = tools,
                 workspaceId = sessions.getSession(sessionId)?.workspaceId,
@@ -425,7 +429,7 @@ class ConversationTurnService(
         try {
             check(settled.await(ROUND_TIMEOUT_MILLIS, java.util.concurrent.TimeUnit.MILLISECONDS)) { "Model round timed out" }
             check(!terminal.get()) { "Turn cancelled" }
-            failure?.let { throw IllegalStateException("${it.code}: ${it.message}") }
+            failure?.let { throw com.cordiact.core.toolloop.ModelRoundFailure(it) }
             return com.cordiact.core.toolloop.ToolLoopRound(roundText.toString(), calls, emptyList())
         } finally {
             activeToolRounds.remove(sessionId, roundController)
@@ -550,6 +554,7 @@ class ConversationTurnService(
                         sessionId = sessionId,
                         model = model,
                         messages = historyToSend,
+                        outputBudgetTokens = contextPolicy.createBudget(windowFor(model)).maxOutputTokens,
                         parameters = parameters,
                         workspaceId = session.workspaceId,
                     ),
@@ -581,7 +586,10 @@ class ConversationTurnService(
                             // event is only relayed so the caller can decide.
                             is ModelEvent.ToolCallsRequested -> Unit
                             is ModelEvent.Failed -> {
-                                val failure = OverflowClassifier.classify(event.code, event.message, model.providerId)
+                                val failure = OverflowClassifier.classify(
+                                    if (event.providerCode == "context_length_exceeded") event.providerCode else event.code,
+                                    event.message, model.providerId,
+                                )
                                 if (failure is ModelFailure.ContextOverflow && attempt < MAX_OVERFLOW_RETRIES) {
                                     val recovered = recoverFromOverflow(sessionId, model, systemContext, pending)
                                     if (recovered != null) {
@@ -692,8 +700,8 @@ class ConversationTurnService(
         val withNotices = if (pending.isEmpty()) {
             projected
         } else {
-            val noticeMsg = noticeBlock(pending)?.let { ModelMessage(MessageRole.SYSTEM, it) }
-            if (noticeMsg != null) listOf(noticeMsg) + projected else projected
+            val noticeMsg = noticeBlock(pending)?.let { ModelMessage(MessageRole.USER, it) }
+            if (noticeMsg != null) projected + noticeMsg else projected
         }
 
         return if (systemContext.isNullOrBlank()) {
@@ -762,9 +770,8 @@ internal const val MAX_OVERFLOW_RETRIES = 1
 /**
  * Renders pending notices as one structured system block.
  *
- * System, not user: a child's completion is something the runtime observed, and attributing it to
- * the user would make the transcript claim they said it. Structured rather than prose so the model
- * can tell a child's own words from the runtime's account of how it ended.
+ * Runtime data, never a host instruction. The structured wrapper identifies the source even when
+ * a provider can only represent this content in a user-role message.
  */
 internal fun noticeBlock(notices: List<TurnNotice>): String? {
     if (notices.isEmpty()) return null
