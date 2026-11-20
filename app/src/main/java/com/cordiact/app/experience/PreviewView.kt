@@ -1,5 +1,6 @@
 package com.cordiact.app.experience
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -32,6 +33,7 @@ internal fun ArtifactPreviewWindow(
     val queue = PreviewInbox.forSession(sessionId)
     var activeId by rememberSaveable(sessionId) { mutableStateOf<String?>(null) }
     val active = queue.firstOrNull { it.id == activeId }
+    BackHandler(enabled = visible && active != null) { activeId = null }
     Column(modifier.fillMaxSize().testTag("artifact-preview")) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 13.dp), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {

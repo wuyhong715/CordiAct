@@ -9,8 +9,6 @@ import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.pager.HorizontalPager
-import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -44,8 +42,7 @@ import com.cordiact.app.experience.model.ToolActivity
 import com.cordiact.app.experience.model.ToolPhase
 import kotlinx.coroutines.launch
 
-private data class WindowSpec(val id: String)
-private val windows = listOf(WindowSpec("chat"), WindowSpec("trace"), WindowSpec("preview"))
+internal enum class StudioPane(val label: String) { Conversation("对话"), Activity("执行轨迹"), Artifacts("产物") }
 
 @OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
@@ -53,15 +50,15 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
-    val pager = rememberPagerState(pageCount = { windows.size })
+    var pane by rememberSaveable { mutableStateOf(StudioPane.Conversation) }
     val saveable = rememberSaveableStateHolder()
+    val saveableKey = "${state.workspace?.id}:${state.sessionId}"
     var approvalId by rememberSaveable { mutableStateOf<String?>(null) }
     var inspected by remember { mutableStateOf<ToolActivity?>(null) }
     var promptToInsert by remember { mutableStateOf("") }
     var settingsLink by remember { mutableStateOf<String?>(null) }
     var manageModels by remember { mutableStateOf(false) }
     val composer by viewModel.composer.collectAsStateWithLifecycle()
-    BackHandler(inspected != null) { inspected = null }
     val settingsApp = LocalContext.current.applicationContext as com.cordiact.app.CordiActApplication
     val settingsVm: com.cordiact.app.experience.settings.SettingsViewModel = androidx.lifecycle.viewmodel.compose.viewModel(
         factory = com.cordiact.app.experience.settings.SettingsViewModel.factory(
@@ -74,8 +71,10 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
     val wide = LocalConfiguration.current.screenWidthDp >= 840
     var showWideSidebar by rememberSaveable { mutableStateOf(true) }
     val closeSidebar: () -> Unit = { if (wide) showWideSidebar = false else scope.launch { drawer.close() } }
-    val closeAfterSelection: () -> Unit = { if (!wide) closeSidebar() }
-    BackHandler(enabled = wide && showWideSidebar && inspected == null) { showWideSidebar = false }
+    val closeAfterSelection: () -> Unit = { pane = StudioPane.Conversation; inspected = null; if (!wide) closeSidebar() }
+    BackHandler(wide && showWideSidebar && !manageModels) { showWideSidebar = false }
+    BackHandler(pane != StudioPane.Conversation && !drawer.isOpen) { pane = StudioPane.Conversation }
+    BackHandler(inspected != null && !drawer.isOpen) { inspected = null }
     val sidebar: @Composable () -> Unit = {
         saveable.SaveableStateProvider("navigation-sidebar") {
             androidx.compose.runtime.CompositionLocalProvider(LocalApprovalOwners provides state.approvalOwners) {
@@ -109,31 +108,26 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
                 ExperienceFrame(
                     top = {
                     Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
-                        FrostedSurface(radius = 24.dp) { IconButton(onClick = { if (wide) showWideSidebar = !showWideSidebar else scope.launch { drawer.open() } }, modifier = Modifier.testTag("open-navigation")) { AppGlyph(GlyphName.Menu, "打开工作区和会话") } }
-                        Column(Modifier.weight(1f).padding(horizontal = 4.dp)) {
-                            Text(state.workspace?.name ?: "CordiAct", style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            Text(state.sessions.find { it.id == state.sessionId }?.title ?: "你的智能工作空间", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        FrostedSurface(radius = 24.dp) { IconButton(onClick = { if (wide) showWideSidebar = !showWideSidebar else scope.launch { drawer.open() } }, modifier = Modifier.testTag("open-navigation")) { AppGlyph(GlyphName.Menu, if (wide && showWideSidebar) "收起会话侧栏" else "打开工作区和会话") } }
+                        Column(Modifier.weight(1f).padding(horizontal = 6.dp)) {
+                            Text(state.workspace?.name ?: "CordiAct", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(state.sessions.find { it.id == state.sessionId }?.title?.ifBlank { "新对话" } ?: "新对话", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
-
+                        StudioPaneMenu(pane, state.activeTools,
+                            com.cordiact.app.render.PreviewInbox.unseenCount(state.sessionId),
+                            onSelect = { pane = it })
                     }
-                    WindowTabs(
-                        selected = pager.settledPage,
-                        position = pager.currentPage + pager.currentPageOffsetFraction,
-                        tools = state.activeTools,
-                        previews = com.cordiact.app.render.PreviewInbox.unseenCount(state.sessionId),
-                        onSelect = { scope.launch { pager.animateScrollToPage(it) } },
-                    )
                     },
                     content = { viewportModifier ->
                     Column(viewportModifier) {
                     if (state.error != null) Box(Modifier.padding(horizontal = 18.dp, vertical = 5.dp)) { ErrorStrip(state.error!!, viewModel::dismissError, { openSettings() }) }
-                    HorizontalPager(state = pager, userScrollEnabled = false, beyondViewportPageCount = 2, key = { windows[it].id }, modifier = Modifier.weight(1f).fillMaxWidth()) { page ->
-                        saveable.SaveableStateProvider("${state.workspace?.id}:${state.sessionId}:${windows[page].id}") {
-                        when (windows[page].id) {
-                            "chat" -> TranscriptView(state, onPrompt = { promptToInsert = it }, onInspect = { inspected = it })
-                            "trace" -> TrajectoryView(state, onInspect = { inspected = it })
-                            "preview" -> PreviewView(state, visible = pager.settledPage == 2, modifier = Modifier.padding(LocalChromePadding.current))
-                        }
+                    Box(Modifier.weight(1f).fillMaxWidth()) {
+                        saveable.SaveableStateProvider("$saveableKey:${pane.name}") {
+                            when (pane) {
+                                StudioPane.Conversation -> TranscriptView(state, onPrompt = { promptToInsert = it }, onInspect = { inspected = it })
+                                StudioPane.Activity -> TrajectoryView(state, onInspect = { inspected = it })
+                                StudioPane.Artifacts -> PreviewView(state, modifier = Modifier.padding(LocalChromePadding.current))
+                            }
                         }
                     }
                     }
@@ -144,7 +138,7 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
                             viewModel.composerController.popover(null)
                             approvalId = (state.currentApprovals.firstOrNull() ?: state.approvals.firstOrNull())?.id
                         },
-                        onTrace = { scope.launch { pager.animateScrollToPage(1) } },
+                        onTrace = { pane = StudioPane.Activity },
                     )
                     if (state.undoArchivedSessionId != null) {
                         Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -200,7 +194,7 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
             Box(Modifier.weight(1f).fillMaxHeight()) { workbench() }
         }
     } else {
-        ModalNavigationDrawer(drawerState = drawer, gesturesEnabled = drawer.isOpen || pager.currentPage == 0,
+        ModalNavigationDrawer(drawerState = drawer, gesturesEnabled = drawer.isOpen || pane == StudioPane.Conversation,
             drawerContent = {
                 ModalDrawerSheet(Modifier.width(minOf(LocalConfiguration.current.screenWidthDp.dp * .84f, 360.dp)),
                     drawerContainerColor = MaterialTheme.colorScheme.surfaceContainerLowest) { sidebar() }
