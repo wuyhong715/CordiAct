@@ -38,7 +38,6 @@ import com.cordiact.app.experience.model.*
  * view rather than a separate screen: the same header, search, list and edge fades are reused.
  */
 @Composable
-@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 fun ConversationSidebar(
     groups: List<SidebarWorkspace>,
     activeWorkspaceId: String?,
@@ -341,7 +340,8 @@ fun ConversationSidebar(
                 Text("包含归档会话", style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant)
             }
         }
-        if (!archiveMode) FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        // Single row: the three filters fit any supported width and avoid the newer FlowRow overload.
+        if (!archiveMode) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             FilterChip(selected = filter == "all", onClick = { filter = "all" }, label = { Text("全部") })
             FilterChip(selected = filter == "running", onClick = { filter = "running" }, label = { Text("运行中") })
             FilterChip(selected = filter == "approval", onClick = { filter = "approval" }, label = { Text("待确认") })
