@@ -124,8 +124,9 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
     BackHandler(overview) { overview = false }
     BackHandler(inspected != null && !overview) { inspected = null }
     val workbench: @Composable () -> Unit = {
-        if (landscape && activeTab !is WorkTab.Plugin) {
-            LandscapeWorkbench(state, pendingSessionId,
+        if (landscape) {
+            val activity = rememberWorkbenchActivity(settingsApp, state.workspace?.id, state.sessionId, state.runningSessionIds)
+            LandscapeWorkbench(state, pendingSessionId, committedKey.orEmpty(), activity,
                 onOverview = { overview = true; inspected = null },
                 onNew = { viewModel.newSession(state.workspace?.id) },
                 onOpenApproval = { approvalId = it }, ownerLabel = ownerLabel,
@@ -135,7 +136,34 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
                         onSelect = { requestedTab = it }, displayedKey = committedKey,
                         pendingKey = pendingSessionId?.let { "s:$it" }, compact = true)
                 },
+                body = { openStep ->
+                    val landscapeHost = object : com.cordiact.app.experience.tabs.TabHost by tabHost {
+                        override fun inspect(step: ToolActivity) = openStep(step)
+                    }
+                    Column(Modifier.fillMaxSize()) {
+                        state.error?.let { message ->
+                            Box(Modifier.padding(horizontal = 12.dp, vertical = 3.dp)) {
+                                ErrorStrip(message, viewModel::dismissError, { openSettings() })
+                            }
+                        }
+                        Box(Modifier.weight(1f).fillMaxWidth()) {
+                            val plugin = activeTab as? WorkTab.Plugin
+                            if (plugin == null) TranscriptView(state, onPrompt = { promptToInsert = it }, onInspect = openStep)
+                            else {
+                                val contributor = com.cordiact.app.experience.tabs.TabRegistry.find(plugin.pluginId)
+                                if (contributor != null) contributor.Content(state, landscapeHost)
+                                else Text("该插件已卸载", Modifier.padding(18.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                    }
+                },
                 composer = { lines ->
+                    state.undoArchivedSessionId?.let {
+                        Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text("会话已归档", Modifier.weight(1f), style = MaterialTheme.typography.labelSmall)
+                            TextButton(onClick = { viewModel.restoreSession(it) }) { Text("撤销") }
+                        }
+                    }
                     if (state.archived) TextButton(onClick = { state.sessionId?.let { viewModel.restoreSession(it) } },
                         enabled = !state.loading && !switchPending) { Text("恢复并继续") }
                     else com.cordiact.app.experience.composer.ComposerBar(

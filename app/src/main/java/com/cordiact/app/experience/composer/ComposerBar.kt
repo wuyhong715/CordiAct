@@ -140,16 +140,26 @@ internal fun ComposerBar(state: ExperienceState, composer: ComposerState, contro
         })
     }
     if (compact) {
-        Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceContainerLowest)) {
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-            BoxWithConstraints(Modifier.fillMaxWidth()) {
+        FrostedSurface(radius = 24.dp, modifier = Modifier.fillMaxWidth()) {
+            BoxWithConstraints(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp)) {
                 val iconOnly = maxWidth < 410.dp || maxEditorLines < 3
-                Row(Modifier.fillMaxWidth().heightIn(min = 51.dp).padding(horizontal = 2.dp),
-                    verticalAlignment = Alignment.CenterVertically) {
-                    attach()
-                    Box(Modifier.weight(1f)) { editor() }
-                    Box(Modifier.width(if (iconOnly) 48.dp else 106.dp)) { model(iconOnly) }
-                    trailing()
+                if (maxEditorLines < 3) {
+                    Row(Modifier.fillMaxWidth().heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically) {
+                        attach()
+                        Box(Modifier.weight(1f)) { editor() }
+                        Box(Modifier.width(48.dp)) { model(true) }
+                        trailing()
+                    }
+                } else {
+                    Column(Modifier.fillMaxWidth()) {
+                        Box(Modifier.fillMaxWidth().padding(horizontal = 9.dp, vertical = 2.dp)) { editor() }
+                        Row(Modifier.fillMaxWidth().heightIn(min = 44.dp), verticalAlignment = Alignment.CenterVertically) {
+                            attach()
+                            Box(Modifier.width(if (iconOnly) 48.dp else 132.dp)) { model(iconOnly) }
+                            Spacer(Modifier.weight(1f))
+                            trailing()
+                        }
+                    }
                 }
             }
         }
