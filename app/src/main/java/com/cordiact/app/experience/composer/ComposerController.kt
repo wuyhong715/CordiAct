@@ -54,16 +54,13 @@ class ComposerController(
         if (active == session) mutable.value = next
     }
 
-    suspend fun open(session: String, workspaceId: String, models: List<ModelDescriptor>, fallback: ModelId?) {
+    suspend fun prepareSession(session: String, workspaceId: String, models: List<ModelDescriptor>, fallback: ModelId?): ComposerState {
         if (pendingSave != null) save()
-        active?.let { snapshots[it] = mutable.value.copy(popover = null) }
-        active = session; workspace = workspaceId
         val cached = snapshots[session]
         val flushed = CompletableDeferred<Unit>()
         writes.send { flushed.complete(Unit) }
         flushed.await()
         val draft = withContext(Dispatchers.IO) { drafts.load(session) }
-        if (active != session) return
         val chosen = models.find { it.id == (cached?.model ?: draft.model ?: last.model) }
             ?: models.find { it.id == fallback } ?: models.firstOrNull()
         val base = cached ?: ComposerState(text = draft.text,
@@ -78,9 +75,23 @@ class ComposerController(
                     thumbnail = thumbnail(descriptor, rendition))
             }
         }
-        if (active != session) return
-        update(session) { base.copy(attachments = restored, popover = null) }
-        if (chosen != null) select(chosen) else update { it.copy(model = null, modelName = "添加模型", capabilities = ModelCapabilities.NONE) }
+        val prepared = (snapshots[session] ?: base).copy(attachments = snapshots[session]?.attachments ?: restored, popover = null)
+        if (chosen == null) return prepared.copy(model = null, modelName = "添加模型", capabilities = ModelCapabilities.NONE)
+        val tuning = ComposerRules.reconcile(prepared.tuning, chosen.capabilities)
+        return prepared.copy(model = chosen.id, modelName = chosen.id.modelId, capabilities = chosen.capabilities,
+            effort = tuning.effort, speed = tuning.speed,
+            attachments = prepared.attachments.map { it.withModel(chosen.capabilities) },
+            banner = if (tuning != prepared.tuning) ComposerBanner("不支持原档位，已恢复 auto", BannerTone.INFO) else null)
+    }
+
+    /** No I/O or suspension here: the editor is bound in the same UI turn as the session. */
+    fun bindSession(session: String, workspaceId: String, prepared: ComposerState) {
+        if (pendingSave != null) save()
+        active?.let { snapshots[it] = mutable.value.copy(popover = null) }
+        active = session
+        workspace = workspaceId
+        update(session) { prepared }
+        save()
     }
 
     private fun draftsRendition(session: String, id: AttachmentId): String? =

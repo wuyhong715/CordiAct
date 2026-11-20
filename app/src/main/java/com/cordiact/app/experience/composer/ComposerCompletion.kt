@@ -20,7 +20,7 @@ import kotlinx.coroutines.withContext
 
 @Composable
 internal fun CompletionEditor(app: CordiActApplication?, sessionId: String, workspaceId: String?, text: String,
-    enabled: Boolean, onText: (String) -> Unit, onSubmit: () -> Unit) {
+    enabled: Boolean, onText: (String) -> Unit, onSubmit: () -> Unit, maxLines: Int = 6, compact: Boolean = false) {
     var editor by remember(sessionId, workspaceId) { mutableStateOf(TextFieldValue(text, TextRange(text.length))) }
     var candidates by remember(sessionId, workspaceId) { mutableStateOf(emptyList<InputCompletionCandidate>()) }
     var candidateOwner by remember(sessionId, workspaceId) { mutableStateOf<TextFieldValue?>(null) }
@@ -67,11 +67,12 @@ internal fun CompletionEditor(app: CordiActApplication?, sessionId: String, work
             }
         }
         BasicTextField(value = editor, onValueChange = { editor = it; onText(it.text) }, enabled = enabled,
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 12.dp)
+            modifier = Modifier.fillMaxWidth().padding(horizontal = if (compact) 3.dp else 10.dp, vertical = if (compact) 5.dp else 12.dp)
                 .heightIn(min = 24.dp, max = 160.dp).testTag("composer-input").focusRequester(focus)
                 .onPreviewKeyEvent { event ->
                     if (editor.composition != null || event.type != KeyEventType.KeyDown) false
-                    else if ((event.key == Key.Enter || event.key == Key.NumPadEnter) && (event.isCtrlPressed || event.isMetaPressed)) {
+                    else if ((event.key == Key.Enter || event.key == Key.NumPadEnter) && (event.isCtrlPressed || event.isMetaPressed ||
+                        (compact && !event.isShiftPressed && event.nativeKeyEvent.device?.isVirtual == false))) {
                         if (candidateOwner == editor && candidates.isNotEmpty()) {
                             if (event.nativeKeyEvent.repeatCount == 0) apply(candidates[selected.coerceIn(candidates.indices)])
                         } else if (enabled && event.nativeKeyEvent.repeatCount == 0) onSubmit()
@@ -84,10 +85,10 @@ internal fun CompletionEditor(app: CordiActApplication?, sessionId: String, work
                         Key.Escape -> { dismissed = editor; candidates = emptyList(); true }
                         else -> false
                     }
-                }, minLines = 1, maxLines = 6,
+                }, minLines = 1, maxLines = maxLines,
             textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface),
             cursorBrush = SolidColor(MaterialTheme.colorScheme.primary), decorationBox = { field ->
-                Box { if (editor.text.isEmpty()) Text("输入消息，可用 / @ #", color = MaterialTheme.colorScheme.onSurfaceVariant); field() }
+                Box { if (editor.text.isEmpty()) Text(if (compact) "输入指令，支持 / @ #" else "输入消息，可用 / @ #", color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1); field() }
             })
 
     }

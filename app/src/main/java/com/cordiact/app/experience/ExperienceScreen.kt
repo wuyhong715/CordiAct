@@ -40,6 +40,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.cordiact.app.experience.model.ToolActivity
 import com.cordiact.app.experience.model.ToolPhase
+import com.cordiact.app.experience.tabs.WorkTab
 import kotlinx.coroutines.launch
 
 internal enum class StudioPane(val label: String) { Conversation("对话"), Activity("执行轨迹"), Artifacts("产物") }
@@ -98,16 +99,53 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
         }
     }
     val configuration = LocalConfiguration.current
-    // Phone held sideways: the transcript becomes a three-pane command deck.
-    val deckMode = configuration.screenWidthDp > configuration.screenHeightDp && configuration.screenWidthDp >= 720
-    val graph by viewModel.graph.collectAsStateWithLifecycle()
-    // Hoisted above the per-tab saveable scope: focusing a node in another session switches tabs.
-    var deckFocus by rememberSaveable { mutableStateOf<String?>(null) }
+    val landscape = configuration.screenWidthDp > configuration.screenHeightDp && configuration.screenWidthDp >= 600
+    var requestedTab by remember { mutableStateOf<WorkTab?>(null) }
+    var loadingTab by remember { mutableStateOf<WorkTab.Session?>(null) }
+    val committedKey = if (activeTab is WorkTab.Plugin) activeTab.key else state.sessionId?.let { "s:$it" }
+    val pendingSessionId = (requestedTab as? WorkTab.Session)?.sessionId ?: loadingTab?.sessionId
+    val switchPending = requestedTab != null || loadingTab != null
+    LaunchedEffect(requestedTab, loadingTab, state.loading) {
+        val target = requestedTab ?: return@LaunchedEffect
+        if (loadingTab != null || state.loading) return@LaunchedEffect
+        if (target is WorkTab.Plugin || (target as? WorkTab.Session)?.sessionId == state.sessionId) {
+            if (tabs.tabs.any { it.key == target.key }) tabs.select(target.key)
+            requestedTab = null
+        } else if (target is WorkTab.Session) {
+            loadingTab = target
+            viewModel.selectWorkbenchSession(target.sessionId,
+                shouldCommit = { requestedTab == target && tabs.tabs.any { it.key == target.key } }) {
+                if (requestedTab == target) requestedTab = null
+                loadingTab = null
+            }
+        }
+    }
     val closeAfterSelection: () -> Unit = { overview = false; inspected = null }
     BackHandler(overview) { overview = false }
     BackHandler(inspected != null && !overview) { inspected = null }
     val workbench: @Composable () -> Unit = {
-        Surface(color = MaterialTheme.colorScheme.background, modifier = Modifier.fillMaxSize()) {
+        if (landscape && activeTab !is WorkTab.Plugin) {
+            LandscapeWorkbench(state, pendingSessionId,
+                onOverview = { overview = true; inspected = null },
+                onNew = { viewModel.newSession(state.workspace?.id) },
+                onOpenApproval = { approvalId = it }, ownerLabel = ownerLabel,
+                tabs = { modifier ->
+                    com.cordiact.app.experience.tabs.TabStrip(state, tabs,
+                        onClose = { if (!switchPending && !state.loading) tabs.close(it) }, modifier = modifier,
+                        onSelect = { requestedTab = it }, displayedKey = committedKey,
+                        pendingKey = pendingSessionId?.let { "s:$it" }, compact = true)
+                },
+                composer = { lines ->
+                    if (state.archived) TextButton(onClick = { state.sessionId?.let { viewModel.restoreSession(it) } },
+                        enabled = !state.loading && !switchPending) { Text("恢复并继续") }
+                    else com.cordiact.app.experience.composer.ComposerBar(
+                        if (switchPending) state.copy(loading = true) else state, composer, viewModel.composerController, promptToInsert,
+                        { promptToInsert = "" }, { text -> if (requestedTab != null || loadingTab != null) false else viewModel.send(text) }, { if (requestedTab == null && loadingTab == null) viewModel.stop() },
+                        viewModel::selectModel, { openSettings("settings://models/providers") },
+                        { openSettings("settings://security/permissions") }, compact = true, maxEditorLines = lines,
+                    )
+                })
+        } else Surface(color = MaterialTheme.colorScheme.background, modifier = Modifier.fillMaxSize()) {
             Box(Modifier.fillMaxSize()) {
                 ExperienceFrame(
                     top = {
@@ -147,15 +185,7 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
                                     if (contributor != null) contributor.Content(state, tabHost)
                                     else Text("该插件已卸载", Modifier.padding(LocalChromePadding.current).padding(24.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
-                                else -> if (deckMode) {
-                                    val openIds = tabs.tabs.filterIsInstance<com.cordiact.app.experience.tabs.WorkTab.Session>().map { it.sessionId }
-                                        .ifEmpty { listOfNotNull(state.sessionId) }
-                                    LaunchedEffect(openIds, state.sessionId, state.turns.size, state.running, state.activeTools) { viewModel.refreshGraph(openIds) }
-                                    CommandDeck(state, graph, deckFocus, { deckFocus = it },
-                                        onFocusSession = { id -> tabs.open(com.cordiact.app.experience.tabs.WorkTab.Session(id)) },
-                                        onInspect = { inspected = it }, onDecide = viewModel::decide,
-                                        onOpenApproval = { approvalId = it }, ownerLabel = ownerLabel)
-                                } else TranscriptView(state, onPrompt = { promptToInsert = it }, onInspect = { inspected = it })
+                                else -> TranscriptView(state, onPrompt = { promptToInsert = it }, onInspect = { inspected = it })
                             }
                         }
                     }
@@ -183,13 +213,6 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
                     )
                     },
                 )
-                approvalId?.let { id ->
-                    val currentIds = state.currentApprovals.mapTo(hashSetOf()) { it.id }
-                    val sortedRequests = state.approvals.sortedBy { it.id !in currentIds }
-                    ApprovalDecisionDialog(sortedRequests, state.decidingApprovals, state.approvalErrors,
-                        ownerLabel = ownerLabel,
-                        selected = id, onSelect = { approvalId = it }, onDismiss = { approvalId = null }, onDecide = viewModel::decide)
-                }
                 inspected?.let { step ->
                     CompactInspector(step = step, onClose = { inspected = null }, onSettings = { link -> openSettings(link) }, modifier = Modifier.align(Alignment.BottomCenter).windowInsetsPadding(WindowInsets.systemBars.union(WindowInsets.ime)))
                 }
@@ -199,6 +222,13 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
     }
     Box(Modifier.fillMaxSize()) {
         workbench()
+        approvalId?.let { id ->
+            val currentIds = state.currentApprovals.mapTo(hashSetOf()) { it.id }
+            val sortedRequests = state.approvals.sortedBy { it.id !in currentIds }
+            ApprovalDecisionDialog(sortedRequests, state.decidingApprovals, state.approvalErrors,
+                ownerLabel = ownerLabel,
+                selected = id, onSelect = { approvalId = it }, onDismiss = { approvalId = null }, onDecide = viewModel::decide)
+        }
         androidx.compose.animation.AnimatedVisibility(overview,
             enter = androidx.compose.animation.fadeIn(tween(com.cordiact.app.experience.composer.motionDuration(220))) + androidx.compose.animation.scaleIn(tween(com.cordiact.app.experience.composer.motionDuration(220)), initialScale = .96f),
             exit = androidx.compose.animation.fadeOut(tween(com.cordiact.app.experience.composer.motionDuration(160))) + androidx.compose.animation.scaleOut(tween(com.cordiact.app.experience.composer.motionDuration(160)), targetScale = .96f)) {

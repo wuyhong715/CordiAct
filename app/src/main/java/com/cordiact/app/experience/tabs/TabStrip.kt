@@ -62,14 +62,17 @@ fun ExperienceState.faceOf(tab: WorkTab, sessionTabs: Int): TabFace = when (tab)
  * (Long-press + drag down will detach into a mini window in the next step; reserved here.)
  */
 @Composable
-fun TabStrip(state: ExperienceState, controller: TabsController, onClose: (String) -> Unit, modifier: Modifier = Modifier) {
+fun TabStrip(state: ExperienceState, controller: TabsController, onClose: (String) -> Unit, modifier: Modifier = Modifier,
+    onSelect: (WorkTab) -> Unit = { controller.select(it.key) }, displayedKey: String? = controller.activeKey,
+    pendingKey: String? = null, compact: Boolean = false,
+) {
     val haptics = LocalHapticFeedback.current
     val list = rememberLazyListState()
     val sessionTabs = controller.tabs.count { it is WorkTab.Session }
     var dragKey by remember { mutableStateOf<String?>(null) }
     var dragDx by remember { mutableFloatStateOf(0f) }
-    LaunchedEffect(controller.activeKey) {
-        val index = controller.tabs.indexOfFirst { it.key == controller.activeKey }
+    LaunchedEffect(displayedKey) {
+        val index = controller.tabs.indexOfFirst { it.key == displayedKey }
         if (index >= 0) list.animateScrollToItem(index, -120)
     }
     LazyRow(
@@ -81,11 +84,11 @@ fun TabStrip(state: ExperienceState, controller: TabsController, onClose: (Strin
     ) {
         itemsIndexed(controller.tabs, key = { _, tab -> tab.key }) { index, tab ->
             val face = state.faceOf(tab, sessionTabs)
-            val selected = tab.key == controller.activeKey
+            val selected = tab.key == displayedKey
             val dragging = dragKey == tab.key
             TabChip(
-                face = face, selected = selected,
-                modifier = Modifier.animateItem()
+                face = face, selected = selected, pending = tab.key == pendingKey, compact = compact,
+                modifier = (if (compact) Modifier else Modifier.animateItem())
                     .graphicsLayer { if (dragging) { translationX = dragDx; scaleX = 1.04f; scaleY = 1.04f; shadowElevation = 12f } }
                     .pointerInput(tab.key) {
                         detectDragGesturesAfterLongPress(
@@ -102,7 +105,7 @@ fun TabStrip(state: ExperienceState, controller: TabsController, onClose: (Strin
                         }
                     }
                     .testTag("tab-${tab.key}"),
-                onClick = { controller.select(tab.key) },
+                onClick = { onSelect(tab) },
                 onClose = { onClose(tab.key) },
             )
         }
@@ -110,9 +113,9 @@ fun TabStrip(state: ExperienceState, controller: TabsController, onClose: (Strin
 }
 
 @Composable
-private fun TabChip(face: TabFace, selected: Boolean, modifier: Modifier, onClick: () -> Unit, onClose: () -> Unit) {
+private fun TabChip(face: TabFace, selected: Boolean, modifier: Modifier, onClick: () -> Unit, onClose: () -> Unit, pending: Boolean = false, compact: Boolean = false) {
     val colors = MaterialTheme.colorScheme
-    val width = if (selected) 168.dp else 120.dp
+    val width = if (compact) 128.dp else if (selected) 168.dp else 120.dp
     Row(
         modifier.width(width).height(34.dp).clip(CircleShape)
             .background(if (selected) colors.surface else colors.surfaceContainer.copy(alpha = .7f))
@@ -123,6 +126,7 @@ private fun TabChip(face: TabFace, selected: Boolean, modifier: Modifier, onClic
                 role = Role.Tab
                 contentDescription = buildString {
                     append(face.title)
+                    if (pending) append("，加载中")
                     if (face.running) append("，运行中")
                     if (face.approvals > 0) append("，待审批 ${face.approvals} 项")
                 }
@@ -132,6 +136,7 @@ private fun TabChip(face: TabFace, selected: Boolean, modifier: Modifier, onClic
         verticalAlignment = Alignment.CenterVertically,
     ) {
         when {
+            pending -> CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 1.5.dp)
             face.approvals > 0 -> Box(Modifier.size(8.dp).clip(CircleShape).background(Lumen.Approve))
             face.running -> SignalDot(size = 8.dp)
             else -> AppGlyph(face.glyph, tint = if (selected) colors.onSurface else colors.onSurfaceVariant, modifier = Modifier.size(14.dp))
