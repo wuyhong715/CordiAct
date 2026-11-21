@@ -32,6 +32,7 @@ class BuiltInToolEffectClassifier : ToolEffectClassifier {
         toolId in setOf("priv_exec", "priv_shell") -> ToolEffectClass.COMMAND
         toolId == "termux_status" -> ToolEffectClass.DEVICE_READ
         toolId.startsWith("termux_") -> ToolEffectClass.COMMAND
+        ownerPluginId == com.cordiact.core.tool.TOOL_MANAGER_PLUGIN_ID && toolId.startsWith("core.mcp.wsmcp_") -> ToolEffectClass.NETWORK
         toolId.startsWith("plugin_") -> ToolEffectClass.UNKNOWN
         toolId.startsWith("core.subagent.") || toolId.startsWith("core.orchestration.") -> ToolEffectClass.PURE
         toolId == "preview.push" -> ToolEffectClass.PURE

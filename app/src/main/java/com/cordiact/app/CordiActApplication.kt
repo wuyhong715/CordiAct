@@ -215,6 +215,10 @@ class CordiActApplication : Application(), androidx.work.Configuration.Provider 
         get() = conversationCatalog.attachmentImportService
 
     val modelAdapter: ModelAdapterService get() = modelAdapterPlugin
+    internal val workspaceConnections by lazy { com.cordiact.app.experience.settings.WorkspaceConnections(this) }
+    internal fun workspaceModels(workspaceId: String) = modelAdapter.models()
+        .filterNot { com.cordiact.app.experience.settings.WorkspaceConnections.isScopedModel(it.id.providerId) } + workspaceConnections.models(workspaceId)
+
     val modelProviders: ModelProviderRegistryService get() = conversationCatalog.modelProviderRegistryPlugin
     val sessions: SessionManagerService get() = sessionManagerPlugin
     val tools: ToolManagerService get() = conversationCatalog.toolManagerService
@@ -571,12 +575,18 @@ class CordiActApplication : Application(), androidx.work.Configuration.Provider 
             extraPlugins = listOf(credentialRuntime.credentialPlugin, credentialRuntime.auditPlugin),
             autoReview = credentialRuntime::reviewTool,
         )
+        val toolPreferences = com.cordiact.core.settings.WorkspaceToolPreferences(conversationCatalog.fileManager)
         conversationCatalog.toolManagerPlugin.setWorkspaceVisibilityPolicy { workspaceId, descriptor ->
-            com.cordiact.core.settings.WorkspaceCapabilityPolicy.visible(descriptor.ownerPluginId,
+            toolPreferences.allows(workspaceId, descriptor.id, descriptor.ownerPluginId == "core.search") &&
+                workspaceConnections.toolVisible(workspaceId, descriptor.id) &&
+                com.cordiact.core.settings.WorkspaceCapabilityPolicy.visible(descriptor.ownerPluginId,
                 { capabilitySettings.enabled(workspaceId, it) },
                 { id -> if (id.startsWith("mcp.")) pluginLifecycle.manager.get("core.$id")?.state == PluginState.ENABLED else id == "search" || id == "privilege" && automationRuntime.privilegeSettings.read().root && automationRuntime.rootChannel.peekReady() || automationReadiness.probe(id).state == com.cordiact.core.settings.ReadinessState.READY })
         }
         modelAdapterPlugin = plugins.filterIsInstance<ModelAdapterPlugin>().single()
+        modelAdapterPlugin.setScopedBackendResolver(
+            { com.cordiact.app.experience.settings.WorkspaceConnections.isScopedModel(it) }, workspaceConnections::backend,
+        )
         credentialRuntime.attachReviewerClient(
             com.cordiact.model.providers.ModelReviewerClient { modelAdapter },
         )
@@ -735,18 +745,6 @@ class CordiActApplication : Application(), androidx.work.Configuration.Provider 
         // interrupted instead of waiting for it forever.
         runCatching { backgroundSubagents.recoverAbandonedRuns() }
             .onFailure { Log.e(TAG, "Recovering abandoned delegations failed", it) }
-        conversationCatalog.mcpCredentialWriter = { name, header, value ->
-            com.cordiact.app.settings.McpCredentialStore(this).set(name, com.cordiact.core.mcp.McpCredential(header, value))
-        }
-        conversationCatalog.mcpInstallApproval = { context, config ->
-            approvalGateway.requestApproval(com.cordiact.core.action.ApprovalRequest(
-                id = java.util.UUID.randomUUID().toString(), toolName = "mcp.install",
-                summary = "安装 MCP ${config.serverName}：${java.net.URI(config.url).host}。服务器将提供可由模型调用的工具。",
-                details = mapOf("workspace" to context.workspaceId, "server" to config.serverName),
-                owner = com.cordiact.core.action.ApprovalOwner(context.workspaceId, context.sessionId),
-                riskLevel = com.cordiact.core.action.ApprovalRequest.RiskLevel.HIGH,
-            )).approved
-        }
         conversationCatalog.pluginManagerService = pluginManagerService()
         // Restore user plugins in the background so slow/offline MCP servers do not block Application.onCreate() or trigger NetworkOnMainThreadException.
         java.util.concurrent.Executors.newSingleThreadExecutor().execute {
@@ -754,7 +752,7 @@ class CordiActApplication : Application(), androidx.work.Configuration.Provider 
         }
         val workspace = workspaceManager.initializeDefaultIfEligible()
         activeSessionId = sessions.listSessions(workspace.id).firstOrNull()?.id
-            ?: sessions.createSession(workspace.id, "New conversation").id
+            ?: com.cordiact.app.conversation.WorkspaceConversationFactory(this).create(workspace.id, "新对话").session.id
     }
 
     /** Workspace of the session currently open in the UI; null before a session exists. */

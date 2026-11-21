@@ -51,25 +51,27 @@ class PluginManagerSettingsTest {
         val service = AndroidPluginManagerService(lifecycle(Records()), onSpecInstalled = { error("MUST_NOT_REGISTER") }, probeMcp = { error("MUST_NOT_CONNECT") })
         assertEquals(PluginChangeResult.Application.FAILED, service.install(mcpPluginSpec(McpServerConfig("demo", "https://example.test/mcp", headers = mapOf("Authorization" to "secret")))).application)
     }
-    @Test fun modelProposalMustBeConfirmedBeforeCredentialWritesOrInstall() {
+    @Test fun modelProposalRejectsCredentialArgumentsWithoutWritingOrConnecting() {
         val lifecycle = lifecycle(Records()); var writes = 0; var connects = 0
         val service = AndroidPluginManagerService(lifecycle, probeMcp = { connects++ })
         val registry = InMemoryToolDefinitionRegistry()
-        registerPluginManagerTools(registry, service, registerCredential = { _, _, _ -> writes++ }, confirmMcpInstall = { _, _ -> false })
+        registerPluginManagerTools(registry, service) { _, _, _ -> writes++ }
         val tool = registry.all().single()
         val result = tool.executor.invoke(ToolInvocationContext("test", "workspace"), ToolArguments(mapOf(
             "action" to ToolValue.StringValue("add_mcp"), "server_name" to ToolValue.StringValue("demo"), "url" to ToolValue.StringValue("https://example.test/mcp"),
             "header_name" to ToolValue.StringValue("Authorization"), "header_value" to ToolValue.StringValue("secret"))))
         assertTrue(result.values.containsKey("error")); assertEquals(0, writes); assertEquals(0, connects)
     }
-    @Test fun credentialIsWrittenBeforeProbeAfterConfirmation() {
+    @Test fun agentMcpRequestOnlyWritesDeclarationForCallingWorkspace() {
         val store = Records(); val lifecycle = lifecycle(store); val events = mutableListOf<String>()
-        val service = AndroidPluginManagerService(lifecycle, onSpecInstalled = { value -> lifecycle.register(object : ManagedPlugin { override val spec = value }); true }, probeMcp = { events += "probe" })
+        val service = AndroidPluginManagerService(lifecycle, probeMcp = { error("MUST_NOT_CONNECT") })
         val registry = InMemoryToolDefinitionRegistry()
-        registerPluginManagerTools(registry, service, registerCredential = { _, _, _ -> events += "credential" }, confirmMcpInstall = { _, _ -> events += "confirm"; true })
-        registry.all().single().executor.invoke(ToolInvocationContext("test", "workspace"), ToolArguments(mapOf(
-            "action" to ToolValue.StringValue("add_mcp"), "server_name" to ToolValue.StringValue("demo"), "url" to ToolValue.StringValue("https://example.test/mcp"),
-            "header_name" to ToolValue.StringValue("Authorization"), "header_value" to ToolValue.StringValue("secret"))))
-        assertEquals(listOf("confirm", "credential", "probe"), events)
+        registerPluginManagerTools(registry, service) { context, name, url -> events += "${context.workspaceId}|$name|$url" }
+        val result = registry.all().single().executor.invoke(ToolInvocationContext("test", "workspace"), ToolArguments(mapOf(
+            "action" to ToolValue.StringValue("add_mcp"), "server_name" to ToolValue.StringValue("demo"),
+            "url" to ToolValue.StringValue("https://example.test/mcp"))))
+        assertTrue(result.values.containsKey("status"))
+        assertEquals(listOf("workspace|demo|https://example.test/mcp"), events)
+        assertTrue(store.data.isEmpty())
     }
 }

@@ -52,7 +52,7 @@ internal fun WorkspaceDefaultsPage(
         val workspace = state.workspaces.firstOrNull { it.id == workspaceId }
         SettingsSectionLabel("工作区默认 · ${workspace?.name ?: workspaceId}")
         if (state.workspaces.size > 1) WorkspaceScopePicker(state, busy || scopeBusy, selectWorkspace)
-        Text("仅影响这里的新对话。Agent 与设置页编辑同一份文件；不能通过文件切换模型提供商。",
+        Text("仅影响这里的新对话。Agent 与设置页编辑同一份文件；文件只能引用既有路由或当前工作区已独立批准的路由。",
             style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium) }
         val snapshot = data
@@ -65,11 +65,11 @@ internal fun WorkspaceDefaultsPage(
             val models = state.models.filter { it.supportsStreaming }
             val inheritedModel = resolveWorkspaceConversationModel(models, inheritedPreset.model, inheritedPreset.model,
                 state.conversationDefault, null)
-            val editableModels = models.filter { it.id.providerId == inheritedModel?.id?.providerId }
+            val editableModels = models.filter { it.id.providerId == inheritedModel?.id?.providerId || WorkspaceConnections.isScopedModel(it.id.providerId) }
             val explicitModel = editableModels.firstOrNull { it.id == snapshot.model }
-            val presetModel = editableModels.firstOrNull { it.id == preset.model }
+            val presetModel = models.firstOrNull { it.id == preset.model && it.id.providerId == inheritedModel?.id?.providerId }
             val appDefault = models.firstOrNull { it.id == state.conversationDefault }
-            val effective = resolveWorkspaceConversationModel(models, inheritedPreset.model, preset.model, state.conversationDefault, snapshot.model)
+            val effective = explicitModel ?: resolveWorkspaceConversationModel(models, inheritedPreset.model, preset.model, state.conversationDefault, snapshot.model)
             val wantedEffort = snapshot.effort ?: preset.effort
             val supportedEfforts = effective?.capabilities?.reasoningEfforts.orEmpty()
             val shownEffort = wantedEffort.takeIf { it == ReasoningEffort.AUTO || it in supportedEfforts } ?: ReasoningEffort.AUTO

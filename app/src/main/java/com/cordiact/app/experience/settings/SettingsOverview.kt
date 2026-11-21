@@ -61,7 +61,8 @@ internal data class OverviewCategory(val title: String, val entries: List<Overvi
 internal val settingsCatalog = listOf(
     OverviewCategory("工作区", listOf(OverviewEntry("项目指令", GlyphName.File, SettingsRoute.PROJECT_INSTRUCTIONS),
         OverviewEntry("提供商声明", GlyphName.File, SettingsRoute.PROVIDER_DRAFTS),
-        OverviewEntry("MCP 声明", GlyphName.File, SettingsRoute.MCP_DRAFTS))),
+        OverviewEntry("MCP 声明", GlyphName.File, SettingsRoute.MCP_DRAFTS),
+        OverviewEntry("工具策略", GlyphName.File, SettingsRoute.WORKSPACE_TOOLS))),
     OverviewCategory("Agent", listOf(OverviewEntry("Agent 预设", GlyphName.AgentPreset, SettingsRoute.AGENT_PRESETS))),
     OverviewCategory("输入", listOf(OverviewEntry("预设变量", GlyphName.Code, SettingsRoute.INPUT_VARIABLES))),
     OverviewCategory("模型与服务", listOf(
@@ -99,7 +100,7 @@ internal val settingsDirectory = listOf(
 internal fun settingsDirectoryRoute(route: SettingsRoute): SettingsRoute = when (route) {
     SettingsRoute.AGENT_PRESETS, SettingsRoute.AGENT_PRESET_EDITOR, SettingsRoute.PROJECT_INSTRUCTIONS -> SettingsRoute.WORKSPACE_DEFAULTS
     SettingsRoute.PROVIDER_DRAFTS, SettingsRoute.PROVIDERS, SettingsRoute.ADD, SettingsRoute.DETAIL, SettingsRoute.ROLES -> SettingsRoute.MODELS
-    SettingsRoute.MCP_DRAFTS, SettingsRoute.CONNECTIONS, SettingsRoute.MCP, SettingsRoute.SSH, SettingsRoute.SEARCH -> SettingsRoute.PLUGINS
+    SettingsRoute.WORKSPACE_TOOLS, SettingsRoute.MCP_DRAFTS, SettingsRoute.CONNECTIONS, SettingsRoute.MCP, SettingsRoute.SSH, SettingsRoute.SEARCH -> SettingsRoute.PLUGINS
     SettingsRoute.PERMISSIONS, SettingsRoute.PRIVILEGE, SettingsRoute.CREDENTIALS, SettingsRoute.AUDIT -> SettingsRoute.SECURITY
     SettingsRoute.ATTACHMENTS, SettingsRoute.INPUT_VARIABLES, SettingsRoute.USAGE, SettingsRoute.TASKS -> SettingsRoute.APP_PREFERENCES
     else -> route
@@ -123,7 +124,8 @@ internal fun SettingsBranch(route: SettingsRoute, navigate: (SettingsRoute) -> U
             Triple(SettingsRoute.MCP, "MCP", "此客户端 · 传统连接管理"),
             Triple(SettingsRoute.SEARCH, "搜索", "客户端服务与工作区搜索策略"),
             Triple(SettingsRoute.SSH, "SSH", "客户端主机库与连接检查"),
-            Triple(SettingsRoute.CONNECTIONS, "工作区工具", "管理当前工作区可用能力"),
+            Triple(SettingsRoute.WORKSPACE_TOOLS, "工具策略", "当前工作区 · 限制工具和搜索"),
+            Triple(SettingsRoute.CONNECTIONS, "连接与能力", "管理已授权的客户端能力"),
         ))
         SettingsRoute.SECURITY -> listOf(
             "权限" to listOf(Triple(SettingsRoute.PERMISSIONS, "当前权限", "访问范围与审批档位")),

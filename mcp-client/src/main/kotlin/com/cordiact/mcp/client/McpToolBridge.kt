@@ -30,6 +30,7 @@ class McpToolBridge(
     private val registry: ToolDefinitionRegistry,
     private val ownerPluginId: String,
     private val toolTimeoutMs: Long,
+    private val approval: ((String, McpToolDescriptor) -> Boolean)? = null,
 ) {
     private var generation: Map<String, String> = emptyMap()
 
@@ -52,8 +53,7 @@ class McpToolBridge(
      * @throws IllegalStateException when registration is refused. Cleanup attempts every
      *   registered tool; any failed withdrawal stays tracked for a later disposal retry.
      */
-    fun sync(live: McpConnection): Map<String, String> {
-        val descriptors = live.listTools(toolTimeoutMs)
+    fun sync(live: McpConnection, descriptors: List<McpToolDescriptor> = live.listTools(toolTimeoutMs)): Map<String, String> {
         val next = buildGeneration(descriptors)
 
         // Retire the old generation only after the new one is fully built, so a listing failure
@@ -65,6 +65,10 @@ class McpToolBridge(
             next.forEach { (toolId, definition) ->
                 registry.register(definition)
                 registered[toolId] = definition.descriptor.name
+                if (approval != null) {
+                    val raw = descriptors.first { mcpToolId(serverName, it.name) == toolId }
+                    registry.registerVisibility(toolId) { ctx -> approval.invoke(ctx.workspaceId, raw) }
+                }
             }
         } catch (failure: Exception) {
             generation = registered
@@ -115,7 +119,10 @@ class McpToolBridge(
                     concurrencySafe = true,
                     rawInputSchemaJson = raw.inputSchemaJson,
                 ),
-                executor = ToolExecutor { _, arguments -> invoke(raw.name, arguments) },
+                executor = ToolExecutor { ctx, arguments ->
+                    if (approval?.invoke(ctx.workspaceId, raw) == false) errorResult("MCP tool authorization is no longer valid")
+                    else invoke(raw.name, arguments)
+                },
             )
         }
         return byId

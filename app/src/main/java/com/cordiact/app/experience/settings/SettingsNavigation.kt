@@ -4,7 +4,7 @@ import java.net.URI
 
 internal enum class SettingsRoute(val title: String) {
     HOME("设置"), MODELS("模型与提供商"), PLUGINS("插件与连接"), SECURITY("权限与安全"),
-    PROVIDER_DRAFTS("工作区提供商声明"), MCP_DRAFTS("工作区 MCP 声明"),
+    WORKSPACE_TOOLS("工作区工具策略"), PROVIDER_DRAFTS("工作区提供商声明"), MCP_DRAFTS("工作区 MCP 声明"),
     APP_PREFERENCES("应用偏好"), PROJECT_INSTRUCTIONS("项目指令"), WORKSPACE_DEFAULTS("工作区默认"), PROVIDERS("模型提供商"), ADD("添加模型提供商"), DETAIL("提供商详情"),
     ROLES("模型角色"), AUDIT("审计日志"), PERMISSIONS("权限档位"), PRIVILEGE("特权执行"),
     CREDENTIALS("已存凭据"), CONNECTIONS("连接与能力"), ATTACHMENTS("附件限制"),

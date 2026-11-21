@@ -104,7 +104,7 @@ class AndroidSettingsFacade(private val app: CordiActApplication) : SettingsFaca
             CapabilitySummary(id, status.title, entry.workspaceEnabled == true && app.hasPluginCapabilityConsent(workspaceId, id), status)
         }.distinctBy { it.id }
         val connectionReadiness = capabilities.map { c -> c.readiness.let { r -> SettingsReadiness(r.id, c.label, SettingsStatus.valueOf(r.state.name), r.summary, r.reasonCode, "settings://connections/${c.id}") } }
-        SettingsSnapshot(providers, available, readiness + connectionReadiness, providers.map { CredentialMeta("model", it.id, it.keyIsSet) }, roles, default, attachmentSettings.limits(), workspaceId, capabilities, app.workspaceManager.list().map { SecurityWorkspace(it.id, it.name) })
+        SettingsSnapshot(providers, available + app.workspaceConnections.models(workspaceId), readiness + connectionReadiness, providers.map { CredentialMeta("model", it.id, it.keyIsSet) }, roles, default, attachmentSettings.limits(), workspaceId, capabilities, app.workspaceManager.list().map { SecurityWorkspace(it.id, it.name) })
     }
     override suspend fun discover(draft: ProviderDraft, key: String) = withContext(Dispatchers.IO) {
         HttpModelDiscoveryService().discover(draft.connection(), key.trim())

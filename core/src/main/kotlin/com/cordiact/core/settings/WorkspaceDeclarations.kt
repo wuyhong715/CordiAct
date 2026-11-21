@@ -12,7 +12,7 @@ class WorkspaceDeclarations(private val files: WorkspaceFileService) {
         PROVIDER(".cordiact/models.toml", "providerDrafts"), MCP(".cordiact/plugins.toml", "mcpDrafts"),
     }
     data class Draft(val id: String, val name: String, val endpoint: String, val protocol: String)
-    data class Snapshot(val revision: String?, val drafts: List<Draft>)
+    data class Snapshot(val revision: String?, val drafts: List<Draft>, val observation: String? = null)
 
     fun read(workspace: String, kind: Kind): Snapshot = load(workspace, kind).first
 
@@ -53,7 +53,7 @@ class WorkspaceDeclarations(private val files: WorkspaceFileService) {
             require(validName(name) && validEndpoint(endpoint) && allowedProtocol(kind, protocol))
             Draft(id, name, endpoint, protocol)
         }.orEmpty()
-        return Snapshot(file.revision, drafts) to text
+        return Snapshot(file.revision, drafts, file.observation) to text
     }
 
     companion object {

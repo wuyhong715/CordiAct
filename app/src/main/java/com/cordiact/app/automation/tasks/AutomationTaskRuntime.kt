@@ -80,12 +80,13 @@ class AutomationTaskRuntime(private val app: CordiActApplication) {
                 }
             } else existing?.also {
                 check(it.workspaceId == run.workspaceId && it.archivedAtMillis == null) { "预约会话不可用" }
-            } ?: app.conversationCatalog.conversationStore.create(
-                id = sessionId, workspaceId = run.workspaceId, title = "自动化 · ${task.name}",
-                nowMillis = System.currentTimeMillis(),
-            )
-            val model = com.cordiact.app.model.ConversationModelSelectionStore(app).forSession(session.id)
-                ?: app.modelAdapter.models().firstOrNull()?.id
+            } ?: com.cordiact.app.conversation.WorkspaceConversationFactory(app)
+                .create(run.workspaceId, "自动化 · ${task.name}", allocatedId = sessionId).session
+            val available = app.workspaceModels(run.workspaceId)
+            val seed = com.cordiact.app.experience.composer.ComposerDraftStore(app).load(session.id)
+            val selected = com.cordiact.app.model.ConversationModelSelectionStore(app).forSession(session.id) ?: seed.model
+            val model = available.firstOrNull { it.id == selected && it.supportsStreaming }?.id
+                ?: available.firstOrNull { it.supportsStreaming && !com.cordiact.app.experience.settings.WorkspaceConnections.isScopedModel(it.id.providerId) }?.id
                 ?: error("没有可执行的模型，请先配置模型")
             val security = app.credentialVaultRuntime.newSecurityContext(run.workspaceId, sessionId, model.providerId, model.modelId)
             val context = ToolInvocationContext(workspaceId = run.workspaceId, sessionId = sessionId,
@@ -129,6 +130,7 @@ class AutomationTaskRuntime(private val app: CordiActApplication) {
                             }.onFailure { android.util.Log.w("AutomationTaskRuntime", "Stage refresh failed", it) }
                         }
                     }, context,
+                    parameters = com.cordiact.core.conversation.GenerationParameters(reasoningEffort = seed.effort),
                     systemContext = "此轮来源为自动化任务。仅在当前工作区执行，不创建递归调度；没有用户在场不代表获得额外权限。",
                     sourceMetadataJson = "{\"source\":\"automation\",\"taskId\":\"${task.id}\",\"runId\":\"${run.id}\"}")
                 when {

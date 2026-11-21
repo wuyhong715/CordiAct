@@ -208,10 +208,11 @@ fun SettingsHost(vm: SettingsViewModel, initialLink: String? = null, onBack: () 
                         val provider = route == SettingsRoute.PROVIDER_DRAFTS
                         WorkspaceDeclarationsPage(state,
                             if (provider) com.cordiact.core.settings.WorkspaceDeclarations.Kind.PROVIDER else com.cordiact.core.settings.WorkspaceDeclarations.Kind.MCP,
-                            onDirty = { dirty = it }, onBusy = { securityBusy = it }) {
+                            onDirty = { dirty = it }, onBusy = { securityBusy = it }, onConnectionChanged = { vm.reload() }) {
                             navigate(if (provider) SettingsRoute.PROVIDERS else SettingsRoute.MCP)
                         }
                     }
+                    SettingsRoute.WORKSPACE_TOOLS -> WorkspaceToolsPage(state) { securityBusy = it }
                     SettingsRoute.PROJECT_INSTRUCTIONS -> ProjectInstructionsPage(state, onDirty = { dirty = it }, onBusy = { securityBusy = it })
                     SettingsRoute.WORKSPACE_DEFAULTS -> {
                         WorkspaceDefaultsPage(state, agentPresets, busy, vm::selectWorkspace)

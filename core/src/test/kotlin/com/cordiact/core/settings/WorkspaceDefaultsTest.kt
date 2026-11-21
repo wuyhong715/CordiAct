@@ -84,6 +84,23 @@ keep = true""")
         }
     }
 
+    @Test fun `tool files only restrict the chosen workspace and fail closed`() {
+        val prefs = WorkspaceToolPreferences(files)
+        val path = ".cordiact/tools.toml"
+        val first = files.external("a", path, """disabledTools = ["core.mcp.one"]""" + "\n[future]\nkeep = true")
+        assertFalse(prefs.allows("a", "core.mcp.one", false))
+        assertTrue(prefs.allows("b", "core.mcp.one", false))
+        prefs.setSearchDisabled("a", first, true)
+        assertFalse(prefs.allows("a", "web_search", true))
+        assertTrue(prefs.allows("a", "other", false))
+        assertFailsWith<WorkspaceFileException> { prefs.setDisabled("a", first, "core.mcp.one", false) }
+        prefs.setDisabled("a", prefs.read("a").revision, "core.mcp.one", false)
+        assertTrue(prefs.allows("a", "core.mcp.one", false))
+        assertEquals(true, org.tomlj.Toml.parse(files.docs.getValue("a" to path).bytes.decodeToString()).getBoolean("future.keep"))
+        files.external("a", path, "disabledTools = [42]")
+        assertFalse(prefs.allows("a", "other", false))
+    }
+
     private class TestFiles : WorkspaceFileService {
         val docs = mutableMapOf<Pair<String, String>, WorkspaceFileContent>()
         private var revision = 0

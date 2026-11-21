@@ -1,9 +1,5 @@
 package com.cordiact.app.plugin
 
-import com.cordiact.core.mcp.MCP_PLUGIN_ID
-import com.cordiact.core.mcp.McpConfigException
-import com.cordiact.core.mcp.McpServerConfig
-import com.cordiact.core.mcp.mcpPluginSpec
 import com.cordiact.core.plugin.PluginChangeResult
 import com.cordiact.core.plugin.PluginManagementException
 import com.cordiact.core.plugin.PluginManagerPresenter
@@ -14,6 +10,7 @@ import com.cordiact.core.tool.ToolDefinitionRegistry
 import com.cordiact.core.tool.ToolDescriptor
 import com.cordiact.core.tool.ToolExecutor
 import com.cordiact.core.tool.ToolInputSchema
+import com.cordiact.core.mcp.MCP_PLUGIN_ID
 import com.cordiact.core.tool.ToolInvocationContext
 import com.cordiact.core.tool.ToolParameter
 import com.cordiact.core.tool.ToolResult
@@ -84,7 +81,7 @@ fun pluginManagerToolDescriptor(): ToolDescriptor = ToolDescriptor(
                 name = "header_value",
                 type = ToolValueType.STRING,
                 required = false,
-                description = "Auth header value. Stored by the app credential store, never in the plugin config.",
+                description = "Not accepted for declarations; never send secrets in tool arguments.",
                 maxLength = 4_000,
             ),
         ),
@@ -94,32 +91,20 @@ fun pluginManagerToolDescriptor(): ToolDescriptor = ToolDescriptor(
     timeoutMs = TIMEOUT_MS,
 )
 
-/**
- * Register the tool.
- *
- * @param registerCredential persists an auth header for one server; the tool never writes a
- *   credential into the plugin config, which `plugin_manager list` and logs would leak.
- */
+/** Agent-side MCP requests produce offline workspace declarations, never installs. */
 fun registerPluginManagerTools(
     registry: ToolDefinitionRegistry,
     service: PluginManagerService,
-    registerCredential: (serverName: String, headerName: String, headerValue: String) -> Unit = { _, _, _ -> error("MCP_CREDENTIAL_STORE_UNAVAILABLE") },
-    confirmMcpInstall: (ToolInvocationContext, McpServerConfig) -> Boolean = { _, _ -> false },
+    declareMcp: ((ToolInvocationContext, String, String) -> Unit)? = null,
 ) {
-    registry.register(
-        ToolDefinition(
-            descriptor = pluginManagerToolDescriptor(),
-            executor = ToolExecutor { context, arguments ->
-                execute(service, registerCredential, confirmMcpInstall, context, arguments)
-            },
-        ),
-    )
+    registry.register(ToolDefinition(pluginManagerToolDescriptor(), ToolExecutor { context, arguments ->
+        execute(service, declareMcp, context, arguments)
+    }))
 }
 
 private fun execute(
     service: PluginManagerService,
-    registerCredential: (String, String, String) -> Unit,
-    confirmMcpInstall: (ToolInvocationContext, McpServerConfig) -> Boolean,
+    declareMcp: ((ToolInvocationContext, String, String) -> Unit)?,
     context: ToolInvocationContext,
     arguments: ToolArguments,
 ): ToolResult {
@@ -133,7 +118,16 @@ private fun execute(
                 val pluginId = arguments.text("plugin_id") ?: return failure("plugin_id is required for $action")
                 ok(service.setEnabled(pluginId, enabled = action == "enable"))
             }
-            "add_mcp" -> addMcp(service, registerCredential, confirmMcpInstall, context, arguments)
+            "add_mcp" -> {
+                val name = arguments.text("server_name") ?: return failure("server_name is required")
+                val url = arguments.text("url") ?: return failure("url is required")
+                if (arguments.text("header_name") != null || arguments.text("header_value") != null) {
+                    return failure("Do not pass credentials in tool calls; the user adds them in workspace settings")
+                }
+                val declare = declareMcp ?: return failure("Workspace declaration storage unavailable")
+                declare(context, name, url)
+                ToolResult(mapOf("status" to ToolValue.StringValue("Offline declaration saved. No connection or tool grants. Review in Settings → Plugins and Connections → MCP declarations.")))
+            }
             "remove" -> {
                 val pluginId = arguments.text("plugin_id") ?: return failure("plugin_id is required for remove")
                 ok(service.remove(pluginId))
@@ -146,30 +140,6 @@ private fun execute(
     } catch (failure: Exception) {
         ToolResult(mapOf("error" to ToolValue.StringValue("plugin management failed; inspect settings")))
     }
-}
-
-private fun addMcp(
-    service: PluginManagerService,
-    registerCredential: (String, String, String) -> Unit,
-    confirmMcpInstall: (ToolInvocationContext, McpServerConfig) -> Boolean,
-    context: ToolInvocationContext,
-    arguments: ToolArguments,
-): ToolResult {
-    val serverName = arguments.text("server_name") ?: return failure("server_name is required for add_mcp")
-    val url = arguments.text("url") ?: return failure("url is required for add_mcp")
-    val config = try {
-        McpServerConfig.validated(McpServerConfig(serverName = serverName, url = url))
-    } catch (failure: McpConfigException) {
-        return failure(failure.message ?: "invalid MCP configuration")
-    }
-    if (!confirmMcpInstall(context, config)) return failure("MCP installation requires explicit confirmation; nothing was saved")
-    val headerName = arguments.text("header_name")
-    val headerValue = arguments.text("header_value")
-    require((headerName == null) == (headerValue == null)) { "Header name and value must be provided together" }
-    require(service.inventory().none { it.spec.id == "$MCP_PLUGIN_ID.$serverName" }) { "MCP_ALREADY_EXISTS" }
-    if (headerName != null && headerValue != null) registerCredential(serverName, headerName, headerValue)
-    val result = service.install(mcpPluginSpec(config))
-    return ok(result)
 }
 
 private fun ok(result: PluginChangeResult): ToolResult =
