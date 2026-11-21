@@ -1,5 +1,6 @@
 package com.cordiact.app.experience.settings
 
+import com.cordiact.app.experience.settings.components.SettingsCard
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -50,7 +51,7 @@ internal fun SearchSettingsPage(facade: SearchSettings?, workspaceId: String, di
             Text("连接诊断", style = MaterialTheme.typography.titleMedium)
             Text("本月 ${snapshot.monthlyCalls} 次计费调用 · 本地抓取${if (snapshot.localFetch) "已启用（SSRF 防护）" else "已关闭"}")
             snapshot.providers.filter { !it.native }.forEach { provider ->
-                OutlinedCard(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp)) {
+                SettingsCard() { Column(Modifier.padding(16.dp)) {
                     Text(provider.id, style = MaterialTheme.typography.titleMedium)
                     Text(if (provider.keySet) "凭据已配置" else "凭据未设置或无需凭据", style = MaterialTheme.typography.bodySmall)
                     TextButton(enabled = !busy, onClick = { work { result = facade.test(workspaceId, provider.id) } }) { Text("测试搜索（消耗服务额度）") }
@@ -71,7 +72,7 @@ internal fun SearchSettingsPage(facade: SearchSettings?, workspaceId: String, di
             }
             order.forEachIndexed { index, id ->
                 val provider = snapshot.providers.firstOrNull { it.id == id } ?: return@forEachIndexed
-                ElevatedCard(Modifier.fillMaxWidth()) {
+                SettingsCard() {
                     Column(Modifier.padding(12.dp)) {
                         Row {
                             if (section == "policy") Checkbox(id in enabled, enabled = !busy, onCheckedChange = { yes -> enabled = if (yes) enabled + id else enabled - id; dirty(true) })

@@ -27,6 +27,7 @@ import java.util.Locale
 internal data class SettingsSearchHit(val entry: OverviewEntry, val path: String, val section: String? = null, val field: String? = null)
 
 private val aliases = mapOf(
+    SettingsRoute.AGENT_PRESETS to "agent 运行配置 自定义预设 指令 工具 能力 推理强度",
     SettingsRoute.USAGE to "token 令牌 费用 计费 调用次数 输入输出 使用量", SettingsRoute.PROVIDERS to "api 模型地址 供应商",
     SettingsRoute.PERMISSIONS to "审批 沙箱 安全", SettingsRoute.CONNECTIONS to "代理 网络 Shizuku Termux 无障碍",
     SettingsRoute.SEARCH to "联网 网页 web 搜索引擎", SettingsRoute.CREDENTIALS to "密钥 Key 密码 凭证",

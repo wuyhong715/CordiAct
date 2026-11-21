@@ -1,5 +1,6 @@
 package com.cordiact.app.experience.settings
 
+import com.cordiact.app.experience.settings.components.SettingsCard
 import android.content.Intent
 import android.provider.Settings
 import androidx.compose.foundation.layout.*
@@ -26,7 +27,7 @@ internal fun ConnectionSettingsPage(state: SettingsSnapshot, vm: SettingsViewMod
         }
     }
     state.capabilities.forEach { capability ->
-        ElevatedCard(if (capability.id == initialCapabilityId) Modifier.fillMaxWidth().bringIntoViewRequester(targetRequester) else Modifier.fillMaxWidth()) {
+        SettingsCard(if (capability.id == initialCapabilityId) Modifier.fillMaxWidth().bringIntoViewRequester(targetRequester) else Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     Text(capability.label, Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)

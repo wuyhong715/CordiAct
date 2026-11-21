@@ -54,6 +54,7 @@ data class ExperienceState(
 
 /** Lifecycle-owned coordinator. Disk/plugin work is IO; one channel serializes provider callbacks. */
 class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
+    private val agentPresets = com.cordiact.app.experience.settings.AgentPresetStore(app)
     private val mutable = MutableStateFlow(ExperienceState())
     val state = mutable.asStateFlow()
     private val settledApprovals = linkedSetOf<String>()
@@ -290,12 +291,17 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
                     require(workspace.archivedAtMillis == null) { "工作区已归档" }
                     val sessions = app.sessions.listSessions(workspace.id).filter { it.kind == SessionKind.USER }
                         .sortedWith(compareByDescending<ConversationSession> { it.updatedAtMillis }.thenBy { it.id })
+                    var created = false
+                    fun newConversation(): ConversationSession {
+                        created = true
+                        return app.sessions.createSession(workspace.id, "新对话")
+                    }
                     val selected = when {
-                        create -> app.sessions.createSession(workspace.id, "新对话")
+                        create -> newConversation()
                         requested != null -> requested.also { require(it.kind == SessionKind.USER) { "无法选择内部执行会话" } }
-                        workspaceId != null -> sessions.firstOrNull { it.archivedAtMillis == null } ?: app.sessions.createSession(workspace.id, "新对话")
+                        workspaceId != null -> sessions.firstOrNull { it.archivedAtMillis == null } ?: newConversation()
                         else -> app.activeSessionId?.let(app.sessions::getSession)?.takeIf { it.workspaceId == workspace.id && it.kind == SessionKind.USER && it.archivedAtMillis == null }
-                            ?: sessions.firstOrNull { it.archivedAtMillis == null } ?: app.sessions.createSession(workspace.id, "新对话")
+                            ?: sessions.firstOrNull { it.archivedAtMillis == null } ?: newConversation()
                     }
                     require(selected.workspaceId == workspace.id)
                     val workspaces = app.workspaceManager.list()
@@ -306,7 +312,8 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
                             })
                     }
                     Loaded(workspace, workspaces, app.sessions.listSessions(workspace.id).filter { it.kind == SessionKind.USER }, selected,
-                        app.modelAdapter.models(), readTranscript(workspace.id, selected.id), sidebar)
+                        app.modelAdapter.models(), readTranscript(workspace.id, selected.id), sidebar,
+                        if (created) agentPresets.effective(workspace.id) else null)
                 }
                 if (version != selectionVersion) return@launch
                 reconcile(snapshot.selected.id, snapshot.messages)
@@ -315,7 +322,9 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
                 }
                 val model = snapshot.models.find { it.id == preferred }?.id
                     ?: snapshot.models.firstOrNull()?.id
-                val prepared = composerController.prepareSession(snapshot.selected.id, snapshot.workspace.id, snapshot.models, model)
+                val prepared = composerController.prepareSession(snapshot.selected.id, snapshot.workspace.id, snapshot.models, model,
+                    snapshot.preset?.let { it.model?.takeIf { id -> snapshot.models.any { m -> m.id == id && m.supportsStreaming } }
+                        ?: com.cordiact.app.model.ConversationModelSelectionStore(app).defaultModel() }, snapshot.preset?.effort)
                 if (version != selectionVersion || !shouldCommit()) {
                     mutable.update { it.copy(loading = false) }
                     loadingSession = false
@@ -356,7 +365,8 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
     }
 
     private data class Loaded(val workspace: Workspace, val workspaces: List<Workspace>, val sessions: List<ConversationSession>,
-        val selected: ConversationSession, val models: List<ModelDescriptor>, val messages: List<StoredMessage>, val sidebar: List<SidebarWorkspace>)
+        val selected: ConversationSession, val models: List<ModelDescriptor>, val messages: List<StoredMessage>, val sidebar: List<SidebarWorkspace>,
+        val preset: com.cordiact.app.experience.settings.AgentPreset?)
 
     fun refreshSettingsModels() {
         viewModelScope.launch {

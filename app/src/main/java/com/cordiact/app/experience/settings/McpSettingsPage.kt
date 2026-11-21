@@ -1,5 +1,6 @@
 package com.cordiact.app.experience.settings
 
+import com.cordiact.app.experience.settings.components.SettingsCard
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -97,7 +98,7 @@ internal fun McpSettingsPage(facade: McpSettings?, dirty: (Boolean) -> Unit, onB
             }
             if (items.isEmpty() && !busy) Text("尚无 MCP 服务器。添加后可连接并预览工具，再确认安装。")
             items.forEach { item ->
-                ElevatedCard(Modifier.fillMaxWidth()) {
+                SettingsCard() {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(item.name, style = MaterialTheme.typography.titleMedium)
                         Text(item.url)

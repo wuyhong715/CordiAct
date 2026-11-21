@@ -1,13 +1,12 @@
 package com.cordiact.app.experience.settings
 
+import com.cordiact.app.experience.settings.components.SettingsCard
 import com.cordiact.app.service.ExecutionPresenceHost
 import com.cordiact.core.jobs.ForegroundExecutionState
 import com.cordiact.core.automation.UnconfirmedAutomationResultException
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -78,7 +77,7 @@ internal fun AutomationTasksPage(workspaceId: String) {
     FilledTonalButton(onClick = { creating = true }) { Text("新建任务") }
     if (tasks.isEmpty()) Text("暂无任务。可设置一次运行、固定间隔、每日或每周。")
     tasks.forEach { task ->
-        OutlinedCard(shape = RoundedCornerShape(20.dp), border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant), modifier = Modifier.fillMaxWidth()) {
+        SettingsCard() {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(task.name, style = MaterialTheme.typography.titleMedium)
                 Text("${if (task.enabled) "已启用" else "已暂停"} · ${task.trigger.kind} · ${task.trigger.zoneId}", style = MaterialTheme.typography.labelMedium)
@@ -106,7 +105,7 @@ internal fun AutomationTasksPage(workspaceId: String) {
     Text("运行收件箱", style = MaterialTheme.typography.titleMedium)
     if (runs.isEmpty()) Text("还没有运行记录。消息投递与执行成功会分开记录。", style = MaterialTheme.typography.bodySmall)
     runs.take(50).forEach { run ->
-        OutlinedCard(shape = RoundedCornerShape(20.dp), border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant), modifier = Modifier.fillMaxWidth()) {
+        SettingsCard() {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text("${run.taskSnapshot.name} · ${runStateLabel(run.state)}", style = MaterialTheme.typography.titleSmall)
                 Text("计划 ${formatTaskTime(run.scheduledAt)} · 开始 ${formatTaskTime(run.startedAt)}", style = MaterialTheme.typography.bodySmall)

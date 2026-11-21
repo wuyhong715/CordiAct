@@ -1,5 +1,6 @@
 package com.cordiact.app.experience.settings
 
+import com.cordiact.app.experience.settings.components.SettingsCard
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -65,7 +66,7 @@ internal fun SshSettingsPage(facade: SshSettings?, dirty: (Boolean) -> Unit, onB
             OutlinedButton(enabled = !busy, onClick = { work {} }) { Text("刷新") }
         }
         hosts.forEach { summary ->
-            ElevatedCard(Modifier.fillMaxWidth()) {
+            SettingsCard() {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(summary.name, style = MaterialTheme.typography.titleMedium)
                     Text("${summary.user}@${summary.host}:${summary.port} · ${summary.authType}")

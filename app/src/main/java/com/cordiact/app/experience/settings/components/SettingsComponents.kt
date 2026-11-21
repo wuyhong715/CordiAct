@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
 import android.view.WindowManager
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -25,9 +26,17 @@ fun SettingsSectionLabel(text: String) {
 
 @Composable
 fun SettingsGroup(content: @Composable ColumnScope.() -> Unit) {
-    Surface(shape = RoundedCornerShape(18.dp), color = MaterialTheme.colorScheme.outlineVariant) {
+    Surface(shape = RoundedCornerShape(24.dp), color = MaterialTheme.colorScheme.outlineVariant) {
         Column(Modifier.fillMaxWidth().padding(1.dp), verticalArrangement = Arrangement.spacedBy(1.dp), content = content)
     }
+}
+
+/** Shared low-emphasis container for service items, diagnostics and editable records. */
+@Composable
+internal fun SettingsCard(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
+    Surface(modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerLowest,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant), content = content)
 }
 
 @Composable
@@ -43,7 +52,7 @@ internal fun SettingsPanel(content: @Composable ColumnScope.() -> Unit) {
 fun SettingsRow(title: String, summary: String, icon: GlyphName? = null, enabled: Boolean = true, onClick: () -> Unit) {
     Surface(shape = RoundedCornerShape(0.dp), color = MaterialTheme.colorScheme.surfaceContainerLowest) {
         Row(Modifier.fillMaxWidth().clickable(enabled = enabled, onClick = onClick).heightIn(min = 58.dp).padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-            if (icon != null) AppGlyph(icon, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(22.dp))
+            if (icon != null) AppGlyph(icon, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(22.dp))
             Column(Modifier.weight(1f).padding(start = if (icon == null) 0.dp else 14.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text(title, style = MaterialTheme.typography.titleSmall)
                 Text(summary, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2)

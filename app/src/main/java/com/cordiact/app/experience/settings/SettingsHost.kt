@@ -3,6 +3,8 @@ package com.cordiact.app.experience.settings
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.background
+import android.content.res.Configuration
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
@@ -73,6 +75,17 @@ fun SettingsHost(vm: SettingsViewModel, initialLink: String? = null, onBack: () 
         else applyNavigation(target)
     }
     fun navigate(target: SettingsRoute) = requestNavigation(navigation.push(target))
+    val directoryRoute = when (route) {
+        SettingsRoute.AGENT_PRESET_EDITOR -> SettingsRoute.AGENT_PRESETS
+        SettingsRoute.ADD, SettingsRoute.DETAIL -> SettingsRoute.PROVIDERS
+        else -> route
+    }
+    fun openDirectory(target: SettingsRoute) {
+        if (route != target) requestNavigation(SettingsNavigation().push(target))
+    }
+    val presetContext = androidx.compose.ui.platform.LocalContext.current.applicationContext
+    val agentPresets = remember(presetContext) { AgentPresetStore(presetContext) }
+    var presetId by rememberSaveable { mutableStateOf("") }
     var requestSearchFocus by remember { mutableStateOf(false) }
     var searchActive by rememberSaveable { mutableStateOf(false) }
     var settingsQuery by rememberSaveable { mutableStateOf("") }
@@ -161,6 +174,10 @@ fun SettingsHost(vm: SettingsViewModel, initialLink: String? = null, onBack: () 
     val keyboardVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
     val showSections = sections.isNotEmpty() && !editor.active && !keyboardVisible
     var sectionBarHeight by remember { mutableIntStateOf(0) }
+    val config = LocalConfiguration.current
+    val wide = config.screenWidthDp >= 600
+    val dockAtEnd = wide || config.orientation == Configuration.ORIENTATION_LANDSCAPE
+    val railWidth = if (config.screenWidthDp < 760) 200.dp else 232.dp
     val sectionBottom = with(LocalDensity.current) { if (showSections || showSearch) sectionBarHeight.toDp() else 0.dp }
     // Keep a separate scroll position per section without discarding the page's draft state.
     val firstScroll = rememberSaveable(route.name, saver = androidx.compose.foundation.ScrollState.Saver) { androidx.compose.foundation.ScrollState(0) }
@@ -174,15 +191,14 @@ fun SettingsHost(vm: SettingsViewModel, initialLink: String? = null, onBack: () 
       CompositionLocalProvider(LocalBackdrop provides backdrop, LocalSettingsSection provides selectedSection, LocalSettingsEditor provides editor) {
         Box(Modifier.padding(inset).consumeWindowInsets(inset).fillMaxSize()) {
         Row(Modifier.fillMaxSize().hazeSource(backdrop)) {
-            val wide = LocalConfiguration.current.screenWidthDp >= 600
             if (wide && !showResults) {
-                Column(Modifier.width(300.dp).fillMaxHeight().verticalScroll(if (showSearch) homeScroll else firstScroll).padding(start = 16.dp, end = 16.dp, top = toolbarDp + 20.dp, bottom = sectionBottom + 24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    SettingsMenu(state, ::navigate, ::openLink)
+                Column(Modifier.width(railWidth).fillMaxHeight().background(MaterialTheme.colorScheme.surfaceContainerLowest)
+                    .verticalScroll(homeScroll).padding(start = 16.dp, end = 12.dp, top = toolbarDp + 13.dp, bottom = if (showSearch) sectionBottom + 24.dp else 24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    SettingsMenu(state, ::openDirectory, ::openLink, selectedRoute = directoryRoute, compact = true)
                 }
-                VerticalDivider()
             }
             Box(Modifier.weight(1f).fillMaxHeight(), contentAlignment = Alignment.TopCenter) {
-            key(route, providerId) {
+            key(route, providerId, if (route == SettingsRoute.AGENT_PRESET_EDITOR) presetId else "") {
             Column(Modifier.widthIn(max = 640.dp).fillMaxWidth().fillMaxHeight().verticalScroll(when { showResults && settingsQuery.isNotBlank() -> resultsScroll; showSearch && (!wide || showResults) -> homeScroll; else -> sectionScroll }).padding(start = 16.dp, end = 16.dp, top = toolbarDp + 20.dp, bottom = sectionBottom + 24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
                 notice?.let { Text(it, color = MaterialTheme.colorScheme.secondary) }
@@ -190,10 +206,17 @@ fun SettingsHost(vm: SettingsViewModel, initialLink: String? = null, onBack: () 
                 when(route) {
                     SettingsRoute.HOME -> if (showResults && settingsQuery.isNotBlank()) {
                         SettingsSearchResults(settingsQuery, ::openResult)
-                    } else if (wide && !showResults) {
+                    } else if (wide) {
                         Text("选择左侧设置项", style = MaterialTheme.typography.titleMedium)
                         Text("模型、凭据和连接为全局设置；权限、搜索策略和能力开关作用于选定工作区。")
                     } else SettingsMenu(state, ::navigate, ::openLink)
+                    SettingsRoute.AGENT_PRESETS -> AgentPresetLibrary(agentPresets, state, wide) {
+                        presetId = it
+                        navigate(SettingsRoute.AGENT_PRESET_EDITOR)
+                    }
+                    SettingsRoute.AGENT_PRESET_EDITOR -> AgentPresetEditor(agentPresets, presetId, state.models, selectedSection,
+                        onDirty = { dirty = it }, onSaved = { applyNavigation(navigation.pop()) },
+                        onCopy = { presetId = "copy:$it" }, onPermissions = { openDirectory(SettingsRoute.PERMISSIONS) })
                     SettingsRoute.PROVIDERS -> ProviderList(state) { providerId = it; navigate(SettingsRoute.DETAIL) }
                     SettingsRoute.ADD -> ProviderEditor(vm, busy, { dirty = it }) { applyNavigation(navigation.providerList()) }
                     SettingsRoute.DETAIL -> state.providers.firstOrNull { it.id == providerId }?.let {
@@ -236,7 +259,8 @@ fun SettingsHost(vm: SettingsViewModel, initialLink: String? = null, onBack: () 
         ViewportFade(backdrop, true, Modifier.align(Alignment.TopCenter).fillMaxWidth().height(toolbarDp + 16.dp))
         ViewportFade(backdrop, false, Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(sectionBottom + 16.dp))
         if (showSections) SettingsSectionBar(sections, selectedSection, { selectedSection = it },
-            Modifier.align(Alignment.BottomCenter).onSizeChanged { sectionBarHeight = it.height }.padding(horizontal = 20.dp, vertical = 12.dp))
+            Modifier.align(if (dockAtEnd) Alignment.BottomEnd else Alignment.BottomCenter).onSizeChanged { sectionBarHeight = it.height }.padding(horizontal = 20.dp, vertical = 12.dp),
+            maxBarWidth = if (dockAtEnd) 324.dp else 440.dp)
         if (showSearch) SettingsSearchBar(searchActive, settingsQuery, searchFocus, requestSearchFocus,
             onFocused = { requestSearchFocus = false }, activate = { requestSearchFocus = true; searchActive = true }, edit = {
                 settingsQuery = it
@@ -249,7 +273,11 @@ fun SettingsHost(vm: SettingsViewModel, initialLink: String? = null, onBack: () 
             FrostedSurface(radius = 24.dp) {
                 IconButton(onClick = { back() }, enabled = !busy && !securityBusy) { AppGlyph(GlyphName.Back, "返回") }
             }
-            Text(route.title, Modifier.weight(1f).padding(horizontal = 12.dp), style = MaterialTheme.typography.titleLarge)
+            Text(when (route) {
+                SettingsRoute.AGENT_PRESETS -> if (wide) "设置" else "Agent 预设"
+                SettingsRoute.AGENT_PRESET_EDITOR -> "Agent 预设"
+                else -> route.title
+            }, Modifier.weight(1f).padding(horizontal = 12.dp), style = MaterialTheme.typography.titleLarge)
             if (route == SettingsRoute.PROVIDERS) FrostedSurface(radius = 24.dp) {
                 TextButton({ navigate(SettingsRoute.ADD) }, enabled = !busy) { Text("添加") }
             }
@@ -259,17 +287,18 @@ fun SettingsHost(vm: SettingsViewModel, initialLink: String? = null, onBack: () 
     }
 }
 @Composable
-private fun SettingsMenu(state: SettingsSnapshot, navigate: (SettingsRoute) -> Unit, openLink: (String?) -> Unit) {
-    SettingsOverview(state, navigate, openLink)
+private fun SettingsMenu(state: SettingsSnapshot, navigate: (SettingsRoute) -> Unit, openLink: (String?) -> Unit,
+                         selectedRoute: SettingsRoute? = null, compact: Boolean = false) {
+    SettingsOverview(state, navigate, openLink, selectedRoute, compact)
 }
 @Composable
 private fun ProviderList(state: SettingsSnapshot, select: (String) -> Unit) {
     if (state.providers.isEmpty()) Text("尚无提供商。点右上角「添加」，填写 URL 与 Key 后选择要启用的模型。")
     state.providers.groupBy { it.protocol }.forEach { (protocol, providers) ->
         Text(protocol.label(), style = MaterialTheme.typography.titleMedium)
-        providers.forEach { p ->
-            SettingsRow(p.name, "${java.net.URI(p.endpoint).host} · ${p.enabled.size}/${p.discovered.size} 启用 · ${if (p.keyIsSet) "Key 已设置" else "需要设置 Key"}") { select(p.id) }
-        }
+        SettingsGroup { providers.forEach { p ->
+            SettingsRow(p.name, "${java.net.URI(p.endpoint).host} · ${p.enabled.size}/${p.discovered.size} 启用 · ${if (p.keyIsSet) "凭据已设置" else "需要设置凭据"}", GlyphName.Link) { select(p.id) }
+        } }
     }
 }
 @Composable

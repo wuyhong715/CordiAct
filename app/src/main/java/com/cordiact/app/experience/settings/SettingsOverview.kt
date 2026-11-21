@@ -3,6 +3,9 @@ package com.cordiact.app.experience.settings
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.background
+import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -21,7 +24,7 @@ import com.cordiact.app.experience.GlyphName
 import com.cordiact.app.experience.GlyphSize
 
 @Composable
-internal fun SettingsOverview(state: SettingsSnapshot, navigate: (SettingsRoute) -> Unit, openLink: (String?) -> Unit) {
+internal fun SettingsOverview(state: SettingsSnapshot, navigate: (SettingsRoute) -> Unit, openLink: (String?) -> Unit, selectedRoute: SettingsRoute? = null, compact: Boolean = false) {
     val actions = remember(state.readiness) { settingsActions(state.readiness) }
     var expanded by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(actions.isEmpty()) { if (actions.isEmpty()) expanded = false }
@@ -51,12 +54,13 @@ internal fun SettingsOverview(state: SettingsSnapshot, navigate: (SettingsRoute)
             }
         }
     }
-    settingsCatalog.forEach { group -> OverviewGroup(group.title, group.entries, navigate) }
+    settingsCatalog.forEach { group -> OverviewGroup(group.title, group.entries, navigate, selectedRoute, compact) }
 }
 
 internal data class OverviewEntry(val title: String, val glyph: GlyphName, val route: SettingsRoute)
 internal data class OverviewCategory(val title: String, val entries: List<OverviewEntry>)
 internal val settingsCatalog = listOf(
+    OverviewCategory("Agent", listOf(OverviewEntry("Agent 预设", GlyphName.AgentPreset, SettingsRoute.AGENT_PRESETS))),
     OverviewCategory("输入", listOf(OverviewEntry("预设变量", GlyphName.Code, SettingsRoute.INPUT_VARIABLES))),
     OverviewCategory("模型与服务", listOf(
         OverviewEntry("模型提供商", GlyphName.Link, SettingsRoute.PROVIDERS),
@@ -78,9 +82,26 @@ internal val settingsCatalog = listOf(
         OverviewEntry("关于", GlyphName.More, SettingsRoute.ABOUT))),
 )
 @Composable
-private fun OverviewGroup(title: String, entries: List<OverviewEntry>, navigate: (SettingsRoute) -> Unit) {
+private fun OverviewGroup(title: String, entries: List<OverviewEntry>, navigate: (SettingsRoute) -> Unit,
+                          selectedRoute: SettingsRoute?, compact: Boolean) {
     Text(title, Modifier.padding(start = 8.dp, top = 12.dp, bottom = 2.dp),
         style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    if (compact) {
+        Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            entries.forEach { entry ->
+                val selected = selectedRoute == entry.route
+                Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
+                    .background(if (selected) MaterialTheme.colorScheme.primaryContainer else androidx.compose.ui.graphics.Color.Transparent)
+                    .selectable(selected, role = Role.Tab) { navigate(entry.route) }
+                    .heightIn(min = 48.dp).padding(horizontal = 10.dp, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                    AppGlyph(entry.glyph, tint = MaterialTheme.colorScheme.primary, size = GlyphSize.Small)
+                    Text(entry.title, style = MaterialTheme.typography.bodyMedium, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal)
+                }
+            }
+        }
+        return
+    }
     val outline = MaterialTheme.colorScheme.outlineVariant
     Surface(
         modifier = Modifier.fillMaxWidth(),

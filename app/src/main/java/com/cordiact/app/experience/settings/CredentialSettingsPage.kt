@@ -1,5 +1,6 @@
 package com.cordiact.app.experience.settings
 
+import com.cordiact.app.experience.settings.components.SettingsCard
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -38,7 +39,7 @@ internal fun CredentialSettingsPage(vm: SettingsViewModel, onBusy: (Boolean) -> 
     if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
     if (rows.isEmpty() && !busy && error == null) Text("尚无可管理的模型或搜索凭据")
     rows.forEach { item ->
-        OutlinedCard(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+        SettingsCard() {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text("${if (item.namespace == "model") "模型" else "搜索"} · ${item.owner}")
                 Text("更新时间：${credentialTime(item.updatedAtMillis)}")
