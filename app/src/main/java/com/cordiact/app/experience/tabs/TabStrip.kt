@@ -165,7 +165,7 @@ fun TabOverview(
     onDismiss: () -> Unit,
     onNewSession: () -> Unit,
     onSettings: () -> Unit,
-    allSessions: @Composable (Modifier) -> Unit,
+    allSessions: @Composable (Modifier, @Composable () -> Unit) -> Unit,
 ) {
     val colors = MaterialTheme.colorScheme
     var segment by rememberSaveable { mutableIntStateOf(0) }
@@ -179,8 +179,7 @@ fun TabOverview(
                 Text(if (segment == 0) "标签页" else "全部会话", style = MaterialTheme.typography.headlineLarge, modifier = Modifier.weight(1f).semantics { heading() })
                 IconButton(onClick = onSettings) { AppGlyph(GlyphName.Settings, "设置") }
             }
-            Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp),
-                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+            val segments: @Composable () -> Unit = {
                 Row(Modifier.padding(vertical = 10.dp).clip(CircleShape).background(colors.surfaceContainer).padding(3.dp)) {
                     listOf("已打开 ${controller.tabs.size}", "全部会话").forEachIndexed { i, label ->
                         val on = segment == i
@@ -191,9 +190,15 @@ fun TabOverview(
                         }
                     }
                 }
-                if (segment == 0) OpenedLayoutChoice(listLayout) { useList ->
-                    listLayout = useList
-                    prefs.edit().putBoolean("opened_list", useList).apply()
+            }
+            if (segment == 0) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+                    verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+                    segments()
+                    OpenedLayoutChoice(listLayout) { useList ->
+                        listLayout = useList
+                        prefs.edit().putBoolean("opened_list", useList).apply()
+                    }
                 }
             }
             Box(Modifier.weight(1f).fillMaxWidth()) {
@@ -227,7 +232,7 @@ fun TabOverview(
                             }
                         }
                     }
-                } else bodyState.SaveableStateProvider("all-sessions") { allSessions(Modifier.fillMaxSize()) }
+                } else bodyState.SaveableStateProvider("all-sessions") { allSessions(Modifier.fillMaxSize(), segments) }
             }
             Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                 TextButton(onClick = onNewSession, modifier = Modifier.heightIn(min = 48.dp).testTag("tab-new")) {

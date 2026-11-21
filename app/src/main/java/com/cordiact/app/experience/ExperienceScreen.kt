@@ -268,7 +268,7 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
                 onDismiss = { overview = false },
                 onNewSession = { viewModel.newSession(state.workspace?.id, closeAfterSelection) },
                 onSettings = { closeAfterSelection(); settingsVm.reload(); openSettings() },
-            ) { m ->
+            ) { m, overviewSegments ->
                 AllSessionsPane(
                     state, viewModel,
                     onOpenSession = { id ->
@@ -283,6 +283,7 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
                     onWorkspaceOpened = closeAfterSelection,
                     onAutomationTasks = { closeAfterSelection(); settingsVm.reload(); openSettings("settings://tasks") },
                     modifier = m,
+                    overviewSegments = overviewSegments,
                 )
             }
         }

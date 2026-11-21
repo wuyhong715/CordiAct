@@ -18,6 +18,9 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.heading
@@ -48,6 +51,7 @@ internal fun AllSessionsPane(
     onWorkspaceOpened: () -> Unit,
     onAutomationTasks: () -> Unit,
     modifier: Modifier = Modifier,
+    overviewSegments: @Composable () -> Unit,
 ) {
     var query by rememberSaveable { mutableStateOf("") }
     var archiveQuery by rememberSaveable { mutableStateOf("") }
@@ -111,7 +115,11 @@ internal fun AllSessionsPane(
     BoxWithConstraints(modifier.padding(horizontal = 16.dp).testTag("all-sessions-pane")) {
         val sideBySide = maxWidth >= 640.dp && configuration.screenWidthDp > configuration.screenHeightDp
         val railWidth = (maxWidth * .26f).coerceIn(176.dp, 220.dp)
+        val hasError = state.error != null && editingType == null
+        val liftRight = sideBySide && !hasError && state.undoArchivedSessionId == null
+        val segments: @Composable () -> Unit = { Box(Modifier.padding(horizontal = 4.dp)) { overviewSegments() } }
         Column(Modifier.fillMaxSize()) {
+            if (!liftRight) segments()
             if (state.error != null && editingType == null) {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Text(state.error, Modifier.weight(1f), color = MaterialTheme.colorScheme.error,
@@ -128,7 +136,7 @@ internal fun AllSessionsPane(
                 }
             }
             if (sideBySide) {
-                Row(Modifier.weight(1f).fillMaxWidth().testTag("all-sessions-landscape")) {
+                val leftRail: @Composable () -> Unit = {
                     Column(Modifier.width(railWidth)
                         .fillMaxHeight().verticalScroll(rememberScrollState()).padding(end = 10.dp)) {
                         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -155,8 +163,12 @@ internal fun AllSessionsPane(
                             } else Column { statusChips() }
                         }
                     }
-                    VerticalDivider()
-                    Column(Modifier.weight(1f).padding(start = 12.dp)) {
+                }
+                SplitSessionsBody(
+                    Modifier.weight(1f).fillMaxWidth().testTag("all-sessions-landscape"),
+                    railWidth, if (liftRight) segments else null, leftRail,
+                ) {
+                    Column(Modifier.fillMaxSize()) {
                         searchBox()
                         resultList(Modifier.weight(1f))
                     }
@@ -227,6 +239,41 @@ internal fun AllSessionsPane(
             text = { Text("归档不会停止正在运行的任务，也不会处理待确认请求。") },
             confirmButton = { TextButton(onClick = { confirmArchive = null; viewModel.archiveSession(id) }) { Text("归档") } },
             dismissButton = { TextButton(onClick = { confirmArchive = null }) { Text("取消") } })
+    }
+}
+
+/** The left rail still starts after the segment switch. Only the right column reclaims that band. */
+@Composable
+private fun SplitSessionsBody(
+    modifier: Modifier,
+    railWidth: Dp,
+    segments: (@Composable () -> Unit)?,
+    left: @Composable () -> Unit,
+    right: @Composable () -> Unit,
+) {
+    Layout(modifier = modifier, content = {
+        Box { if (segments != null) segments() }
+        Row { left(); VerticalDivider() }
+        Box { right() }
+    }) { children, space ->
+        val width = space.maxWidth
+        val height = space.maxHeight
+        val leftWidth = railWidth.roundToPx() + 1.dp.roundToPx()
+        val rightStart = (leftWidth + 12.dp.roundToPx()).coerceAtMost(width)
+        val selector = children[0].measure(Constraints(maxWidth = width, maxHeight = height))
+        val leftTop = selector.height
+        // The parent begins just below the title row. Leave a little air, and avoid collision
+        // with a long selector (for example at a large accessibility font scale).
+        val rightTop = if (selector.width <= rightStart - 8.dp.roundToPx()) {
+            minOf(leftTop, 8.dp.roundToPx())
+        } else leftTop
+        val rail = children[1].measure(Constraints.fixed(leftWidth, height - leftTop))
+        val results = children[2].measure(Constraints.fixed(width - rightStart, height - rightTop))
+        layout(width, height) {
+            selector.placeRelative(0, 0)
+            rail.placeRelative(0, leftTop)
+            results.placeRelative(rightStart, rightTop)
+        }
     }
 }
 
