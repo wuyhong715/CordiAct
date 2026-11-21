@@ -1,6 +1,7 @@
 package com.cordiact.app.experience.settings
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.selection.selectable
@@ -34,7 +35,7 @@ internal fun AgentPresetLibrary(store: AgentPresetStore, state: SettingsSnapshot
     val local = remember(workspace, revision, records) { store.workspaceId(workspace) }
     val selected = local ?: global
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
-        Column(Modifier.weight(1f)) { PresetHero("Agent 预设", "为新会话预选模型与推理强度，集中管理指令和工具草稿。") }
+        Column(Modifier.weight(1f)) { PresetHero("Agent 预设", "为新会话预选模型与推理强度，写入系统提示词，并管理工具草稿。") }
         FilledTonalButton(onClick = { onEdit("") }, modifier = Modifier.heightIn(min = 48.dp)) {
             AppGlyph(GlyphName.Plus, size = GlyphSize.Small); Spacer(Modifier.width(5.dp)); Text("新建预设")
         }
@@ -97,7 +98,7 @@ internal fun AgentPresetEditor(store: AgentPresetStore, routeId: String, models:
     var provider by rememberSaveable(routeId) { mutableStateOf(baseline.model?.providerId) }
     var modelId by rememberSaveable(routeId) { mutableStateOf(baseline.model?.modelId) }
     var effortName by rememberSaveable(routeId) { mutableStateOf(baseline.effort.name) }
-    var instructions by rememberSaveable(routeId) { mutableStateOf(baseline.instructions) }
+    var instructions by rememberSaveable(routeId) { mutableStateOf(baseline.systemPrompt) }
     var capabilityIds by rememberSaveable(routeId) { mutableStateOf(ArrayList(baseline.capabilities)) }
     var scope by rememberSaveable(routeId) { mutableStateOf(baseline.scope) }
     var openPicker by remember { mutableStateOf<String?>(null) }
@@ -106,7 +107,7 @@ internal fun AgentPresetEditor(store: AgentPresetStore, routeId: String, models:
     val currentModel = availableModels.firstOrNull { it.id == model }
     val allowedEfforts = (currentModel?.capabilities?.reasoningEfforts ?: availableModels.flatMap { it.capabilities.reasoningEfforts }.toSet()) - ReasoningEffort.AUTO
     val draft = baseline.copy(name = name, description = description, model = model,
-        effort = ReasoningEffort.valueOf(effortName), instructions = instructions, capabilities = capabilityIds.toSet(), scope = scope)
+        effort = ReasoningEffort.valueOf(effortName), systemPrompt = instructions.trim(), capabilities = capabilityIds.toSet(), scope = scope)
     val dirty = !draft.builtIn && draft != baseline
     SideEffect { onDirty(dirty) }
     if (routeId.isNotEmpty() && existing == null) {
@@ -147,29 +148,49 @@ internal fun AgentPresetEditor(store: AgentPresetStore, routeId: String, models:
             PresetHint("预设不授予权限，也不会跳过凭据审批。要限制真实会话，请使用「权限档位」。")
         }
         else -> {
-            PresetGroup("运行配置") {
-                if (!draft.builtIn) {
-                    PresetField("预设名称", name) { name = it.take(32) }
-                    PresetField("说明", description) { description = it.take(56) }
+            val modelCard: @Composable () -> Unit = {
+                PresetGroup("运行配置") {
+                    if (!draft.builtIn) {
+                        PresetField("预设名称", name) { name = it.take(32) }
+                        PresetField("说明", description) { description = it.take(56) }
+                        PresetDivider()
+                    }
+                    PresetRow("默认模型", if (model != null && currentModel == null) "模型不可用，将跟随对话默认" else "新会话使用的模型",
+                        currentModel?.displayName ?: if (model == null) "跟随对话默认" else model.modelId,
+                        onClick = if (draft.builtIn) null else { { openPicker = "model" } })
                     PresetDivider()
+                    PresetRow("推理强度", "只应用模型声明支持的档位", effortNameOf(draft.effort),
+                        onClick = if (draft.builtIn) null else { { openPicker = "effort" } })
+            }
+            }
+            val promptCard: @Composable () -> Unit = {
+                PresetGroup("系统提示词") {
+                    if (draft.builtIn) PresetRow("新会话指令", instructions.ifBlank { "无自定义系统指令；可复制后编辑" })
+                    else PresetField("系统提示词", instructions, singleLine = false) { instructions = it.take(12_000) }
+                    PresetRow("预览组装", "平台指令 → 预设系统提示词 → 会话历史", onClick = { openPicker = "prompt" })
+            }
+            }
+            BoxWithConstraints(Modifier.fillMaxWidth()) {
+                if (maxWidth >= 610.dp) Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                    Column(Modifier.weight(1.18f)) { promptCard() }
+                    Column(Modifier.weight(1f)) { modelCard() }
+                } else Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    promptCard()
+                    modelCard()
                 }
-                PresetRow("默认模型", if (model != null && currentModel == null) "模型不可用，将跟随对话默认" else "新会话使用的模型",
-                    currentModel?.displayName ?: if (model == null) "跟随对话默认" else model.modelId,
-                    onClick = if (draft.builtIn) null else { { openPicker = "model" } })
-                PresetDivider()
-                PresetRow("推理强度", "只应用模型声明支持的档位", effortNameOf(draft.effort),
-                    onClick = if (draft.builtIn) null else { { openPicker = "effort" } })
             }
-            PresetGroup("预设指令（未生效）") {
-                if (draft.builtIn) PresetRow("会话指令", instructions)
-                else PresetField("会话指令", instructions, singleLine = false) { instructions = it.take(600) }
-            }
-            PresetHint("指令可以编辑和保存；本版不会将它写入会话提示。")
+            PresetHint("仅用于之后创建的会话，不改旧会话、不授予工具或审批权限。请勿填写密钥。")
             if (!draft.builtIn && draft.id.isNotEmpty()) TextButton(onClick = { openPicker = "remove" },
                 modifier = Modifier.heightIn(min = 48.dp)) { Text("移除预设", color = MaterialTheme.colorScheme.error) }
         }
     }
     when (openPicker) {
+        "prompt" -> AlertDialog(onDismissRequest = { openPicker = null }, title = { Text("系统提示词预览") },
+            text = { Column(Modifier.verticalScroll(rememberScrollState())) {
+                Text("平台指令（保留）")
+                Text(instructions.ifBlank { "未添加预设指令" }, Modifier.padding(vertical = 12.dp))
+                Text("之后接入会话历史")
+            } }, confirmButton = { TextButton({ openPicker = null }) { Text("关闭") } })
         "model" -> PresetChoices("默认模型", listOf("" to "跟随对话默认") + availableModels.mapIndexed { i, m -> "$i" to m.displayName },
             availableModels.indexOfFirst { it.id == model }.takeIf { it >= 0 }?.toString().orEmpty(), { openPicker = null }) { key ->
             val m = key.toIntOrNull()?.let(availableModels::getOrNull); provider = m?.id?.providerId; modelId = m?.id?.modelId
@@ -216,7 +237,7 @@ internal fun AgentPresetEditor(store: AgentPresetStore, routeId: String, models:
 }
 @Composable private fun PresetField(label: String, value: String, singleLine: Boolean = true, change: (String) -> Unit) {
     OutlinedTextField(value, change, Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 7.dp),
-        label = { Text(label) }, singleLine = singleLine, minLines = if (singleLine) 1 else 2, maxLines = if (singleLine) 1 else 5,
+        label = { Text(label) }, singleLine = singleLine, minLines = if (singleLine) 1 else 4, maxLines = if (singleLine) 1 else 10,
         shape = RoundedCornerShape(12.dp))
 }
 @Composable private fun PresetChoices(title: String, items: List<Pair<String, String>>, current: String, onDismiss: () -> Unit, onSelect: (String) -> Unit) {

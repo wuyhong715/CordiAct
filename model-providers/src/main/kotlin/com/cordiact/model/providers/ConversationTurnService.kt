@@ -161,9 +161,12 @@ class ConversationTurnService(
         compactor.prepareCandidate(sessionId, windowFor(model), rawHistoryOf(sessionId))
     }
 
+    private fun ConversationMessage.isAgentPresetPrefix(): Boolean =
+        role == MessageRole.SYSTEM && metadataJson == com.cordiact.core.conversation.AGENT_PRESET_SYSTEM_METADATA
+
     private fun rawHistoryOf(sessionId: String): List<ConversationMessage> =
         sessions.messages(sessionId)
-            .filter { it.role == MessageRole.SYSTEM || it.role == MessageRole.USER || it.role == MessageRole.ASSISTANT }
+            .filter { !it.isAgentPresetPrefix() && (it.role == MessageRole.SYSTEM || it.role == MessageRole.USER || it.role == MessageRole.ASSISTANT) }
 
     /**
      * Submits a turn that may use tools.
@@ -662,8 +665,7 @@ class ConversationTurnService(
         systemContext: String?,
         pending: List<TurnNotice>,
     ): List<ModelMessage>? {
-        val raw = sessions.messages(sessionId)
-            .filter { it.role == MessageRole.SYSTEM || it.role == MessageRole.USER || it.role == MessageRole.ASSISTANT }
+        val raw = rawHistoryOf(sessionId)
         val result = withCompactionModel(model) { compactor.emergencyCompact(sessionId, windowFor(model), raw) } ?: return null
         // Worth a log line: the turn continued, so nothing else would explain the sudden shrink.
         java.util.logging.Logger.getLogger(ConversationTurnService::class.java.name).warning(
@@ -686,8 +688,11 @@ class ConversationTurnService(
         pending: List<TurnNotice>,
         onEvent: ((ModelEvent) -> Unit)? = null,
     ): List<ModelMessage> {
-        val rawMessages = sessions.messages(sessionId)
-            .filter { it.role == MessageRole.SYSTEM || it.role == MessageRole.USER || it.role == MessageRole.ASSISTANT }
+        val history = sessions.messages(sessionId)
+        val preset = history.firstOrNull { it.isAgentPresetPrefix() }
+        val rawMessages = history.filter {
+            !it.isAgentPresetPrefix() && (it.role == MessageRole.SYSTEM || it.role == MessageRole.USER || it.role == MessageRole.ASSISTANT)
+        }
 
         // Perform auto-compaction check if compactionStore is available and policy is enabled
         if (compactionStore != null && contextPolicy.enabled) {
@@ -704,11 +709,9 @@ class ConversationTurnService(
             if (noticeMsg != null) projected + noticeMsg else projected
         }
 
-        return if (systemContext.isNullOrBlank()) {
-            withNotices
-        } else {
-            listOf(ModelMessage(MessageRole.SYSTEM, systemContext)) + withNotices
-        }
+        val presetPrefix = preset?.let { listOf(ModelMessage(MessageRole.SYSTEM, it.content)) }.orEmpty()
+        return if (systemContext.isNullOrBlank()) presetPrefix + withNotices
+        else listOf(ModelMessage(MessageRole.SYSTEM, systemContext)) + presetPrefix + withNotices
     }
 
     private fun maybeCompact(sessionId: String, model: ModelId, rawMessages: List<ConversationMessage>, onEvent: ((ModelEvent) -> Unit)? = null) {

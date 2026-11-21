@@ -17,6 +17,7 @@ internal data class AgentPreset(
     val capabilities: Set<String> = setOf("files"),
     val scope: String = "read-only",
     val builtIn: Boolean = false,
+    val systemPrompt: String = "",
 )
 
 /** The library saves configuration locally; this store does not grant runtime capabilities. */
@@ -62,7 +63,7 @@ internal class AgentPresetStore(context: Context) {
             records.forEach { p -> put(JSONObject().apply {
                 put("id", p.id); put("name", p.name); put("description", p.description)
                 put("provider", p.model?.providerId); put("model", p.model?.modelId)
-                put("effort", p.effort.name); put("instructions", p.instructions); put("scope", p.scope)
+                put("effort", p.effort.name); put("instructions", p.instructions); put("systemPromptV2", p.systemPrompt); put("scope", p.scope)
                 put("capabilities", JSONArray(p.capabilities.toList()))
             }) }
         }.toString()
@@ -75,6 +76,7 @@ internal class AgentPresetStore(context: Context) {
             o.optString("instructions"), o.optJSONArray("capabilities")?.let { a ->
                 (0 until a.length()).map { a.optString(it) }.filter { it.isNotBlank() }.toSet()
             }.orEmpty(), o.optString("scope", "read-only"),
+            systemPrompt = o.optString("systemPromptV2").take(12_000),
         )
     }
 }

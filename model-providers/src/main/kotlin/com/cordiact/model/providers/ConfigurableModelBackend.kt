@@ -150,6 +150,7 @@ class ModelProviderConfig private constructor(
     val attachmentCapabilities: Map<String, AttachmentInputCapability>,
     val discoveredModels: List<String>,
     val modelDefaults: Map<String, GenerationParameters>,
+    val contextWindows: Map<String, Int>,
 ) {
     constructor(
         providerId: String,
@@ -164,6 +165,7 @@ class ModelProviderConfig private constructor(
         attachmentCapabilities: Map<String, AttachmentInputCapability> = emptyMap(),
         discoveredModels: List<String> = models,
         modelDefaults: Map<String, GenerationParameters> = emptyMap(),
+        contextWindows: Map<String, Int> = emptyMap(),
     ) : this(
         providerId,
         displayName,
@@ -183,6 +185,7 @@ class ModelProviderConfig private constructor(
         attachmentCapabilities.toMap(),
         discoveredModels.toList(),
         modelDefaults.toMap(),
+        contextWindows.toMap(),
     )
 
     internal fun duplicate(
@@ -205,6 +208,7 @@ class ModelProviderConfig private constructor(
         (attachmentCapabilities ?: this.attachmentCapabilities).toMap(),
         discoveredModels.toList(),
         modelDefaults.toMap(),
+        contextWindows.filterKeys { it in discoveredModels },
     )
 
     override fun equals(other: Any?): Boolean = other is ModelProviderConfig &&
@@ -212,11 +216,11 @@ class ModelProviderConfig private constructor(
         endpoint == other.endpoint && models == other.models && connectTimeoutMillis == other.connectTimeoutMillis &&
         readTimeoutMillis == other.readTimeoutMillis && allowInsecureLoopbackForTests == other.allowInsecureLoopbackForTests &&
         defaults == other.defaults && parameterCapabilities == other.parameterCapabilities &&
-        attachmentCapabilities == other.attachmentCapabilities && discoveredModels == other.discoveredModels && modelDefaults == other.modelDefaults
+        attachmentCapabilities == other.attachmentCapabilities && discoveredModels == other.discoveredModels && modelDefaults == other.modelDefaults && contextWindows == other.contextWindows
 
     override fun hashCode(): Int = listOf(
         providerId, displayName, protocol, endpoint, models, connectTimeoutMillis, readTimeoutMillis,
-        allowInsecureLoopbackForTests, defaults, parameterCapabilities, attachmentCapabilities, discoveredModels, modelDefaults,
+        allowInsecureLoopbackForTests, defaults, parameterCapabilities, attachmentCapabilities, discoveredModels, modelDefaults, contextWindows,
     ).hashCode()
 
     companion object {
@@ -233,7 +237,7 @@ class ModelProviderConfig private constructor(
             attachmentCapabilities: Map<String, AttachmentInputCapability> = emptyMap(),
         ) = ModelProviderConfig(
             providerId, displayName, protocol, endpoint, models, connectTimeoutMillis, readTimeoutMillis, true, defaults,
-            parameterCapabilities.toMap(), attachmentCapabilities.toMap(), models.toList(), emptyMap(),
+            parameterCapabilities.toMap(), attachmentCapabilities.toMap(), models.toList(), emptyMap(), emptyMap(),
         )
     }
     fun withModelDefaults(values: Map<String, GenerationParameters>): ModelProviderConfig {
@@ -353,6 +357,7 @@ class ConfigurableModelBackend(
         val parameters = config.parameterCapabilities[it]
         ModelDescriptor(
             ModelId(providerId, it), "${config.displayName} - $it", supportsStreaming = true,
+            contextWindowTokens = config.contextWindows[it],
             capabilities = com.cordiact.core.conversation.ModelCapabilities(
                 reasoningEfforts = parameters?.reasoningEffortValues?.keys.orEmpty() - ReasoningEffort.AUTO,
                 responseSpeeds = parameters?.responseSpeedValues?.keys.orEmpty() - ResponseSpeed.AUTO,

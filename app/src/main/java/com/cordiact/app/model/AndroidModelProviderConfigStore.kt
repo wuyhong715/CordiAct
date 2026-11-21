@@ -37,6 +37,9 @@ class AndroidModelProviderConfigStore(context: Context) : ModelProviderConfigSto
                     discoveredModels = (item.optJSONArray("discoveredModels") ?: item.getJSONArray("models")).let { models ->
                         List(models.length()) { models.getString(it) }
                     },
+                    contextWindows = item.optJSONObject("contextWindows")?.let { values ->
+                        values.keys().asSequence().associateWith { values.getInt(it) }
+                    }.orEmpty(),
                     modelDefaults = item.optJSONObject("modelDefaults")?.let { entries ->
                         entries.keys().asSequence().associateWith { id ->
                             val value = entries.getJSONObject(id)
@@ -122,6 +125,7 @@ class AndroidModelProviderConfigStore(context: Context) : ModelProviderConfigSto
                 put("endpoint", config.endpoint)
                 put("models", JSONArray().apply { config.models.forEach { put(it) } })
                 put("discoveredModels", JSONArray().apply { config.discoveredModels.forEach { put(it) } })
+                put("contextWindows", JSONObject().apply { config.contextWindows.forEach { (id, value) -> put(id, value) } })
                 put("modelDefaults", JSONObject().apply {
                     config.modelDefaults.forEach { (id, value) -> put(id, JSONObject().apply {
                         value.temperature?.let { put("temperature", it) }

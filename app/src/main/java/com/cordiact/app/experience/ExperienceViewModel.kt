@@ -294,7 +294,13 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
                     var created = false
                     fun newConversation(): ConversationSession {
                         created = true
-                        return app.sessions.createSession(workspace.id, "新对话")
+                        val preset = agentPresets.effective(workspace.id)
+                        val session = app.sessions.createSession(workspace.id, "新对话")
+                        preset.systemPrompt.trim().takeIf(String::isNotEmpty)?.let { prompt ->
+                            app.sessions.appendMessage(session.id, com.cordiact.core.conversation.MessageRole.SYSTEM, prompt,
+                                com.cordiact.core.conversation.AGENT_PRESET_SYSTEM_METADATA)
+                        }
+                        return session
                     }
                     val selected = when {
                         create -> newConversation()

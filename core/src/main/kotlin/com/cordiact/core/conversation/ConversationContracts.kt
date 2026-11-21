@@ -290,6 +290,8 @@ data class ConversationSession(
     val titleManuallySet: Boolean = false,
 )
 
+const val AGENT_PRESET_SYSTEM_METADATA = "{\"cordiactAgentPresetSystem\":true}"
+
 data class ConversationMessage(
     val id: String,
     val sessionId: String,
