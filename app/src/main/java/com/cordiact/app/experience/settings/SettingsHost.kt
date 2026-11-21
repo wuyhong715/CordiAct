@@ -27,6 +27,8 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.cordiact.app.experience.AppGlyph
+import com.cordiact.app.experience.settings.components.SettingsGroup
+import com.cordiact.app.experience.settings.components.SettingsRow
 import com.cordiact.app.experience.GlyphName
 import com.cordiact.app.experience.settings.components.*
 import com.cordiact.core.conversation.ModelId
@@ -75,11 +77,7 @@ fun SettingsHost(vm: SettingsViewModel, initialLink: String? = null, onBack: () 
         else applyNavigation(target)
     }
     fun navigate(target: SettingsRoute) = requestNavigation(navigation.push(target))
-    val directoryRoute = when (route) {
-        SettingsRoute.AGENT_PRESET_EDITOR -> SettingsRoute.AGENT_PRESETS
-        SettingsRoute.ADD, SettingsRoute.DETAIL -> SettingsRoute.PROVIDERS
-        else -> route
-    }
+    val directoryRoute = settingsDirectoryRoute(route)
     fun openDirectory(target: SettingsRoute) {
         if (route != target) requestNavigation(SettingsNavigation().push(target))
     }
@@ -175,7 +173,7 @@ fun SettingsHost(vm: SettingsViewModel, initialLink: String? = null, onBack: () 
     val showSections = sections.isNotEmpty() && !editor.active && !keyboardVisible
     var sectionBarHeight by remember { mutableIntStateOf(0) }
     val config = LocalConfiguration.current
-    val wide = config.screenWidthDp >= 600
+    val wide = config.screenWidthDp >= (if (config.fontScale > 1.3f) 760 else 600)
     val dockAtEnd = wide || config.orientation == Configuration.ORIENTATION_LANDSCAPE
     val railWidth = if (config.screenWidthDp < 760) 200.dp else 232.dp
     val sectionBottom = with(LocalDensity.current) { if (showSections || showSearch) sectionBarHeight.toDp() else 0.dp }
@@ -191,9 +189,10 @@ fun SettingsHost(vm: SettingsViewModel, initialLink: String? = null, onBack: () 
       CompositionLocalProvider(LocalBackdrop provides backdrop, LocalSettingsSection provides selectedSection, LocalSettingsEditor provides editor) {
         Box(Modifier.padding(inset).consumeWindowInsets(inset).fillMaxSize()) {
         Row(Modifier.fillMaxSize().hazeSource(backdrop)) {
-            if (wide && !showResults) {
+            if (wide) {
                 Column(Modifier.width(railWidth).fillMaxHeight().background(MaterialTheme.colorScheme.surfaceContainerLowest)
                     .verticalScroll(homeScroll).padding(start = 16.dp, end = 12.dp, top = toolbarDp + 13.dp, bottom = if (showSearch) sectionBottom + 24.dp else 24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    WorkspaceScopePicker(state, busy || dirty || securityBusy, vm::selectWorkspace)
                     SettingsMenu(state, ::openDirectory, ::openLink, selectedRoute = directoryRoute, compact = true)
                 }
             }
@@ -204,12 +203,34 @@ fun SettingsHost(vm: SettingsViewModel, initialLink: String? = null, onBack: () 
                 notice?.let { Text(it, color = MaterialTheme.colorScheme.secondary) }
                 error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                 when(route) {
+                    SettingsRoute.MODELS, SettingsRoute.PLUGINS, SettingsRoute.SECURITY, SettingsRoute.APP_PREFERENCES -> SettingsBranch(route, ::navigate)
+                    SettingsRoute.PROVIDER_DRAFTS, SettingsRoute.MCP_DRAFTS -> {
+                        val provider = route == SettingsRoute.PROVIDER_DRAFTS
+                        WorkspaceDeclarationsPage(state,
+                            if (provider) com.cordiact.core.settings.WorkspaceDeclarations.Kind.PROVIDER else com.cordiact.core.settings.WorkspaceDeclarations.Kind.MCP,
+                            onDirty = { dirty = it }, onBusy = { securityBusy = it }) {
+                            navigate(if (provider) SettingsRoute.PROVIDERS else SettingsRoute.MCP)
+                        }
+                    }
+                    SettingsRoute.PROJECT_INSTRUCTIONS -> ProjectInstructionsPage(state, onDirty = { dirty = it }, onBusy = { securityBusy = it })
+                    SettingsRoute.WORKSPACE_DEFAULTS -> {
+                        WorkspaceDefaultsPage(state, agentPresets, busy, vm::selectWorkspace)
+                        SettingsGroup {
+                            SettingsRow("项目指令", "AGENTS.md · 不授予权限", GlyphName.File) { navigate(SettingsRoute.PROJECT_INSTRUCTIONS) }
+                            SettingsRow("Agent 预设库", "此客户端 · 系统提示词与默认模型", GlyphName.AgentPreset) { navigate(SettingsRoute.AGENT_PRESETS) }
+                        }
+                    }
                     SettingsRoute.HOME -> if (showResults && settingsQuery.isNotBlank()) {
                         SettingsSearchResults(settingsQuery, ::openResult)
+
                     } else if (wide) {
-                        Text("选择左侧设置项", style = MaterialTheme.typography.titleMedium)
-                        Text("模型、凭据和连接为全局设置；权限、搜索策略和能力开关作用于选定工作区。")
-                    } else SettingsMenu(state, ::navigate, ::openLink)
+                        Text("工作区设置", style = MaterialTheme.typography.headlineSmall)
+                        Text(state.workspaces.firstOrNull { it.id == state.capabilityWorkspaceId }?.name ?: "未选择工作区")
+                        Text("从左侧选择工作区默认、模型与提供商、插件与连接或权限与安全。", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    } else {
+                        WorkspaceScopePicker(state, busy || dirty || securityBusy, vm::selectWorkspace)
+                        SettingsMenu(state, ::navigate, ::openLink)
+                    }
                     SettingsRoute.AGENT_PRESETS -> AgentPresetLibrary(agentPresets, state, wide) {
                         presetId = it
                         navigate(SettingsRoute.AGENT_PRESET_EDITOR)

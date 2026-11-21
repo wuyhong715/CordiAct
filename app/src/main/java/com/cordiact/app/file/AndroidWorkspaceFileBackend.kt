@@ -155,6 +155,9 @@ class AndroidWorkspaceFileBackend : WorkspaceFileBackend {
     }
 
     private val lock = Any()
+    // Exact root documents only; the directory itself and all other hidden paths remain inaccessible.
+    private val CONFIG_ROOT = ".cordiact"
+    private val CONFIG_NAMES = setOf("agent.toml", "models.toml", "plugins.toml", "tools.toml")
 
     private fun resolve(root: File, relativePath: String, allowRoot: Boolean): File {
         validatePath(relativePath, allowRoot)
@@ -209,7 +212,8 @@ class AndroidWorkspaceFileBackend : WorkspaceFileBackend {
             (path.isNotEmpty() && segments.any { it.isEmpty() || it == "." || it == ".." })) {
             throw invalidPath()
         }
-        if (path.isNotEmpty() && segments.any { it.startsWith(".") }) {
+        val configFile = segments.size == 2 && segments[0] == CONFIG_ROOT && segments[1] in CONFIG_NAMES
+        if (!configFile && path.isNotEmpty() && segments.any { it.startsWith(".") }) {
             throw failure(WorkspaceFileException.Code.HIDDEN_PATH_NOT_ALLOWED, "Hidden paths are not accessible")
         }
     }

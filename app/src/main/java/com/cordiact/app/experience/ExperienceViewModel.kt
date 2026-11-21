@@ -11,6 +11,8 @@ import com.cordiact.core.conversation.*
 import com.cordiact.core.workspace.Workspace
 import com.cordiact.interaction.InteractionContext
 import com.cordiact.model.providers.ModelProtocol
+import com.cordiact.core.settings.WorkspaceDefaults
+import com.cordiact.core.settings.resolveWorkspaceConversationModel
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -291,12 +293,23 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
                     require(workspace.archivedAtMillis == null) { "工作区已归档" }
                     val sessions = app.sessions.listSessions(workspace.id).filter { it.kind == SessionKind.USER }
                         .sortedWith(compareByDescending<ConversationSession> { it.updatedAtMillis }.thenBy { it.id })
-                    var created = false
+                    var defaults: NewConversationDefaults? = null
                     fun newConversation(): ConversationSession {
-                        created = true
-                        val preset = agentPresets.effective(workspace.id)
+                        val file = WorkspaceDefaults(app.conversationCatalog.fileManager).read(workspace.id)
+                        val inheritedPreset = agentPresets.effective(workspace.id)
+                        val preset = file.presetId?.let(agentPresets::get) ?: inheritedPreset
+                        val usable = app.modelAdapter.models().filter(ModelDescriptor::supportsStreaming)
+                        val defaultModel = com.cordiact.app.model.ConversationModelSelectionStore(app).defaultModel()
+                        val model = resolveWorkspaceConversationModel(usable, inheritedPreset.model, preset.model, defaultModel, file.model)
+                        defaults = NewConversationDefaults(model?.id, file.effort ?: preset.effort)
                         val session = app.sessions.createSession(workspace.id, "新对话")
-                        preset.systemPrompt.trim().takeIf(String::isNotEmpty)?.let { prompt ->
+                        val rules = runCatching {
+                            com.cordiact.core.settings.WorkspaceInstructions(app.conversationCatalog.fileManager).read(workspace.id).text
+                        }.getOrDefault("").trim()
+                        listOfNotNull(
+                            preset.systemPrompt.trim().takeIf(String::isNotEmpty),
+                            rules.takeIf(String::isNotEmpty)?.let { "工作区项目指令（AGENTS.md）：\n$it" },
+                        ).joinToString("\n\n").takeIf(String::isNotEmpty)?.let { prompt ->
                             app.sessions.appendMessage(session.id, com.cordiact.core.conversation.MessageRole.SYSTEM, prompt,
                                 com.cordiact.core.conversation.AGENT_PRESET_SYSTEM_METADATA)
                         }
@@ -319,7 +332,7 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
                     }
                     Loaded(workspace, workspaces, app.sessions.listSessions(workspace.id).filter { it.kind == SessionKind.USER }, selected,
                         app.modelAdapter.models(), readTranscript(workspace.id, selected.id), sidebar,
-                        if (created) agentPresets.effective(workspace.id) else null)
+                        defaults)
                 }
                 if (version != selectionVersion) return@launch
                 reconcile(snapshot.selected.id, snapshot.messages)
@@ -329,8 +342,7 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
                 val model = snapshot.models.find { it.id == preferred }?.id
                     ?: snapshot.models.firstOrNull()?.id
                 val prepared = composerController.prepareSession(snapshot.selected.id, snapshot.workspace.id, snapshot.models, model,
-                    snapshot.preset?.let { it.model?.takeIf { id -> snapshot.models.any { m -> m.id == id && m.supportsStreaming } }
-                        ?: com.cordiact.app.model.ConversationModelSelectionStore(app).defaultModel() }, snapshot.preset?.effort)
+                    snapshot.defaults?.model, snapshot.defaults?.effort)
                 if (version != selectionVersion || !shouldCommit()) {
                     mutable.update { it.copy(loading = false) }
                     loadingSession = false
@@ -372,7 +384,9 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
 
     private data class Loaded(val workspace: Workspace, val workspaces: List<Workspace>, val sessions: List<ConversationSession>,
         val selected: ConversationSession, val models: List<ModelDescriptor>, val messages: List<StoredMessage>, val sidebar: List<SidebarWorkspace>,
-        val preset: com.cordiact.app.experience.settings.AgentPreset?)
+        val defaults: NewConversationDefaults?)
+
+    private data class NewConversationDefaults(val model: ModelId?, val effort: ReasoningEffort)
 
     fun refreshSettingsModels() {
         viewModelScope.launch {

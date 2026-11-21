@@ -6,7 +6,6 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.background
 import androidx.compose.ui.draw.clip
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -54,12 +53,15 @@ internal fun SettingsOverview(state: SettingsSnapshot, navigate: (SettingsRoute)
             }
         }
     }
-    settingsCatalog.forEach { group -> OverviewGroup(group.title, group.entries, navigate, selectedRoute, compact) }
+    settingsDirectory.forEach { group -> OverviewGroup(group.title, group.entries, navigate, selectedRoute, compact) }
 }
 
 internal data class OverviewEntry(val title: String, val glyph: GlyphName, val route: SettingsRoute)
 internal data class OverviewCategory(val title: String, val entries: List<OverviewEntry>)
 internal val settingsCatalog = listOf(
+    OverviewCategory("工作区", listOf(OverviewEntry("项目指令", GlyphName.File, SettingsRoute.PROJECT_INSTRUCTIONS),
+        OverviewEntry("提供商声明", GlyphName.File, SettingsRoute.PROVIDER_DRAFTS),
+        OverviewEntry("MCP 声明", GlyphName.File, SettingsRoute.MCP_DRAFTS))),
     OverviewCategory("Agent", listOf(OverviewEntry("Agent 预设", GlyphName.AgentPreset, SettingsRoute.AGENT_PRESETS))),
     OverviewCategory("输入", listOf(OverviewEntry("预设变量", GlyphName.Code, SettingsRoute.INPUT_VARIABLES))),
     OverviewCategory("模型与服务", listOf(
@@ -81,6 +83,74 @@ internal val settingsCatalog = listOf(
         OverviewEntry("附件限制", GlyphName.File, SettingsRoute.ATTACHMENTS),
         OverviewEntry("关于", GlyphName.More, SettingsRoute.ABOUT))),
 )
+internal val settingsDirectory = listOf(
+    OverviewCategory("工作区设置", listOf(
+        OverviewEntry("工作区默认", GlyphName.Folder, SettingsRoute.WORKSPACE_DEFAULTS),
+        OverviewEntry("模型与提供商", GlyphName.Sparkle, SettingsRoute.MODELS),
+        OverviewEntry("插件与连接", GlyphName.Link, SettingsRoute.PLUGINS),
+        OverviewEntry("权限与安全", GlyphName.Settings, SettingsRoute.SECURITY),
+    )),
+    OverviewCategory("应用", listOf(
+        OverviewEntry("应用偏好", GlyphName.File, SettingsRoute.APP_PREFERENCES),
+        OverviewEntry("关于", GlyphName.More, SettingsRoute.ABOUT),
+    )),
+)
+
+internal fun settingsDirectoryRoute(route: SettingsRoute): SettingsRoute = when (route) {
+    SettingsRoute.AGENT_PRESETS, SettingsRoute.AGENT_PRESET_EDITOR, SettingsRoute.PROJECT_INSTRUCTIONS -> SettingsRoute.WORKSPACE_DEFAULTS
+    SettingsRoute.PROVIDER_DRAFTS, SettingsRoute.PROVIDERS, SettingsRoute.ADD, SettingsRoute.DETAIL, SettingsRoute.ROLES -> SettingsRoute.MODELS
+    SettingsRoute.MCP_DRAFTS, SettingsRoute.CONNECTIONS, SettingsRoute.MCP, SettingsRoute.SSH, SettingsRoute.SEARCH -> SettingsRoute.PLUGINS
+    SettingsRoute.PERMISSIONS, SettingsRoute.PRIVILEGE, SettingsRoute.CREDENTIALS, SettingsRoute.AUDIT -> SettingsRoute.SECURITY
+    SettingsRoute.ATTACHMENTS, SettingsRoute.INPUT_VARIABLES, SettingsRoute.USAGE, SettingsRoute.TASKS -> SettingsRoute.APP_PREFERENCES
+    else -> route
+}
+
+@Composable
+internal fun SettingsBranch(route: SettingsRoute, navigate: (SettingsRoute) -> Unit) {
+    val groups = when (route) {
+        SettingsRoute.MODELS -> listOf(
+            "当前工作区" to listOf(
+                Triple(SettingsRoute.WORKSPACE_DEFAULTS, "新会话默认模型", "查看有效配置和继承来源"),
+                Triple(SettingsRoute.PROVIDER_DRAFTS, "提供商声明", "查看 Agent 或用户保存的离线声明"),
+            ),
+            "此客户端" to listOf(
+                Triple(SettingsRoute.PROVIDERS, "提供商", "管理连接、凭据状态、模型和能力声明"),
+                Triple(SettingsRoute.ROLES, "模型角色", "辅助模型等客户端设置"),
+            ),
+        )
+        SettingsRoute.PLUGINS -> listOf("插件与连接" to listOf(
+            Triple(SettingsRoute.MCP_DRAFTS, "MCP 声明", "当前工作区 · 不联网、不启用"),
+            Triple(SettingsRoute.MCP, "MCP", "此客户端 · 传统连接管理"),
+            Triple(SettingsRoute.SEARCH, "搜索", "客户端服务与工作区搜索策略"),
+            Triple(SettingsRoute.SSH, "SSH", "客户端主机库与连接检查"),
+            Triple(SettingsRoute.CONNECTIONS, "工作区工具", "管理当前工作区可用能力"),
+        ))
+        SettingsRoute.SECURITY -> listOf(
+            "权限" to listOf(Triple(SettingsRoute.PERMISSIONS, "当前权限", "访问范围与审批档位")),
+            "此客户端" to listOf(
+                Triple(SettingsRoute.CREDENTIALS, "凭据库", "授权访问客户端安全存储"),
+                Triple(SettingsRoute.AUDIT, "审计日志", "查看操作记录"),
+                Triple(SettingsRoute.PRIVILEGE, "设备授权", "查看设备权限与执行后端"),
+            ),
+        )
+        SettingsRoute.APP_PREFERENCES -> listOf("应用" to listOf(
+            Triple(SettingsRoute.INPUT_VARIABLES, "预设变量", "输入与快捷变量"),
+            Triple(SettingsRoute.ATTACHMENTS, "附件限制", "大小、数量和文件类型"),
+            Triple(SettingsRoute.USAGE, "用量与统计", "调用、模型及令牌统计"),
+            Triple(SettingsRoute.TASKS, "自动化任务", "查看工作区中的任务"),
+        ))
+        else -> emptyList()
+    }
+    for ((label, entries) in groups) {
+        Text(label, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        com.cordiact.app.experience.settings.components.SettingsGroup {
+            entries.forEach { (target, title, subtitle) ->
+                com.cordiact.app.experience.settings.components.SettingsRow(title, subtitle, GlyphName.More) { navigate(target) }
+            }
+        }
+    }
+}
+
 @Composable
 private fun OverviewGroup(title: String, entries: List<OverviewEntry>, navigate: (SettingsRoute) -> Unit,
                           selectedRoute: SettingsRoute?, compact: Boolean) {
