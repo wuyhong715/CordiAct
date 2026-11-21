@@ -36,6 +36,7 @@ internal fun LandscapeWorkbench(
     state: ExperienceState,
     pendingSessionId: String?,
     viewKey: String,
+    pluginPage: Boolean,
     activity: WorkbenchActivity,
     onOverview: () -> Unit,
     onNew: () -> Unit,
@@ -101,38 +102,52 @@ internal fun LandscapeWorkbench(
             val dockInspector = maxWidth >= 950.dp
             val editorLines = if (maxHeight < 305.dp) 1 else 3
             val shortBody = maxHeight < 275.dp
-            Row(Modifier.fillMaxSize()) {
-                WorkbenchBoard(state, tools, activity, subtitle, Modifier.width(boardWidth).fillMaxHeight(),
-                    onAgents = { detail = if (detail == Detail.AGENTS) null else Detail.AGENTS },
-                    onJobs = { detail = if (detail == Detail.JOBS) null else Detail.JOBS },
-                    onQueue = { detail = if (detail == Detail.QUEUE) null else Detail.QUEUE })
-                Column(Modifier.weight(1f).fillMaxHeight()) {
-                    Box(Modifier.weight(1f).fillMaxWidth()) {
-                        Row(Modifier.fillMaxSize()) {
-                            Box(Modifier.weight(1f).fillMaxHeight()) {
-                                Box(Modifier.fillMaxSize().hazeSource(backdrop).padding(start = 8.dp, end = 10.dp)) {
-                                    bodyState.SaveableStateProvider("${state.sessionId}:$viewKey") {
-                                        if (viewKey == "p:${com.cordiact.app.experience.tabs.ArtifactsTab.id}") ArtifactBoard(artifacts, inspectArtifact)
-                                        else body(inspectTool)
+            if (pluginPage) {
+                Box(Modifier.fillMaxSize()) {
+                    Box(Modifier.fillMaxSize().hazeSource(backdrop)) {
+                        bodyState.SaveableStateProvider("${state.sessionId}:$viewKey") {
+                            if (viewKey == "p:${com.cordiact.app.experience.tabs.ArtifactsTab.id}") ArtifactBoard(artifacts, inspectArtifact)
+                            else body(inspectTool)
+                        }
+                    }
+                    if (detail != null) WorkbenchDetail(detail!!, state.approvals, failures,
+                        tools.firstOrNull { it.id == tool?.id } ?: tool, artifacts.firstOrNull { it.id == artifactId },
+                        activity, ownerLabel, onOpenApproval, closeDetail, inspectTool,
+                        Modifier.align(Alignment.CenterEnd).widthIn(max = 320.dp).fillMaxWidth(.86f).fillMaxHeight())
+                }
+            } else {
+                Row(Modifier.fillMaxSize()) {
+                    WorkbenchBoard(state, tools, activity, subtitle, Modifier.width(boardWidth).fillMaxHeight(),
+                        onAgents = { detail = if (detail == Detail.AGENTS) null else Detail.AGENTS },
+                        onJobs = { detail = if (detail == Detail.JOBS) null else Detail.JOBS },
+                        onQueue = { detail = if (detail == Detail.QUEUE) null else Detail.QUEUE })
+                    Column(Modifier.weight(1f).fillMaxHeight()) {
+                        Box(Modifier.weight(1f).fillMaxWidth()) {
+                            Row(Modifier.fillMaxSize()) {
+                                Box(Modifier.weight(1f).fillMaxHeight()) {
+                                    Box(Modifier.fillMaxSize().hazeSource(backdrop).padding(start = 8.dp, end = 10.dp)) {
+                                        bodyState.SaveableStateProvider("${state.sessionId}:$viewKey") {
+                                            body(inspectTool)
+                                        }
                                     }
+                                    ViewportFade(backdrop, top = true, Modifier.align(Alignment.TopCenter).fillMaxWidth().height(9.dp))
+                                    ViewportFade(backdrop, top = false, Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(13.dp))
                                 }
-                                ViewportFade(backdrop, top = true, Modifier.align(Alignment.TopCenter).fillMaxWidth().height(9.dp))
-                                ViewportFade(backdrop, top = false, Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(13.dp))
+                                if (dockInspector && detail != null) WorkbenchDetail(detail!!, state.approvals, failures,
+                                    tools.firstOrNull { it.id == tool?.id } ?: tool, artifacts.firstOrNull { it.id == artifactId },
+                                    activity, ownerLabel, onOpenApproval, closeDetail, inspectTool,
+                                    Modifier.width(252.dp).fillMaxHeight().padding(end = 12.dp, top = 5.dp))
                             }
-                            if (dockInspector && detail != null) WorkbenchDetail(detail!!, state.approvals, failures,
+                            if (!dockInspector && detail != null) WorkbenchDetail(detail!!, state.approvals, failures,
                                 tools.firstOrNull { it.id == tool?.id } ?: tool, artifacts.firstOrNull { it.id == artifactId },
                                 activity, ownerLabel, onOpenApproval, closeDetail, inspectTool,
-                                Modifier.width(252.dp).fillMaxHeight().padding(end = 12.dp, top = 5.dp))
+                                Modifier.align(Alignment.CenterEnd).widthIn(max = 320.dp).fillMaxWidth(if (shortBody) 1f else .84f)
+                                    .fillMaxHeight().padding(top = 2.dp, end = 10.dp))
                         }
-                        if (!dockInspector && detail != null) WorkbenchDetail(detail!!, state.approvals, failures,
-                            tools.firstOrNull { it.id == tool?.id } ?: tool, artifacts.firstOrNull { it.id == artifactId },
-                            activity, ownerLabel, onOpenApproval, closeDetail, inspectTool,
-                            Modifier.align(Alignment.CenterEnd).widthIn(max = 320.dp).fillMaxWidth(if (shortBody) 1f else .84f)
-                                .fillMaxHeight().padding(top = 2.dp, end = 10.dp))
-                    }
-                    CompositionLocalProvider(LocalBackdrop provides backdrop) {
-                        Box(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 5.dp), contentAlignment = Alignment.Center) {
-                            Box(Modifier.widthIn(max = 900.dp).fillMaxWidth()) { composer(editorLines) }
+                        CompositionLocalProvider(LocalBackdrop provides backdrop) {
+                            Box(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 5.dp), contentAlignment = Alignment.Center) {
+                                Box(Modifier.widthIn(max = 900.dp).fillMaxWidth()) { composer(editorLines) }
+                            }
                         }
                     }
                 }

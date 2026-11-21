@@ -30,4 +30,5 @@ internal object ArtifactsTab : TabContributor {
 internal fun registerBuiltinTabs() {
     TabRegistry.register(TraceTab)
     TabRegistry.register(ArtifactsTab)
+    TabRegistry.register(GitTreeTab)
 }

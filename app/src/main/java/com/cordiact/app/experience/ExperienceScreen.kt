@@ -126,7 +126,7 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
     val workbench: @Composable () -> Unit = {
         if (landscape) {
             val activity = rememberWorkbenchActivity(settingsApp, state.workspace?.id, state.sessionId, state.runningSessionIds)
-            LandscapeWorkbench(state, pendingSessionId, committedKey.orEmpty(), activity,
+            LandscapeWorkbench(state, pendingSessionId, committedKey.orEmpty(), activeTab is WorkTab.Plugin, activity,
                 onOverview = { overview = true; inspected = null },
                 onNew = { viewModel.newSession(state.workspace?.id) },
                 onOpenApproval = { approvalId = it }, ownerLabel = ownerLabel,
@@ -220,25 +220,27 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
                     }
                     },
                     bottom = {
-                    if (state.undoArchivedSessionId != null) {
-                        Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Text("会话已归档，运行任务不受影响", Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
-                            TextButton(onClick = viewModel::undoArchive, enabled = !state.loading) { Text("撤销") }
-                            TextButton(onClick = viewModel::dismissArchiveUndo) { Text("关闭") }
+                        if (activeTab !is WorkTab.Plugin) {
+                            if (state.undoArchivedSessionId != null) {
+                                Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Text("会话已归档，运行任务不受影响", Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+                                    TextButton(onClick = viewModel::undoArchive, enabled = !state.loading) { Text("撤销") }
+                                    TextButton(onClick = viewModel::dismissArchiveUndo) { Text("关闭") }
+                                }
+                            }
+                            if (state.archived) {
+                                Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Text("此会话已归档", Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+                                    if (state.running) TextButton(onClick = viewModel::stop) { Text("停止") }
+                                    TextButton(onClick = { state.sessionId?.let { viewModel.restoreSession(it) } }, enabled = !state.loading) { Text("恢复并继续") }
+                                }
+                            } else com.cordiact.app.experience.composer.ComposerBar(
+                                state, composer, viewModel.composerController, promptToInsert,
+                                { promptToInsert = "" }, viewModel::send, viewModel::stop,
+                                viewModel::selectModel, { openSettings("settings://models/providers") },
+                                { openSettings("settings://security/permissions") },
+                            )
                         }
-                    }
-                    if (state.archived) {
-                        Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Text("此会话已归档", Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
-                            if (state.running) TextButton(onClick = viewModel::stop) { Text("停止") }
-                            TextButton(onClick = { state.sessionId?.let { viewModel.restoreSession(it) } }, enabled = !state.loading) { Text("恢复并继续") }
-                        }
-                    } else com.cordiact.app.experience.composer.ComposerBar(
-                        state, composer, viewModel.composerController, promptToInsert,
-                        { promptToInsert = "" }, viewModel::send, viewModel::stop,
-                        viewModel::selectModel, { openSettings("settings://models/providers") },
-                        { openSettings("settings://security/permissions") },
-                    )
                     },
                 )
                 inspected?.let { step ->
