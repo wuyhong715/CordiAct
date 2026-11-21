@@ -57,7 +57,7 @@ class PluginManagerSettingsTest {
         val registry = InMemoryToolDefinitionRegistry()
         registerPluginManagerTools(registry, service) { _, _, _ -> writes++ }
         val tool = registry.all().single()
-        val result = tool.executor.invoke(ToolInvocationContext("test", "workspace"), ToolArguments(mapOf(
+        val result = tool.executor.invoke(ToolInvocationContext(workspaceId = "workspace", requestId = "test"), ToolArguments(mapOf(
             "action" to ToolValue.StringValue("add_mcp"), "server_name" to ToolValue.StringValue("demo"), "url" to ToolValue.StringValue("https://example.test/mcp"),
             "header_name" to ToolValue.StringValue("Authorization"), "header_value" to ToolValue.StringValue("secret"))))
         assertTrue(result.values.containsKey("error")); assertEquals(0, writes); assertEquals(0, connects)
@@ -67,7 +67,7 @@ class PluginManagerSettingsTest {
         val service = AndroidPluginManagerService(lifecycle, probeMcp = { error("MUST_NOT_CONNECT") })
         val registry = InMemoryToolDefinitionRegistry()
         registerPluginManagerTools(registry, service) { context, name, url -> events += "${context.workspaceId}|$name|$url" }
-        val result = registry.all().single().executor.invoke(ToolInvocationContext("test", "workspace"), ToolArguments(mapOf(
+        val result = registry.all().single().executor.invoke(ToolInvocationContext(workspaceId = "workspace", requestId = "test"), ToolArguments(mapOf(
             "action" to ToolValue.StringValue("add_mcp"), "server_name" to ToolValue.StringValue("demo"),
             "url" to ToolValue.StringValue("https://example.test/mcp"))))
         assertTrue(result.values.containsKey("status"))

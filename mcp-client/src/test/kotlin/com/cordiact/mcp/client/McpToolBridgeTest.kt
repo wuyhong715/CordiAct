@@ -36,10 +36,11 @@ class McpToolBridgeTest {
         assertTrue(gate.visible(com.cordiact.core.tool.ToolActivationContext("owner")))
         assertFalse(gate.visible(com.cordiact.core.tool.ToolActivationContext("foreign")))
         val args = ToolArguments(emptyMap())
-        assertTrue("error" in def.executor.invoke(com.cordiact.core.tool.ToolInvocationContext("s", "foreign"), args).values)
+        assertTrue("error" in def.executor.invoke(com.cordiact.core.tool.ToolInvocationContext(workspaceId = "foreign", requestId = "s"), args).values)
+        assertFalse("error" in def.executor.invoke(com.cordiact.core.tool.ToolInvocationContext(workspaceId = "owner"), args).values)
         valid = false
         assertFalse(gate.visible(com.cordiact.core.tool.ToolActivationContext("owner")))
-        assertTrue("error" in def.executor.invoke(com.cordiact.core.tool.ToolInvocationContext("s", "owner"), args).values)
+        assertTrue("error" in def.executor.invoke(com.cordiact.core.tool.ToolInvocationContext(workspaceId = "owner", requestId = "s"), args).values)
     }
 
     @Test
