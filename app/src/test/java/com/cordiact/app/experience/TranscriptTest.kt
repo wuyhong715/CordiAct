@@ -21,6 +21,20 @@ class TranscriptTest {
         assertEquals(ToolPhase.SUCCEEDED, turn.tools[1].phase)
         assertEquals(20L, turn.tools[1].durationMillis)
     }
+
+    @Test fun `process retains interleaved thinking and tool order`() {
+        val turn = running()
+            .reduce(TranscriptEvent.Reasoning("first"))
+            .reduce(TranscriptEvent.ToolStarted("a", "read", "{}", 110))
+            .reduce(TranscriptEvent.Reasoning("second"))
+            .reduce(TranscriptEvent.ToolFinished("a", "read", true, "ok", 20, 140))
+
+        assertEquals(
+            listOf(ProcessEntry.Thinking(0, 5), ProcessEntry.Tool("a"), ProcessEntry.Thinking(5, 11)),
+            turn.process,
+        )
+        assertEquals(ToolPhase.SUCCEEDED, turn.tools.single().phase)
+    }
     @Test fun `duplicate start cannot duplicate cards`() {
         val start = TranscriptEvent.ToolStarted("a", "read", "{}", 110)
         assertEquals(1, running().reduce(start).reduce(start).tools.size)
@@ -82,6 +96,58 @@ class TranscriptTest {
         val policy = PinnedScrollPolicy()
         assertTrue(policy.userDrag(9f)); assertTrue(policy.userDrag(-1f))
         assertTrue(policy.userDrag(9f)); assertFalse(policy.userDrag(1f))
+    }
+
+    @Test fun `restoreTranscript hydrates persisted trace without fabricating missing timings`() {
+        val tool = ToolActivity("c1", "priv_status", "{}", "shell", ToolPhase.SUCCEEDED, 1000L, 1140L, 140L)
+        val restored = restoreTranscript(listOf(
+            StoredMessage("u1", "USER", "旧消息", 100L),
+            StoredMessage("a1", "ASSISTANT", "旧回复", 200L),
+            StoredMessage("u2", "USER", "新消息", 900L),
+            StoredMessage(
+                "a2", "ASSISTANT", "新回复", 1500L,
+                trace = StoredTurnTrace(
+                    startedAt = 950L,
+                    finishedAt = 1500L,
+                    inputTokens = 120L,
+                    outputTokens = 45L,
+                    reasoning = "先检查状态",
+                    tools = listOf(tool),
+                ),
+            ),
+        ))
+        assertEquals(2, restored.size)
+        assertNull(restored[0].finishedAt)
+        assertTrue(restored[0].tools.isEmpty())
+        assertEquals(950L, restored[1].startedAt)
+        assertEquals(1500L, restored[1].finishedAt)
+        assertEquals(45L, restored[1].outputTokens)
+        assertEquals("先检查状态", restored[1].reasoning)
+        assertEquals(listOf(tool), restored[1].tools)
+    }
+
+    @Test fun `markdown splitter repairs tight and collapsed pipe tables and fenced code`() {
+        val collapsed = "1. 设备特权控制 | 工具 | 作用 | |---|---| | `priv_status` | 查看通道 | | `priv_exec` | 运行命令 |"
+        val collapsedBlocks = splitMarkdownBlocks(collapsed)
+        assertTrue(collapsedBlocks.any { it is MarkdownBlock.Table && it.headers == listOf("工具", "作用") && it.rows.size == 2 })
+
+        val tight = """
+            1. 清单
+            | 工具 | 说明 |
+            | --- | --- |
+            | `read_file` | 读取 |
+            ```kotlin
+            val x = 1
+            ```
+        """.trimIndent()
+        val blocks = splitMarkdownBlocks(tight)
+        assertEquals(3, blocks.size)
+        assertTrue(blocks[0] is MarkdownBlock.Prose)
+        assertTrue(blocks[1] is MarkdownBlock.Table)
+        assertTrue(blocks[2] is MarkdownBlock.Code)
+        val code = blocks[2] as MarkdownBlock.Code
+        assertEquals("kotlin", code.language)
+        assertTrue(code.closed)
     }
 
 }

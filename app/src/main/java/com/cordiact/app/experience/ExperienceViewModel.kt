@@ -247,21 +247,65 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
     }
 
     private fun readTranscript(workspaceId: String, sessionId: String): List<StoredMessage> =
-        app.sessions.messages(sessionId).map { StoredMessage(it.id, it.role.name, it.content, it.createdAtMillis,
-                            it.parts.filterIsInstance<com.cordiact.core.attachment.MessagePart.Attachment>().mapNotNull { part ->
-                                app.attachments.find(workspaceId, part.id)?.let { descriptor ->
-                                    TranscriptAttachment(descriptor, part.interpretation, part.renditionId)
-                                }
-                            }, phase = it.metadataJson?.let { metadata ->
-                                runCatching {
-                                    val status = org.json.JSONObject(metadata)
-                                    when {
-                                        status.optBoolean("outputLimitReached") -> RunPhase.TRUNCATED
-                                        status.optBoolean("toolLimitReached") -> RunPhase.PARTIAL
-                                        else -> RunPhase.COMPLETE
-                                    }
-                                }.getOrDefault(RunPhase.COMPLETE)
-                            } ?: RunPhase.COMPLETE) }
+        app.sessions.messages(sessionId).map { message ->
+            val parsedMeta = message.metadataJson?.let { runCatching { org.json.JSONObject(it) }.getOrNull() }
+            val phase = when {
+                parsedMeta?.optBoolean("outputLimitReached") == true -> RunPhase.TRUNCATED
+                parsedMeta?.optBoolean("toolLimitReached") == true -> RunPhase.PARTIAL
+                else -> RunPhase.COMPLETE
+            }
+            val trace = parsedMeta?.optJSONObject("trace")?.let { obj ->
+                val toolsArray = obj.optJSONArray("tools")
+                val tools = buildList {
+                    if (toolsArray != null) {
+                        for (i in 0 until toolsArray.length()) {
+                            val t = toolsArray.optJSONObject(i) ?: continue
+                            val id = t.optString("id").takeIf { it.isNotBlank() } ?: continue
+                            val name = t.optString("name").takeIf { it.isNotBlank() } ?: continue
+                            val startedAt = t.optLong("startedAt", 0L)
+                            val finishedAt = if (t.has("finishedAt") && !t.isNull("finishedAt")) t.optLong("finishedAt") else null
+                            val duration = if (t.has("durationMillis") && !t.isNull("durationMillis")) t.optLong("durationMillis") else null
+                            val phaseVal = when {
+                                !t.has("success") || t.isNull("success") -> ToolPhase.INTERRUPTED
+                                t.optBoolean("success") -> ToolPhase.SUCCEEDED
+                                else -> ToolPhase.FAILED
+                            }
+                            add(ToolActivity(
+                                id = id,
+                                name = name,
+                                arguments = t.optString("arguments", ""),
+                                summary = t.optString("summary", "").takeIf { it.isNotBlank() },
+                                phase = phaseVal,
+                                startedAt = startedAt,
+                                finishedAt = finishedAt,
+                                durationMillis = duration,
+                            ))
+                        }
+                    }
+                }
+                StoredTurnTrace(
+                    startedAt = if (obj.has("startedAt") && !obj.isNull("startedAt")) obj.optLong("startedAt") else null,
+                    finishedAt = if (obj.has("finishedAt") && !obj.isNull("finishedAt")) obj.optLong("finishedAt") else null,
+                    inputTokens = if (obj.has("inputTokens") && !obj.isNull("inputTokens")) obj.optLong("inputTokens") else null,
+                    outputTokens = if (obj.has("outputTokens") && !obj.isNull("outputTokens")) obj.optLong("outputTokens") else null,
+                    reasoning = obj.optString("reasoning", "").takeIf { it.isNotBlank() },
+                    tools = tools,
+                )
+            }
+            StoredMessage(
+                id = message.id,
+                role = message.role.name,
+                content = message.content,
+                at = message.createdAtMillis,
+                attachments = message.parts.filterIsInstance<com.cordiact.core.attachment.MessagePart.Attachment>().mapNotNull { part ->
+                    app.attachments.find(workspaceId, part.id)?.let { descriptor ->
+                        TranscriptAttachment(descriptor, part.interpretation, part.renditionId)
+                    }
+                },
+                phase = phase,
+                trace = trace,
+            )
+        }
 
     private fun loadSession(
         sessionId: String?, workspaceId: String?, create: Boolean = false,

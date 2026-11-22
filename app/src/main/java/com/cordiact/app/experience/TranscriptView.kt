@@ -1,8 +1,6 @@
 package com.cordiact.app.experience
 
 import androidx.compose.ui.draw.drawBehind
-import androidx.compose.animation.animateContentSize
-import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.*
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -10,7 +8,6 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.*
@@ -20,7 +17,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
@@ -38,7 +34,15 @@ import com.cordiact.app.experience.model.*
 import kotlinx.coroutines.launch
 
 @Composable
-fun TranscriptView(state: ExperienceState, onPrompt: (String) -> Unit, onInspect: (ToolActivity) -> Unit, modifier: Modifier = Modifier) {
+fun TranscriptView(
+    state: ExperienceState,
+    onPrompt: (String) -> Unit,
+    onInspect: (ToolActivity) -> Unit,
+    modifier: Modifier = Modifier,
+    onDecideApproval: ((String, Boolean) -> Unit)? = null,
+    onOpenApprovalQueue: (() -> Unit)? = null,
+    onOpenTrace: (() -> Unit)? = null,
+) {
     val list = rememberLazyListState()
     val scope = rememberCoroutineScope()
     var pinned by rememberSaveable(state.sessionId) { mutableStateOf(true) }
@@ -123,7 +127,18 @@ fun TranscriptView(state: ExperienceState, onPrompt: (String) -> Unit, onInspect
                 modifier = Modifier.fillMaxSize().nestedScroll(connection).testTag("transcript"),
             ) {
                 items(state.turns, key = { it.id }, contentType = { "turn" }) { turn ->
-                    TurnView(turn, onInspect)
+                    TurnView(turn, onInspect, onOpenTrace = onOpenTrace)
+                }
+                if (state.currentApprovals.isNotEmpty() && onDecideApproval != null) {
+                    items(state.currentApprovals, key = { "inline-ap:${it.id}" }, contentType = { "approval" }) { req ->
+                        InlineApprovalCard(
+                            request = req,
+                            busy = req.id in state.decidingApprovals,
+                            error = state.approvalErrors[req.id],
+                            onDecide = { approved -> onDecideApproval(req.id, approved) },
+                            onExpandQueue = if (state.approvals.size > 1) onOpenApprovalQueue else null,
+                        )
+                    }
                 }
                 val workspaceId = state.workspace?.id
                 val sessionId = state.sessionId
@@ -212,8 +227,7 @@ private fun Suggestion(title: String, prompt: String, icon: GlyphName, onPrompt:
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-internal fun TurnView(turn: TranscriptTurn, onInspect: (ToolActivity) -> Unit) {
-    var thoughtsExpanded by rememberSaveable(turn.id) { mutableStateOf(false) }
+internal fun TurnView(turn: TranscriptTurn, onInspect: (ToolActivity) -> Unit, onOpenTrace: (() -> Unit)? = null) {
     var menu by remember { mutableStateOf(false) }
     val clipboard = LocalClipboardManager.current
     Column(verticalArrangement = Arrangement.spacedBy(13.dp)) {
@@ -227,8 +241,7 @@ internal fun TurnView(turn: TranscriptTurn, onInspect: (ToolActivity) -> Unit) {
             Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {
                 Surface(
                     shape = RoundedCornerShape(20.dp, 20.dp, 6.dp, 20.dp),
-                    color = MaterialTheme.colorScheme.surface,
-                    shadowElevation = 0.5.dp,
+                    color = MaterialTheme.colorScheme.surfaceContainerLow,
                     modifier = Modifier.fillMaxWidth(.85f).widthIn(max = 520.dp).combinedClickable(onClick = {}, onLongClick = { menu = true }),
                 ) {
                     SelectionContainer { Text(turn.prompt, Modifier.padding(horizontal = 16.dp, vertical = 12.dp), style = MaterialTheme.typography.bodyLarge) }
@@ -238,19 +251,7 @@ internal fun TurnView(turn: TranscriptTurn, onInspect: (ToolActivity) -> Unit) {
                 }
             }
         }
-        if (turn.reasoning.isNotEmpty()) {
-            Surface(color = MaterialTheme.colorScheme.surfaceContainerLow, shape = RoundedCornerShape(13.dp), modifier = Modifier.animateContentSize(spring())) {
-                Column {
-                    Row(Modifier.fillMaxWidth().clickable { thoughtsExpanded = !thoughtsExpanded }.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Box(Modifier.size(6.dp).background(MaterialTheme.colorScheme.primary, CircleShape))
-                        Text(if (turn.isRunning && turn.answer.isEmpty()) "正在思考" else "思考过程", Modifier.weight(1f).padding(start = 9.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text(if (thoughtsExpanded) "收起" else "展开", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
-                    }
-                    if (thoughtsExpanded) SelectionContainer { Text(turn.reasoning, Modifier.padding(start = 14.dp, end = 14.dp, bottom = 14.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-                }
-            }
-        }
-        StepTrack(turn.tools, turn.isRunning, onInspect)
+        ProcessThread(turn, onInspect)
         if (turn.answer.isNotEmpty()) {
             SafeMarkdown(
                 markdown = turn.answer,
@@ -281,7 +282,12 @@ internal fun TurnView(turn: TranscriptTurn, onInspect: (ToolActivity) -> Unit) {
                         turn.outputTokens?.let { append(" · $it tokens") }
                     }, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f),
                 )
-                if (turn.answer.isNotEmpty()) IconButton(onClick = { clipboard.setText(AnnotatedString(turn.answer)) }, modifier = Modifier.size(48.dp)) {
+                if (onOpenTrace != null && (turn.tools.isNotEmpty() || turn.finishedAt != null)) {
+                    IconButton(onClick = onOpenTrace, modifier = Modifier.size(44.dp)) {
+                        AppGlyph(GlyphName.Trace, "查看执行轨迹", modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+                if (turn.answer.isNotEmpty()) IconButton(onClick = { clipboard.setText(AnnotatedString(turn.answer)) }, modifier = Modifier.size(44.dp)) {
                     AppGlyph(GlyphName.Copy, "复制回复", modifier = Modifier.size(17.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
@@ -292,7 +298,7 @@ internal fun TurnView(turn: TranscriptTurn, onInspect: (ToolActivity) -> Unit) {
 @Composable
 fun ToolRow(step: ToolActivity, large: Boolean = false, onClick: () -> Unit) {
     Row(Modifier.fillMaxWidth().clickable(onClick = onClick).heightIn(min = if (large) 64.dp else 48.dp).padding(horizontal = 14.dp, vertical = if (large) 14.dp else 11.dp), verticalAlignment = Alignment.CenterVertically) {
-        val color = when (step.phase) { ToolPhase.SUCCEEDED -> Color(0xFF3F866C); ToolPhase.FAILED -> MaterialTheme.colorScheme.error; ToolPhase.RUNNING -> MaterialTheme.colorScheme.primary; else -> MaterialTheme.colorScheme.onSurfaceVariant }
+        val color = when (step.phase) { ToolPhase.FAILED -> MaterialTheme.colorScheme.error; ToolPhase.RUNNING -> MaterialTheme.colorScheme.primary; else -> MaterialTheme.colorScheme.onSurfaceVariant }
         if (step.phase == ToolPhase.RUNNING) CircularProgressIndicator(Modifier.size(12.dp), color = color, strokeWidth = 1.5.dp)
         else AppGlyph(if (step.phase == ToolPhase.SUCCEEDED) GlyphName.Check else GlyphName.Warning, modifier = Modifier.size(13.dp), tint = color)
         Column(Modifier.weight(1f).padding(horizontal = 11.dp)) {

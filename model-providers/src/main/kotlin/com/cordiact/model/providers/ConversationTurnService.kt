@@ -208,6 +208,10 @@ class ConversationTurnService(
         var outputTokens: Long? = null
         var outputLimitReached = false
         var finishReason: String? = null
+        val turnStartedAt = System.currentTimeMillis()
+        val traceLock = Any()
+        val traceTools = mutableListOf<PersistedToolTrace>()
+        val traceReasoning = StringBuilder()
         // A provider's Completed terminates ONE model round, not the entire tool-using turn.
         val roundEvents: (ModelEvent) -> Unit = { event ->
             when (event) {
@@ -218,7 +222,52 @@ class ConversationTurnService(
                     finishReason = event.finishReason
                 }
                 is ModelEvent.Failed -> Unit // Converted to the single turn-level terminal below.
-                else -> if (!terminal.get()) onEvent(event)
+                else -> {
+                    when (event) {
+                        is ModelEvent.Thinking -> synchronized(traceLock) {
+                            if (traceReasoning.length < MAX_TRACE_REASONING_CHARS) {
+                                traceReasoning.append(event.text.take(MAX_TRACE_REASONING_CHARS - traceReasoning.length))
+                            }
+                        }
+                        is ModelEvent.ToolCallStarted -> synchronized(traceLock) {
+                            if (traceTools.none { it.id == event.callId }) {
+                                traceTools += PersistedToolTrace(
+                                    id = event.callId,
+                                    name = event.toolName,
+                                    arguments = event.argumentsJson.take(MAX_TRACE_PREVIEW_CHARS),
+                                    startedAt = System.currentTimeMillis(),
+                                )
+                            }
+                        }
+                        is ModelEvent.ToolCallCompleted -> synchronized(traceLock) {
+                            val now = System.currentTimeMillis()
+                            val idx = traceTools.indexOfFirst { it.id == event.callId }
+                            val dur = event.durationMillis.coerceAtLeast(0)
+                            val updated = if (idx >= 0) {
+                                traceTools[idx].copy(
+                                    success = event.success,
+                                    summary = event.summary?.take(MAX_TRACE_PREVIEW_CHARS),
+                                    finishedAt = now,
+                                    durationMillis = dur,
+                                )
+                            } else {
+                                PersistedToolTrace(
+                                    id = event.callId,
+                                    name = event.toolName,
+                                    arguments = "",
+                                    summary = event.summary?.take(MAX_TRACE_PREVIEW_CHARS),
+                                    success = event.success,
+                                    startedAt = now - dur,
+                                    finishedAt = now,
+                                    durationMillis = dur,
+                                )
+                            }
+                            if (idx >= 0) traceTools[idx] = updated else traceTools += updated
+                        }
+                        else -> Unit
+                    }
+                    if (!terminal.get()) onEvent(event)
+                }
             }
         }
         try {
@@ -251,8 +300,16 @@ class ConversationTurnService(
             }.takeIf { it.isNotEmpty() }?.let(::encodeEvidence)
             val toolLimitReached = outcome is ToolLoopOutcome.Stopped &&
                 (outcome.reason == ToolLoopStop.CALL_LIMIT || outcome.reason == ToolLoopStop.ROUND_LIMIT)
+            val turnTrace = PersistedTurnTrace(
+                startedAt = turnStartedAt,
+                finishedAt = System.currentTimeMillis(),
+                inputTokens = inputTokens,
+                outputTokens = outputTokens,
+                reasoning = synchronized(traceLock) { traceReasoning.toString().takeIf { it.isNotBlank() } },
+                tools = synchronized(traceLock) { traceTools.toList() },
+            )
             if (finalText.isNotBlank()) sessions.appendMessage(sessionId, MessageRole.ASSISTANT, finalText,
-                completionMetadata(evidence, outputLimitReached, toolLimitReached))
+                completionMetadata(evidence, outputLimitReached, toolLimitReached, turnTrace))
             activeToolRounds.remove(sessionId)
             activeCallsBySession.remove(sessionId, controller)
             activeSessions.remove(sessionId)
@@ -521,6 +578,8 @@ class ConversationTurnService(
         val terminal = AtomicBoolean(false)
         val callbackLock = Any()
         val reply = StringBuilder()
+        val turnStartedAt = System.currentTimeMillis()
+        val traceReasoning = StringBuilder()
 
         val pending = notices?.pending(sessionId).orEmpty()
         // The durable queue wins at the head of a turn; drop the mid-turn shadow copy so the same
@@ -566,6 +625,11 @@ class ConversationTurnService(
                         if (terminal.get() || attempt != currentAttempt) return@generate
                         when (event) {
                             is ModelEvent.Delta -> reply.append(event.text)
+                            is ModelEvent.Thinking -> {
+                                if (traceReasoning.length < MAX_TRACE_REASONING_CHARS) {
+                                    traceReasoning.append(event.text.take(MAX_TRACE_REASONING_CHARS - traceReasoning.length))
+                                }
+                            }
                             is ModelEvent.Completed -> {
                                 event.inputTokens?.let { actual ->
                                     val estimated = tokenEstimator.estimateMessages(historyToSend)
@@ -573,8 +637,16 @@ class ConversationTurnService(
                                 }
                                 if (reply.isNotEmpty()) {
                                     try {
+                                        val turnTrace = PersistedTurnTrace(
+                                            startedAt = turnStartedAt,
+                                            finishedAt = System.currentTimeMillis(),
+                                            inputTokens = event.inputTokens,
+                                            outputTokens = event.outputTokens,
+                                            reasoning = traceReasoning.toString().takeIf { it.isNotBlank() },
+                                            tools = emptyList(),
+                                        )
                                         sessions.appendMessage(sessionId, MessageRole.ASSISTANT, reply.toString(),
-                                            completionMetadata(null, event.outputLimitReached))
+                                            completionMetadata(null, event.outputLimitReached, trace = turnTrace))
                                     } catch (_: Exception) {
                                         terminal.set(true)
                                         activeSessions.remove(sessionId)
@@ -723,15 +795,69 @@ class ConversationTurnService(
     }
 }
 
+internal data class PersistedToolTrace(
+    val id: String,
+    val name: String,
+    val arguments: String,
+    val summary: String? = null,
+    val success: Boolean? = null,
+    val startedAt: Long,
+    val finishedAt: Long? = null,
+    val durationMillis: Long? = null,
+)
+
+internal data class PersistedTurnTrace(
+    val startedAt: Long,
+    val finishedAt: Long,
+    val inputTokens: Long? = null,
+    val outputTokens: Long? = null,
+    val reasoning: String? = null,
+    val tools: List<PersistedToolTrace> = emptyList(),
+)
+
 /** Evidence list -> one JSON array, bounded so a chatty tool cannot bloat a message row. */
-private fun completionMetadata(evidence: String?, outputLimitReached: Boolean, toolLimitReached: Boolean = false): String? {
-    if (!outputLimitReached && !toolLimitReached) return evidence
+private fun completionMetadata(
+    evidence: String?,
+    outputLimitReached: Boolean,
+    toolLimitReached: Boolean = false,
+    trace: PersistedTurnTrace? = null,
+): String? {
+    if (!outputLimitReached && !toolLimitReached && trace == null) return evidence
     return com.google.gson.JsonObject().apply {
         if (outputLimitReached) addProperty("outputLimitReached", true)
         if (toolLimitReached) addProperty("toolLimitReached", true)
         if (evidence != null) add("evidence", com.google.gson.JsonParser.parseString(evidence))
+        if (trace != null) {
+            add("trace", com.google.gson.JsonObject().apply {
+                addProperty("startedAt", trace.startedAt)
+                addProperty("finishedAt", trace.finishedAt)
+                trace.inputTokens?.let { addProperty("inputTokens", it) }
+                trace.outputTokens?.let { addProperty("outputTokens", it) }
+                trace.reasoning?.let { addProperty("reasoning", it) }
+                if (trace.tools.isNotEmpty()) {
+                    add("tools", com.google.gson.JsonArray().apply {
+                        trace.tools.take(MAX_TRACE_TOOLS).forEach { tool ->
+                            add(com.google.gson.JsonObject().apply {
+                                addProperty("id", tool.id)
+                                addProperty("name", tool.name)
+                                if (tool.arguments.isNotBlank()) addProperty("arguments", tool.arguments)
+                                tool.summary?.let { addProperty("summary", it) }
+                                tool.success?.let { addProperty("success", it) }
+                                addProperty("startedAt", tool.startedAt)
+                                tool.finishedAt?.let { addProperty("finishedAt", it) }
+                                tool.durationMillis?.let { addProperty("durationMillis", it) }
+                            })
+                        }
+                    })
+                }
+            })
+        }
     }.toString()
 }
+
+private const val MAX_TRACE_TOOLS = 64
+private const val MAX_TRACE_PREVIEW_CHARS = 600
+private const val MAX_TRACE_REASONING_CHARS = 4_000
 
 internal fun encodeEvidence(evidence: List<com.cordiact.core.toolloop.ToolEvidence>): String? {
     if (evidence.isEmpty()) return null

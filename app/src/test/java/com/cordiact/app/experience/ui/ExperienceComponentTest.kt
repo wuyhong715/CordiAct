@@ -120,15 +120,16 @@ class ExperienceComponentTest {
         var inspect: ToolActivity? = null
         content { TranscriptView(ready(listOf(TranscriptTurn("t", "prompt", tools = listOf(step)))), {}, { inspect = it }) }
         compose.onNodeWithText("read_file").assertDoesNotExist()
-        compose.onNodeWithText("1 步完成").assertExists()
-        compose.onNodeWithContentDescription("执行轨道", substring = true).performScrollTo().performTouchInput { click(center) }
+        compose.onNodeWithText("执行过程 · 1 项调用").assertExists().performClick()
+        compose.onNodeWithText("read_file").assertIsDisplayed().performClick()
         compose.waitForIdle()
         assertEquals("c", inspect?.id)
     }
     @Test fun reasoning_isOptInInlineContent() {
         content { TranscriptView(ready(listOf(TranscriptTurn("t", "prompt", reasoning = "provider reasoning"))), {}, {}) }
         compose.onNodeWithText("provider reasoning").assertDoesNotExist()
-        compose.onNodeWithText("思考过程").performClick()
+        compose.onNodeWithText("模型过程").performClick()
+        compose.onNodeWithText("查看模型过程").performClick()
         compose.onNodeWithText("provider reasoning").assertIsDisplayed()
     }
     @Test fun preview_neverRendersAssistantTextAsArtifact() {
