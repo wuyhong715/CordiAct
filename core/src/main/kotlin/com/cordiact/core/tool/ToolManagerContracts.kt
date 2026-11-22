@@ -89,6 +89,7 @@ data class ToolActivationContext(
     val workspaceId: String,
     val modelProviderId: String? = null,
     val modelId: String? = null,
+    val sessionId: String? = null,
 )
 
 /** Host-side gate evaluated when a turn's tool list is assembled. */
@@ -184,6 +185,12 @@ data class ToolInvocationContext(
     val securityContext: com.cordiact.core.security.SecurityContext? = null,
     /** Optional event callback to emit real-time tool lifecycle events to the caller/UI. */
     val onEvent: ((com.cordiact.core.conversation.ModelEvent) -> Unit)? = null,
+    /** Identities from the actual turn's tool catalog. Never populated from model arguments. */
+    @Transient val toolRegistrations: Map<String, ToolRegistration> = emptyMap(),
+    /** Set by the host only for ordinary turns started from the foreground composer. */
+    @Transient val allowsPluginAuthoring: Boolean = false,
+    /** Never serialized, delegated, or populated from model-supplied tool arguments. */
+    @Transient val authoredPluginTurn: com.cordiact.core.plugin.AuthoredPluginTurn? = null,
 ) {
     /** The grant covering [targetWorkspaceId], or null when it is not readable this turn. */
     fun scopeFor(targetWorkspaceId: String): GrantedScope? =
@@ -194,10 +201,29 @@ data class ToolInvocationContext(
         targetWorkspaceId == workspaceId || scopeFor(targetWorkspaceId) != null
 }
 
-data class ToolDefinition(
+/** Host-only identity of one published definition. Never serialize it to a model or a log. */
+class ToolRegistration internal constructor(internal val scope: ToolContributionScope)
+
+/** Explicit publication scope, separate from @ grants and other data-read permissions. */
+internal data class ToolContributionScope(val workspaceId: String? = null, val sessionId: String? = null) {
+    fun includes(workspace: String, session: String?): Boolean =
+        (workspaceId == null || workspaceId == workspace) && (sessionId == null || sessionId == session)
+
+    fun overlaps(other: ToolContributionScope): Boolean =
+        (workspaceId == null || other.workspaceId == null || workspaceId == other.workspaceId) &&
+            (sessionId == null || other.sessionId == null || sessionId == other.sessionId)
+
+    val global: Boolean get() = workspaceId == null
+}
+
+@ExposedCopyVisibility // Preserve existing host adapters that copy a definition to wrap its executor.
+data class ToolDefinition internal constructor(
     val descriptor: ToolDescriptor,
     val executor: ToolExecutor,
-)
+    @Transient val registration: ToolRegistration?,
+) {
+    constructor(descriptor: ToolDescriptor, executor: ToolExecutor) : this(descriptor, executor, null)
+}
 
 fun interface ToolExecutor {
     fun invoke(context: ToolInvocationContext, arguments: ToolArguments): ToolResult
@@ -240,6 +266,10 @@ interface ToolDefinitionRegistry {
 
     fun all(): List<ToolDefinition>
 
+    /** Legacy registries have only global definitions. */
+    fun getIn(toolId: String, workspaceId: String, sessionId: String?): ToolDefinition? = get(toolId)
+    fun allIn(workspaceId: String, sessionId: String?): List<ToolDefinition> = all()
+
     /** Attach the per-request visibility gate for an already registered tool. */
     fun registerVisibility(toolId: String, gate: ToolVisibilityGate)
 
@@ -248,39 +278,66 @@ interface ToolDefinitionRegistry {
 }
 
 class InMemoryToolDefinitionRegistry : ToolDefinitionRegistry {
-    private val definitions = linkedMapOf<String, ToolDefinition>()
+    private data class Binding(val definition: ToolDefinition, val active: () -> Boolean)
+    private val globalScope = ToolContributionScope()
+    private val definitions = linkedMapOf<String, MutableMap<ToolContributionScope, Binding>>()
     private val visibilityGates = mutableMapOf<String, ToolVisibilityGate>()
 
-    @Synchronized
     override fun register(definition: ToolDefinition) {
+        publish(definition, globalScope) { true }
+    }
+
+    /** The activation reader must be lock-free and must never invoke plugin code. */
+    @Synchronized internal fun publish(
+        definition: ToolDefinition, scope: ToolContributionScope, active: () -> Boolean,
+    ): AutoCloseable {
         val descriptor = snapshotDescriptor(definition.descriptor)
         validateDescriptor(descriptor)
         validateExecutionDeclaration(descriptor)
-        require(definitions.putIfAbsent(descriptor.id, ToolDefinition(descriptor, definition.executor)) == null) {
-            "Tool '${descriptor.id}' is already registered"
-        }
+        val bindings = definitions.getOrPut(descriptor.id) { linkedMapOf() }
+        require(bindings.keys.none(scope::overlaps)) { "Tool '${descriptor.id}' is already registered in an overlapping scope" }
+        val token = ToolRegistration(scope)
+        bindings[scope] = Binding(ToolDefinition(descriptor, definition.executor, token), active)
+        return AutoCloseable { withdraw(descriptor.id, scope, token) }
     }
 
-    @Synchronized
-    override fun get(toolId: String): ToolDefinition? = definitions[toolId]?.let(::snapshotDefinition)
-
-    @Synchronized
-    override fun unregister(toolId: String): Boolean {
-        visibilityGates.remove(toolId)
-        return definitions.remove(toolId) != null
+    @Synchronized private fun withdraw(toolId: String, scope: ToolContributionScope, token: ToolRegistration) {
+        if (definitions[toolId]?.get(scope)?.definition?.registration === token) remove(toolId, scope)
     }
 
-    @Synchronized
-    override fun all(): List<ToolDefinition> = definitions.values.map(::snapshotDefinition)
+    private fun remove(toolId: String, scope: ToolContributionScope): Boolean {
+        val bindings = definitions[toolId] ?: return false
+        val removed = bindings.remove(scope) != null
+        if (bindings.isEmpty()) definitions.remove(toolId)
+        if (scope.global) visibilityGates.remove(toolId)
+        return removed
+    }
 
-    @Synchronized
-    override fun registerVisibility(toolId: String, gate: ToolVisibilityGate) {
-        require(definitions.containsKey(toolId)) { "Tool '$toolId' is not registered" }
+    @Synchronized override fun get(toolId: String): ToolDefinition? =
+        definitions[toolId]?.get(globalScope)?.snapshotIfActive()
+
+    @Synchronized override fun unregister(toolId: String): Boolean = remove(toolId, globalScope)
+
+    @Synchronized override fun all(): List<ToolDefinition> =
+        definitions.values.mapNotNull { it[globalScope]?.snapshotIfActive() }
+
+    @Synchronized override fun getIn(toolId: String, workspaceId: String, sessionId: String?): ToolDefinition? =
+        definitions[toolId]?.inScope(workspaceId, sessionId)
+
+    @Synchronized override fun allIn(workspaceId: String, sessionId: String?): List<ToolDefinition> =
+        definitions.values.mapNotNull { it.inScope(workspaceId, sessionId) }
+
+    private fun Map<ToolContributionScope, Binding>.inScope(workspaceId: String, sessionId: String?): ToolDefinition? =
+        entries.firstOrNull { it.key.includes(workspaceId, sessionId) }?.value?.snapshotIfActive()
+
+    private fun Binding.snapshotIfActive(): ToolDefinition? = if (active()) snapshotDefinition(definition) else null
+
+    @Synchronized override fun registerVisibility(toolId: String, gate: ToolVisibilityGate) {
+        require(definitions[toolId]?.containsKey(globalScope) == true) { "Tool '$toolId' is not registered" }
         visibilityGates[toolId] = gate
     }
 
-    @Synchronized
-    override fun visibility(toolId: String): ToolVisibilityGate? = visibilityGates[toolId]
+    @Synchronized override fun visibility(toolId: String): ToolVisibilityGate? = visibilityGates[toolId]
 
     private fun validateExecutionDeclaration(descriptor: ToolDescriptor) {
         val parameterNames = descriptor.inputSchema.parameters.map { it.name }.toSet()
@@ -305,6 +362,7 @@ class InMemoryToolDefinitionRegistry : ToolDefinitionRegistry {
     private fun snapshotDefinition(definition: ToolDefinition) = ToolDefinition(
         snapshotDescriptor(definition.descriptor),
         definition.executor,
+        definition.registration,
     )
 
     private fun snapshotDescriptor(descriptor: ToolDescriptor) = descriptor.copy(
@@ -400,6 +458,9 @@ interface ToolManagerService {
      * request are omitted. Omitting the argument keeps the workspace-wide view.
      */
     fun resolveEnabled(workspaceId: String, activation: ToolActivationContext? = null): List<ToolDescriptor>
+
+    /** Host-only catalog; use these identities when dispatching calls from the advertised turn. */
+    fun resolveForTurn(activation: ToolActivationContext): List<ToolDefinition>
     fun invoke(context: ToolInvocationContext, toolId: String, arguments: ToolArguments): ToolResult
 }
 
@@ -428,6 +489,8 @@ class ToolManagerPlugin(
     private val executionPolicy: ToolExecutionAuthorizationPolicy = ToolExecutionAuthorizationPolicy(null),
     private val accessPolicy: com.cordiact.core.security.EnvelopeToolAccessPolicy? = null,
     private val autoReview: ((com.cordiact.core.security.SecurityContext, String, ToolArguments, () -> ToolResult) -> ToolResult)? = null,
+    /** Authoritative host lookup. Without it no session-scoped contribution is visible. */
+    private val sessionWorkspace: (String) -> String? = { null },
 ) : ManagedPlugin, ToolManagerService {
     override val spec: PluginSpec = toolManagerPluginSpec()
     @Volatile private var enabled = false
@@ -435,7 +498,10 @@ class ToolManagerPlugin(
     private val dispatchLock = Any()
     @Volatile private var workspaceVisibility: (String, ToolDescriptor) -> Boolean = { _, _ -> true }
     fun setWorkspaceVisibilityPolicy(policy: (String, ToolDescriptor) -> Boolean) {
-        workspaceVisibility = policy
+        synchronized(dispatchLock) {
+            workspaceVisibility = policy
+            generation++
+        }
     }
 
     /**
@@ -465,7 +531,7 @@ class ToolManagerPlugin(
     override fun list(workspaceId: String): List<ToolAvailability> {
         validateWorkspace(workspaceId)
         checkManagerEnabled()
-        return registry.all().map { definition -> availability(workspaceId, definition.descriptor) }
+        return registry.all().map { definition -> availability(workspaceId, definition) }
     }
 
     override fun setEnabled(workspaceId: String, toolId: String, enabled: Boolean) {
@@ -486,12 +552,25 @@ class ToolManagerPlugin(
     override fun resolveEnabled(
         workspaceId: String,
         activation: ToolActivationContext?,
-    ): List<ToolDescriptor> = list(workspaceId)
-        .filter(ToolAvailability::dispatchable)
-        .map(ToolAvailability::descriptor)
-        .filter { descriptor ->
-            activation == null || registry.visibility(descriptor.id)?.visible(activation) != false
+    ): List<ToolDescriptor> = if (activation == null) {
+        // Keep legacy Settings and inventory global; scoped preferences are not stored by tool id.
+        list(workspaceId).filter(ToolAvailability::dispatchable).map(ToolAvailability::descriptor)
+    } else {
+        require(activation.workspaceId == workspaceId) { "Tool activation belongs to another workspace" }
+        resolveForTurn(activation).map(ToolDefinition::descriptor)
+    }
+
+    override fun resolveForTurn(activation: ToolActivationContext): List<ToolDefinition> {
+        val workspace = activation.workspaceId
+        validateWorkspace(workspace)
+        checkManagerEnabled()
+        val session = activation.sessionId?.takeIf { sessionWorkspace(it) == workspace }
+        val candidates = if (session == null) registry.all() else registry.allIn(workspace, session)
+        return candidates.filter { definition ->
+            availability(workspace, definition).dispatchable &&
+                registry.visibility(definition.descriptor.id)?.visible(activation) != false
         }
+    }
 
     override fun invoke(context: ToolInvocationContext, toolId: String, arguments: ToolArguments): ToolResult =
         invokeFrozen(context, toolId, ToolArguments(arguments.values.mapValues { freezeValue(it.value) }))
@@ -510,9 +589,12 @@ class ToolManagerPlugin(
             validateWorkspace(scope.workspaceId)
         }
         checkManagerEnabled()
-        val definition = registry.get(toolId) ?: throw failure(
-            ToolManagerException.Code.TOOL_NOT_REGISTERED,
-            "Tool is not registered",
+        val generationAtStart = synchronized(dispatchLock) {
+            checkManagerLocallyEnabled()
+            generation
+        }
+        val definition = currentDefinition(context, toolId) ?: throw failure(
+            ToolManagerException.Code.TOOL_NOT_REGISTERED, "Tool is not registered for this turn",
         )
         val descriptor = definition.descriptor
         if (pluginStates.state(descriptor.ownerPluginId) != PluginState.ENABLED) {
@@ -520,6 +602,9 @@ class ToolManagerPlugin(
         }
         if (!capabilities.grantsTool(context.workspaceId, descriptor)) {
             throw failure(ToolManagerException.Code.CAPABILITY_DENIED, "Required capability is not granted")
+        }
+        if (!isEnabled(context.workspaceId, definition)) {
+            throw failure(ToolManagerException.Code.TOOL_DISABLED, "Tool is disabled for this workspace")
         }
         validateArguments(descriptor.inputSchema, arguments)
 
@@ -542,78 +627,79 @@ class ToolManagerPlugin(
             }
         }
 
-        // Human authorization is enforced here, after schema/capability checks and
-        // before the real executor. Every caller (model, sub-agent, tool-to-tool,
-        // SSH/Termux background start) goes through this single path.
+        fun recheck() {
+            checkManagerEnabled()
+            validateWorkspace(context.workspaceId)
+            if (pluginStates.state(descriptor.ownerPluginId) != PluginState.ENABLED) {
+                throw failure(ToolManagerException.Code.OWNER_PLUGIN_UNAVAILABLE, "Tool owner plugin is unavailable")
+            }
+            if (!capabilities.grantsTool(context.workspaceId, descriptor)) {
+                throw failure(ToolManagerException.Code.CAPABILITY_DENIED, "Required capability is not granted")
+            }
+            if (!isEnabled(context.workspaceId, definition)) {
+                throw failure(ToolManagerException.Code.TOOL_DISABLED, "Tool is disabled for this workspace")
+            }
+            synchronized(dispatchLock) {
+                checkManagerLocallyEnabled()
+                if (generation != generationAtStart) {
+                    throw failure(ToolManagerException.Code.TOOL_DISABLED, "Tool authorization changed")
+                }
+            }
+            val current = currentDefinition(context, toolId)
+            if (current == null || current.registration !== definition.registration ||
+                current.descriptor != descriptor || current.executor !== definition.executor) {
+                throw failure(ToolManagerException.Code.APPROVAL_DENIED, "Tool registration changed")
+            }
+        }
+
+        // No stale registration should even open an approval card. All execution backends share
+        // this check, then recheck inside the serial queue or timeout worker at admission.
+        recheck()
         when (val authorization = executionPolicy.authorize(
             descriptor, arguments, com.cordiact.core.action.ApprovalOwner(context.workspaceId, context.sessionId),
         )) {
             is ToolExecutionAuthorization.Denied -> throw failure(
-                ToolManagerException.Code.APPROVAL_DENIED,
-                authorization.reason,
+                ToolManagerException.Code.APPROVAL_DENIED, authorization.reason,
             )
             is ToolExecutionAuthorization.Allowed, is ToolExecutionAuthorization.Approved -> Unit
         }
-        // The tool may have been re-registered while the approval card was open;
-        // never execute a different definition than the one that was approved.
-        if (descriptor.execution != null && registry.get(toolId)?.descriptor != descriptor) {
-            throw failure(
-                ToolManagerException.Code.APPROVAL_DENIED,
-                "Tool definition changed during approval; execution refused",
-            )
+        recheck()
+        // An admitted action may have side effects; withdrawal invalidates its publication, not history.
+        val invokeExecutor = {
+            recheck()
+            definition.executor.invoke(context, arguments)
         }
-
-        // Snapshot the authorization state, then execute OUTSIDE dispatchLock. Network tools
-        // must never hold a lock shared by every Workspace; the generation check below discards
-        // a result whose authorization changed while it was in flight.
-        val generationAtStart = synchronized(dispatchLock) {
-            checkManagerLocallyEnabled()
-            if (!isEnabled(context.workspaceId, descriptor)) {
-                throw failure(ToolManagerException.Code.TOOL_DISABLED, "Tool is disabled for this workspace")
-            }
-            generation
-        }
-
         val execute = {
-            synchronized(dispatchLock) {
-                checkManagerLocallyEnabled()
-                if (generation != generationAtStart || !isEnabled(context.workspaceId, descriptor)) {
-                    throw failure(ToolManagerException.Code.TOOL_DISABLED, "Tool authorization changed during approval")
-                }
-            }
-            if (registry.get(toolId).let { it == null || it.descriptor != definition.descriptor || it.executor !== definition.executor }) {
-                throw failure(ToolManagerException.Code.APPROVAL_DENIED, "Tool definition changed during approval")
-            }
-            if (descriptor.concurrencySafe) {
-            executeWithTimeout(descriptor.timeoutMs) { definition.executor.invoke(context, arguments) }
-        } else {
-            synchronized(serializedExecution) {
-                executeWithTimeout(descriptor.timeoutMs) { definition.executor.invoke(context, arguments) }
-            }
-        }
-
+            if (descriptor.concurrencySafe) executeWithTimeout(descriptor.timeoutMs, invokeExecutor)
+            else synchronized(serializedExecution) { executeWithTimeout(descriptor.timeoutMs, invokeExecutor) }
         }
         val result = if (requiresReview) {
             val reviewer = autoReview ?: throw failure(ToolManagerException.Code.APPROVAL_DENIED, "AUTO_REVIEW_UNAVAILABLE")
             reviewer(requireNotNull(securityContext), descriptor.id, arguments, execute)
         } else execute()
-
-        // Revalidate after execution: a disabled manager, revoked preference, unloaded owner
-        // plugin or archived Workspace makes the result stale, so it is discarded fail-closed.
-        synchronized(dispatchLock) {
-            checkManagerLocallyEnabled()
-            if (generation != generationAtStart) {
-                throw failure(ToolManagerException.Code.TOOL_DISABLED, "Tool authorization changed during execution")
-            }
-            if (!isEnabled(context.workspaceId, descriptor)) {
-                throw failure(ToolManagerException.Code.TOOL_DISABLED, "Tool is disabled for this workspace")
-            }
+        try {
+            recheck()
+        } catch (refused: Exception) {
+            result.sensitivePayload?.close()
+            throw refused
         }
-        if (pluginStates.state(descriptor.ownerPluginId) != PluginState.ENABLED) {
-            throw failure(ToolManagerException.Code.OWNER_PLUGIN_UNAVAILABLE, "Tool owner plugin is unavailable")
-        }
-        validateWorkspace(context.workspaceId)
         return result
+    }
+
+    private fun currentDefinition(context: ToolInvocationContext, toolId: String): ToolDefinition? {
+        val binding = context.toolRegistrations[toolId]
+        if (binding == null || binding.scope.global) {
+            // Legacy host calls can resolve only global definitions. A bound turn cannot silently
+            // switch to a replacement, even when the public schema is unchanged.
+            return registry.get(toolId)?.takeIf { binding == null || binding === it.registration }
+        }
+        // @ read grants and caller-provided tool arguments never imply publication scope.
+        val workspace = context.workspaceId
+        val session = context.sessionId ?: return null
+        if (!binding.scope.includes(workspace, session) || sessionWorkspace(session) != workspace) return null
+        val security = context.securityContext
+        if (security != null && (security.workspaceId != workspace || security.sessionId != session)) return null
+        return registry.getIn(toolId, workspace, session)?.takeIf { binding === it.registration }
     }
 
     private fun executeWithTimeout(timeoutMs: Long?, block: () -> ToolResult): ToolResult {
@@ -700,16 +786,23 @@ class ToolManagerPlugin(
         value,
     )
 
-    private fun availability(workspaceId: String, descriptor: ToolDescriptor): ToolAvailability = ToolAvailability(
-        descriptor = descriptor,
-        enabledForWorkspace = isEnabled(workspaceId, descriptor),
-        ownerEnabled = pluginStates.state(descriptor.ownerPluginId) == PluginState.ENABLED,
-        capabilitiesGranted = capabilities.grantsTool(workspaceId, descriptor),
-    )
+    private fun availability(workspaceId: String, definition: ToolDefinition): ToolAvailability {
+        val descriptor = definition.descriptor
+        return ToolAvailability(
+            descriptor = descriptor,
+            enabledForWorkspace = isEnabled(workspaceId, definition),
+            ownerEnabled = pluginStates.state(descriptor.ownerPluginId) == PluginState.ENABLED,
+            capabilitiesGranted = capabilities.grantsTool(workspaceId, descriptor),
+        )
+    }
 
-    private fun isEnabled(workspaceId: String, descriptor: ToolDescriptor): Boolean =
-        workspaceVisibility(workspaceId, descriptor) &&
-            (preferences.isEnabled(workspaceId, descriptor.id) ?: descriptor.defaultEnabled)
+    private fun isEnabled(workspaceId: String, definition: ToolDefinition): Boolean {
+        val descriptor = definition.descriptor
+        if (!workspaceVisibility(workspaceId, descriptor)) return false
+        // A stale global preference must not grant a future scoped registration the same id.
+        if (definition.registration?.scope?.global == false) return descriptor.defaultEnabled
+        return preferences.isEnabled(workspaceId, descriptor.id) ?: descriptor.defaultEnabled
+    }
 
     private fun validateWorkspace(workspaceId: String) {
         try {

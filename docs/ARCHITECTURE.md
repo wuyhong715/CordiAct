@@ -4,7 +4,7 @@
 
 CordiAct treats product capabilities as plugins: conversation surfaces, workspace features, Android integrations, local Cordis extensions, and remote DeepSeek Harness tools all enter through a common plugin model. Some plugins are **system plugins**: essential, shipped with the app, and not user-uninstallable. “Non-removable” is a lifecycle/protection policy, not a different product concept.
 
-A very small **kernel/host** is still necessary to bootstrap the app and plugin system. It owns plugin discovery and lifecycle, manifest validation, dependency resolution, event routing, storage boundaries, permission/policy enforcement, and recovery when plugins fail. It should not absorb every feature implementation. Security enforcement cannot itself be delegated to an untrusted plugin.
+A very small **kernel/host** is still necessary to bootstrap the app and plugin system. It owns plugin discovery and lifecycle, manifest validation, dependency resolution, event routing, storage boundaries, permission/policy enforcement, and recovery when plugins fail. It should not absorb every feature implementation. Security enforcement cannot itself be delegated to an untrusted plugin. The [plugin-first plan](architecture/plugin-extension.md) tracks scoped contributions and the first user-configurable extensions separately from the target runtime design below.
 
 ## Decision: native-first, multi-target plugin runtime
 

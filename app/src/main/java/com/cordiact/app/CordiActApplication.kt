@@ -7,6 +7,7 @@ import com.cordiact.app.automation.AutomationRuntime
 import com.cordiact.app.conversation.AndroidConversationSessionStore
 import com.cordiact.app.conversation.BundledConversationPluginCatalog
 import com.cordiact.app.conversation.BundledConversationPlugins
+import com.cordiact.app.plugin.AndroidAuthoredPluginInstallStore
 import com.cordiact.app.plugin.AndroidPluginLifecycle
 import com.cordiact.app.model.AndroidProviderApiKeyStore
 import com.cordiact.core.conversation.ModelAdapterPlugin
@@ -22,6 +23,16 @@ import com.cordiact.core.conversation.SessionManagerPlugin
 import com.cordiact.core.conversation.SessionManagerService
 import com.cordiact.core.mcp.MCP_PLUGIN_ID
 import com.cordiact.app.plugin.AndroidPluginManagerService
+import com.cordiact.core.plugin.AuthoredPluginDrafts
+import com.cordiact.core.plugin.AuthoredPluginForeground
+import com.cordiact.core.plugin.AuthoredPluginInstallations
+import com.cordiact.core.plugin.AuthoredPluginInstalledRecord
+import com.cordiact.core.plugin.AuthoredPluginReceipt
+import com.cordiact.core.plugin.AuthoredPluginTurn
+import com.cordiact.core.security.AccessEnvelope
+import com.cordiact.core.security.EffectiveSecurityProfile
+import com.cordiact.core.plugin.PluginKernel
+import com.cordiact.core.plugin.AuthoredPluginRuntime
 import com.cordiact.core.plugin.PluginManagerService
 import com.cordiact.core.plugin.pluginManagerPluginSpec
 import com.cordiact.core.plugin.PluginSpec
@@ -106,6 +117,8 @@ class CordiActApplication : Application(), androidx.work.Configuration.Provider 
         private set
     lateinit var sessionManagerPlugin: SessionManagerPlugin
         private set
+    private lateinit var authoredPlugins: AuthoredPluginRuntime
+    internal val authoredPluginForeground = AuthoredPluginForeground()
     lateinit var sandboxManagerPlugin: SandboxManagerPlugin
         private set
     lateinit var interactionPlugin: com.cordiact.interaction.InteractionPlugin
@@ -317,14 +330,13 @@ class CordiActApplication : Application(), androidx.work.Configuration.Provider 
      * or whose capability is missing cannot run, so offering it would only produce a failing
      * call the model has to recover from.
      */
-    private fun availableToolSpecs(workspaceId: String, model: ModelId): List<ModelToolSpec> =
+    private fun availableToolSpecs(
+        workspaceId: String, model: ModelId, sessionId: String? = null, allowAuthoring: Boolean = false,
+    ): List<ModelToolSpec> =
         try {
-            AndroidToolDispatcher.specs(
-                tools.resolveEnabled(
-                    workspaceId,
-                    ToolActivationContext(workspaceId, model.providerId, model.modelId),
-                ),
-            )
+            AndroidToolDispatcher.turnSpecs(
+                tools.resolveForTurn(ToolActivationContext(workspaceId, model.providerId, model.modelId, sessionId)),
+            ).filter { allowAuthoring || it.name != com.cordiact.core.plugin.AUTHORED_PLUGIN_TOOL_ID }
         } catch (e: Exception) {
             emptyList()
         }
@@ -550,8 +562,27 @@ class CordiActApplication : Application(), androidx.work.Configuration.Provider 
         }
 
         val credentialRuntime = credentialVaultRuntime
+        authoredPlugins = AuthoredPluginRuntime(
+            // These generated plugins have no services or foreign lifecycle hooks. Keep their
+            // commit kernel separate from the interaction kernel, whose stop can cancel turns.
+            workspaceFiles, approvalGateway, PluginKernel(), conversationCatalog.toolContributions,
+        ) { context ->
+            val session = context.sessionId
+            val turn = context.authoredPluginTurn
+            context.allowsPluginAuthoring && turn != null && turn.isOpen && session != null && session == activeSessionId &&
+                workspaceManager.findSessionWorkspace(context.workspaceId) != null &&
+                context.securityContext?.let(credentialRuntime::permitsAuthoredPluginChanges) == true &&
+                sessions.getSession(session)?.let { it.workspaceId == context.workspaceId &&
+                    it.kind == com.cordiact.core.conversation.SessionKind.USER && it.archivedAtMillis == null } == true
+        }
         val plugins = conversationCatalog.create(
-            stateLookup = { pluginId -> pluginLifecycle.manager.get(pluginId)?.state },
+            stateLookup = { pluginId ->
+                // The protected host must be enabled. The exact authored instance is separately
+                // checked by its scoped registry binding; no user spec is admitted to this lane.
+                val owner = if (com.cordiact.core.plugin.AuthoredPluginNames.isOwner(pluginId))
+                    com.cordiact.core.plugin.AUTHORED_PLUGIN_HOST_ID else pluginId
+                pluginLifecycle.manager.get(owner)?.state
+            },
             capabilityGate = object : com.cordiact.core.tool.ToolCapabilityGate {
                 override fun grantsAll(workspaceId: String, capabilityIds: Set<String>): Boolean = capabilityIds.isEmpty()
                 override fun grantsTool(workspaceId: String, descriptor: com.cordiact.core.tool.ToolDescriptor): Boolean {
@@ -570,6 +601,10 @@ class CordiActApplication : Application(), androidx.work.Configuration.Provider 
             approvalGateway = approvalGateway,
             extraPlugins = listOf(credentialRuntime.credentialPlugin, credentialRuntime.auditPlugin),
             autoReview = credentialRuntime::reviewTool,
+            invalidateSessionResources = { session ->
+                authoredPluginForeground.invalidateSession(session.workspaceId, session.id)
+                authoredPlugins.invalidateSession(session.workspaceId, session.id)
+            },
         )
         conversationCatalog.toolManagerPlugin.setWorkspaceVisibilityPolicy { workspaceId, descriptor ->
             com.cordiact.core.settings.WorkspaceCapabilityPolicy.visible(descriptor.ownerPluginId,
@@ -640,6 +675,15 @@ class CordiActApplication : Application(), androidx.work.Configuration.Provider 
                 }
             recordTurnGrants(envelope.context.sessionId, grants)
             val prompt = if (envelope.command == null) envelope.submittedText else envelope.commandInput
+            val authoring = envelope.authoredPluginTurn?.takeIf {
+                envelope.command == null && it.isOpen && it.matches(envelope.context.workspaceId, envelope.context.sessionId)
+            }
+            val security = credentialVaultRuntime.newSecurityContext(
+                workspaceId = envelope.context.workspaceId,
+                sessionId = envelope.context.sessionId,
+                modelProviderId = modelId.providerId,
+                modelId = modelId.modelId,
+            )
             val toolContext = ToolInvocationContext(
                 workspaceId = envelope.context.workspaceId,
                 // Delegation addresses its caller by Session. Carried rather than inferred: a
@@ -650,18 +694,15 @@ class CordiActApplication : Application(), androidx.work.Configuration.Provider 
                 modelProviderId = modelId.providerId,
                 modelId = modelId.modelId,
                 requestText = prompt,
-                securityContext = credentialVaultRuntime.newSecurityContext(
-                    workspaceId = envelope.context.workspaceId,
-                    sessionId = envelope.context.sessionId,
-                    modelProviderId = modelId.providerId,
-                    modelId = modelId.modelId,
-                ),
+                allowsPluginAuthoring = authoring != null && credentialVaultRuntime.permitsAuthoredPluginChanges(security),
+                authoredPluginTurn = authoring,
+                securityContext = security,
             )
             turnService.submitWithTools(
                 sessionId = envelope.context.sessionId,
                 model = modelId,
                 text = prompt,
-                tools = availableToolSpecs(envelope.context.workspaceId, modelId),
+                tools = availableToolSpecs(envelope.context.workspaceId, modelId, envelope.context.sessionId, toolContext.allowsPluginAuthoring),
                 toolLoop = toolLoopPlugin,
                 dispatcher = toolDispatcher,
                 toolContext = toolContext,
@@ -677,6 +718,7 @@ class CordiActApplication : Application(), androidx.work.Configuration.Provider 
                     sessions.updateFirstUserTitleFromOriginal(envelope.context.sessionId, envelope.originalText)
                     envelope.onUserMessagePersisted?.invoke()
                 },
+                onModelCallStarted = envelope.onModelCallStarted,
                 onEvent = onEvent,
             )
         })
@@ -684,7 +726,11 @@ class CordiActApplication : Application(), androidx.work.Configuration.Provider 
         val pluginManagerPlugin = object : ManagedPlugin {
             override val spec: PluginSpec = pluginManagerPluginSpec()
         }
-        (plugins + automationRuntime.plugins() + sandboxManagerPlugin + subagentRuntime + orchestrationPlugin + backgroundSubagents + pluginManagerPlugin)
+        val authoredPluginHost = object : ManagedPlugin {
+            override val spec: PluginSpec = com.cordiact.core.plugin.authoredPluginHostSpec()
+        }
+        com.cordiact.core.plugin.registerAuthoredPluginTool(conversationCatalog.toolRegistry, authoredPlugins)
+        (plugins + automationRuntime.plugins() + sandboxManagerPlugin + subagentRuntime + orchestrationPlugin + backgroundSubagents + pluginManagerPlugin + authoredPluginHost)
             .forEach(::registerAndEnableSystemPlugin)
         com.cordiact.app.automation.tasks.registerAutomationTaskTools(
             conversationCatalog.toolRegistry, { automationTasks }, sessions,
@@ -753,8 +799,9 @@ class CordiActApplication : Application(), androidx.work.Configuration.Provider 
             restoreUserPlugins()
         }
         val workspace = workspaceManager.initializeDefaultIfEligible()
-        activeSessionId = sessions.listSessions(workspace.id).firstOrNull()?.id
+        val initialSessionId = sessions.listSessions(workspace.id).firstOrNull()?.id
             ?: sessions.createSession(workspace.id, "New conversation").id
+        selectForegroundSession(initialSessionId)
     }
 
     /** Workspace of the session currently open in the UI; null before a session exists. */
@@ -762,11 +809,120 @@ class CordiActApplication : Application(), androidx.work.Configuration.Provider 
     fun selectForegroundSession(sessionId: String) {
         val session = requireNotNull(sessions.getSession(sessionId)) { "Session does not exist" }
         require(workspaceManager.activeWorkspace().id == session.workspaceId) { "Session is outside active workspace" }
+        authoredPluginForeground.select(session.workspaceId, sessionId)
         activeSessionId = sessionId
     }
 
     fun activeSessionWorkspaceId(): String? =
         activeSessionId?.let { id -> sessions.getSession(id)?.workspaceId }
+
+    private val authoredPluginDrafts by lazy { AuthoredPluginDrafts(workspaceFiles) }
+    private val authoredPluginInstallations by lazy {
+        AuthoredPluginInstallations(workspaceFiles, AndroidAuthoredPluginInstallStore(this))
+    }
+
+    /** Trusted workbench actions. The UI supplies only the currently open, persisted user session. */
+    internal fun listSessionPluginDrafts(context: InteractionContext, cursor: String? = null) =
+        withOpenPluginSession(context) { authoredPluginDrafts.list(context.workspaceId, cursor) }
+
+    internal fun previewSessionPluginDraft(context: InteractionContext, pluginId: String) =
+        withOpenPluginSession(context) { authoredPluginDrafts.preview(context.workspaceId, pluginId) }
+
+    internal fun sessionPluginProfile(context: InteractionContext): EffectiveSecurityProfile =
+        withOpenPluginSession(context) { credentialVaultRuntime.profileStore.profileFor(context.workspaceId) }
+
+    /** Only the actual preview dialog may call this, after its explicit confirmation. */
+    internal fun activateSessionPlugin(
+        context: InteractionContext,
+        confirmation: AuthoredPluginTurn,
+        expectedProfile: EffectiveSecurityProfile,
+        pluginId: String,
+        sha256: String,
+    ): AuthoredPluginReceipt {
+        require(confirmation.matches(context.workspaceId, context.sessionId)) { "插件确认不属于该会话" }
+        return authoredPlugins.activateForSession(confirmation, pluginId, sha256) {
+            canConfirmPluginChange(context, expectedProfile)
+        }
+    }
+
+    internal fun saveSessionPluginVersion(
+        context: InteractionContext,
+        confirmation: AuthoredPluginTurn,
+        expectedProfile: EffectiveSecurityProfile,
+        pluginId: String,
+        sha256: String,
+    ): AuthoredPluginInstalledRecord {
+        require(confirmation.matches(context.workspaceId, context.sessionId)) { "插件确认不属于该会话" }
+        return authoredPluginInstallations.saveConfirmed(confirmation, pluginId, sha256) {
+            canConfirmPluginChange(context, expectedProfile)
+        }
+    }
+
+    internal fun listWorkspacePluginVersions(context: InteractionContext) =
+        withOpenPluginSession(context) { authoredPluginInstallations.list(context.workspaceId) }
+
+    internal fun previewSavedPluginVersion(context: InteractionContext, record: AuthoredPluginInstalledRecord) =
+        withOpenPluginSession(context) {
+            require(record.workspaceId == context.workspaceId)
+            authoredPluginInstallations.previewSaved(context.workspaceId, record.id, record.sha256, record.installationId)
+        }
+
+    internal fun activateSavedPluginVersion(
+        context: InteractionContext,
+        confirmation: AuthoredPluginTurn,
+        expectedProfile: EffectiveSecurityProfile,
+        record: AuthoredPluginInstalledRecord,
+    ): AuthoredPluginReceipt {
+        require(confirmation.matches(context.workspaceId, context.sessionId) && record.workspaceId == context.workspaceId)
+        return authoredPlugins.activateSavedForSession(authoredPluginInstallations, confirmation, record.id, record.sha256, record.installationId) {
+            canConfirmPluginChange(context, expectedProfile)
+        }
+    }
+
+    internal fun removeSavedPluginVersion(
+        context: InteractionContext, confirmation: AuthoredPluginTurn,
+        expectedProfile: EffectiveSecurityProfile, expected: AuthoredPluginInstalledRecord,
+    ) {
+        require(confirmation.matches(context.workspaceId, context.sessionId) && expected.workspaceId == context.workspaceId)
+        authoredPluginInstallations.removeConfirmed(confirmation, expected) { canConfirmPluginChange(context, expectedProfile) }
+    }
+
+    internal fun replaceSavedPluginVersion(
+        context: InteractionContext, confirmation: AuthoredPluginTurn,
+        expectedProfile: EffectiveSecurityProfile, expected: AuthoredPluginInstalledRecord, newSha256: String,
+    ): AuthoredPluginInstalledRecord {
+        require(confirmation.matches(context.workspaceId, context.sessionId) && expected.workspaceId == context.workspaceId)
+        return authoredPluginInstallations.replaceConfirmed(confirmation, expected, newSha256) { canConfirmPluginChange(context, expectedProfile) }
+    }
+
+    private fun canConfirmPluginChange(context: InteractionContext, expectedProfile: EffectiveSecurityProfile): Boolean =
+        isOpenPluginSession(context) && expectedProfile.workspaceId == context.workspaceId &&
+            expectedProfile.accessEnvelope != AccessEnvelope.READ_ONLY &&
+            credentialVaultRuntime.profileStore.profileFor(context.workspaceId) == expectedProfile
+
+    internal fun listSessionPlugins(context: InteractionContext): List<AuthoredPluginReceipt> =
+        withOpenPluginSession(context) { authoredPlugins.listForSession(context.workspaceId, context.sessionId) }
+
+    private inline fun <T> withOpenPluginSession(context: InteractionContext, read: () -> T): T {
+        requireOpenPluginSession(context)
+        return read().also { requireOpenPluginSession(context) }
+    }
+
+    internal fun revokeSessionPlugin(context: InteractionContext, receipt: AuthoredPluginReceipt) {
+        requireOpenPluginSession(context)
+        authoredPlugins.revokeForSession(context.workspaceId, context.sessionId, receipt)
+    }
+
+    private fun requireOpenPluginSession(context: InteractionContext) {
+        require(isOpenPluginSession(context)) { "该会话已离开、归档或不可用" }
+    }
+
+    private fun isOpenPluginSession(context: InteractionContext): Boolean {
+        val session = sessions.getSession(context.sessionId) ?: return false
+        return session.id == activeSessionId && session.workspaceId == context.workspaceId &&
+            session.kind == com.cordiact.core.conversation.SessionKind.USER && session.archivedAtMillis == null &&
+            workspaceManager.findSessionWorkspace(context.workspaceId) != null
+    }
 
     /**
      * Bring back whatever the user installed in an earlier process.

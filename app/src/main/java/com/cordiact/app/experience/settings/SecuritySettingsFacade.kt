@@ -59,7 +59,11 @@ class SecuritySettingsFacade(private val app: CordiActApplication) {
             var audited = false
             val revision = writer(workspaceId) { audited = it }.write("security.permission", expected, object : SettingsMutation {
                 override fun validate() { check(profiles.profileFor(workspaceId).profileRevision == expected) { "SETTINGS_REVISION_CONFLICT" } }
-                override fun commit(expectedRevision: Long) = profiles.setPreset(workspaceId, preset, reviewer = resolved, expectedRevision = expectedRevision)
+                override fun commit(expectedRevision: Long) = app.authoredPluginForeground.whileUpdatingPolicy(workspaceId) {
+                    // A plugin commit already in progress can finish; no old or new confirmation
+                    // can be submitted during the subsequent settings write.
+                    profiles.setPreset(workspaceId, preset, reviewer = resolved, expectedRevision = expectedRevision)
+                }
             })
             SecurityWriteReceipt(revision, audited)
         }

@@ -76,6 +76,35 @@ class ConversationPluginsTest {
         assertFailsWith<IllegalStateException> { plugin.messages(created.id) }
     }
 
+    @Test
+    fun archivedSessionCleanupUsesPersistedOwnerAndRetriesBeforeRestore() {
+        val store = FakeSessionStore()
+        val seen = mutableListOf<Pair<String, String>>()
+        var cleanupFails = true
+        val plugin = SessionManagerPlugin(
+            store,
+            WorkspaceSessionResolver { id -> Workspace(id, "Test", 1L, 1L) },
+            clockMillis = { 100L },
+            idFactory = { "session-1" },
+            invalidateSessionResources = { archived ->
+                assertEquals(100L, store.get(archived.id)?.archivedAtMillis)
+                seen += archived.workspaceId to archived.id
+                check(!cleanupFails) { "cleanup unavailable" }
+            },
+        )
+        plugin.onEnable()
+        val created = plugin.createSession("workspace-1", "Test")
+        plugin.restoreSession(created.id) // no invalidation of an already-open session
+        assertTrue(seen.isEmpty())
+        assertFailsWith<SessionArchiveCleanupException> { plugin.archiveSession(created.id) }
+        assertEquals(100L, plugin.getSession(created.id)?.archivedAtMillis)
+        assertFailsWith<IllegalStateException> { plugin.restoreSession(created.id) }
+        assertEquals(100L, plugin.getSession(created.id)?.archivedAtMillis)
+        cleanupFails = false
+        assertEquals(null, plugin.restoreSession(created.id).archivedAtMillis)
+        assertEquals(List(3) { "workspace-1" to "session-1" }, seen)
+    }
+
     private fun request() = ModelGenerationRequest(
         sessionId = "session-1",
         model = ModelId("test-provider", "echo-v1"),
@@ -118,6 +147,11 @@ class ConversationPluginsTest {
             return value
         }
         override fun get(sessionId: String) = sessions[sessionId]
+        override fun archiveSession(sessionId: String, nowMillis: Long): ConversationSession =
+            sessions.getValue(sessionId).let { it.copy(archivedAtMillis = it.archivedAtMillis ?: nowMillis) }
+                .also { sessions[sessionId] = it }
+        override fun restoreSession(sessionId: String): ConversationSession =
+            sessions.getValue(sessionId).copy(archivedAtMillis = null).also { sessions[sessionId] = it }
         override fun list(workspaceId: String) =
             sessions.values.filter { it.workspaceId == workspaceId && it.kind == SessionKind.USER }
         override fun listChildren(parentSessionId: String) =

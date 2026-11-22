@@ -15,16 +15,19 @@ CordiAct 是一个原生 Android、以工作区为中心的行动运行时：对
 - `deepseek-harness`：DeepSeek 动作提交适配器契约（尚未被 app 消费）
 - `search-providers`、`mcp-client`、`subagent`：搜索、MCP 与子 Agent 运行时
 
+## Agent 编写插件
+
+普通前台会话的 Agent 可以写工作区插件源码、检查版本并申请用户批准；用户也能在会话插件面板直接预览、确认启用和撤回。会话试用提供固定文本和有界文本变换，不执行第三方脚本，也不在进程重启后自动启用。可信宿主插件可按全局、工作区或会话发布工具、斜杠命令与别名。声明式扩展包把工具和命令放进同一个带版本、宿主兼容与能力声明的清单，支持安装、升级、回滚和旧插件迁移；格式与边界见[声明式扩展包](docs/architecture/extension-packages.md)。插件架构与创作流程见[插件架构](docs/architecture/plugin-extension.md)与[示例与验收](docs/testing/authored-plugins.md)。
+
 ## 构建与测试
 
-本地需要 JDK 17+ 与 Android SDK（`compileSdk = 35`）：
+纯 JVM 测试不需要 Android SDK。APK 验证需要完整的 Android SDK 36 和兼容的原生工具链。JDK 配置、ARM64 工作区入口、测试范围与 Android 构建见[开发环境](docs/development.md)。
 
-```bash
-./gradlew :core:test          # 纯 JVM 契约、策略与工具测试
-./gradlew test assembleDebug  # 全部单元测试 + debug APK
+```sh
+./gradlew -p verification/jvm test  # 七个 JVM 模块；其中六个有测试源
 ```
 
-APK 只由 GitHub Actions 构建，工作流见 `.github/workflows/android.yml`。工作流会上传 `cordiact-debug-apk` 产物，并额外 `assembleRelease` 后检查 release merged manifest/APK 中不含 `AutomationProbeReceiver`。
+APK 只由 [GitHub Actions](.github/workflows/android.yml) 打包，不在本地打包。主工作流上传 `cordiact-debug-apk`，额外构建 Release 并检查不含 `AutomationProbeReceiver`。长期演进、上游参考和验收门槛见[路线图](docs/roadmap.md)。
 
 侧载 debug 包：
 
@@ -57,17 +60,12 @@ adb install -r app-debug.apk
 
 ### 调试探针
 
-`AutomationProbeReceiver` 及其 Manifest 声明位于 `app/src/debug`，release 变体不包含。release 检查由 CI 执行；本地可运行：
-
-```bash
-./gradlew :app:processReleaseManifest
-grep -R "AutomationProbeReceiver" app/build/intermediates/merged_manifests/release || true
-```
+`AutomationProbeReceiver` 只声明在 [Debug Manifest](app/src/debug/AndroidManifest.xml)，Release 不包含。[Android CI](.github/workflows/android.yml#L58-L76) 检查 Release 合并清单、APK 清单和 DEX。
 
 ## 已知未验证 / 发布条件
 
-- 本仓库当前不在 Google Play 发布流程中；`targetSdk = 35`。Google Play 新应用/更新的 API 36 要求是条件性发布准入，未在本次修复中升级，以避免无关行为变化。
-- 真机验收尚未在本机执行（本机为 aarch64 proot，aapt2/aidl 原生二进制不可用）。需要在真实设备上验证：对话 → 工作区 → 受控执行 → 审批 → 结果；重点检查审批卡显示、拒绝零执行、root 关闭时 `priv_exec` 走 shell、release 包无探针。
+- 本仓库不在 Google Play 发布流程中；当前 `targetSdk = 36`。签名 Beta 与真机升级见[放行清单](docs/beta-readiness.md)。
+- 真机端到端验收需要真实设备：对话 → 工作区 → 受控执行 → 审批 → 结果；重点检查审批卡显示、拒绝零执行、root 关闭时 `priv_exec` 走 shell、Release 包无探针。
 - 真机安装、root/Shizuku 权限、Termux 实际命令与 SSH 远端连通性均未在本机验证。
 
 ## License

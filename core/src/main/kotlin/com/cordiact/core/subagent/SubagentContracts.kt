@@ -124,6 +124,9 @@ fun childContext(
     sessionId = childSessionId,
     requestText = prompt,
     grantedScopes = parent.grantedScopes,
+    toolRegistrations = emptyMap(),
+    allowsPluginAuthoring = false,
+    authoredPluginTurn = null,
 )
 
 interface SubagentRuntimeService {

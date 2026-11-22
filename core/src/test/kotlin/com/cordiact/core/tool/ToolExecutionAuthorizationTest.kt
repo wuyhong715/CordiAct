@@ -332,6 +332,35 @@ class ToolExecutionAuthorizationTest {
         assertEquals(0, invocations)
     }
 
+    @Test
+    fun scopedApprovalCannotExecuteAReplacementWithTheSameDescriptorAndExecutor() {
+        val registry = InMemoryToolDefinitionRegistry()
+        val contributions = com.cordiact.core.plugin.PluginToolContributions(registry)
+        val kernel = com.cordiact.core.plugin.PluginKernel()
+        val instance = com.cordiact.core.plugin.PluginInstanceId("test", WORKSPACE, "session")
+        val id = "extension.test.run"
+        var calls = 0
+        val definition = ToolDefinition(executionDescriptor().copy(id = id, defaultEnabled = true),
+            ToolExecutor { _, _ -> calls++; ToolResult() })
+        kernel.register(instance, object : com.cordiact.core.plugin.ContextPlugin {
+            override fun start(context: com.cordiact.core.plugin.PluginContext) = contributions.register(context, definition)
+        })
+        kernel.enable(instance)
+        val gateway = FakeGateway {
+            kernel.restart(instance)
+            ApprovalDecision(approved = true)
+        }
+        val manager = ToolManagerPlugin(registry, FakePreferences(), FakeWorkspaceManager(), { PluginState.ENABLED },
+            executionPolicy = ToolExecutionAuthorizationPolicy(gateway), sessionWorkspace = { WORKSPACE })
+        manager.onEnable()
+        val binding = requireNotNull(manager.resolveForTurn(ToolActivationContext(WORKSPACE, sessionId = "session")).single().registration)
+        val context = ToolInvocationContext(WORKSPACE, sessionId = "session", toolRegistrations = mapOf(id to binding))
+        val denied = assertFailsWith<ToolManagerException> { manager.invoke(context, id, commandArgs("id")) }
+        assertEquals(ToolManagerException.Code.APPROVAL_DENIED, denied.code)
+        assertEquals(1, gateway.requests.size)
+        assertEquals(0, calls)
+    }
+
     private fun executionDescriptor() = ToolDescriptor(
         id = "priv_exec",
         name = "Privileged exec",

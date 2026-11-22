@@ -52,15 +52,16 @@ enum class MessageRole { SYSTEM, USER, ASSISTANT, TOOL }
 /**
  * One tool the model may call.
  *
- * Deliberately mirrors [ToolDescriptor] rather than reusing it: the model contract must not
- * depend on the tool manager, or a provider adapter would gain the ability to dispatch. This is
- * a request shape, not a capability.
+ * Providers use only the public name, description and schema. A host may attach opaque
+ * registration identity so dispatch can reject a model response from a retired tool catalog.
  */
 data class ModelToolSpec(
     val name: String,
     val description: String,
     /** JSON Schema object as a string; providers want it as-is. */
     val parametersJson: String,
+    /** Local metadata only; deliberately absent from provider payloads and persisted messages. */
+    @Transient val registration: com.cordiact.core.tool.ToolRegistration? = null,
 )
 
 /**
@@ -554,15 +555,22 @@ class ModelAdapterPlugin : ManagedPlugin, ModelAdapterService {
     }
 }
 
+/** Archive is persisted, but the host has not confirmed all local resources were withdrawn. */
+class SessionArchiveCleanupException(cause: Exception) :
+    IllegalStateException("会话已归档，但本地插件清理未完成。恢复前会再次清理。", cause)
+
 /** Lifecycle-managed system plugin for durable workspace-scoped conversation history. */
 class SessionManagerPlugin(
     private val store: ConversationSessionStore,
     private val workspaces: WorkspaceSessionResolver,
     private val clockMillis: () -> Long = System::currentTimeMillis,
     private val idFactory: () -> String = { java.util.UUID.randomUUID().toString() },
+    /** Withdraw process-local session state without recreating it on restore. Must be retryable. */
+    private val invalidateSessionResources: (ConversationSession) -> Unit = {},
 ) : ManagedPlugin, SessionManagerService {
     override val spec = sessionManagerPluginSpec()
     @Volatile private var enabled = false
+    private val archiveLock = Any()
 
     override fun onEnable() { enabled = true }
     override fun onDisable() { enabled = false }
@@ -585,13 +593,22 @@ class SessionManagerPlugin(
         requireManagedUserSession(sessionId)
         return store.renameSession(sessionId, normalizeSessionTitle(title))
     }
-    override fun archiveSession(sessionId: String): ConversationSession {
+    override fun archiveSession(sessionId: String): ConversationSession = synchronized(archiveLock) {
         requireManagedUserSession(sessionId)
-        return store.archiveSession(sessionId, clockMillis())
+        // Persist first: the host can reject new plugin changes as soon as the session is archived.
+        val archived = store.archiveSession(sessionId, clockMillis())
+        try {
+            invalidateSessionResources(archived)
+        } catch (failure: Exception) {
+            throw SessionArchiveCleanupException(failure)
+        }
+        archived
     }
-    override fun restoreSession(sessionId: String): ConversationSession {
-        requireManagedUserSession(sessionId)
-        return store.restoreSession(sessionId)
+    override fun restoreSession(sessionId: String): ConversationSession = synchronized(archiveLock) {
+        val session = requireManagedUserSession(sessionId)
+        // If previous cleanup failed, refuse to make the session usable again until it succeeds.
+        if (session.archivedAtMillis != null) invalidateSessionResources(session)
+        store.restoreSession(sessionId)
     }
     override fun setSessionPinned(sessionId: String, pinned: Boolean): ConversationSession {
         requireManagedUserSession(sessionId)

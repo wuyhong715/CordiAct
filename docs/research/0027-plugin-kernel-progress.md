@@ -1,5 +1,7 @@
 # Plugin kernel implementation — 2026-11-17
 
+Historical checkpoint. For current scoped tool behavior and the DIY plan, see [plugin-first extension](../architecture/plugin-extension.md).
+
 ## Implemented
 
 - `core/plugin/PluginScope.kt`: reverse-order disposal, aggregate failures, retained retryable resources, late-acquisition cleanup, child scopes, idempotent effects.

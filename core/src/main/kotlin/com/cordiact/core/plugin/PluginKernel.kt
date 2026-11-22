@@ -33,7 +33,11 @@ class PluginContext internal constructor(
     val scope: PluginScope,
     private val lookup: (ServiceKey<*>) -> Any?,
     private val publish: (ServiceKey<*>, Any) -> Unit,
+    private val publicationActive: () -> Boolean,
 ) {
+    /** Lock-free read for registries. A contribution is callable only after its start commits. */
+    fun isContributionActive(): Boolean = publicationActive() && scope.isOpen
+
     fun <T : Any> service(key: ServiceKey<T>): T {
         scope.requireOpen()
         return key.type.cast(checkNotNull(lookup(key)) { "Unavailable service '${key.name}'" })
@@ -60,8 +64,12 @@ class PluginKernel {
         var desired = false
         var state = PluginInstanceState.DISABLED
         var scope: PluginScope? = null
+        var publication: ContributionPublication? = null
         var error: String? = null
         val dependencies = linkedMapOf<ServiceKey<*>, Binding>()
+    }
+    private class ContributionPublication {
+        @Volatile var active = false
     }
     private class Binding(val owner: Entry, val value: Any)
     private data class Address(val workspace: String?, val session: String?, val name: String)
@@ -140,6 +148,8 @@ class PluginKernel {
                     }) { invalid.add(entry); changed = true }
             }
         } while (changed)
+        // Stop admitting new calls for the full closure before any disposer can block.
+        invalid.forEach { it.publication?.active = false }
         var cleanupFailure: Exception? = null
         for (entry in started.toList().asReversed()) {
             if (entry in invalid) {
@@ -176,6 +186,8 @@ class PluginKernel {
         val scope = PluginScope()
         entry.scope = scope
         entry.state = PluginInstanceState.STARTING
+        val publication = ContributionPublication()
+        entry.publication = publication
         val context = PluginContext(entry.id, scope, lookup = { key -> synchronized(this) {
             check(key in entry.requirements) { "Undeclared service dependency '${key.name}'" }
             binding(entry, key)?.value
@@ -188,13 +200,14 @@ class PluginKernel {
             scope.effect { synchronized(this) {
                 if (bindings[address]?.second === published) bindings.remove(address)
             } }
-        } })
+        } }, publicationActive = { publication.active })
         try {
             entry.plugin.start(context)
             scope.requireOpen()
             entry.state = PluginInstanceState.ACTIVE
             entry.error = null
             started.add(entry)
+            publication.active = true
         } catch (failure: Exception) {
             entry.state = PluginInstanceState.FAILED
             entry.error = failure.message ?: failure.javaClass.name
@@ -207,6 +220,8 @@ class PluginKernel {
     }
 
     private fun stop(entry: Entry) {
+        entry.publication?.active = false
+        entry.publication = null
         bindings.entries.removeAll { it.value.second.owner === entry }
         try {
             entry.scope?.close()

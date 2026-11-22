@@ -158,19 +158,20 @@ class AndroidToolDispatcher(
          * Uses the same descriptors the manager reports, so what the model is offered and what
          * the manager will accept cannot drift apart.
          */
-        fun specs(descriptors: List<ToolDescriptor>): List<ModelToolSpec> = descriptors.map { descriptor ->
-            ModelToolSpec(
-                name = descriptor.id,
-                description = descriptor.description,
-                // A foreign tool's schema is passed through untouched: flattening it into
-                // ToolInputSchema would drop nested properties, enums and `$ref`, and the model
-                // would then call with shapes the server rejects.
-                parametersJson = descriptor.rawInputSchemaJson ?: schemaJson(
-                    descriptor.inputSchema.parameters,
-                    descriptor.inputSchema.allowAdditional,
-                ),
-            )
-        }
+        fun specs(descriptors: List<ToolDescriptor>): List<ModelToolSpec> = descriptors.map(::spec)
+
+        fun turnSpecs(definitions: List<com.cordiact.core.tool.ToolDefinition>): List<ModelToolSpec> =
+            definitions.map { spec(it.descriptor).copy(registration = it.registration) }
+
+        private fun spec(descriptor: ToolDescriptor): ModelToolSpec = ModelToolSpec(
+            name = descriptor.id,
+            description = descriptor.description,
+            // Preserve foreign schemas, including nested properties and references.
+            parametersJson = descriptor.rawInputSchemaJson ?: schemaJson(
+                descriptor.inputSchema.parameters,
+                descriptor.inputSchema.allowAdditional,
+            ),
+        )
 
         private fun schemaJson(parameters: List<ToolParameter>, allowAdditional: Boolean): String {
             val properties = JSONObject()

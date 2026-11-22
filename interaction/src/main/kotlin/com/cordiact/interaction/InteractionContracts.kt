@@ -194,58 +194,6 @@ class InMemoryInteractionTaskTracker(
         .sortedBy { it.startedAtMillis }
 }
 
-/** Registry mutations are owner-scoped; disabling an owner immediately blocks its commands. */
-class InteractionCommandRegistry {
-    private val commands = ConcurrentHashMap<String, CommandDescriptor>()
-    private val enabledOwners = ConcurrentHashMap.newKeySet<String>()
-
-    @Synchronized
-    fun register(descriptor: CommandDescriptor): CommandDescriptor {
-        val snapshot = descriptor.copy(
-            aliases = descriptor.aliases.toSet(),
-            allowedMentionTypes = descriptor.allowedMentionTypes.toSet(),
-            requiredCapabilities = descriptor.requiredCapabilities.toSet(),
-        )
-        val names = snapshot.aliases + snapshot.name
-        require(names.size == snapshot.aliases.size + 1) { "Command name duplicates an alias" }
-        require(commands.values.none { it.id == snapshot.id }) { "Command id is already registered" }
-        require(names.none { name -> commands.containsKey(name) }) { "Command name is already registered" }
-        names.forEach { commands[it] = snapshot }
-        return snapshot
-    }
-
-    /** Identity token returned by register; safe even when executors are reused. */
-    @Synchronized
-    fun unregisterRegistration(registration: CommandDescriptor): Boolean {
-        if (commands[registration.name] !== registration) return false
-        commands.entries.removeIf { it.value === registration }
-        return true
-    }
-
-    @Synchronized
-    fun unregister(id: String): Boolean {
-        if (commands.values.none { it.id == id }) return false
-        commands.entries.removeIf { it.value.id == id }
-        return true
-    }
-
-    @Synchronized
-    fun unregisterOwner(ownerPluginId: String) {
-        commands.entries.removeIf { it.value.ownerPluginId == ownerPluginId }
-        enabledOwners.remove(ownerPluginId)
-    }
-
-    fun setOwnerEnabled(ownerPluginId: String, enabled: Boolean) {
-        if (enabled) enabledOwners.add(ownerPluginId) else enabledOwners.remove(ownerPluginId)
-    }
-
-    fun find(name: String): CommandDescriptor? = commands[name]?.takeIf { it.ownerPluginId in enabledOwners }
-
-    fun candidates(): List<CommandDescriptor> = commands.values.distinctBy { it.id }
-        .filter { it.ownerPluginId in enabledOwners }
-        .sortedBy { it.name }
-}
-
 /** The only object passed to an interaction command after the preflight gate succeeds. */
 data class InteractionEnvelope(
     val context: InteractionContext,
@@ -263,6 +211,10 @@ data class InteractionEnvelope(
     val attachments: List<com.cordiact.core.attachment.MessagePart.Attachment> = emptyList(),
     /** Host-only notification, never serialized or passed to a model. */
     val onUserMessagePersisted: (() -> Unit)? = null,
+    /** Issued by the composer at send time; parsed text and commands cannot supply it. */
+    @Transient val authoredPluginTurn: com.cordiact.core.plugin.AuthoredPluginTurn? = null,
+    /** Delivers the exact controller before synchronous tool rounds begin. Host only. */
+    @Transient val onModelCallStarted: ((ModelCall) -> Unit)? = null,
 )
 
 /** Host-owned adapter to the existing ConversationTurnService; model choice stays provider-neutral. */
@@ -331,7 +283,8 @@ class InteractionService(
         }
     }
 
-    fun commandCandidates(): List<CommandDescriptor> = if (enabled) commands.candidates() else emptyList()
+    fun commandCandidates(context: InteractionContext? = null): List<CommandDescriptor> =
+        if (enabled) commands.candidates(context) else emptyList()
 
     fun mentionCandidates(context: InteractionContext, parentId: String? = null): List<MentionDescriptor> {
         check(enabled) { "Interaction plugin is disabled" }
@@ -358,24 +311,32 @@ class InteractionService(
         check(enabled) { "Interaction plugin is disabled" }
         val envelope = requireNotNull(prepared.envelope) { "Interaction has syntax errors" }
         require(prepared.diagnostics.isEmpty()) { "Interaction has syntax errors" }
-        val decision = authorization.authorize(envelope.context, envelope.command, envelope.mentions.flatMap { it.entities })
-        check(decision.allowed && !decision.requiresConfirmation) {
-            decision.reason ?: "Interaction is not authorized"
-        }
         val command = requireNotNull(envelope.command) { "No registered behavior command was selected" }
-        check(commands.find(command.name) == command) { "Command owner is no longer enabled" }
-        val currentDecision = authorization.authorize(envelope.context, command, envelope.mentions.flatMap { it.entities })
-        check(currentDecision.allowed && !currentDecision.requiresConfirmation) {
-            currentDecision.reason ?: "Authorization was revoked before execution"
+        fun requireCurrentRegistration() {
+            check(enabled && commands.find(command.name, envelope.context) === command) {
+                "Command registration is no longer active in this session"
+            }
         }
+        fun authorize(current: InteractionEnvelope) {
+            val decision = authorization.authorize(current.context, command, current.mentions.flatMap { it.entities })
+            check(decision.allowed && !decision.requiresConfirmation) { decision.reason ?: "Interaction is not authorized" }
+            requireCurrentRegistration() // user or host policy can block; recheck publication afterwards
+        }
+        requireCurrentRegistration()
+        authorize(envelope)
         val submitter = requireNotNull(modelSubmitter) { "Model submission is not configured" }
-        // Bind this turn's overrides so command executors inherit them without changing their contract.
+        // Bind this turn's registration and overrides; a command cannot resubmit into another view.
         val boundSubmitter = InteractionModelSubmitter { envelopeToSubmit, id, overrides, onEvent ->
+            require(envelopeToSubmit.context == envelope.context && envelopeToSubmit.command === command) {
+                "Command submission must use the same registered command and session"
+            }
+            authorize(envelopeToSubmit)
             submitter.submit(envelopeToSubmit, id, overrides ?: parameters, onEvent)
         }
         val task = taskTracker.start(command, envelope.context)
         val terminal = java.util.concurrent.atomic.AtomicBoolean(false)
         val result = try {
+            authorize(envelope)
             command.executor.execute(envelope, modelId, boundSubmitter) { event ->
                 when (event) {
                     is ModelEvent.Completed -> if (terminal.compareAndSet(false, true)) {
@@ -443,11 +404,14 @@ class InteractionService(
         parameters: GenerationParameters? = null,
         attachments: List<com.cordiact.core.attachment.MessagePart.Attachment> = emptyList(),
         onUserMessagePersisted: (() -> Unit)? = null,
+        authoredPluginTurn: com.cordiact.core.plugin.AuthoredPluginTurn? = null,
+        onModelCallStarted: ((ModelCall) -> Unit)? = null,
         onEvent: (ModelEvent) -> Unit,
     ): ModelCall {
         check(enabled) { "Interaction plugin is disabled" }
         val envelope = requireNotNull(prepared.envelope) { "Interaction has syntax errors" }
-            .copy(attachments = attachments, onUserMessagePersisted = onUserMessagePersisted)
+            .copy(attachments = attachments, onUserMessagePersisted = onUserMessagePersisted,
+                authoredPluginTurn = authoredPluginTurn, onModelCallStarted = onModelCallStarted)
         require(prepared.diagnostics.isEmpty()) { "Interaction has syntax errors" }
         require(envelope.command == null) { "Behavior commands must be dispatched, not sent as ordinary prompts" }
         require(envelope.submittedText.isNotBlank() || attachments.isNotEmpty()) { "Message must not be blank" }
@@ -533,8 +497,11 @@ class InteractionPlugin(
     val service: InteractionService,
     val commandRegistry: InteractionCommandRegistry,
     kernel: com.cordiact.core.plugin.PluginKernel = com.cordiact.core.plugin.PluginKernel(),
+    builtInCommands: List<CommandDescriptor> = emptyList(),
 ) : com.cordiact.core.plugin.RuntimeAwarePlugin {
     override val spec: PluginSpec = interactionPluginSpec()
+    val commandContributions = PluginCommandContributions(commandRegistry)
+    private val commandDefinitions = builtInCommands.toList()
     @Volatile private var enabled = false
 
     private val runtime = com.cordiact.core.plugin.ContextManagedPlugin(spec, kernel,
@@ -542,6 +509,7 @@ class InteractionPlugin(
             override fun start(context: com.cordiact.core.plugin.PluginContext) {
                 context.provide(COMMAND_REGISTRY, commandRegistry)
                 context.provide(SERVICE, service)
+                commandDefinitions.forEach { commandContributions.register(context, it) }
                 context.effect { commandRegistry.setOwnerEnabled(spec.id, false) }
                 context.effect { service.setEnabled(false) }
                 context.effect { enabled = false }

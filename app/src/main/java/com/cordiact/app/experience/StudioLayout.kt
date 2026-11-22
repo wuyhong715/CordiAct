@@ -15,7 +15,10 @@ import androidx.compose.ui.unit.dp
 
 /** A single entry to the current session’s secondary views. */
 @Composable
-internal fun StudioPaneMenu(pane: StudioPane, tools: Int, previews: Int, onSelect: (StudioPane) -> Unit) {
+internal fun StudioPaneMenu(
+    pane: StudioPane, tools: Int, previews: Int, onSelect: (StudioPane) -> Unit,
+    onSessionPlugins: (() -> Unit)? = null,
+) {
     var expanded by remember { mutableStateOf(false) }
     val label = if (pane != StudioPane.Conversation) pane.label
         else if (previews > 0) "产物 $previews" else if (tools > 0) "执行中 $tools" else "工作台"
@@ -38,6 +41,14 @@ internal fun StudioPaneMenu(pane: StudioPane, tools: Int, previews: Int, onSelec
                     } else null,
                     modifier = Modifier.testTag("studio-pane-${item.name.lowercase()}").semantics { selected = item == pane },
                     onClick = { expanded = false; onSelect(item) },
+                )
+            }
+            if (onSessionPlugins != null) {
+                HorizontalDivider()
+                DropdownMenuItem(
+                    text = { Text("会话插件") },
+                    onClick = { expanded = false; onSessionPlugins() },
+                    modifier = Modifier.testTag("studio-session-plugins"),
                 )
             }
         }

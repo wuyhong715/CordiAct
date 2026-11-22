@@ -5,9 +5,9 @@ class PluginScope : AutoCloseable {
     private val lock = Any()
     private val resources = mutableListOf<AutoCloseable>()
     private var closing = false
-    private var closed = false
+    @Volatile private var closed = false
 
-    val isOpen: Boolean get() = synchronized(lock) { !closed }
+    val isOpen: Boolean get() = !closed
 
     /** Register immediately after acquisition. A late resource is disposed, never leaked. */
     fun <T : AutoCloseable> own(resource: T): T = synchronized(lock) {

@@ -19,6 +19,14 @@ import com.cordiact.app.experience.*
 import com.cordiact.app.experience.model.*
 import com.cordiact.core.conversation.ModelDescriptor
 import com.cordiact.core.conversation.ModelId
+import com.cordiact.core.plugin.AuthoredPluginDefinition
+import com.cordiact.core.plugin.AuthoredPluginDraftEntry
+import com.cordiact.core.plugin.AuthoredPluginDraftPage
+import com.cordiact.core.plugin.AuthoredPluginInstallationEntry
+import com.cordiact.core.plugin.AuthoredPluginInstallationStatus
+import com.cordiact.core.plugin.AuthoredPluginInstalledRecord
+import com.cordiact.core.plugin.AuthoredPluginReceipt
+import com.cordiact.core.plugin.AuthoredToolDefinition
 import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
@@ -263,6 +271,159 @@ class ExperienceComponentTest {
         compose.onNodeWithTag("studio-pane-artifacts").performClick()
         compose.onNodeWithTag("studio-pane-menu").performClick()
         compose.onNodeWithTag("studio-pane-artifacts").assertIsSelected()
+    }
+
+    @Test fun sessionPlugins_canOpenFromWorkbenchWithoutModelAndRevokeOnlyAfterConfirmation() {
+        val receipt = AuthoredPluginReceipt("demo", "a".repeat(64), listOf("extension.authored.demo.show"))
+        var shown by mutableStateOf(false)
+        var revoked: AuthoredPluginReceipt? = null
+        content {
+            StudioPaneMenu(StudioPane.Conversation, tools = 0, previews = 0, onSelect = {}, onSessionPlugins = { shown = true })
+            if (shown) SessionPluginsDialog(
+                receipts = listOf(receipt), reading = false, busy = false, note = null, failure = null,
+                onDismiss = { shown = false }, onRefresh = {}, onRevoke = { revoked = it },
+            )
+        }
+        compose.onNodeWithTag("studio-pane-menu").performClick()
+        compose.onNodeWithTag("studio-session-plugins").performClick()
+        compose.onNodeWithText("extension.authored.demo.show").assertExists()
+        compose.onNodeWithTag("session-plugin-revoke-demo").performClick()
+        compose.runOnIdle { assertNull(revoked) }
+        compose.onNodeWithTag("session-plugin-confirm-revoke").performClick()
+        compose.runOnIdle { assertSame(receipt, revoked) }
+    }
+
+    @Test fun pluginDrafts_emptyFilteredPageCanAdvanceAndPreviewShowsDifferentActiveVersion() {
+        val draft = AuthoredPluginDefinition("demo", "草稿标题", listOf(AuthoredToolDefinition("show", "说明", "固定正文")), "a".repeat(64))
+        val active = AuthoredPluginReceipt("demo", "b".repeat(64), listOf("extension.authored.demo.show"))
+        var view by mutableStateOf("active")
+        var cursor by mutableStateOf<String?>(null)
+        content {
+            when (view) {
+                "active" -> SessionPluginsDialog(listOf(active), false, false, null, null,
+                    onDismiss = {}, onRefresh = {}, onRevoke = { error("Preview must not revoke") }, onOpenDrafts = { view = "drafts" })
+                "drafts" -> PluginDraftsDialog(
+                    if (cursor == null) AuthoredPluginDraftPage(emptyList(), "opaque")
+                    else AuthoredPluginDraftPage(listOf(AuthoredPluginDraftEntry("demo", 192L)), null),
+                    null, cursor == null, onPreview = { view = it }, onNext = { cursor = it },
+                    onFirstPage = { cursor = null }, onDismiss = { view = "active" },
+                )
+                else -> PluginDraftPreviewDialog(view, draft, active, null, onBack = { view = "drafts" })
+            }
+        }
+        compose.onNodeWithTag("session-plugin-drafts").performClick()
+        compose.onNodeWithTag("plugin-draft-next").assertIsEnabled().performClick()
+        compose.runOnIdle { assertEquals("opaque", cursor) }
+        compose.onNodeWithTag("plugin-draft-preview-demo").performClick()
+        compose.onNodeWithText("草稿与本会话启用的版本不同；编辑草稿不会更新启用版本。").assertExists()
+        compose.onNodeWithText("固定正文").assertExists()
+        compose.onNodeWithText("启用", substring = false).assertDoesNotExist()
+        compose.onNodeWithTag("session-plugin-revoke-demo").assertDoesNotExist()
+    }
+
+    @Test fun pluginPreview_requiresSecondClickAndPassesNoActionUnderReadOnly() {
+        val draft = AuthoredPluginDefinition("demo", "草稿标题", listOf(AuthoredToolDefinition("show", "说明", "固定正文")), "a".repeat(64))
+        var readOnly by mutableStateOf(true)
+        var enabled = 0
+        content {
+            PluginDraftPreviewDialog("demo", draft, null, null, onBack = {}, readOnly = readOnly, onEnable = { enabled++ })
+        }
+        compose.onNodeWithTag("plugin-draft-enable").assertDoesNotExist()
+        compose.runOnIdle { readOnly = false }
+        compose.onNodeWithTag("plugin-draft-enable").performClick()
+        compose.runOnIdle { assertEquals(0, enabled) }
+        compose.onNodeWithText("取消").performClick()
+        compose.runOnIdle { assertEquals(0, enabled) }
+        compose.onNodeWithTag("plugin-draft-enable").performClick()
+        compose.onNodeWithTag("plugin-draft-confirm-enable").performClick()
+        compose.runOnIdle { assertEquals(1, enabled) }
+    }
+
+    @Test fun savingDraftRequiresExplicitConfirmationAndNeverEnables() {
+        val draft = AuthoredPluginDefinition("demo", "草稿标题", listOf(AuthoredToolDefinition("show", "说明", "固定正文")), "a".repeat(64))
+        var saves = 0
+        var activations = 0
+        content { PluginDraftPreviewDialog("demo", draft, null, null, onBack = {},
+            onEnable = { activations++ }, onSave = { saves++ }) }
+        compose.onNodeWithTag("plugin-draft-save").performScrollTo().performClick()
+        compose.runOnIdle { assertEquals(0, saves); assertEquals(0, activations) }
+        compose.onNodeWithTag("plugin-draft-confirm-save").performClick()
+        compose.runOnIdle { assertEquals(1, saves); assertEquals(0, activations) }
+    }
+
+    @Test fun savedPluginListDistinguishesInvalidVersionFromNoSavedRecords() {
+        var shown by mutableStateOf(false)
+        content {
+            if (!shown) SessionPluginsDialog(emptyList(), false, false, null, null,
+                onDismiss = {}, onRefresh = {}, onRevoke = {}, onOpenSaved = { shown = true })
+            else WorkspacePluginVersionsDialog(
+                listOf(AuthoredPluginInstallationEntry("broken", AuthoredPluginInstallationStatus.CORRUPT, null),
+                    AuthoredPluginInstallationEntry("future", AuthoredPluginInstallationStatus.UNSUPPORTED, null)),
+                error = false, onRefresh = {}, onBack = { shown = false },
+                onPreview = { error("Unreadable records must not open a preview") },
+            )
+        }
+        compose.onNodeWithTag("session-plugin-saved-versions").performClick()
+        compose.onNodeWithText("内容或摘要校验失败").assertExists()
+        compose.onNodeWithText("此应用版本不支持该记录格式").assertExists()
+        compose.onNodeWithText("当前工作区尚无已保存版本。").assertDoesNotExist()
+        compose.onNodeWithTag("workspace-plugin-preview-broken").assertDoesNotExist()
+        compose.onNodeWithTag("workspace-plugin-preview-future").assertDoesNotExist()
+    }
+
+    @Test fun savedPluginPreviewShowsSourceAndRequiresExplicitEnable() {
+        val digest = "a".repeat(64)
+        val record = AuthoredPluginInstalledRecord("w", "demo", digest, 1, 1, 192, 1L,
+            "批准标题", listOf("extension.authored.demo.show"))
+        val definition = AuthoredPluginDefinition("demo", "批准标题",
+            listOf(AuthoredToolDefinition("show", "说明", "快照正文")), digest)
+        var selected by mutableStateOf<AuthoredPluginInstalledRecord?>(null)
+        var readOnly by mutableStateOf(true)
+        var activations = 0
+        content {
+            if (selected == null) {
+                WorkspacePluginVersionsDialog(listOf(AuthoredPluginInstallationEntry("demo", AuthoredPluginInstallationStatus.READY, record)),
+                    error = false, onRefresh = {}, onBack = {}, onPreview = { selected = it })
+            } else {
+                PluginDraftPreviewDialog("demo", definition, null, null, onBack = { selected = null },
+                    readOnly = readOnly, onEnable = { activations++ },
+                    onSave = { error("Save cannot be shown for an installed preview") }, fromSaved = true)
+            }
+        }
+        compose.onNodeWithTag("workspace-plugin-preview-demo").performScrollTo().performClick()
+        compose.runOnIdle { assertSame(record, selected) }
+        compose.onNodeWithText("已保存版本 SHA-256").assertExists()
+        compose.onNodeWithText("快照正文").assertExists()
+        compose.onNodeWithTag("plugin-draft-enable").assertDoesNotExist()
+        compose.runOnIdle { readOnly = false }
+        compose.onNodeWithTag("plugin-draft-save").assertDoesNotExist()
+        compose.onNodeWithTag("plugin-draft-enable").performScrollTo().performClick()
+        compose.onNodeWithText("仅启用下列摘要对应的已保存版本，不读取草稿。").assertExists()
+        compose.runOnIdle { assertEquals(0, activations) }
+        compose.onNodeWithTag("plugin-draft-confirm-enable").performClick()
+        compose.runOnIdle { assertEquals(1, activations) }
+    }
+
+    @Test fun savedPluginReviewKeepsDeleteReplaceAndEnableSeparate() {
+        val old = AuthoredPluginDefinition("demo", "旧版", listOf(AuthoredToolDefinition("show", "说明", "旧正文")), "a".repeat(64))
+        val candidate = AuthoredPluginDefinition("demo", "新版", listOf(AuthoredToolDefinition("show", "说明", "新正文")), "b".repeat(64))
+        var removes = 0
+        var replacements = 0
+        var enables = 0
+        content {
+            PluginDraftPreviewDialog("demo", old, null, null, onBack = {}, onEnable = { enables++ },
+                fromSaved = true, replacement = candidate, onRemoveSaved = { removes++ }, onReplaceSaved = { replacements++ })
+        }
+        compose.onNodeWithText("新正文").assertExists()
+        compose.onNodeWithTag("plugin-saved-replace").performScrollTo().performClick()
+        compose.onNodeWithText("旧版 SHA-256：${old.sha256}").assertExists()
+        compose.onNodeWithText("新版 SHA-256：${candidate.sha256}").assertExists()
+        compose.runOnIdle { assertEquals(0, replacements) }
+        compose.onNodeWithTag("plugin-draft-confirm-replace").performClick()
+        compose.onNodeWithTag("plugin-saved-remove").performScrollTo().performClick()
+        compose.runOnIdle { assertEquals(0, removes); assertEquals(1, replacements); assertEquals(0, enables) }
+        compose.onNodeWithTag("plugin-draft-confirm-remove").performClick()
+        compose.runOnIdle { assertEquals(1, removes); assertEquals(1, replacements); assertEquals(0, enables) }
     }
 
     @Test fun everyOriginalGlyphCanBeBuiltAndDrawn() {

@@ -40,6 +40,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.cordiact.app.experience.model.ToolActivity
 import com.cordiact.app.experience.model.ToolPhase
+import com.cordiact.interaction.InteractionContext
 import kotlinx.coroutines.launch
 
 internal enum class StudioPane(val label: String) { Conversation("对话"), Activity("执行轨迹"), Artifacts("产物") }
@@ -58,12 +59,16 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
     var promptToInsert by remember { mutableStateOf("") }
     var settingsLink by remember { mutableStateOf<String?>(null) }
     var manageModels by remember { mutableStateOf(false) }
+    var showSessionPlugins by remember(saveableKey, state.archived) { mutableStateOf(false) }
+    val pluginOwner = state.workspace?.id?.let { workspaceId ->
+        state.sessionId?.takeUnless { state.archived || state.loading }?.let { InteractionContext(it, workspaceId) }
+    }
     val composer by viewModel.composer.collectAsStateWithLifecycle()
     val settingsApp = LocalContext.current.applicationContext as com.cordiact.app.CordiActApplication
     val settingsVm: com.cordiact.app.experience.settings.SettingsViewModel = androidx.lifecycle.viewmodel.compose.viewModel(
         factory = com.cordiact.app.experience.settings.SettingsViewModel.factory(
             remember(settingsApp) { com.cordiact.app.experience.settings.AndroidSettingsFacade(settingsApp) }))
-    fun openSettings(link: String? = null) { settingsLink = link; inspected = null; manageModels = true }
+    fun openSettings(link: String? = null) { settingsLink = link; inspected = null; showSessionPlugins = false; manageModels = true }
     if (manageModels) {
         com.cordiact.app.experience.settings.SettingsHost(settingsVm, initialLink = settingsLink) { manageModels = false; settingsLink = null; viewModel.refreshSettingsModels() }
         return
@@ -115,7 +120,9 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
                         }
                         StudioPaneMenu(pane, state.activeTools,
                             com.cordiact.app.render.PreviewInbox.unseenCount(state.sessionId),
-                            onSelect = { pane = it })
+                            onSelect = { pane = it },
+                            onSessionPlugins = if (pluginOwner != null) ({ showSessionPlugins = true }) else null,
+                        )
                     }
                     },
                     content = { viewportModifier ->
@@ -180,6 +187,9 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
                 }
                 inspected?.let { step ->
                     CompactInspector(step = step, onClose = { inspected = null }, onSettings = { link -> openSettings(link) }, modifier = Modifier.align(Alignment.BottomCenter).windowInsetsPadding(WindowInsets.systemBars.union(WindowInsets.ime)))
+                }
+                if (showSessionPlugins && pluginOwner != null) {
+                    SessionPluginsRoute(settingsApp, pluginOwner) { showSessionPlugins = false }
                 }
 
             }

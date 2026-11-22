@@ -73,7 +73,7 @@ object InputSyntax {
 
 fun completionCandidates(target: InputCompletionTarget, commands: InteractionCommandRegistry,
     directory: MentionDirectory, fills: FillValueStore, context: InteractionContext): List<InputCompletionCandidate> = when(target.kind) {
-    '/' -> commands.candidates().flatMap { command -> (listOf(command.name) + command.aliases).map { name ->
+    '/' -> commands.candidates(context).flatMap { command -> (listOf(command.name) + command.aliases).map { name ->
         InputCompletionCandidate("/$name", "/$name ", if (command.allowsEmptyBody) "本地命令" else "需要输入内容")
     } }
     '#' -> fills.keys().sorted().map { key -> InputCompletionCandidate("#$key", "#{${key}}", fills.get(key).orEmpty().take(100)) }

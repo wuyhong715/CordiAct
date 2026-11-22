@@ -94,7 +94,18 @@ class ConversationTurnService(
     )
     private val activeSessions = ConcurrentHashMap.newKeySet<String>()
     private val activeCallsBySession = ConcurrentHashMap<String, ModelCall>()
-    private val activeToolRounds = ConcurrentHashMap<String, ModelCall>()
+
+    /** A stale cancellation handle cannot address a newer turn's provider round by session ID. */
+    private class ToolTurnRun(private val authoring: AutoCloseable? = null) {
+        val terminal = AtomicBoolean(false)
+        val round = java.util.concurrent.atomic.AtomicReference<ModelCall?>(null)
+        val controller = ModelCall {
+            terminal.set(true)
+            closeAuthoring()
+            round.getAndSet(null)?.cancel()
+        }
+        fun closeAuthoring() { authoring?.close() }
+    }
 
     /** Whether a turn currently owns this Session. Used to decide if a report may wake it. */
     fun isTurnActive(sessionId: String): Boolean = activeSessions.contains(sessionId)
@@ -186,20 +197,20 @@ class ConversationTurnService(
         parts: List<MessagePart> = emptyList(),
         onUserMessagePersisted: (() -> Unit)? = null,
         userMetadataJson: String? = null,
+        onModelCallStarted: ((ModelCall) -> Unit)? = null,
         onEvent: (ModelEvent) -> Unit,
     ): ModelCall {
         if (tools.isEmpty()) {
+            toolContext.authoredPluginTurn?.close()
             return submit(sessionId, model, text, emptyList(), parameters, systemContext, parts, onUserMessagePersisted, userMetadataJson, onEvent)
         }
         require(text.isNotBlank() || parts.isNotEmpty()) { "Message must not be blank" }
         requireNotNull(sessions.getSession(sessionId)) { "Session does not exist" }
         check(activeSessions.add(sessionId)) { "A model turn is already active for this Session" }
 
-        val terminal = AtomicBoolean(false)
-        val controller = ModelCall {
-            terminal.set(true)
-            activeToolRounds[sessionId]?.cancel()
-        }
+        val run = ToolTurnRun(toolContext.authoredPluginTurn)
+        val terminal = run.terminal
+        val controller = run.controller
         activeCallsBySession[sessionId] = controller
         var inputTokens: Long? = null
         var outputTokens: Long? = null
@@ -219,22 +230,27 @@ class ConversationTurnService(
             }
         }
         try {
+            onModelCallStarted?.invoke(controller)
+            check(!terminal.get()) { "Turn cancelled" }
             val pending = notices?.pending(sessionId).orEmpty()
             appendUserMessage(sessionId, text, parts, userMetadataJson)
             onUserMessagePersisted?.invoke()
             val initial = buildProjectedHistory(sessionId, model, systemContext, pending, onEvent)
             var noticesAcknowledged = false
-            val effectiveContext = if (toolContext.onEvent == null) toolContext.copy(onEvent = roundEvents) else toolContext
+            val effectiveContext = bindToolRegistrations(toolContext, tools).let {
+                if (it.onEvent == null) it.copy(onEvent = roundEvents) else it
+            }
+            val providerTools = tools.map { it.copy(registration = null) }
             val guardedDispatcher = ToolDispatcher { context, call ->
                 check(!terminal.get()) { "Turn cancelled" }
                 dispatcher.dispatch(context, call)
             }
             val outcome = toolLoop.run(effectiveContext, initial, guardedDispatcher, finalizeWithoutTools = { messages ->
                 check(!terminal.get()) { "Turn cancelled" }
-                sendRound(sessionId, model, messages, emptyList(), parameters, terminal, roundEvents)
+                sendRound(sessionId, model, messages, emptyList(), parameters, run, roundEvents)
             }) { messages ->
                 check(!terminal.get()) { "Turn cancelled" }
-                sendRound(sessionId, model, messages, tools, parameters, terminal, roundEvents).also {
+                sendRound(sessionId, model, messages, providerTools, parameters, run, roundEvents).also {
                     if (!noticesAcknowledged) noticesAcknowledged = acknowledgeNotices(sessionId, pending)
                 }
             }
@@ -250,9 +266,8 @@ class ConversationTurnService(
                 (outcome.reason == ToolLoopStop.CALL_LIMIT || outcome.reason == ToolLoopStop.ROUND_LIMIT)
             if (finalText.isNotBlank()) sessions.appendMessage(sessionId, MessageRole.ASSISTANT, finalText,
                 completionMetadata(evidence, outputLimitReached, toolLimitReached))
-            activeToolRounds.remove(sessionId)
-            activeCallsBySession.remove(sessionId, controller)
-            activeSessions.remove(sessionId)
+            run.closeAuthoring()
+            if (activeCallsBySession.remove(sessionId, controller)) activeSessions.remove(sessionId)
             when {
                 terminal.get() -> onEvent(ModelEvent.Failed("turn_cancelled", "Turn cancelled"))
                 outcome is ToolLoopOutcome.Stopped && outcome.failure != null -> onEvent(requireNotNull(outcome.failure))
@@ -265,20 +280,25 @@ class ConversationTurnService(
             }
             runCatching { onTurnCompleted?.invoke(sessionId) }
         } catch (error: Exception) {
-            activeToolRounds.remove(sessionId)?.cancel()
-            activeCallsBySession.remove(sessionId, controller)
-            activeSessions.remove(sessionId)
+            run.closeAuthoring()
+            run.round.getAndSet(null)?.cancel()
+            if (activeCallsBySession.remove(sessionId, controller)) activeSessions.remove(sessionId)
             onEvent(ModelEvent.Failed(if (terminal.get()) "turn_cancelled" else "tool_loop_error", error.message ?: "Tool loop failed"))
         } finally {
             terminal.set(true)
+            run.closeAuthoring()
             // A terminal callback may already have started a new turn. Never clear its ownership.
-            if (activeCallsBySession.remove(sessionId, controller)) {
-                activeSessions.remove(sessionId)
-                activeToolRounds.remove(sessionId)?.cancel()
-            }
+            if (activeCallsBySession.remove(sessionId, controller)) activeSessions.remove(sessionId)
+            run.round.getAndSet(null)?.cancel()
         }
         return controller
     }
+
+    /** Child and background turns get their own catalog, never the parent's bindings. */
+    private fun bindToolRegistrations(context: ToolInvocationContext, tools: List<ModelToolSpec>) =
+        context.copy(toolRegistrations = tools.mapNotNull { tool ->
+            tool.registration?.let { tool.name to it }
+        }.toMap())
 
     /**
      * Runs one complete turn and returns its outcome instead of streaming it.
@@ -304,11 +324,8 @@ class ConversationTurnService(
         requireNotNull(sessions.getSession(sessionId)) { "Session does not exist" }
         check(activeSessions.add(sessionId)) { "A model turn is already active for this Session" }
 
-        val terminal = AtomicBoolean(false)
-        val controller = ModelCall {
-            terminal.set(true)
-            activeToolRounds[sessionId]?.cancel()
-        }
+        val run = ToolTurnRun()
+        val controller = run.controller
         activeCallsBySession[sessionId] = controller
         try {
             sessions.appendMessage(sessionId, MessageRole.USER, text.trim(), sourceMetadataJson)
@@ -321,14 +338,17 @@ class ConversationTurnService(
                     .forEach { add(ModelMessage(it.role, it.content)) }
             }
 
-            val effectiveContext = if (toolContext.onEvent == null) {
-                toolContext.copy(onEvent = onEvent)
-            } else toolContext
+            val effectiveContext = bindToolRegistrations(
+                toolContext.copy(allowsPluginAuthoring = false, authoredPluginTurn = null), tools,
+            ).let {
+                if (it.onEvent == null) it.copy(onEvent = onEvent) else it
+            }
+            val providerTools = tools.map { it.copy(registration = null) }
 
             val outcome = toolLoop.run(effectiveContext, initial, dispatcher, finalizeWithoutTools = { messages ->
-                sendRound(sessionId, model, messages, emptyList(), parameters, terminal, onEvent)
+                sendRound(sessionId, model, messages, emptyList(), parameters, run, onEvent)
             }) { messages ->
-                sendRound(sessionId, model, messages, tools, parameters, terminal, onEvent)
+                sendRound(sessionId, model, messages, providerTools, parameters, run, onEvent)
             }
             val finalText = when (outcome) {
                 is ToolLoopOutcome.Completed -> outcome.text
@@ -343,11 +363,9 @@ class ConversationTurnService(
             }
             return outcome
         } finally {
-            terminal.set(true)
-            if (activeCallsBySession.remove(sessionId, controller)) {
-                activeSessions.remove(sessionId)
-                activeToolRounds.remove(sessionId)?.cancel()
-            }
+            run.terminal.set(true)
+            if (activeCallsBySession.remove(sessionId, controller)) activeSessions.remove(sessionId)
+            run.round.getAndSet(null)?.cancel()
         }
     }
 
@@ -367,21 +385,22 @@ class ConversationTurnService(
         messages: List<ModelMessage>,
         tools: List<ModelToolSpec>,
         parameters: GenerationParameters?,
-        terminal: AtomicBoolean,
+        run: ToolTurnRun,
         onEvent: (ModelEvent) -> Unit,
     ): com.cordiact.core.toolloop.ToolLoopRound {
+        val terminal = run.terminal
         check(!terminal.get()) { "Turn cancelled" }
         val roundText = StringBuilder()
         var calls: List<com.cordiact.core.conversation.ModelToolCall> = emptyList()
         val settled = java.util.concurrent.CountDownLatch(1)
         val finished = AtomicBoolean(false)
         val delegate = java.util.concurrent.atomic.AtomicReference<ModelCall?>(null)
+        fun cancelProvider() { delegate.getAndSet(null)?.cancel() }
         val roundController = ModelCall {
             terminal.set(true)
-            delegate.get()?.cancel()
             settled.countDown()
+            cancelProvider()
         }
-        activeToolRounds[sessionId] = roundController
         var failure: ModelEvent.Failed? = null
         val wireMessages = sensitivePayloads?.wireMessages(
             messages = messages,
@@ -389,7 +408,10 @@ class ConversationTurnService(
             modelId = model.modelId,
         ) ?: messages
 
-        val call = try { models.generate(
+        run.round.set(roundController)
+        val call = try {
+            check(!terminal.get()) { "Turn cancelled" }
+            models.generate(
             ModelGenerationRequest(
                 sessionId = sessionId,
                 model = model,
@@ -421,19 +443,19 @@ class ConversationTurnService(
         }
 
         } catch (error: Exception) {
-            activeToolRounds.remove(sessionId, roundController)
+            run.round.compareAndSet(roundController, null)
             throw error
         }
         delegate.set(call)
-        if (terminal.get()) call.cancel()
+        if (terminal.get()) cancelProvider()
         try {
             check(settled.await(ROUND_TIMEOUT_MILLIS, java.util.concurrent.TimeUnit.MILLISECONDS)) { "Model round timed out" }
             check(!terminal.get()) { "Turn cancelled" }
             failure?.let { throw com.cordiact.core.toolloop.ModelRoundFailure(it) }
             return com.cordiact.core.toolloop.ToolLoopRound(roundText.toString(), calls, emptyList())
         } finally {
-            activeToolRounds.remove(sessionId, roundController)
-            if (!finished.get() || terminal.get()) call.cancel()
+            run.round.compareAndSet(roundController, null)
+            if (!finished.get() || terminal.get()) cancelProvider()
         }
     }
 
@@ -632,13 +654,15 @@ class ConversationTurnService(
         issue(history, 0)
 
         val call = ModelCall {
-            synchronized(callbackLock) {
+            val provider = synchronized(callbackLock) {
                 if (terminal.compareAndSet(false, true)) {
-                    activeSessions.remove(sessionId)
                     activeCallsBySession.remove(sessionId)
-                    pendingCall.get()?.cancel()
-                }
+                    activeSessions.remove(sessionId)
+                    pendingCall.getAndSet(null)
+                } else null
             }
+            // A provider may hold its own callback lock when it calls back into this turn.
+            provider?.cancel()
         }
         synchronized(callbackLock) {
             // Some adapters complete inline, before generate() returns. Do not retain a dead call.

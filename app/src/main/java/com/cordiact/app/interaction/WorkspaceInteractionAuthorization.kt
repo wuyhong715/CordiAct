@@ -34,8 +34,8 @@ class WorkspaceInteractionAuthorization(
         if (workspace.archivedAtMillis != null) {
             return AuthorizationDecision(false, reason = "Archived Workspaces cannot be used")
         }
-        if (command != null && commands.find(command.name) != command) {
-            return AuthorizationDecision(false, reason = "Command owner is disabled")
+        if (command != null && (session.archivedAtMillis != null || commands.find(command.name, context) !== command)) {
+            return AuthorizationDecision(false, reason = "Command registration is no longer active in this session")
         }
         for (target in targets) {
             val crossWorkspace = target.workspaceId != workspace.id

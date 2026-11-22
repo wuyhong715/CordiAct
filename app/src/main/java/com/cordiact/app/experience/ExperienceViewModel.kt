@@ -84,13 +84,16 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
     val composerController = com.cordiact.app.experience.composer.ComposerController(app, viewModelScope)
     val composer = composerController.state
 
-    private class OwnedCall(val turnId: String) {
+    private class OwnedCall(
+        val turnId: String,
+        val authoredPluginTurn: com.cordiact.core.plugin.AuthoredPluginTurn?,
+    ) {
         private val cancelled = AtomicBoolean(false)
         private val handle = AtomicReference<ModelCall?>(null)
         private val job = AtomicReference<Job?>(null)
         fun attach(call: ModelCall) { handle.set(call); if (cancelled.get()) call.cancel() }
         fun attachJob(value: Job) { job.set(value); if (cancelled.get()) value.cancel() }
-        fun cancel() { cancelled.set(true); job.get()?.cancel(); handle.get()?.cancel() }
+        fun cancel() { authoredPluginTurn?.close(); cancelled.set(true); job.get()?.cancel(); handle.get()?.cancel() }
     }
     private data class OwnedEvent(val session: String, val turn: String, val event: TranscriptEvent)
 
@@ -113,7 +116,11 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
                 val pending = withContext(Dispatchers.IO) { try { app.approvalGateway.pendingRequests() } catch (cancel: CancellationException) { throw cancel } catch (_: Exception) { null } }
                 if (pending != null) mutable.update { current ->
                     val active = pending.filterNot { it.id in settledApprovals }
-                    current.copy(approvals = active, approvalErrors = current.approvalErrors.filterKeys { id -> active.any { it.id == id } })
+                    val activeIds = active.mapTo(hashSetOf()) { it.id }
+                    // The open approval dialog can show feedback for a request already removed from the queue.
+                    current.copy(approvals = active, approvalErrors = current.approvalErrors.filterKeys { id ->
+                        id in activeIds || id in settledApprovals
+                    })
                 }
                 delay(400)
             }
@@ -208,6 +215,13 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
                 reloadSessionMetadata()
                 succeeded = true
             } catch (cancel: CancellationException) { throw cancel }
+            catch (error: SessionArchiveCleanupException) {
+                // The archive was already persisted; reflect it without claiming cleanup succeeded.
+                try { reloadSessionMetadata() }
+                catch (cancel: CancellationException) { throw cancel }
+                catch (_: Exception) { }
+                mutable.update { it.copy(error = error.message) }
+            }
             catch (error: Exception) { mutable.update { it.copy(error = error.message ?: "更新会话失败") } }
             finally {
                 loadingSession = false
@@ -389,7 +403,8 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
         if (state.loading || state.running || state.stopping || (text.isBlank() && draft.sendableParts().isEmpty()) || calls.containsKey(session)) return false
         if (draft.sendAvailability != com.cordiact.core.composer.ComposerRules.SendAvailability.READY) return false
         val turnId = UUID.randomUUID().toString()
-        val owner = OwnedCall(turnId)
+        val authoring = app.authoredPluginForeground.openTurn(workspace.id, session)
+        val owner = OwnedCall(turnId, authoring)
         calls[session] = owner
         val turn = TranscriptTurn(turnId, text.trim(), phase = RunPhase.RUNNING, startedAt = System.currentTimeMillis(),
             attachments = draft.attachments.filter { it.ready }.map { chip ->
@@ -430,6 +445,8 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
                             parameters = com.cordiact.core.composer.ComposerRules.parameters(draft.tuning),
                             attachments = draft.sendableParts(),
                             onUserMessagePersisted = { viewModelScope.launch { composerController.submitted(session, draft); refreshSessionMetadata() } },
+                            authoredPluginTurn = authoring,
+                            onModelCallStarted = owner::attach,
                             onEvent = callback)
                     owner.attach(call)
                 }
@@ -446,9 +463,11 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
                 }
             } catch (cancel: CancellationException) { owner.cancel(); throw cancel }
             catch (error: Exception) { events.trySend(OwnedEvent(session, turnId, TranscriptEvent.Finished(RunPhase.FAILED, System.currentTimeMillis(), error.message ?: "请求失败"))) }
+            finally { authoring?.close() }
         }
         owner.attachJob(requestJob)
         requestJob.invokeOnCompletion { cause ->
+            authoring?.close()
             if (cause != null) events.trySend(OwnedEvent(session, turnId, TranscriptEvent.Finished(RunPhase.CANCELLED, System.currentTimeMillis())))
         }
         requestJob.start()
@@ -459,10 +478,10 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
         val session = mutable.value.sessionId ?: return
         val owner = calls[session] ?: return
         if (mutable.value.stopping) return
+        owner.authoredPluginTurn?.close() // Revoke approval before posting any asynchronous cancellation.
         cache[session] = cache[session].orEmpty().map { if (it.id == owner.turnId) it.reduce(TranscriptEvent.Finished(RunPhase.CANCELLED, System.currentTimeMillis())) else it }
         mutable.update { it.copy(turns = cache[session].orEmpty(), stoppingSessions = it.stoppingSessions + session) }
         viewModelScope.launch(Dispatchers.IO) {
-            app.turnService.cancelTurn(session)
             owner.cancel()
             events.trySend(OwnedEvent(session, owner.turnId, TranscriptEvent.Finished(RunPhase.CANCELLED, System.currentTimeMillis())))
         }
@@ -475,15 +494,24 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
         mutable.update { it.copy(decidingApprovals = it.decidingApprovals + requestId, approvalErrors = it.approvalErrors - requestId) }
         viewModelScope.launch {
             try {
-                withContext(Dispatchers.IO) {
+                val accepted = withContext(Dispatchers.IO) {
                     app.approvalGateway.respond(requestId, ApprovalDecision(approved = approved, rememberChoice = false))
                 }
                 settledApprovals.add(requestId)
-                if (settledApprovals.size > 128) settledApprovals.remove(settledApprovals.first())
-                mutable.update { state -> state.copy(
-                    approvals = state.approvals.filterNot { it.id == requestId },
-                    approvalErrors = state.approvalErrors - requestId,
-                ) }
+                val evicted = if (settledApprovals.size > 128) {
+                    settledApprovals.first().also { settledApprovals.remove(it) }
+                } else null
+                mutable.update { state ->
+                    val errors = state.approvalErrors - requestId
+                    val retained = if (evicted == null) errors else errors - evicted
+                    state.copy(
+                        approvals = state.approvals.filterNot { it.id == requestId },
+                        // Acceptance only records a choice; execution status comes from the operation itself.
+                        approvalErrors = if (accepted) retained else retained + (
+                            requestId to "该审批请求已失效或已处理，本次选择未被接收。"
+                        ),
+                    )
+                }
             } catch (cancel: CancellationException) {
                 throw cancel
             } catch (error: Exception) {
@@ -496,7 +524,7 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
     override fun onCleared() {
         composerController.flushOnClose()
         // Cancel the session-level controller, including calls whose submitter hasn't returned yet.
-        calls.forEach { (session, call) -> runCatching { call.cancel(); app.turnService.cancelTurn(session) } }
+        calls.values.forEach { call -> runCatching { call.cancel() } }
         events.close()
         super.onCleared()
     }

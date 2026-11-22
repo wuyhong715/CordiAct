@@ -102,8 +102,11 @@ import com.cordiact.search.providers.NativeSearchOptions
 import com.cordiact.app.interaction.AndroidFillValueStore
 import com.cordiact.app.interaction.AndroidInteractionDirectory
 import com.cordiact.app.interaction.WorkspaceInteractionAuthorization
+import com.cordiact.app.plugin.BundledDeclarativePackages
+import com.cordiact.core.plugin.extensionPackageSpec
 import com.cordiact.interaction.CommandDescriptor
 import com.cordiact.interaction.CommandExecutionResult
+import com.cordiact.interaction.DeclarativePackagePlugin
 import com.cordiact.interaction.InteractionCommandExecutor
 import com.cordiact.interaction.InteractionCommandRegistry
 import com.cordiact.interaction.InteractionPlugin
@@ -164,12 +167,14 @@ object BundledConversationPluginCatalog {
         backgroundSubagentPluginSpec(),
         com.cordiact.app.automation.tasks.automationTasksPluginSpec(),
         pluginManagerPluginSpec(),
+        com.cordiact.core.plugin.authoredPluginHostSpec(),
         screenPluginSpec(),
         browserPluginSpec(),
         privilegePluginSpec(),
         displayPluginSpec(),
         com.cordiact.core.security.credentialVaultPluginSpec(),
         com.cordiact.core.security.securityAuditPluginSpec(),
+        extensionPackageSpec(BundledDeclarativePackages.manifest),
     )
 
     val verifier = BundledPluginVerifier { candidate -> candidate in trustedSpecs }
@@ -287,6 +292,7 @@ class BundledConversationPlugins private constructor(
 
     /** Shared trusted-code runtime; durable lifecycle and approval remain authoritative. */
     val pluginKernel = com.cordiact.core.plugin.PluginKernel()
+    val toolContributions = com.cordiact.core.plugin.PluginToolContributions(registry)
 
     val spillStore: SpillStore by lazy {
         StandardSpillStore(spillStoreDir ?: File(System.getProperty("java.io.tmpdir"), "cordiact-spills"))
@@ -302,6 +308,7 @@ class BundledConversationPlugins private constructor(
         stateLookup: ToolPluginStateLookup,
         extraPlugins: List<ManagedPlugin> = emptyList(),
         capabilityGate: com.cordiact.core.tool.ToolCapabilityGate = com.cordiact.core.tool.ToolCapabilityGate { _, required -> required.isEmpty() },
+        invalidateSessionResources: (com.cordiact.core.conversation.ConversationSession) -> Unit = {},
     ): List<ManagedPlugin> {
         registerContextTools(registry, spillStore)
         registerJobTools(registry, jobRegistry)
@@ -316,6 +323,7 @@ class BundledConversationPlugins private constructor(
             capabilities = capabilityGate,
             executionPolicy = com.cordiact.core.tool.ToolExecutionAuthorizationPolicy(approvalGateway),
             autoReview = autoReview,
+            sessionWorkspace = { id -> conversationStore.get(id)?.takeIf { it.archivedAtMillis == null }?.workspaceId },
             accessPolicy = com.cordiact.core.security.EnvelopeToolAccessPolicy(
                 com.cordiact.app.security.BuiltInToolEffectClassifier(),
             ),
@@ -438,8 +446,14 @@ class BundledConversationPlugins private constructor(
             attachmentAudit = attachmentAudit,
             saveCredential = saveProviderCredential,
         )
-        val commandRegistry = InteractionCommandRegistry()
-        val sessionManager = SessionManagerPlugin(conversationStore, workspaceManager)
+        val sessionManager = SessionManagerPlugin(conversationStore, workspaceManager,
+            invalidateSessionResources = invalidateSessionResources)
+        val commandRegistry = InteractionCommandRegistry { context ->
+            val session = sessionManager.getSession(context.sessionId)
+            session != null && session.workspaceId == context.workspaceId &&
+                session.kind == com.cordiact.core.conversation.SessionKind.USER && session.archivedAtMillis == null &&
+                workspaceManager.findSessionWorkspace(context.workspaceId) != null
+        }
         interactionDirectory = AndroidInteractionDirectory(workspaceManager, fileManager, sessionManager)
         val interactionAuthorization = WorkspaceInteractionAuthorization(
             sessions = sessionManager,
@@ -453,8 +467,7 @@ class BundledConversationPlugins private constructor(
             fills = fillValues,
             authorization = interactionAuthorization,
         )
-        interactionPlugin = InteractionPlugin(interactionService, commandRegistry, pluginKernel)
-        commandRegistry.register(
+        val builtInCommands = listOf(
             CommandDescriptor(
                 id = "core.interaction.target",
                 name = "目标",
@@ -467,8 +480,6 @@ class BundledConversationPlugins private constructor(
                         .execute(envelope, modelId, submitter, onEvent)
                 },
             ),
-        )
-        commandRegistry.register(
             CommandDescriptor(
                 id = "core.interaction.compact",
                 name = "compact",
@@ -485,6 +496,14 @@ class BundledConversationPlugins private constructor(
                 },
             ),
         )
+        interactionPlugin = InteractionPlugin(interactionService, commandRegistry, pluginKernel, builtInCommands)
+        val bundledDeclarativePackage = DeclarativePackagePlugin(
+            manifest = BundledDeclarativePackages.manifest,
+            kernel = pluginKernel,
+            tools = toolContributions,
+            commands = interactionPlugin.commandContributions,
+            commandRegistry = commandRegistry,
+        )
         return listOf(
             workspacePlugin,
             fileManagerPlugin,
@@ -495,6 +514,7 @@ class BundledConversationPlugins private constructor(
             sessionManager,
             modelProviderRegistryPlugin,
             interactionPlugin,
+            bundledDeclarativePackage,
         ) + extraPlugins
     }
 

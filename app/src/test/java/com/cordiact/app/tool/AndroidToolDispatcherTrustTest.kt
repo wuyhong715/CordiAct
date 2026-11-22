@@ -3,6 +3,7 @@ package com.cordiact.app.tool
 import com.cordiact.core.conversation.ModelToolCall
 import com.cordiact.core.tool.ToolAvailability
 import com.cordiact.core.tool.ToolArguments
+import com.cordiact.core.tool.ToolDefinition
 import com.cordiact.core.tool.ToolDescriptor
 import com.cordiact.core.tool.ToolInvocationContext
 import com.cordiact.core.tool.ToolManagerService
@@ -69,6 +70,7 @@ class AndroidToolDispatcherTrustTest {
         override fun list(workspaceId: String): List<ToolAvailability> = emptyList()
         override fun setEnabled(workspaceId: String, toolId: String, enabled: Boolean) = Unit
         override fun resolveEnabled(workspaceId: String, activation: com.cordiact.core.tool.ToolActivationContext?): List<ToolDescriptor> = emptyList()
+        override fun resolveForTurn(activation: com.cordiact.core.tool.ToolActivationContext): List<ToolDefinition> = emptyList()
         override fun invoke(context: ToolInvocationContext, toolId: String, arguments: ToolArguments): ToolResult = result
     }
 }

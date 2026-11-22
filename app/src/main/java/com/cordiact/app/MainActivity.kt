@@ -15,8 +15,14 @@ import com.cordiact.app.experience.ExperienceViewModel
 class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
+        (application as CordiActApplication).authoredPluginForeground.resume(this)
         runCatching { com.cordiact.app.service.ExecutionPresenceHost.onUserForeground(this) }
             .onFailure { android.util.Log.w("MainActivity", "Execution state refresh failed", it) }
+    }
+
+    override fun onPause() {
+        (application as CordiActApplication).authoredPluginForeground.pause(this)
+        super.onPause()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {

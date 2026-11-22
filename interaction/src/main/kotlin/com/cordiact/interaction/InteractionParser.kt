@@ -16,7 +16,7 @@ class InteractionParser(
     fun parse(text: String, context: InteractionContext, allowEmptyWithAttachments: Boolean = false): PreparedInteraction {
         val tokens = mutableListOf<InteractionToken>()
         val diagnostics = mutableListOf<InteractionDiagnostic>()
-        val header = parseHeader(text)
+        val header = parseHeader(text, context)
         header.token?.let(tokens::add)
         header.error?.let(diagnostics::add)
         if (text.isBlank() && !allowEmptyWithAttachments) {
@@ -67,11 +67,11 @@ class InteractionParser(
         return PreparedInteraction(envelope, tokens.sortedBy { it.start }, diagnostics.sortedBy { it.start })
     }
 
-    private fun parseHeader(text: String): ParsedHeader {
+    private fun parseHeader(text: String, context: InteractionContext): ParsedHeader {
         if (!text.startsWith('/')) return ParsedHeader(command = null, bodyStart = 0)
         if (text.length == 1) return invalidHeader("command_missing", "Choose a registered command", 0, 1)
 
-        val names = commands.candidates().flatMap { descriptor ->
+        val names = commands.candidates(context).flatMap { descriptor ->
             (descriptor.aliases + descriptor.name).map { it to descriptor }
         }.distinctBy { it.first }.sortedByDescending { it.first.length }
         val match = names.firstOrNull { (name, _) -> text.startsWith("/$name") && (text.length == name.length + 1 || text[name.length + 1].isWhitespace() || text[name.length + 1] in ":：") }

@@ -7,4 +7,4 @@ CordiAct is being developed as an independent product. Contributions should pres
 - do not add credentials, generated APKs, or local machine configuration to Git;
 - add tests for core contracts before changing runtime behavior.
 
-APK packaging is performed by GitHub Actions, not committed from a local machine.
+Run local JVM checks using the [development guide](docs/development.md). Build Debug, Release, and Beta APKs only in GitHub Actions, never on a local machine.

@@ -88,6 +88,12 @@ class CredentialVaultRuntime private constructor(
         )
     }
 
+    /** A decision for an older permission preset must not authorize plugin publication. */
+    internal fun permitsAuthoredPluginChanges(context: SecurityContext): Boolean {
+        val live = effectiveProfile(context.workspaceId, context.modelProviderId, context.modelId)
+        return live == context.profile && live.accessEnvelope != com.cordiact.core.security.AccessEnvelope.READ_ONLY
+    }
+
     private val operationCommitment = IntentCommitment(ByteArray(32).also(SecureRandom()::nextBytes))
 
     private val gate = SensitiveOperationGate(

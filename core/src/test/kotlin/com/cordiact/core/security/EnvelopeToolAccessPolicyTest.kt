@@ -62,6 +62,16 @@ class EnvelopeToolAccessPolicyTest {
         assertEquals("UNCLASSIFIED_TOOL_DENIED", (decision as ToolAccessDecision.Deny).reasonCode)
     }
 
+    @Test
+    fun `network and destructive effects are usable unless the envelope is read only`() {
+        val readOnly = context(EffectiveSecurityProfile.readOnly("ws-1"))
+        val workspaceOnly = context(EffectiveSecurityProfile.workspaceOnly("ws-1"))
+        assertTrue(policy(ToolEffectClass.NETWORK).evaluate(readOnly, "core.mcp.demo.echo", "core.mcp") is ToolAccessDecision.Deny)
+        assertTrue(policy(ToolEffectClass.NETWORK).evaluate(workspaceOnly, "core.mcp.demo.echo", "core.mcp") is ToolAccessDecision.Allow)
+        assertTrue(policy(ToolEffectClass.DESTRUCTIVE).evaluate(readOnly, "plugin_manager", "core.plugin-manager") is ToolAccessDecision.Deny)
+        assertTrue(policy(ToolEffectClass.DESTRUCTIVE).evaluate(workspaceOnly, "plugin_manager", "core.plugin-manager") is ToolAccessDecision.Allow)
+    }
+
     private fun reviewer() = ReviewerConfig(
         reviewerId = "reviewer-1", revision = 1, providerId = "p-1", modelId = "m-1",
         endpointIdentity = "https://example.test", policyTemplateVersion = "v1", timeoutMillis = 1_000,

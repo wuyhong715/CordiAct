@@ -98,7 +98,7 @@ class BundledConversationPluginCatalogTest {
             },
         )
         assertEquals(
-            listOf("core.workspace-manager", "core.file-manager", "core.skill", "core.tool-manager", "core.search", "core.model-adapter", "core.session-manager", "model.providers", "core.interaction"),
+            listOf("core.workspace-manager", "core.file-manager", "core.skill", "core.tool-manager", "core.search", "core.model-adapter", "core.session-manager", "model.providers", "core.interaction", "pkg.core-quick-notes"),
             plugins.map { it.spec.id },
         )
 

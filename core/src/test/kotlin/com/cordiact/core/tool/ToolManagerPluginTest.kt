@@ -1,6 +1,11 @@
 package com.cordiact.core.tool
 
 import com.cordiact.core.plugin.PluginState
+import com.cordiact.core.security.EffectiveSecurityProfile
+import com.cordiact.core.security.EnvelopeToolAccessPolicy
+import com.cordiact.core.security.Principal
+import com.cordiact.core.security.SecurityContext
+import com.cordiact.core.security.ToolEffectClass
 import com.cordiact.core.workspace.Workspace
 import com.cordiact.core.workspace.WorkspaceManagerService
 import java.io.File
@@ -302,6 +307,74 @@ class ToolManagerPluginTest {
     ) = ToolManagerPlugin(registry, preferences, workspaces, states)
 
     @Test
+    fun classifiedPluginAndMcpToolsReachExecutorOutsideReadOnly() {
+        val preferences = FakePreferences().apply {
+            setEnabled(WORKSPACE_A, "plugin_manager", true)
+            setEnabled(WORKSPACE_A, "core.mcp.demo.echo", true)
+        }
+        var calls = 0
+        fun tool(id: String, owner: String) = ToolDefinition(
+            ToolDescriptor(
+                id = id,
+                name = id,
+                description = id,
+                inputSchema = ToolInputSchema(),
+                ownerPluginId = owner,
+                defaultEnabled = true,
+            ),
+            ToolExecutor { _, _ ->
+                calls++
+                ToolResult(mapOf("ok" to ToolValue.BooleanValue(true)))
+            },
+        )
+        val registry = InMemoryToolDefinitionRegistry().apply {
+            register(tool("plugin_manager", "core.plugin-manager"))
+            register(tool("core.mcp.demo.echo", "core.mcp"))
+        }
+        val plugin = ToolManagerPlugin(
+            registry,
+            preferences,
+            FakeWorkspaceManager(),
+            ToolPluginStateLookup { PluginState.ENABLED },
+            accessPolicy = EnvelopeToolAccessPolicy { id, _ ->
+                if (id == "plugin_manager") ToolEffectClass.DESTRUCTIVE else ToolEffectClass.NETWORK
+            },
+        )
+        plugin.onEnable()
+        val full = ToolInvocationContext(
+            WORKSPACE_A,
+            securityContext = securityContext(EffectiveSecurityProfile.fullAccess(WORKSPACE_A)),
+        )
+        assertEquals(1, plugin.invoke(full, "plugin_manager", ToolArguments()).values.size)
+        assertEquals(1, plugin.invoke(full, "core.mcp.demo.echo", ToolArguments()).values.size)
+        assertEquals(2, calls)
+
+        val readOnly = ToolInvocationContext(
+            WORKSPACE_A,
+            securityContext = securityContext(EffectiveSecurityProfile.readOnly(WORKSPACE_A)),
+        )
+        assertEquals(
+            ToolManagerException.Code.APPROVAL_DENIED,
+            assertFailsWith<ToolManagerException> { plugin.invoke(readOnly, "plugin_manager", ToolArguments()) }.code,
+        )
+        assertEquals(
+            ToolManagerException.Code.APPROVAL_DENIED,
+            assertFailsWith<ToolManagerException> { plugin.invoke(readOnly, "core.mcp.demo.echo", ToolArguments()) }.code,
+        )
+        assertEquals(2, calls)
+    }
+
+    private fun securityContext(profile: EffectiveSecurityProfile) = SecurityContext(
+        workspaceId = WORKSPACE_A,
+        sessionId = "session-1",
+        runId = "run-1",
+        turnId = "turn-1",
+        toolCallId = "call-1",
+        principalChain = listOf(Principal("main")),
+        profile = profile,
+    )
+
+    @Test
     fun unregisterRetiresOneToolAndItsVisibilityGateOnly() {
         val registry = InMemoryToolDefinitionRegistry()
         registry.register(ToolDefinition(descriptor(), ToolExecutor { _, args -> ToolResult(mapOf("path" to args.values.getValue("path"))) }))
@@ -344,6 +417,152 @@ class ToolManagerPluginTest {
 
         val oversized = arrayRoot.copy(rawInputSchemaJson = "{" + " ".repeat(40_000) + "}")
         assertFailsWith<IllegalArgumentException> { registry.register(ToolDefinition(oversized, ToolExecutor { _, _ -> ToolResult() })) }
+    }
+
+    @Test
+    fun scopedToolsUseExactLiveSessionAndRejectAnOldCatalogAfterRestart() {
+        val registry = InMemoryToolDefinitionRegistry()
+        val contributions = com.cordiact.core.plugin.PluginToolContributions(registry)
+        val kernel = com.cordiact.core.plugin.PluginKernel()
+        val workspace = com.cordiact.core.plugin.PluginInstanceId(OWNER_ID, WORKSPACE_A)
+        val first = com.cordiact.core.plugin.PluginInstanceId(OWNER_ID, WORKSPACE_A, "first")
+        val other = com.cordiact.core.plugin.PluginInstanceId(OWNER_ID, WORKSPACE_B, "other")
+        val owners = mutableMapOf("first" to WORKSPACE_A, "sibling" to WORKSPACE_A, "other" to WORKSPACE_B)
+        val plugin = ToolManagerPlugin(registry, FakePreferences(), FakeWorkspaceManager(),
+            ToolPluginStateLookup { PluginState.ENABLED }, sessionWorkspace = owners::get)
+        plugin.onEnable()
+        val sharedId = "extension.$OWNER_ID.read"
+        val wideId = "extension.$OWNER_ID.catalog"
+        var calls = 0
+        fun contributor(id: String, result: String) = object : com.cordiact.core.plugin.ContextPlugin {
+            override fun start(context: com.cordiact.core.plugin.PluginContext) {
+                val definition = ToolDefinition(descriptor().copy(id = id, defaultEnabled = true), ToolExecutor { _, _ ->
+                    calls++
+                    ToolResult(mapOf("source" to ToolValue.StringValue(result)))
+                })
+                contributions.register(context, definition)
+                assertNull(registry.getIn(id, context.id.workspaceId!!, context.id.sessionId))
+            }
+        }
+        kernel.register(first, contributor(sharedId, "first"))
+        kernel.register(other, contributor(sharedId, "other"))
+        kernel.register(workspace, contributor(wideId, "workspace"))
+        kernel.enable(first); kernel.enable(other); kernel.enable(workspace)
+
+        fun catalog(workspaceId: String, sessionId: String?) = plugin.resolveForTurn(ToolActivationContext(workspaceId, sessionId = sessionId))
+        fun caller(workspaceId: String, sessionId: String) = ToolInvocationContext(workspaceId, sessionId = sessionId,
+            toolRegistrations = catalog(workspaceId, sessionId).associate { it.descriptor.id to requireNotNull(it.registration) })
+        val old = caller(WORKSPACE_A, "first")
+        val b = caller(WORKSPACE_B, "other")
+        fun run(context: ToolInvocationContext, id: String) = plugin.invoke(context, id, validArgs()).values["source"]
+        assertEquals(setOf(sharedId, wideId), old.toolRegistrations.keys)
+        assertEquals(listOf(wideId), catalog(WORKSPACE_A, "sibling").map { it.descriptor.id })
+        assertTrue(catalog(WORKSPACE_A, "other").isEmpty())
+        assertTrue(catalog(WORKSPACE_A, null).isEmpty())
+        assertTrue(plugin.list(WORKSPACE_A).isEmpty())
+        assertTrue(registry.all().isEmpty())
+        assertFailsWith<ToolManagerException> { plugin.setEnabled(WORKSPACE_A, wideId, true) }
+        assertFailsWith<ToolManagerException> { run(old.copy(toolRegistrations = emptyMap()), sharedId) }
+        assertFailsWith<ToolManagerException> { run(old.copy(sessionId = "sibling"), sharedId) }
+        assertFailsWith<ToolManagerException> { run(old.copy(workspaceId = WORKSPACE_B), sharedId) }
+        assertFailsWith<ToolManagerException> { run(b.copy(grantedScopes = listOf(GrantedScope(WORKSPACE_A))), wideId) }
+        assertEquals(0, calls)
+        assertEquals(ToolValue.StringValue("first"), run(old, sharedId))
+        assertEquals(ToolValue.StringValue("other"), run(b, sharedId))
+        assertEquals(ToolValue.StringValue("workspace"), run(caller(WORKSPACE_A, "sibling"), wideId))
+        kernel.restart(first)
+        assertFailsWith<ToolManagerException> { run(old, sharedId) }
+        assertEquals(3, calls)
+        assertEquals(ToolValue.StringValue("first"), run(caller(WORKSPACE_A, "first"), sharedId))
+        kernel.disable(first)
+        assertEquals(ToolValue.StringValue("other"), run(b, sharedId))
+        owners.remove("other")
+        assertFailsWith<ToolManagerException> { run(b, sharedId) }
+        assertEquals(5, calls)
+    }
+
+    @Test
+    fun withdrawalHidesContributionBeforeDisposalAndSuppressesAnInFlightResult() {
+        val registry = InMemoryToolDefinitionRegistry()
+        val kernel = com.cordiact.core.plugin.PluginKernel()
+        val contributions = com.cordiact.core.plugin.PluginToolContributions(registry)
+        val instance = com.cordiact.core.plugin.PluginInstanceId(OWNER_ID, WORKSPACE_A, "first")
+        val id = "extension.$OWNER_ID.blocking"
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val finish = java.util.concurrent.CountDownLatch(1)
+        val disposing = java.util.concurrent.CountDownLatch(1)
+        val finishDisposal = java.util.concurrent.CountDownLatch(1)
+        val pool = java.util.concurrent.Executors.newFixedThreadPool(2)
+        val unit = java.util.concurrent.TimeUnit.SECONDS
+        val plugin = ToolManagerPlugin(registry, FakePreferences(), FakeWorkspaceManager(), { PluginState.ENABLED },
+            sessionWorkspace = { WORKSPACE_A }).also { it.onEnable() }
+        kernel.register(instance, object : com.cordiact.core.plugin.ContextPlugin {
+            override fun start(context: com.cordiact.core.plugin.PluginContext) {
+                contributions.register(context, ToolDefinition(descriptor().copy(id = id, defaultEnabled = true)) { _, _ ->
+                    entered.countDown()
+                    check(finish.await(5, unit))
+                    ToolResult(mapOf("old" to ToolValue.StringValue("stale")))
+                })
+                // Reverse cleanup order: registry withdrawal runs after this blocking disposer.
+                context.effect { disposing.countDown(); check(finishDisposal.await(5, unit)) }
+            }
+        })
+        kernel.enable(instance)
+        val activation = ToolActivationContext(WORKSPACE_A, sessionId = "first")
+        val token = requireNotNull(plugin.resolveForTurn(activation).single().registration)
+        val caller = ToolInvocationContext(WORKSPACE_A, sessionId = "first", toolRegistrations = mapOf(id to token))
+        try {
+            val invocation = pool.submit<ToolManagerException.Code> {
+                assertFailsWith<ToolManagerException> { plugin.invoke(caller, id, validArgs()) }.code
+            }
+            assertTrue(entered.await(5, unit))
+            val disable = pool.submit { kernel.disable(instance) }
+            assertTrue(disposing.await(5, unit))
+            assertTrue(plugin.resolveForTurn(activation).isEmpty())
+            val refused = assertFailsWith<ToolManagerException> { plugin.invoke(caller, id, validArgs()) }
+            assertEquals(ToolManagerException.Code.TOOL_NOT_REGISTERED, refused.code)
+            finish.countDown()
+            assertEquals(ToolManagerException.Code.APPROVAL_DENIED, invocation.get(5, unit))
+            finishDisposal.countDown()
+            disable.get(5, unit)
+        } finally {
+            finish.countDown()
+            finishDisposal.countDown()
+            pool.shutdownNow()
+        }
+    }
+
+    @Test
+    fun scopedPublicationRejectsOverlapsAndFailedStartLeavesNoDefinition() {
+        val registry = InMemoryToolDefinitionRegistry()
+        val kernel = com.cordiact.core.plugin.PluginKernel()
+        val contributions = com.cordiact.core.plugin.PluginToolContributions(registry)
+        val id = "extension.$OWNER_ID.example"
+        val definition = ToolDefinition(descriptor().copy(id = id), ToolExecutor { _, _ -> ToolResult() })
+        fun plugin(fail: Boolean = false) = object : com.cordiact.core.plugin.ContextPlugin {
+            override fun start(context: com.cordiact.core.plugin.PluginContext) {
+                contributions.register(context, definition)
+                check(!fail) { "startup failed" }
+            }
+        }
+        val workspace = com.cordiact.core.plugin.PluginInstanceId(OWNER_ID, WORKSPACE_A)
+        val session = com.cordiact.core.plugin.PluginInstanceId(OWNER_ID, WORKSPACE_A, "first")
+        kernel.register(workspace, plugin(true))
+        kernel.enable(workspace)
+        assertNull(registry.getIn(id, WORKSPACE_A, "first"))
+        kernel.register(session, plugin())
+        kernel.enable(session)
+        assertNotNull(registry.getIn(id, WORKSPACE_A, "first"))
+        assertFailsWith<IllegalArgumentException> { registry.register(definition) }
+        kernel.unregister(workspace)
+        kernel.register(workspace, plugin())
+        kernel.enable(workspace)
+        assertEquals(com.cordiact.core.plugin.PluginInstanceState.FAILED, kernel.status(workspace).state)
+        assertNotNull(registry.getIn(id, WORKSPACE_A, "first"))
+        kernel.disable(session)
+        assertNull(registry.getIn(id, WORKSPACE_A, "first"))
+        registry.register(definition)
+        assertNotNull(registry.get(id))
     }
 
     private fun descriptor() = ToolDescriptor(

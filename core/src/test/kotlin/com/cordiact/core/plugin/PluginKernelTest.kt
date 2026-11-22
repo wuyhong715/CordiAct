@@ -193,7 +193,7 @@ class PluginKernelTest {
         val local = PluginInstanceId("demo", "workspace")
         kernel.register(local, plugin { tools.register(it, definition) })
         kernel.enable(local)
-        assertEquals(PluginInstanceState.FAILED, kernel.status(local).state)
+        assertEquals(PluginInstanceState.FAILED, kernel.status(local).state) // reserved namespace
         assertTrue(registry.all().isEmpty())
     }
 
