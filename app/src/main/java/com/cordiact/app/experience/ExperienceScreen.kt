@@ -178,8 +178,7 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
                     else com.cordiact.app.experience.composer.ComposerBar(
                         if (switchPending) state.copy(loading = true) else state, composer, viewModel.composerController, promptToInsert,
                         { promptToInsert = "" }, { text -> if (requestedTab != null || loadingTab != null) false else viewModel.send(text) }, { if (requestedTab == null && loadingTab == null) viewModel.stop() },
-                        viewModel::selectModel, { openSettings("settings://models/providers") },
-                        { openSettings("settings://security/permissions") }, compact = true, maxEditorLines = lines,
+                        viewModel::selectModel, compact = true, maxEditorLines = lines,
                     )
                 })
         } else Surface(color = MaterialTheme.colorScheme.background, modifier = Modifier.fillMaxSize()) {
@@ -268,8 +267,7 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
                             } else com.cordiact.app.experience.composer.ComposerBar(
                                 state, composer, viewModel.composerController, promptToInsert,
                                 { promptToInsert = "" }, viewModel::send, viewModel::stop,
-                                viewModel::selectModel, { openSettings("settings://models/providers") },
-                                { openSettings("settings://security/permissions") },
+                                viewModel::selectModel,
                             )
                         }
                     },

@@ -6,6 +6,8 @@ import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.*
@@ -16,6 +18,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.*
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.*
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.*
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.style.TextOverflow
@@ -30,7 +33,7 @@ import kotlin.math.roundToInt
 @Composable
 internal fun ComposerBar(state: ExperienceState, composer: ComposerState, controller: ComposerController,
     insert: String, onInserted: () -> Unit, onSend: (String) -> Boolean, onStop: () -> Unit,
-    onSelect: (ModelId) -> Unit, onManage: () -> Unit, onSecurity: () -> Unit,
+    onSelect: (ModelId) -> Unit,
     compact: Boolean = false, maxEditorLines: Int = 3) {
     var waiting by remember(state.sessionId) { mutableStateOf(false) }
     var confirmLocal by remember(state.sessionId) { mutableStateOf(false) }
@@ -92,30 +95,26 @@ internal fun ComposerBar(state: ExperienceState, composer: ComposerState, contro
                     tint = if (composer.popover == ComposerPopover.Attach) MaterialTheme.colorScheme.primary else LocalContentColor.current)
                 if (compact && composer.attachments.isNotEmpty()) Badge(Modifier.align(Alignment.TopEnd))
             } }
-            AnchoredPopover(composer.popover == ComposerPopover.Attach, { controller.popover(null) }) {
-                if (compact && composer.attachments.isNotEmpty()) {
-                    AttachmentTray(composer.attachments, if (state.running) null else controller::remove,
-                        if (state.running) null else controller::retry)
-                }
-                if (compact) composer.banner?.let { Text(it.text, style = MaterialTheme.typography.bodySmall) }
-                registry.actions().forEach { action ->
-                    Row(Modifier.fillMaxWidth().clickable { controller.popover(null); action.invoke() }.heightIn(min = 48.dp).padding(horizontal = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                        AppGlyph(action.glyph, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(22.dp))
-                        Text(action.label, style = MaterialTheme.typography.bodyLarge)
+            AnchoredPopover(composer.popover == ComposerPopover.Attach, { controller.popover(null) }, width = 160.dp, maxHeight = 156.dp) {
+                Column(Modifier.verticalScroll(rememberScrollState())) {
+                    registry.actions().forEach { action ->
+                        Row(Modifier.fillMaxWidth().clickable { controller.popover(null); action.invoke() }.heightIn(min = 48.dp).padding(horizontal = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                            AppGlyph(action.glyph, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(22.dp))
+                            Text(action.label, style = MaterialTheme.typography.bodyLarge)
+                        }
                     }
                 }
-                if (!composer.capabilities.attachments.declared) Text("当前模型不能读取附件，仅存到工作区", Modifier.padding(8.dp), style = MaterialTheme.typography.bodySmall)
             }
         }
     }
     val model: @Composable (Boolean) -> Unit = { iconOnly ->
         Box(Modifier.fillMaxWidth()) {
-            Surface(onClick = { if (composer.model == null) onManage() else controller.popover(ComposerPopover.Effort) }, enabled = !compact || !state.loading, shape = CircleShape,
+            Surface(onClick = { controller.popover(if (composer.model == null) ComposerPopover.Model else ComposerPopover.Effort) }, enabled = !compact || !state.loading, shape = CircleShape,
                 color = Color.Transparent, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).semantics { contentDescription = "模型与思考深度：${composer.pillLabel()}" }) {
                 Row(Modifier.padding(horizontal = 4.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     if (compact && iconOnly) AppGlyph(GlyphName.Model)
-                    if ((!compact || !iconOnly) && composer.speed != ResponseSpeed.AUTO) AppGlyph(GlyphName.Bolt, size = GlyphSize.Small)
+                    if ((!compact || !iconOnly) && composer.hasPaidSpeed() && composer.speed != ResponseSpeed.AUTO) AppGlyph(composer.speed.glyph(), size = GlyphSize.Small)
                     if (!compact || !iconOnly) Text(composer.pillLabel(), maxLines = 1, overflow = TextOverflow.Ellipsis,
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -123,18 +122,19 @@ internal fun ComposerBar(state: ExperienceState, composer: ComposerState, contro
                     if (!compact || !iconOnly) AppGlyph(GlyphName.ChevronDown, size = GlyphSize.Small)
                 }
             }
-            AnchoredPopover(composer.popover == ComposerPopover.Effort, { controller.popover(null) }) {
-                EffortPanel(composer, controller)
-            }
-            AnchoredPopover(composer.popover == ComposerPopover.Model, { controller.popover(null) }) {
-                ModelList(state.models, composer.model, controller.pinned, controller.recent,
-                    onSelect = { onSelect(it); controller.popover(null) }, onPin = controller::pin,
-                    onManage = { controller.popover(null); onManage() })
+            val choosing = composer.popover == ComposerPopover.Model
+            AnchoredPopover(choosing || composer.popover == ComposerPopover.Effort,
+                { controller.popover(if (choosing && composer.model != null) ComposerPopover.Effort else null) },
+                width = if (choosing) 212.dp else 264.dp, maxHeight = if (choosing) 212.dp else 200.dp) {
+                if (choosing) {
+                    ModelList(state.models, state.providerNames, composer.model, controller.pinned, controller.recent,
+                        onSelect = { onSelect(it); controller.popover(ComposerPopover.Effort) }, onPin = controller::pin)
+                } else EffortPanel(composer, controller)
             }
         }
     }
     val trailing: @Composable () -> Unit = {
-        ComposerPermission(state.workspace?.id, composer.model, !state.running && !state.loading && !state.stopping && !waiting, onSecurity)
+        ComposerPermission(state.workspace?.id, composer.model, !state.running && !state.loading && !state.stopping && !waiting)
         SendAction(state, composer, waiting, {
             if (state.running) onStop() else if (waiting) waiting = false else if (composer.sendAvailability == ComposerRules.SendAvailability.WAIT_FOR_ATTACHMENTS) waiting = true else submit()
         })
@@ -143,21 +143,25 @@ internal fun ComposerBar(state: ExperienceState, composer: ComposerState, contro
         FrostedSurface(radius = 24.dp, modifier = Modifier.fillMaxWidth()) {
             BoxWithConstraints(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp)) {
                 val iconOnly = maxWidth < 410.dp || maxEditorLines < 3
-                if (maxEditorLines < 3) {
-                    Row(Modifier.fillMaxWidth().heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically) {
-                        attach()
-                        Box(Modifier.weight(1f)) { editor() }
-                        Box(Modifier.width(48.dp)) { model(true) }
-                        trailing()
-                    }
-                } else {
-                    Column(Modifier.fillMaxWidth()) {
-                        Box(Modifier.fillMaxWidth().padding(horizontal = 9.dp, vertical = 2.dp)) { editor() }
-                        Row(Modifier.fillMaxWidth().heightIn(min = 44.dp), verticalAlignment = Alignment.CenterVertically) {
+                Column {
+                    if (composer.attachments.isNotEmpty()) AttachmentTray(composer.attachments,
+                        if (state.running) null else controller::remove, if (state.running) null else controller::retry)
+                    if (maxEditorLines < 3) {
+                        Row(Modifier.fillMaxWidth().heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically) {
                             attach()
-                            Box(Modifier.width(if (iconOnly) 48.dp else 132.dp)) { model(iconOnly) }
-                            Spacer(Modifier.weight(1f))
+                            Box(Modifier.weight(1f)) { editor() }
+                            Box(Modifier.width(48.dp)) { model(true) }
                             trailing()
+                        }
+                    } else {
+                        Column(Modifier.fillMaxWidth()) {
+                            Box(Modifier.fillMaxWidth().padding(horizontal = 9.dp, vertical = 2.dp)) { editor() }
+                            Row(Modifier.fillMaxWidth().heightIn(min = 44.dp), verticalAlignment = Alignment.CenterVertically) {
+                                attach()
+                                Box(Modifier.width(if (iconOnly) 48.dp else 132.dp)) { model(iconOnly) }
+                                Spacer(Modifier.weight(1f))
+                                trailing()
+                            }
                         }
                     }
                 }
@@ -172,7 +176,6 @@ internal fun ComposerBar(state: ExperienceState, composer: ComposerState, contro
                 val message = composer.banner?.text ?: if (composer.failedCount > 0) "${composer.failedCount} 个附件失败，请移除或重试"
                     else "${composer.localOnlyCount} 个附件当前模型无法读取"
                 Text(message, Modifier.weight(1f), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
-                if (composer.localOnlyCount > 0) TextButton(onClick = { controller.popover(ComposerPopover.Model) }) { Text("换模型") }
             }
         }
         com.cordiact.app.experience.FrostedSurface(radius = 28.dp,
@@ -220,74 +223,111 @@ private fun SendAction(state: ExperienceState, composer: ComposerState, waiting:
     }
 }
 
+private fun ComposerState.hasPaidSpeed() = model?.modelId?.let { id ->
+    Regex("(^|[^a-z0-9])gpt(?:[-_.]|[0-9]|$)", RegexOption.IGNORE_CASE).containsMatchIn(id)
+} == true && speedCycle.any { it != ResponseSpeed.AUTO }
+
+private fun ResponseSpeed.glyph() = if (this == ResponseSpeed.ULTRAFAST) GlyphName.DoubleBolt else GlyphName.Bolt
+
 @Composable
 private fun EffortPanel(state: ComposerState, controller: ComposerController) {
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        IconButton(controller::speed, enabled = state.speedCycle.isNotEmpty()) {
-            AppGlyph(GlyphName.Bolt, "响应速度：${state.speedLabel(state.speed)}", tint = if (state.speed == ResponseSpeed.AUTO) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.primary)
+        Row(Modifier.weight(1f).heightIn(min = 48.dp).clip(RoundedCornerShape(9.dp))
+            .clickable(role = Role.Button, onClickLabel = "切换模型") { controller.popover(ComposerPopover.Model) }
+            .padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+            Text(state.modelName, style = MaterialTheme.typography.titleSmall, maxLines = 1,
+                overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+            AppGlyph(GlyphName.ChevronDown, size = GlyphSize.Small)
         }
-        Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
-            AnimatedContent(state.effort, label = "effort-label") { effort -> Text(state.effortLabel(effort), style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.primary) }
-            TextButton(onClick = { controller.popover(ComposerPopover.Model) }) {
-                Text(state.modelName, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
-                AppGlyph(GlyphName.ChevronDown, size = GlyphSize.Small)
+        if (state.hasPaidSpeed()) {
+            val tint = if (state.speed == ResponseSpeed.AUTO) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.primary
+            val highlight = when (state.speed) {
+                ResponseSpeed.FAST -> MaterialTheme.colorScheme.primary.copy(alpha = .10f)
+                ResponseSpeed.ULTRAFAST -> MaterialTheme.colorScheme.primary.copy(alpha = .19f)
+                else -> Color.Transparent
+            }
+            IconButton(controller::speed, Modifier.size(48.dp).semantics { stateDescription = state.speedLabel(state.speed) }) {
+                Box(Modifier.size(32.dp).background(highlight, CircleShape), contentAlignment = Alignment.Center) {
+                    AppGlyph(state.speed.glyph(), "付费快速思考，切换档位", tint = tint)
+                }
             }
         }
-        IconButton(controller::reset) { AppGlyph(GlyphName.Reset, "恢复 auto") }
     }
     val stops = state.effortStops
     if (stops.size > 1) {
         val haptic = LocalHapticFeedback.current
         val index = stops.indexOf(state.effort).coerceAtLeast(0)
-        var dragged by remember(stops) { mutableFloatStateOf(index.toFloat()) }
-        var dragging by remember { mutableStateOf(false) }
-        LaunchedEffect(state.effort, dragging) { if (!dragging) dragged = index.toFloat() }
-        Box(Modifier.padding(horizontal = 8.dp, vertical = 6.dp)) {
-            Box(Modifier.fillMaxWidth().height(10.dp).align(Alignment.Center).clip(CircleShape)
-                .background(Brush.horizontalGradient(listOf(Color(0xFF4865DB), Color(0xFF9A65E8)))))
-            Slider(value = dragged, onValueChange = {
-                val next = it.roundToInt().coerceIn(stops.indices)
-                if (next != dragged.roundToInt()) haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
-                dragging = true; dragged = it; controller.effort(stops[next])
-            }, onValueChangeFinished = { dragging = false; dragged = stops.indexOf(state.effort).coerceAtLeast(0).toFloat() }, valueRange = 0f..stops.lastIndex.toFloat(), steps = (stops.size - 2).coerceAtLeast(0),
-                colors = SliderDefaults.colors(activeTrackColor = Color.Transparent, inactiveTrackColor = Color.Transparent, thumbColor = MaterialTheme.colorScheme.primary),
-                modifier = Modifier.semantics { contentDescription = "思考深度"; stateDescription = state.effortLabel(state.effort) })
+        var preview by remember(state.model, stops, state.effort) { mutableFloatStateOf(index.toFloat()) }
+        val shown = stops[preview.roundToInt().coerceIn(stops.indices)]
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = .50f))
+        Column(Modifier.padding(horizontal = 8.dp, vertical = 7.dp)) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("思考深度", style = MaterialTheme.typography.labelLarge)
+                Text(state.effortLabel(shown), color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
+            }
+            val fill = preview / stops.lastIndex
+            Box(Modifier.fillMaxWidth()) {
+                Box(Modifier.fillMaxWidth().height(28.dp).align(Alignment.Center).clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.surfaceContainerHigh)) {
+                    Box(Modifier.fillMaxWidth(fill).fillMaxHeight().background(MaterialTheme.colorScheme.primary.copy(alpha = .24f)))
+                    Row(Modifier.fillMaxSize().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically) {
+                        stops.indices.forEach { Box(Modifier.size(4.dp).background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = .55f), CircleShape)) }
+                    }
+                }
+                Slider(value = preview, onValueChange = {
+                    if (it.roundToInt() != preview.roundToInt()) haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                    preview = it
+                }, onValueChangeFinished = {
+                    val chosen = stops[preview.roundToInt().coerceIn(stops.indices)]
+                    if (chosen != state.effort) controller.effort(chosen)
+                }, valueRange = 0f..stops.lastIndex.toFloat(), steps = stops.size - 2,
+                    colors = SliderDefaults.colors(activeTrackColor = Color.Transparent, inactiveTrackColor = Color.Transparent,
+                        activeTickColor = Color.Transparent, inactiveTickColor = Color.Transparent, thumbColor = MaterialTheme.colorScheme.primary),
+                    modifier = Modifier.fillMaxWidth().semantics { contentDescription = "思考深度"; stateDescription = state.effortLabel(shown) })
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                val labels = if (stops.size > 5) listOf(stops.first(), stops.last()) else stops
+                labels.forEach { Text(state.effortLabel(it), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            }
         }
-        Text(stops.joinToString(" · ") { state.effortLabel(it) }, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(horizontal = 8.dp))
-    } else Text("此模型不支持调节思考深度", Modifier.padding(12.dp), style = MaterialTheme.typography.bodySmall)
-    if (state.speed != ResponseSpeed.AUTO) Text("${state.speedLabel(state.speed)} · 可能增加用量", Modifier.padding(8.dp), style = MaterialTheme.typography.bodySmall)
+    }
 }
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-internal fun ModelList(models: List<ModelDescriptor>, selected: ModelId?, pinned: List<String>, recent: List<String>,
-    onSelect: (ModelId) -> Unit, onPin: (ModelId) -> Unit, onManage: () -> Unit) {
-    var search by remember { mutableStateOf("") }
-    OutlinedTextField(search, { search = it }, placeholder = { Text("搜索模型") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-    val ordered = models.filter { search.isBlank() || "${it.id.modelId} ${it.displayName}".contains(search, true) }
-        .sortedWith(compareBy<ModelDescriptor> {
+private fun ModelList(models: List<ModelDescriptor>, providers: Map<String, String>, selected: ModelId?, pinned: List<String>, recent: List<String>,
+    onSelect: (ModelId) -> Unit, onPin: (ModelId) -> Unit) {
+    val ordered = remember(models, pinned, recent) {
+        models.sortedWith(compareBy<ModelDescriptor> {
             val key = "${it.id.providerId}/${it.id.modelId}"
             when { key in pinned -> 0; key in recent -> 1; else -> 2 }
         }.thenBy { it.id.providerId }.thenBy { it.id.modelId })
-    Column(Modifier.heightIn(max = 220.dp).verticalScroll(rememberScrollState())) {
-        ordered.forEach { model ->
-            val key = "${model.id.providerId}/${model.id.modelId}"
-            Row(Modifier.fillMaxWidth().combinedClickable(onClick = { onSelect(model.id) }, onLongClick = { onPin(model.id) }).heightIn(min = 56.dp).padding(8.dp),
-                verticalAlignment = Alignment.CenterVertically) {
+    }
+    val selectedIndex = ordered.indexOfFirst { it.id == selected }.coerceAtLeast(0)
+    val list = rememberLazyListState(initialFirstVisibleItemIndex = (selectedIndex - 1).coerceAtLeast(0))
+    if (models.isEmpty()) Text("暂无可用模型", Modifier.padding(10.dp), style = MaterialTheme.typography.bodySmall)
+    LazyColumn(state = list) {
+        items(ordered) { model ->
+            val checked = model.id == selected
+            val shape = RoundedCornerShape(9.dp)
+            Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).clip(shape)
+                .background(if (checked) MaterialTheme.colorScheme.primary.copy(alpha = .10f) else Color.Transparent)
+                .combinedClickable(role = Role.RadioButton, onClick = { onSelect(model.id) }, onLongClick = { onPin(model.id) })
+                .semantics { this.selected = checked }.padding(horizontal = 8.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 Column(Modifier.weight(1f)) {
-                    Text(model.id.modelId, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text(buildString { append(model.id.providerId); if (key in pinned) append(" · 置顶") else if (key in recent) append(" · 最近")
-                        if (model.capabilities.attachments.declared) append(" · 附件")
-                        if (model.capabilities.reasoningEfforts.isNotEmpty()) append(" · 思考")
-                        model.contextWindowTokens?.let { append(" · ${it / 1000}K") }
-                    }, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(model.displayName.ifBlank { model.id.modelId }, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.bodyMedium)
+                    Text(providers[model.id.providerId]?.takeIf { it.isNotBlank() } ?: "模型服务商",
+                        maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                if (selected == model.id) AppGlyph(GlyphName.Check, "已选中")
+                if (checked) AppGlyph(GlyphName.Check, tint = MaterialTheme.colorScheme.primary, size = GlyphSize.Small)
             }
         }
-        if (ordered.isEmpty()) Text("暂无可用模型", Modifier.padding(16.dp))
     }
-    TextButton(onManage, Modifier.fillMaxWidth()) { Text("管理模型 →") }
 }
 
 @Composable

@@ -1,6 +1,7 @@
 package com.cordiact.app.experience
 
 import androidx.activity.compose.BackHandler
+import com.cordiact.app.experience.composer.AnchoredPopover
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
@@ -453,10 +454,13 @@ private fun OverviewSessionRow(
             IconButton(onClick = { open = true }, enabled = !busy) {
                 AppGlyph(GlyphName.More, "会话操作：$title", modifier = Modifier.size(17.dp))
             }
-            DropdownMenu(open, { open = false }) {
-                DropdownMenuItem(text = { Text("重命名") }, onClick = { open = false; onRename() })
-                DropdownMenuItem(text = { Text(if (row.session.isPinned) "取消置顶" else "置顶") }, onClick = { open = false; onPin() })
-                DropdownMenuItem(text = { Text("归档") }, onClick = { open = false; onArchive() })
+            AnchoredPopover(open, { open = false }, width = 160.dp, maxHeight = 156.dp, alignEnd = true, preferBelow = true) {
+                DropdownMenuItem(text = { Text("重命名") }, leadingIcon = { AppGlyph(GlyphName.File, size = GlyphSize.Small) },
+                    contentPadding = PaddingValues(horizontal = 8.dp), onClick = { open = false; onRename() })
+                DropdownMenuItem(text = { Text(if (row.session.isPinned) "取消置顶" else "置顶") }, leadingIcon = { AppGlyph(GlyphName.Pin, size = GlyphSize.Small) },
+                    contentPadding = PaddingValues(horizontal = 8.dp), onClick = { open = false; onPin() })
+                DropdownMenuItem(text = { Text("归档") }, leadingIcon = { AppGlyph(GlyphName.Archive, size = GlyphSize.Small) },
+                    contentPadding = PaddingValues(horizontal = 8.dp), onClick = { open = false; onArchive() })
             }
         }
     }
