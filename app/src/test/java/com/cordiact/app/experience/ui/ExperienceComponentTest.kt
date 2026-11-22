@@ -49,7 +49,7 @@ class ExperienceComponentTest {
             { error("No catalogue needed in text input test") }, { error("No importer needed in text input test") }) }
         val draft by controller.state.collectAsState()
         com.cordiact.app.experience.composer.ComposerBar(state, draft.copy(model = model), controller,
-            "", {}, { text -> val accepted = send(text); if (accepted) controller.text(""); accepted }, stop, {}, {}, {})
+            "", {}, { text -> val accepted = send(text); if (accepted) controller.text(""); accepted }, stop, {})
     }
 
     @Test fun settingsSections_selectsOnlyRequestedSection() {
@@ -152,7 +152,7 @@ class ExperienceComponentTest {
             val scope = rememberCoroutineScope()
             val controller = remember { com.cordiact.app.experience.composer.ComposerController(app, scope, { error("No catalogue needed for input test") }, { error("No import needed for input test") }) }
             val state by controller.state.collectAsState()
-            com.cordiact.app.experience.composer.ComposerBar(ready(), state.copy(model = model), controller, "", {}, { true }, {}, {}, {}, {})
+            com.cordiact.app.experience.composer.ComposerBar(ready(), state.copy(model = model), controller, "", {}, { true }, {}, {})
         }
         // The composers rails were retired: tokens stay typeable, the hint carries the affordance.
         listOf("/", "@", "#").forEach { compose.onNodeWithText(it).assertDoesNotExist() }
