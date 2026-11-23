@@ -58,12 +58,17 @@ internal fun ViewportFade(source: HazeState, top: Boolean, modifier: Modifier = 
     val background = MaterialTheme.colorScheme.background
     // Fade the sampled image itself: an unmasked near-zero blur otherwise overlays
     // a second, slightly filtered copy on the sharp source at the join.
-    val stops = listOf(0f to 1f, .25f to .96f, .5f to .68f, .75f to .22f, 1f to 0f)
+    val stops = if (top) {
+        listOf(0f to 1f, .25f to .96f, .5f to .68f, .75f to .22f, 1f to 0f)
+    } else {
+        // Stronger bottom scrim behind the floating composer so transcript lines never ghost through input hints.
+        listOf(0f to 1f, .42f to .98f, .68f to .82f, .86f to .36f, 1f to 0f)
+    }
     val fade = Brush.verticalGradient(*stops.map { (position, strength) ->
         (if (top) position else 1f - position) to Color.Black.copy(alpha = strength)
     }.sortedBy { it.first }.toTypedArray())
     val tint = Brush.verticalGradient(*stops.map { (position, strength) ->
-        (if (top) position else 1f - position) to background.copy(alpha = strength * .88f)
+        (if (top) position else 1f - position) to background.copy(alpha = strength * if (top) .88f else .96f)
     }.sortedBy { it.first }.toTypedArray())
     Box(modifier.hazeEffect(source) {
         backgroundColor = background

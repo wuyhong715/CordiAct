@@ -124,8 +124,9 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
     BackHandler(overview) { overview = false }
     BackHandler(inspected != null && !overview) { inspected = null }
     val workbench: @Composable () -> Unit = {
-        if (landscape && activeTab !is WorkTab.Plugin) {
-            LandscapeWorkbench(state, pendingSessionId,
+        if (landscape) {
+            val activity = rememberWorkbenchActivity(settingsApp, state.workspace?.id, state.sessionId, state.runningSessionIds)
+            LandscapeWorkbench(state, pendingSessionId, committedKey.orEmpty(), activeTab is WorkTab.Plugin, activity,
                 onOverview = { overview = true; inspected = null },
                 onNew = { viewModel.newSession(state.workspace?.id) },
                 onOpenApproval = { approvalId = it }, ownerLabel = ownerLabel,
@@ -135,14 +136,49 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
                         onSelect = { requestedTab = it }, displayedKey = committedKey,
                         pendingKey = pendingSessionId?.let { "s:$it" }, compact = true)
                 },
+                body = { openStep ->
+                    val landscapeHost = object : com.cordiact.app.experience.tabs.TabHost by tabHost {
+                        override fun inspect(step: ToolActivity) = openStep(step)
+                    }
+                    Column(Modifier.fillMaxSize()) {
+                        state.error?.let { message ->
+                            Box(Modifier.padding(horizontal = 12.dp, vertical = 3.dp)) {
+                                ErrorStrip(message, viewModel::dismissError, { openSettings() })
+                            }
+                        }
+                        Box(Modifier.weight(1f).fillMaxWidth()) {
+                            val plugin = activeTab as? WorkTab.Plugin
+                            if (plugin == null) TranscriptView(
+                                state,
+                                onPrompt = { promptToInsert = it },
+                                onInspect = openStep,
+                                onDecideApproval = viewModel::decide,
+                                onOpenApprovalQueue = {
+                                    approvalId = (state.currentApprovals.firstOrNull() ?: state.approvals.firstOrNull())?.id
+                                },
+                                onOpenTrace = { tabs.open(WorkTab.Plugin(com.cordiact.app.experience.tabs.TraceTab.id)) },
+                            )
+                            else {
+                                val contributor = com.cordiact.app.experience.tabs.TabRegistry.find(plugin.pluginId)
+                                if (contributor != null) contributor.Content(state, landscapeHost)
+                                else Text("该插件已卸载", Modifier.padding(18.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                    }
+                },
                 composer = { lines ->
+                    state.undoArchivedSessionId?.let {
+                        Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text("会话已归档", Modifier.weight(1f), style = MaterialTheme.typography.labelSmall)
+                            TextButton(onClick = { viewModel.restoreSession(it) }) { Text("撤销") }
+                        }
+                    }
                     if (state.archived) TextButton(onClick = { state.sessionId?.let { viewModel.restoreSession(it) } },
                         enabled = !state.loading && !switchPending) { Text("恢复并继续") }
                     else com.cordiact.app.experience.composer.ComposerBar(
                         if (switchPending) state.copy(loading = true) else state, composer, viewModel.composerController, promptToInsert,
                         { promptToInsert = "" }, { text -> if (requestedTab != null || loadingTab != null) false else viewModel.send(text) }, { if (requestedTab == null && loadingTab == null) viewModel.stop() },
-                        viewModel::selectModel, { openSettings("settings://models/providers") },
-                        { openSettings("settings://security/permissions") }, compact = true, maxEditorLines = lines,
+                        viewModel::selectModel, compact = true, maxEditorLines = lines,
                     )
                 })
         } else Surface(color = MaterialTheme.colorScheme.background, modifier = Modifier.fillMaxSize()) {
@@ -185,32 +221,55 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
                                     if (contributor != null) contributor.Content(state, tabHost)
                                     else Text("该插件已卸载", Modifier.padding(LocalChromePadding.current).padding(24.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
-                                else -> TranscriptView(state, onPrompt = { promptToInsert = it }, onInspect = { inspected = it })
+                                else -> TranscriptView(
+                                    state,
+                                    onPrompt = { promptToInsert = it },
+                                    onInspect = { inspected = it },
+                                    onDecideApproval = viewModel::decide,
+                                    onOpenApprovalQueue = {
+                                        viewModel.composerController.popover(null)
+                                        approvalId = (state.currentApprovals.firstOrNull() ?: state.approvals.firstOrNull())?.id
+                                    },
+                                    onOpenTrace = { tabs.open(WorkTab.Plugin(com.cordiact.app.experience.tabs.TraceTab.id)) },
+                                )
                             }
                         }
                     }
                     }
                     },
                     bottom = {
-                    if (state.undoArchivedSessionId != null) {
-                        Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Text("会话已归档，运行任务不受影响", Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
-                            TextButton(onClick = viewModel::undoArchive, enabled = !state.loading) { Text("撤销") }
-                            TextButton(onClick = viewModel::dismissArchiveUndo) { Text("关闭") }
+                        if (activeTab !is WorkTab.Plugin) {
+                            val otherApprovals = state.approvals.size - state.currentApprovals.size
+                            if (otherApprovals > 0) {
+                                Box(Modifier.fillMaxWidth().padding(bottom = 6.dp), contentAlignment = Alignment.Center) {
+                                    ApprovalDockPill(
+                                        label = "其他会话待审批 $otherApprovals 项 · 查看队列",
+                                        onClick = {
+                                            viewModel.composerController.popover(null)
+                                            approvalId = (state.approvals.firstOrNull { it !in state.currentApprovals } ?: state.approvals.firstOrNull())?.id
+                                        },
+                                    )
+                                }
+                            }
+                            if (state.undoArchivedSessionId != null) {
+                                Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Text("会话已归档，运行任务不受影响", Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+                                    TextButton(onClick = viewModel::undoArchive, enabled = !state.loading) { Text("撤销") }
+                                    TextButton(onClick = viewModel::dismissArchiveUndo) { Text("关闭") }
+                                }
+                            }
+                            if (state.archived) {
+                                Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Text("此会话已归档", Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+                                    if (state.running) TextButton(onClick = viewModel::stop) { Text("停止") }
+                                    TextButton(onClick = { state.sessionId?.let { viewModel.restoreSession(it) } }, enabled = !state.loading) { Text("恢复并继续") }
+                                }
+                            } else com.cordiact.app.experience.composer.ComposerBar(
+                                state, composer, viewModel.composerController, promptToInsert,
+                                { promptToInsert = "" }, viewModel::send, viewModel::stop,
+                                viewModel::selectModel,
+                            )
                         }
-                    }
-                    if (state.archived) {
-                        Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Text("此会话已归档", Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
-                            if (state.running) TextButton(onClick = viewModel::stop) { Text("停止") }
-                            TextButton(onClick = { state.sessionId?.let { viewModel.restoreSession(it) } }, enabled = !state.loading) { Text("恢复并继续") }
-                        }
-                    } else com.cordiact.app.experience.composer.ComposerBar(
-                        state, composer, viewModel.composerController, promptToInsert,
-                        { promptToInsert = "" }, viewModel::send, viewModel::stop,
-                        viewModel::selectModel, { openSettings("settings://models/providers") },
-                        { openSettings("settings://security/permissions") },
-                    )
                     },
                 )
                 inspected?.let { step ->
@@ -238,7 +297,7 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
                 onDismiss = { overview = false },
                 onNewSession = { viewModel.newSession(state.workspace?.id, closeAfterSelection) },
                 onSettings = { closeAfterSelection(); settingsVm.reload(); openSettings() },
-            ) { m ->
+            ) { m, overviewSegments ->
                 AllSessionsPane(
                     state, viewModel,
                     onOpenSession = { id ->
@@ -253,6 +312,7 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
                     onWorkspaceOpened = closeAfterSelection,
                     onAutomationTasks = { closeAfterSelection(); settingsVm.reload(); openSettings("settings://tasks") },
                     modifier = m,
+                    overviewSegments = overviewSegments,
                 )
             }
         }
@@ -263,38 +323,119 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
 @Composable
 internal fun CompactInspector(step: ToolActivity, onClose: () -> Unit, modifier: Modifier = Modifier, onSettings: ((String?) -> Unit)? = null) {
     val clipboard = LocalClipboardManager.current
+    val colors = MaterialTheme.colorScheme
+    var tab by remember(step.id) { mutableIntStateOf(0) } // 0: 概览, 1: 输入参数, 2: 返回内容
+    val statusText = when (step.phase) {
+        ToolPhase.SUCCEEDED -> "完成"
+        ToolPhase.FAILED -> "失败"
+        ToolPhase.RUNNING -> "执行中"
+        ToolPhase.INTERRUPTED -> "中断"
+    }
+    val statusColor = when (step.phase) {
+        ToolPhase.FAILED -> colors.error
+        ToolPhase.RUNNING -> colors.primary
+        else -> colors.onSurfaceVariant
+    }
     BoxWithConstraints(modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
         // Landscape: a side panel beside the transcript instead of a sheet squeezed into 360dp of height.
         val side = maxWidth > maxHeight && maxWidth >= 600.dp
-        val maxSheet = if (side) maxHeight else maxHeight * .45f
-        Surface((if (side) Modifier.align(Alignment.CenterEnd).width(minOf(420.dp, maxWidth * .45f)).fillMaxHeight()
-                else Modifier.fillMaxWidth()).heightIn(max = maxSheet).padding(horizontal = 8.dp, vertical = 4.dp).testTag("tool-inspector"), shape = RoundedCornerShape(23.dp), shadowElevation = 12.dp, color = MaterialTheme.colorScheme.surface, border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
+        val maxSheet = if (side) maxHeight else maxHeight * .46f
+        Surface(
+            (if (side) Modifier.align(Alignment.CenterEnd).width(minOf(420.dp, maxWidth * .45f)).fillMaxHeight()
+            else Modifier.fillMaxWidth()).heightIn(max = maxSheet).padding(horizontal = 8.dp, vertical = 4.dp).testTag("tool-inspector"),
+            shape = RoundedCornerShape(20.dp),
+            shadowElevation = 2.dp,
+            color = colors.surface,
+            border = BorderStroke(1.dp, colors.outlineVariant),
+        ) {
             Column {
                 PeekHandle(onClose)
-                Row(Modifier.padding(start = 17.dp, end = 5.dp), verticalAlignment = Alignment.CenterVertically) {
-                    AppGlyph(GlyphName.Terminal, modifier = Modifier.size(17.dp), tint = MaterialTheme.colorScheme.primary)
-                    Text(step.name, Modifier.weight(1f).padding(horizontal = 9.dp), style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    IconButton(onClick = { clipboard.setText(AnnotatedString(listOf(step.arguments, step.summary.orEmpty()).filter { it.isNotBlank() }.joinToString("\n\n"))) }) { AppGlyph(GlyphName.Copy, "复制工具详情", modifier = Modifier.size(17.dp)) }
+                Row(Modifier.padding(start = 16.dp, end = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.size(7.dp).clip(CircleShape).background(statusColor))
+                    Column(Modifier.weight(1f).padding(horizontal = 10.dp)) {
+                        Text(step.name, style = MaterialTheme.typography.titleSmall.copy(fontFamily = FontFamily.Monospace), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(
+                            listOfNotNull(statusText, step.durationMillis?.let { com.cordiact.app.experience.model.durationLabel(it) }).joinToString(" · "),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = statusColor,
+                        )
+                    }
+                    IconButton(onClick = { clipboard.setText(AnnotatedString(listOf(step.arguments, step.summary.orEmpty()).filter { it.isNotBlank() }.joinToString("\n\n"))) }) {
+                        AppGlyph(GlyphName.Copy, "复制工具详情", modifier = Modifier.size(17.dp))
+                    }
                     IconButton(onClick = onClose) { AppGlyph(GlyphName.Close, "关闭工具详情", modifier = Modifier.size(17.dp)) }
                 }
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    listOf("概览", "输入参数", "返回内容").forEachIndexed { idx, label ->
+                        val active = tab == idx
+                        Surface(
+                            onClick = { tab = idx },
+                            shape = CircleShape,
+                            color = if (active) colors.onSurface else colors.surfaceContainerLow,
+                        ) {
+                            Text(
+                                label,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (active) colors.surface else colors.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 11.dp, vertical = 5.dp),
+                            )
+                        }
+                    }
+                }
+                HorizontalDivider(thickness = 0.5.dp, color = colors.outlineVariant)
                 if (step.phase == ToolPhase.FAILED && onSettings != null) {
                     val link = when {
                         step.name.startsWith("ssh_") -> "settings://ssh"
                         step.name.startsWith("termux_") -> "settings://connections/termux"
                         step.name.startsWith("browser_") -> "settings://connections/browser"
                         step.name.startsWith("mcp") || step.name.startsWith("mcp_") -> "settings://mcp"
-                        step.name in setOf("root_exec", "shizuku_exec") -> "settings://connections/privilege"
+                        step.name in setOf("root_exec", "shizuku_exec", "priv_exec", "priv_shell", "priv_root") -> "settings://connections/privilege"
                         step.name in setOf("take_screenshot", "read_window_tree", "click_node", "tap", "swipe", "set_text", "scroll", "global_action") -> "settings://connections/screen"
                         step.name.startsWith("web_") || step.name == "search_web" -> "settings://search"
                         else -> null
                     }
-                    TextButton(onClick = { onSettings(link) }, modifier = Modifier.padding(horizontal = 16.dp)) { Text("前往设置检查连接与权限") }
+                    TextButton(onClick = { onSettings(link) }, modifier = Modifier.padding(horizontal = 12.dp)) { Text("前往设置检查连接与权限") }
                 }
-                SelectionContainer(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()).padding(horizontal = 17.dp, vertical = 12.dp)) {
-                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        if (step.arguments.isNotBlank()) { Text("输入参数", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant); Text(step.arguments, fontFamily = FontFamily.Monospace, fontSize = 12.sp, lineHeight = 18.sp) }
-                        Text("返回内容", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text(step.summary ?: "工具尚未返回内容", fontFamily = FontFamily.Monospace, fontSize = 12.sp, lineHeight = 18.sp)
+                SelectionContainer(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 12.dp)) {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        when (tab) {
+                            0 -> {
+                                Text(
+                                    step.summary?.takeIf { it.isNotBlank() } ?: "工具尚未返回摘要",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = colors.onSurface,
+                                )
+                                if (step.arguments.isNotBlank()) {
+                                    Text("调用参数预览", style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
+                                    Text(
+                                        step.arguments.take(360),
+                                        fontFamily = FontFamily.Monospace,
+                                        fontSize = 12.sp,
+                                        lineHeight = 18.sp,
+                                        color = colors.onSurfaceVariant,
+                                    )
+                                }
+                            }
+                            1 -> {
+                                Text(
+                                    step.arguments.ifBlank { "无输入参数" },
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 12.sp,
+                                    lineHeight = 18.sp,
+                                )
+                            }
+                            else -> {
+                                Text(
+                                    step.summary?.ifBlank { "工具尚未返回内容" } ?: "工具尚未返回内容",
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 12.sp,
+                                    lineHeight = 18.sp,
+                                )
+                            }
+                        }
                     }
                 }
             }

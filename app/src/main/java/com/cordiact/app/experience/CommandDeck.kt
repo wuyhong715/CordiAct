@@ -140,7 +140,7 @@ private fun TreePane(
     val list = rememberLazyListState()
     LaunchedEffect(timeline.size) { if (timeline.isNotEmpty()) list.scrollToItem(timeline.lastIndex) }
     val colors = MaterialTheme.colorScheme
-    val laneColors = listOf(colors.primary, colors.tertiary, colors.secondary, Color(0xFFE08A2E), Color(0xFF7A5AF8))
+    val laneColors = List(5) { colors.onSurfaceVariant.copy(alpha = .62f) }
     Column(modifier) {
         if (timeline.isEmpty()) {
             Box(Modifier.fillMaxSize().padding(pane), contentAlignment = Alignment.Center) {
@@ -283,8 +283,8 @@ private fun QueueCard(modifier: Modifier = Modifier, content: @Composable () -> 
 
 @Composable
 private fun riskColor(level: ApprovalRequest.RiskLevel): Color = when (level) {
-    ApprovalRequest.RiskLevel.LOW -> MaterialTheme.colorScheme.primary
-    ApprovalRequest.RiskLevel.MEDIUM -> Color(0xFFE0A21A)
-    ApprovalRequest.RiskLevel.HIGH -> Color(0xFFE5672E)
+    ApprovalRequest.RiskLevel.LOW -> MaterialTheme.colorScheme.onSurfaceVariant
+    ApprovalRequest.RiskLevel.MEDIUM -> Lumen.Approve
+    ApprovalRequest.RiskLevel.HIGH -> MaterialTheme.colorScheme.error
     ApprovalRequest.RiskLevel.CRITICAL -> MaterialTheme.colorScheme.error
 }

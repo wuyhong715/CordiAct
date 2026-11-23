@@ -14,6 +14,7 @@ data class TranscriptTurn(
     val inputTokens: Long? = null,
     val outputTokens: Long? = null,
     val attachments: List<TranscriptAttachment> = emptyList(),
+    val process: List<ProcessEntry> = emptyList(),
 ) {
     val isRunning: Boolean get() = phase == RunPhase.RUNNING
 }
@@ -31,6 +32,12 @@ data class ToolActivity(
     val durationMillis: Long? = null,
 )
 
+/** Observed order within a live turn. Tool completions update their original entry. */
+sealed interface ProcessEntry {
+    data class Thinking(val start: Int, val end: Int) : ProcessEntry
+    data class Tool(val id: String) : ProcessEntry
+}
+
 sealed interface TranscriptEvent {
     data class Answer(val text: String) : TranscriptEvent
     data class Reasoning(val text: String) : TranscriptEvent
@@ -44,9 +51,20 @@ fun TranscriptTurn.reduce(event: TranscriptEvent): TranscriptTurn {
     if (!isRunning) return this
     return when (event) {
         is TranscriptEvent.Answer -> copy(answer = answer + event.text)
-        is TranscriptEvent.Reasoning -> copy(reasoning = reasoning + event.text)
+        is TranscriptEvent.Reasoning -> {
+            if (event.text.isEmpty()) return this
+            val end = reasoning.length + event.text.length
+            val previous = process.lastOrNull() as? ProcessEntry.Thinking
+            val entries = if (previous?.end == reasoning.length) {
+                process.dropLast(1) + previous.copy(end = end)
+            } else {
+                process + ProcessEntry.Thinking(reasoning.length, end)
+            }
+            copy(reasoning = reasoning + event.text, process = entries)
+        }
         is TranscriptEvent.ToolStarted -> if (tools.any { it.id == event.id }) this else copy(
             tools = tools + ToolActivity(event.id, event.name, event.arguments, startedAt = event.at),
+            process = process + ProcessEntry.Tool(event.id),
         )
         is TranscriptEvent.ToolFinished -> {
             val existing = tools.find { it.id == event.id }
@@ -55,7 +73,11 @@ fun TranscriptTurn.reduce(event: TranscriptEvent): TranscriptTurn {
                 phase = if (event.success) ToolPhase.SUCCEEDED else ToolPhase.FAILED,
                 summary = event.summary, finishedAt = event.at, durationMillis = event.duration.coerceAtLeast(0),
             )
-            copy(tools = if (tools.any { it.id == event.id }) tools.map { if (it.id == event.id) result else it } else tools + result)
+            if (tools.any { it.id == event.id }) {
+                copy(tools = tools.map { if (it.id == event.id) result else it })
+            } else {
+                copy(tools = tools + result, process = process + ProcessEntry.Tool(event.id))
+            }
         }
         is TranscriptEvent.Finished -> copy(
             phase = event.phase, finishedAt = event.at, error = event.error,
@@ -65,7 +87,7 @@ fun TranscriptTurn.reduce(event: TranscriptEvent): TranscriptTurn {
     }
 }
 
-/** Group persisted messages by user turn, without fabricating runtime details absent from storage. */
+/** Group persisted messages by user turn, restoring persisted trace metadata when present without fabricating absent timings. */
 fun restoreTranscript(messages: List<StoredMessage>): List<TranscriptTurn> {
     val result = mutableListOf<TranscriptTurn>()
     messages.forEach { message ->
@@ -73,23 +95,81 @@ fun restoreTranscript(messages: List<StoredMessage>): List<TranscriptTurn> {
             "USER" -> result += TranscriptTurn(message.id, message.content, startedAt = message.at, attachments = message.attachments)
             "ASSISTANT" -> {
                 val phase = message.phase
-                if (result.isEmpty()) result += TranscriptTurn(message.id, "", answer = message.content, startedAt = message.at, phase = phase)
-                else result[result.lastIndex] = result.last().let {
-                    it.copy(phase = phase, answer = listOf(it.answer, message.content).filter(String::isNotBlank).joinToString("\n\n"))
+                val trace = message.trace
+                val traceTools = trace?.tools.orEmpty()
+                val traceReasoning = trace?.reasoning.orEmpty()
+                val traceProcess = buildList {
+                    if (traceReasoning.isNotEmpty()) add(ProcessEntry.Thinking(0, traceReasoning.length))
+                    traceTools.forEach { add(ProcessEntry.Tool(it.id)) }
+                }
+                if (result.isEmpty()) {
+                    result += TranscriptTurn(
+                        id = message.id,
+                        prompt = "",
+                        answer = message.content,
+                        reasoning = traceReasoning,
+                        tools = traceTools,
+                        phase = phase,
+                        startedAt = trace?.startedAt ?: message.at,
+                        finishedAt = trace?.finishedAt,
+                        inputTokens = trace?.inputTokens,
+                        outputTokens = trace?.outputTokens,
+                        process = traceProcess,
+                    )
+                } else {
+                    result[result.lastIndex] = result.last().let { existing ->
+                        val mergedReasoning = listOf(existing.reasoning, traceReasoning).filter(String::isNotBlank).joinToString("\n\n")
+                        val existingToolIds = existing.tools.mapTo(hashSetOf()) { it.id }
+                        val mergedTools = existing.tools + traceTools.filter { it.id !in existingToolIds }
+                        val mergedProcess = if (existing.process.isNotEmpty()) {
+                            existing.process + traceTools.filter { it.id !in existingToolIds }.map { ProcessEntry.Tool(it.id) }
+                        } else {
+                            buildList {
+                                if (mergedReasoning.isNotEmpty()) add(ProcessEntry.Thinking(0, mergedReasoning.length))
+                                mergedTools.forEach { add(ProcessEntry.Tool(it.id)) }
+                            }
+                        }
+                        existing.copy(
+                            phase = phase,
+                            answer = listOf(existing.answer, message.content).filter(String::isNotBlank).joinToString("\n\n"),
+                            reasoning = mergedReasoning,
+                            tools = mergedTools,
+                            startedAt = trace?.startedAt ?: existing.startedAt,
+                            finishedAt = trace?.finishedAt ?: existing.finishedAt,
+                            inputTokens = trace?.inputTokens ?: existing.inputTokens,
+                            outputTokens = trace?.outputTokens ?: existing.outputTokens,
+                            process = mergedProcess,
+                        )
+                    }
                 }
             }
-            // TOOL/SYSTEM rows aren't conversation prose. Runtime metadata is not invented.
+            // TOOL/SYSTEM rows aren't conversation prose. Runtime metadata is only restored from persisted trace.
         }
     }
     return result
 }
+data class StoredTurnTrace(
+    val startedAt: Long? = null,
+    val finishedAt: Long? = null,
+    val inputTokens: Long? = null,
+    val outputTokens: Long? = null,
+    val reasoning: String? = null,
+    val tools: List<ToolActivity> = emptyList(),
+)
 data class TranscriptAttachment(
     val descriptor: com.cordiact.core.attachment.AttachmentDescriptor,
     val interpretation: com.cordiact.core.attachment.Interpretation,
     val renditionId: String? = null,
 )
-data class StoredMessage(val id: String, val role: String, val content: String, val at: Long,
-    val attachments: List<TranscriptAttachment> = emptyList(), val phase: RunPhase = RunPhase.COMPLETE)
+data class StoredMessage(
+    val id: String,
+    val role: String,
+    val content: String,
+    val at: Long,
+    val attachments: List<TranscriptAttachment> = emptyList(),
+    val phase: RunPhase = RunPhase.COMPLETE,
+    val trace: StoredTurnTrace? = null,
+)
 
 fun durationLabel(millis: Long): String = when {
     millis < 1000 -> "${millis.coerceAtLeast(0)} ms"

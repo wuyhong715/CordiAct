@@ -27,6 +27,9 @@ import java.util.Locale
 internal data class SettingsSearchHit(val entry: OverviewEntry, val path: String, val section: String? = null, val field: String? = null)
 
 private val aliases = mapOf(
+    SettingsRoute.PROJECT_INSTRUCTIONS to "AGENTS.md 项目规范 工作区指令",
+    SettingsRoute.WORKSPACE_DEFAULTS to "项目 工作区配置 本地文件 新会话 新对话 默认模型 推理 覆盖 继承",
+    SettingsRoute.AGENT_PRESETS to "agent 运行配置 自定义预设 指令 工具 能力 推理强度",
     SettingsRoute.USAGE to "token 令牌 费用 计费 调用次数 输入输出 使用量", SettingsRoute.PROVIDERS to "api 模型地址 供应商",
     SettingsRoute.PERMISSIONS to "审批 沙箱 安全", SettingsRoute.CONNECTIONS to "代理 网络 Shizuku Termux 无障碍",
     SettingsRoute.SEARCH to "联网 网页 web 搜索引擎", SettingsRoute.CREDENTIALS to "密钥 Key 密码 凭证",
@@ -37,7 +40,7 @@ private val aliases = mapOf(
 internal fun searchSettings(query: String): List<SettingsSearchHit> {
     val terms = query.trim().lowercase(Locale.ROOT).split(Regex("\\s+")).filter(String::isNotBlank)
     if (terms.isEmpty()) return emptyList()
-    return settingsCatalog.flatMap { group -> group.entries.flatMap { entry ->
+    return (settingsDirectory + settingsCatalog).flatMap { group -> group.entries.flatMap { entry ->
         val base = "${group.title} ${entry.title} ${aliases[entry.route].orEmpty()}".lowercase(Locale.ROOT)
         buildList {
             if (terms.all(base::contains)) add(SettingsSearchHit(entry, group.title))

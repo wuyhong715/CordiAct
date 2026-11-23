@@ -290,6 +290,8 @@ data class ConversationSession(
     val titleManuallySet: Boolean = false,
 )
 
+const val AGENT_PRESET_SYSTEM_METADATA = "{\"cordiactAgentPresetSystem\":true}"
+
 data class ConversationMessage(
     val id: String,
     val sessionId: String,
@@ -449,6 +451,13 @@ class ModelAdapterPlugin : ManagedPlugin, ModelAdapterService {
     private val activeCalls = linkedMapOf<String, Pair<String, ModelCall>>()
     @Volatile private var enabled = false
 
+    private class ScopedBackends(val owns: (String) -> Boolean, val resolve: (ModelGenerationRequest) -> ModelBackend?)
+    @Volatile private var scopedBackends: ScopedBackends? = null
+
+    fun setScopedBackendResolver(owns: (String) -> Boolean, resolver: (ModelGenerationRequest) -> ModelBackend?) {
+        scopedBackends = ScopedBackends(owns, resolver)
+    }
+
     @Synchronized
     fun attachBackend(ownerPluginId: String, backend: ModelBackend) {
         check(enabled) { "Model Adapter plugin is not enabled" }
@@ -502,11 +511,13 @@ class ModelAdapterPlugin : ManagedPlugin, ModelAdapterService {
             }
             backends[request.model.providerId]?.backend
         }
-        if (backend == null) {
+        val scope = scopedBackends
+        val selected = if (scope?.owns?.invoke(request.model.providerId) == true) scope.resolve(request) else backend
+        if (selected == null) {
             onEvent(ModelEvent.Failed("provider_unavailable", "No adapter is available for '${request.model.providerId}'"))
             return ModelCall {}
         }
-        if (backend.models().none { it.id == request.model }) {
+        if (selected.models().none { it.id == request.model }) {
             onEvent(ModelEvent.Failed("model_unavailable", "Model '${request.model.modelId}' is not available"))
             return ModelCall {}
         }
@@ -524,7 +535,7 @@ class ModelAdapterPlugin : ManagedPlugin, ModelAdapterService {
             return true
         }
         return try {
-            val delegate = backend.generate(request) { event ->
+            val delegate = selected.generate(request) { event ->
                 when (event) {
                     is ModelEvent.Completed -> if (finish(ModelUsage.Status.COMPLETED, event)) onEvent(event)
                     is ModelEvent.Failed -> if (finish(ModelUsage.Status.FAILED)) onEvent(event)

@@ -247,21 +247,65 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
     }
 
     private fun readTranscript(workspaceId: String, sessionId: String): List<StoredMessage> =
-        app.sessions.messages(sessionId).map { StoredMessage(it.id, it.role.name, it.content, it.createdAtMillis,
-                            it.parts.filterIsInstance<com.cordiact.core.attachment.MessagePart.Attachment>().mapNotNull { part ->
-                                app.attachments.find(workspaceId, part.id)?.let { descriptor ->
-                                    TranscriptAttachment(descriptor, part.interpretation, part.renditionId)
-                                }
-                            }, phase = it.metadataJson?.let { metadata ->
-                                runCatching {
-                                    val status = org.json.JSONObject(metadata)
-                                    when {
-                                        status.optBoolean("outputLimitReached") -> RunPhase.TRUNCATED
-                                        status.optBoolean("toolLimitReached") -> RunPhase.PARTIAL
-                                        else -> RunPhase.COMPLETE
-                                    }
-                                }.getOrDefault(RunPhase.COMPLETE)
-                            } ?: RunPhase.COMPLETE) }
+        app.sessions.messages(sessionId).map { message ->
+            val parsedMeta = message.metadataJson?.let { runCatching { org.json.JSONObject(it) }.getOrNull() }
+            val phase = when {
+                parsedMeta?.optBoolean("outputLimitReached") == true -> RunPhase.TRUNCATED
+                parsedMeta?.optBoolean("toolLimitReached") == true -> RunPhase.PARTIAL
+                else -> RunPhase.COMPLETE
+            }
+            val trace = parsedMeta?.optJSONObject("trace")?.let { obj ->
+                val toolsArray = obj.optJSONArray("tools")
+                val tools = buildList {
+                    if (toolsArray != null) {
+                        for (i in 0 until toolsArray.length()) {
+                            val t = toolsArray.optJSONObject(i) ?: continue
+                            val id = t.optString("id").takeIf { it.isNotBlank() } ?: continue
+                            val name = t.optString("name").takeIf { it.isNotBlank() } ?: continue
+                            val startedAt = t.optLong("startedAt", 0L)
+                            val finishedAt = if (t.has("finishedAt") && !t.isNull("finishedAt")) t.optLong("finishedAt") else null
+                            val duration = if (t.has("durationMillis") && !t.isNull("durationMillis")) t.optLong("durationMillis") else null
+                            val phaseVal = when {
+                                !t.has("success") || t.isNull("success") -> ToolPhase.INTERRUPTED
+                                t.optBoolean("success") -> ToolPhase.SUCCEEDED
+                                else -> ToolPhase.FAILED
+                            }
+                            add(ToolActivity(
+                                id = id,
+                                name = name,
+                                arguments = t.optString("arguments", ""),
+                                summary = t.optString("summary", "").takeIf { it.isNotBlank() },
+                                phase = phaseVal,
+                                startedAt = startedAt,
+                                finishedAt = finishedAt,
+                                durationMillis = duration,
+                            ))
+                        }
+                    }
+                }
+                StoredTurnTrace(
+                    startedAt = if (obj.has("startedAt") && !obj.isNull("startedAt")) obj.optLong("startedAt") else null,
+                    finishedAt = if (obj.has("finishedAt") && !obj.isNull("finishedAt")) obj.optLong("finishedAt") else null,
+                    inputTokens = if (obj.has("inputTokens") && !obj.isNull("inputTokens")) obj.optLong("inputTokens") else null,
+                    outputTokens = if (obj.has("outputTokens") && !obj.isNull("outputTokens")) obj.optLong("outputTokens") else null,
+                    reasoning = obj.optString("reasoning", "").takeIf { it.isNotBlank() },
+                    tools = tools,
+                )
+            }
+            StoredMessage(
+                id = message.id,
+                role = message.role.name,
+                content = message.content,
+                at = message.createdAtMillis,
+                attachments = message.parts.filterIsInstance<com.cordiact.core.attachment.MessagePart.Attachment>().mapNotNull { part ->
+                    app.attachments.find(workspaceId, part.id)?.let { descriptor ->
+                        TranscriptAttachment(descriptor, part.interpretation, part.renditionId)
+                    }
+                },
+                phase = phase,
+                trace = trace,
+            )
+        }
 
     private fun loadSession(
         sessionId: String?, workspaceId: String?, create: Boolean = false,
@@ -290,12 +334,18 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
                     require(workspace.archivedAtMillis == null) { "工作区已归档" }
                     val sessions = app.sessions.listSessions(workspace.id).filter { it.kind == SessionKind.USER }
                         .sortedWith(compareByDescending<ConversationSession> { it.updatedAtMillis }.thenBy { it.id })
+                    var defaults: NewConversationDefaults? = null
+                    fun newConversation(): ConversationSession {
+                        val created = com.cordiact.app.conversation.WorkspaceConversationFactory(app).create(workspace.id, "新对话")
+                        defaults = NewConversationDefaults(created.draft.model, created.draft.effort)
+                        return created.session
+                    }
                     val selected = when {
-                        create -> app.sessions.createSession(workspace.id, "新对话")
+                        create -> newConversation()
                         requested != null -> requested.also { require(it.kind == SessionKind.USER) { "无法选择内部执行会话" } }
-                        workspaceId != null -> sessions.firstOrNull { it.archivedAtMillis == null } ?: app.sessions.createSession(workspace.id, "新对话")
+                        workspaceId != null -> sessions.firstOrNull { it.archivedAtMillis == null } ?: newConversation()
                         else -> app.activeSessionId?.let(app.sessions::getSession)?.takeIf { it.workspaceId == workspace.id && it.kind == SessionKind.USER && it.archivedAtMillis == null }
-                            ?: sessions.firstOrNull { it.archivedAtMillis == null } ?: app.sessions.createSession(workspace.id, "新对话")
+                            ?: sessions.firstOrNull { it.archivedAtMillis == null } ?: newConversation()
                     }
                     require(selected.workspaceId == workspace.id)
                     val workspaces = app.workspaceManager.list()
@@ -306,7 +356,8 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
                             })
                     }
                     Loaded(workspace, workspaces, app.sessions.listSessions(workspace.id).filter { it.kind == SessionKind.USER }, selected,
-                        app.modelAdapter.models(), readTranscript(workspace.id, selected.id), sidebar)
+                        app.workspaceModels(workspace.id), readTranscript(workspace.id, selected.id), sidebar,
+                        defaults)
                 }
                 if (version != selectionVersion) return@launch
                 reconcile(snapshot.selected.id, snapshot.messages)
@@ -315,7 +366,8 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
                 }
                 val model = snapshot.models.find { it.id == preferred }?.id
                     ?: snapshot.models.firstOrNull()?.id
-                val prepared = composerController.prepareSession(snapshot.selected.id, snapshot.workspace.id, snapshot.models, model)
+                val prepared = composerController.prepareSession(snapshot.selected.id, snapshot.workspace.id, snapshot.models, model,
+                    snapshot.defaults?.model, snapshot.defaults?.effort)
                 if (version != selectionVersion || !shouldCommit()) {
                     mutable.update { it.copy(loading = false) }
                     loadingSession = false
@@ -356,11 +408,14 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
     }
 
     private data class Loaded(val workspace: Workspace, val workspaces: List<Workspace>, val sessions: List<ConversationSession>,
-        val selected: ConversationSession, val models: List<ModelDescriptor>, val messages: List<StoredMessage>, val sidebar: List<SidebarWorkspace>)
+        val selected: ConversationSession, val models: List<ModelDescriptor>, val messages: List<StoredMessage>, val sidebar: List<SidebarWorkspace>,
+        val defaults: NewConversationDefaults?)
+
+    private data class NewConversationDefaults(val model: ModelId?, val effort: ReasoningEffort)
 
     fun refreshSettingsModels() {
         viewModelScope.launch {
-            val models = withContext(Dispatchers.IO) { app.modelAdapter.models() }
+            val models = withContext(Dispatchers.IO) { mutable.value.workspace?.id?.let(app::workspaceModels) ?: app.modelAdapter.models() }
             val prefs = app.getSharedPreferences("cordiact.settings.models", android.content.Context.MODE_PRIVATE)
             val preferred = models.firstOrNull { it.id.providerId == prefs.getString("provider", null) && it.id.modelId == prefs.getString("model", null) }?.id
             mutable.update { current -> current.copy(models = models,
@@ -384,7 +439,7 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
             try {
                 val models = withContext(Dispatchers.IO) {
                     app.modelProviders.refreshModels(providerId)
-                    app.modelAdapter.models()
+                    mutable.value.workspace?.id?.let(app::workspaceModels) ?: app.modelAdapter.models()
                 }
                 mutable.update { current -> current.copy(models = models,
                     model = current.model?.takeIf { selected -> models.any { it.id == selected } } ?: models.firstOrNull()?.id) }

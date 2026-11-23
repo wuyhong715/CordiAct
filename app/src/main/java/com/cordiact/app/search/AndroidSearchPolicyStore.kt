@@ -13,10 +13,17 @@ import org.json.JSONObject
  */
 class AndroidSearchPolicyStore(
     private val store: AndroidConversationSessionStore,
+    private val tools: com.cordiact.core.settings.WorkspaceToolPreferences? = null,
 ) : SearchPolicyStore {
     override fun policy(workspaceId: String): WorkspaceSearchPolicy {
+        val base = storedPolicy(workspaceId)
+        val stop = tools?.let { runCatching { it.read(workspaceId).searchDisabled }.getOrDefault(true) } ?: false
+        return if (stop) base.copy(mode = SearchMode.OFF) else base
+    }
+
+    fun storedPolicy(workspaceId: String): WorkspaceSearchPolicy {
         val raw = store.pluginSetting(workspaceId, SEARCH_PLUGIN_ID, KEY) ?: return DEFAULT
-        return parse(raw) // corrupt policy must not silently re-enable networking
+        return parse(raw)
     }
 
     fun save(workspaceId: String, policy: WorkspaceSearchPolicy) {

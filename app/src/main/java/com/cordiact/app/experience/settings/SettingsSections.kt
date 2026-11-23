@@ -14,6 +14,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.cordiact.app.experience.FrostedSurface
 
@@ -30,9 +31,9 @@ internal fun SettingsEditor(active: Boolean) {
 }
 
 @Composable
-internal fun SettingsSectionBar(sections: List<SettingsSection>, selected: String, select: (String) -> Unit, modifier: Modifier = Modifier) {
+internal fun SettingsSectionBar(sections: List<SettingsSection>, selected: String, select: (String) -> Unit, modifier: Modifier = Modifier, maxBarWidth: Dp = 440.dp) {
     if (sections.isEmpty()) return
-    FrostedSurface(modifier.widthIn(max = 440.dp).fillMaxWidth().testTag("settings-sections"), radius = 30.dp) {
+    FrostedSurface(modifier.widthIn(max = maxBarWidth).fillMaxWidth().testTag("settings-sections"), radius = 30.dp) {
         BoxWithConstraints(Modifier.padding(6.dp)) {
             val width = maxWidth / sections.size
             val index = sections.indexOfFirst { it.id == selected }.coerceAtLeast(0)

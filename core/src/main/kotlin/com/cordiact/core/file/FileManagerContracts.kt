@@ -17,7 +17,12 @@ fun fileManagerPluginSpec() = PluginSpec(
 
 data class WorkspaceFileEntry(val name: String, val directory: Boolean, val sizeBytes: Long, val revision: String?)
 data class WorkspaceFilePage(val entries: List<WorkspaceFileEntry>, val nextCursor: String?)
-data class WorkspaceFileContent(val bytes: ByteArray, val revision: String) {
+data class WorkspaceFileContent(
+    val bytes: ByteArray,
+    val revision: String,
+    /** Optional identity of the observed file version; content revisions remain stable for editor CAS. */
+    val observation: String? = null,
+) {
     override fun equals(other: Any?): Boolean = other is WorkspaceFileContent &&
         bytes.contentEquals(other.bytes) && revision == other.revision
 

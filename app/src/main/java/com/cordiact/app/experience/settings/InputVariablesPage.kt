@@ -1,10 +1,9 @@
 package com.cordiact.app.experience.settings
 
+import com.cordiact.app.experience.settings.components.SettingsCard
 import androidx.activity.compose.BackHandler
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -40,8 +39,7 @@ internal fun InputVariablesPage() {
         Button(enabled = !busy, onClick = { original = null; key = ""; value = ""; error = null; open = true }) { Text("新增变量") }
         error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         entries.forEach { (name, text) ->
-            Surface(shape = RoundedCornerShape(16.dp), border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant),
-                color = MaterialTheme.colorScheme.surfaceContainerLowest, modifier = Modifier.fillMaxWidth()) {
+            SettingsCard() {
                 Column(Modifier.clickable(enabled = !busy) { original = name; key = name; value = text; error = null; open = true }.padding(14.dp)) {
                     Text("#$name", style = MaterialTheme.typography.titleSmall)
                     Text(text, maxLines = 2, style = MaterialTheme.typography.bodySmall)

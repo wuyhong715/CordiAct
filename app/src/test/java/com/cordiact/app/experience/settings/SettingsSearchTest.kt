@@ -6,6 +6,13 @@ import org.junit.Test
 
 class SettingsSearchTest {
     @Test
+    fun agentPresetSearchOpensLibraryRatherThanUnboundEditor() {
+        val hits = searchSettings("Agent 预设")
+        assertEquals(SettingsRoute.AGENT_PRESETS, hits.first().entry.route)
+        assertTrue(hits.none { it.entry.route == SettingsRoute.AGENT_PRESET_EDITOR })
+    }
+
+    @Test
     fun blankQueryHasNoResults() {
         assertTrue(searchSettings("   ").isEmpty())
     }

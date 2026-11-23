@@ -14,9 +14,34 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class McpToolBridgeTest {
+
+    @Test
+    fun scopedSelectionChecksWorkspaceAndRevocationBeforeDispatch() {
+        val registry = InMemoryToolDefinitionRegistry()
+        var valid = true
+        val bridge = McpToolBridge("scope", registry, "core.tool-manager", 5000) { workspace, raw ->
+            valid && workspace == "owner" && raw.name == "echo"
+        }
+        val allowed = McpToolDescriptor("echo", "Echo")
+        val connection = FakeConnection(tools = listOf(allowed, McpToolDescriptor("other", "Other")))
+        bridge.sync(connection, listOf(allowed))
+        val id = "core.mcp.scope.echo"
+        assertNull(registry.get("core.mcp.scope.other"))
+        val def = requireNotNull(registry.get(id))
+        val gate = requireNotNull(registry.visibility(id))
+        assertTrue(gate.visible(com.cordiact.core.tool.ToolActivationContext("owner")))
+        assertFalse(gate.visible(com.cordiact.core.tool.ToolActivationContext("foreign")))
+        val args = ToolArguments(emptyMap())
+        assertTrue("error" in def.executor.invoke(com.cordiact.core.tool.ToolInvocationContext(workspaceId = "foreign", requestId = "s"), args).values)
+        assertFalse("error" in def.executor.invoke(com.cordiact.core.tool.ToolInvocationContext(workspaceId = "owner"), args).values)
+        valid = false
+        assertFalse(gate.visible(com.cordiact.core.tool.ToolActivationContext("owner")))
+        assertTrue("error" in def.executor.invoke(com.cordiact.core.tool.ToolInvocationContext(workspaceId = "owner", requestId = "s"), args).values)
+    }
 
     @Test
     fun syncPublishesEveryToolWithTheServerSchemaVerbatim() {

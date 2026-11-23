@@ -15,7 +15,8 @@ internal object TraceTab : TabContributor {
     override val title = "执行轨迹"
     override val glyph = GlyphName.Trace
     override fun badge(state: ExperienceState) = state.activeTools
-    @Composable override fun Content(state: ExperienceState, host: TabHost) = TrajectoryView(state, onInspect = host::inspect)
+    @Composable override fun Content(state: ExperienceState, host: TabHost) =
+        TrajectoryView(state, onInspect = host::inspect, onOpenSession = host::openSession)
 }
 
 internal object ArtifactsTab : TabContributor {
@@ -30,4 +31,5 @@ internal object ArtifactsTab : TabContributor {
 internal fun registerBuiltinTabs() {
     TabRegistry.register(TraceTab)
     TabRegistry.register(ArtifactsTab)
+    TabRegistry.register(GitTreeTab)
 }

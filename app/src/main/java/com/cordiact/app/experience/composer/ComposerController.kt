@@ -54,17 +54,19 @@ class ComposerController(
         if (active == session) mutable.value = next
     }
 
-    suspend fun prepareSession(session: String, workspaceId: String, models: List<ModelDescriptor>, fallback: ModelId?): ComposerState {
+    suspend fun prepareSession(session: String, workspaceId: String, models: List<ModelDescriptor>, fallback: ModelId?,
+                               presetModel: ModelId? = null, presetEffort: ReasoningEffort? = null): ComposerState {
         if (pendingSave != null) save()
         val cached = snapshots[session]
         val flushed = CompletableDeferred<Unit>()
         writes.send { flushed.complete(Unit) }
         flushed.await()
         val draft = withContext(Dispatchers.IO) { drafts.load(session) }
-        val chosen = models.find { it.id == (cached?.model ?: draft.model ?: last.model) }
+        val chosen = models.find { it.id == (cached?.model ?: draft.model ?: presetModel) }
+            ?: models.find { it.id == last.model }
             ?: models.find { it.id == fallback } ?: models.firstOrNull()
         val base = cached ?: ComposerState(text = draft.text,
-            effort = if (draft.model == null) last.effort else draft.effort,
+            effort = if (draft.model == null) presetEffort ?: last.effort else draft.effort,
             speed = if (draft.model == null) last.speed else draft.speed)
         val restored = if (cached != null) cached.attachments else withContext(Dispatchers.IO) {
             catalogue().draftAttachments(key(session)).map { descriptor ->

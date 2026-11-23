@@ -13,17 +13,23 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.addPathNodes
 import androidx.compose.ui.unit.dp
 
-enum class GlyphName { Menu, Chat, Trace, Preview, Plus, Send, Stop, Close, ChevronDown, Check, Copy, ArrowDown, Expand, Terminal, Code, Globe, Back, Search, Settings, Link, Warning, Folder, More, Image, File, Camera, Bolt, Reset, Pin, Sparkle, Retry, Model, Role, Connections, Credential, Audit, ChevronRight, Shield, Info, Tabs }
+enum class GlyphName { Menu, Chat, Trace, Preview, Plus, Send, Stop, Close, ChevronDown, Check, Copy, ArrowDown, Expand, Terminal, Code, Globe, Back, Search, Settings, Link, Warning, Folder, More, Image, File, Camera, Bolt, Reset, Pin, Sparkle, Retry, Model, Role, Connections, Credential, Audit, ChevronRight, Shield, Eye, Unlock, Archive, DoubleBolt, Info, Tabs, Branch, AgentPreset }
 
 /** Cached original vectors: constant 24-unit viewport, no mutable Canvas scaling or per-frame paths. */
 private val glyphs: Map<GlyphName, ImageVector> by lazy {
     val paths = mapOf(
+        GlyphName.Branch to "M6,16 V8 M18,8 V9 Q18,13 13,13 H11 Q6,13 6,16 M8,6 A2,2 0,1 0,4,6 A2,2 0,1 0,8,6 M8,18 A2,2 0,1 0,4,18 A2,2 0,1 0,8,18 M20,6 A2,2 0,1 0,16,6 A2,2 0,1 0,20,6",
         GlyphName.Image to "M4,3 H20 Q21,3 21,4 V20 Q21,21 20,21 H4 Q3,21 3,20 V4 Q3,3 4,3 M3,16 L9,10 L14,15 L17,12 L21,16 M15,7 A1,1 0,1 0,17,7 A1,1 0,1 0,15,7",
         GlyphName.File to "M5,3 H14 L20,9 V21 H5 Z M14,3 V9 H20 M8,13 H17 M8,17 H15",
         GlyphName.Camera to "M3,7 H7 L9,4 H15 L17,7 H21 V20 H3 Z M8,13 A4,4 0,1 0,16,13 A4,4 0,1 0,8,13",
         GlyphName.Bolt to "M14,2 L4,14 H11 L10,22 L20,9 H13 Z",
+        GlyphName.DoubleBolt to "M10,3 L3,13 H8 L7,21 L14,11 H9 Z M18,3 L14,9 H20 L16,20 L22,11 H18 Z",
+        GlyphName.Eye to "M2,12 Q7,5 12,5 Q17,5 22,12 Q17,19 12,19 Q7,19 2,12 M15,12 A3,3 0,1 0,9,12 A3,3 0,1 0,15,12",
+        GlyphName.Unlock to "M8,11 V7 A4,4 0,0 1,16,6 M5,11 H19 V21 H5 Z M12,15 V17",
+        GlyphName.Archive to "M3,4 H21 V8 H3 Z M5,8 V20 H19 V8 M10,12 H14",
         GlyphName.Reset to "M4,10 A8,8 0,1 1,5,17 M4,4 V10 H10",
         GlyphName.Pin to "M8,3 H16 L15,9 L19,13 H13 V21 L11,19 V13 H5 L9,9 Z",
+        GlyphName.AgentPreset to "M4,5 H20 M4,12 H20 M4,19 H20 M8,3 V7 M16,10 V14 M10,17 V21",
         GlyphName.Sparkle to "M12,3 L14,9 L21,12 L14,15 L12,21 L10,15 L3,12 L10,9 Z",
         GlyphName.Retry to "M4,10 A8,8 0,1 1,5,17 M4,4 V10 H10",
         GlyphName.Model to "M3,3 H9 V9 H3 Z M15,3 H21 V9 H15 Z M9,15 H15 V21 H9 Z M6,9 V15 M18,9 V15 M9,18 H15",

@@ -49,7 +49,7 @@ class ExperienceComponentTest {
             { error("No catalogue needed in text input test") }, { error("No importer needed in text input test") }) }
         val draft by controller.state.collectAsState()
         com.cordiact.app.experience.composer.ComposerBar(state, draft.copy(model = model), controller,
-            "", {}, { text -> val accepted = send(text); if (accepted) controller.text(""); accepted }, stop, {}, {}, {})
+            "", {}, { text -> val accepted = send(text); if (accepted) controller.text(""); accepted }, stop, {})
     }
 
     @Test fun settingsSections_selectsOnlyRequestedSection() {
@@ -120,15 +120,16 @@ class ExperienceComponentTest {
         var inspect: ToolActivity? = null
         content { TranscriptView(ready(listOf(TranscriptTurn("t", "prompt", tools = listOf(step)))), {}, { inspect = it }) }
         compose.onNodeWithText("read_file").assertDoesNotExist()
-        compose.onNodeWithText("1 步完成").assertExists()
-        compose.onNodeWithContentDescription("执行轨道", substring = true).performScrollTo().performTouchInput { click(center) }
+        compose.onNodeWithText("执行过程 · 1 项调用").assertExists().performClick()
+        compose.onNodeWithText("read_file").assertIsDisplayed().performClick()
         compose.waitForIdle()
         assertEquals("c", inspect?.id)
     }
     @Test fun reasoning_isOptInInlineContent() {
         content { TranscriptView(ready(listOf(TranscriptTurn("t", "prompt", reasoning = "provider reasoning"))), {}, {}) }
         compose.onNodeWithText("provider reasoning").assertDoesNotExist()
-        compose.onNodeWithText("思考过程").performClick()
+        compose.onNodeWithText("模型过程").performClick()
+        compose.onNodeWithText("查看模型过程").performClick()
         compose.onNodeWithText("provider reasoning").assertIsDisplayed()
     }
     @Test fun preview_neverRendersAssistantTextAsArtifact() {
@@ -151,7 +152,7 @@ class ExperienceComponentTest {
             val scope = rememberCoroutineScope()
             val controller = remember { com.cordiact.app.experience.composer.ComposerController(app, scope, { error("No catalogue needed for input test") }, { error("No import needed for input test") }) }
             val state by controller.state.collectAsState()
-            com.cordiact.app.experience.composer.ComposerBar(ready(), state.copy(model = model), controller, "", {}, { true }, {}, {}, {}, {})
+            com.cordiact.app.experience.composer.ComposerBar(ready(), state.copy(model = model), controller, "", {}, { true }, {}, {})
         }
         // The composers rails were retired: tokens stay typeable, the hint carries the affordance.
         listOf("/", "@", "#").forEach { compose.onNodeWithText(it).assertDoesNotExist() }

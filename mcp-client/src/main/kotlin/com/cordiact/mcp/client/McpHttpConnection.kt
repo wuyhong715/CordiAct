@@ -164,6 +164,7 @@ internal class McpHttpConnection(
             append('}')
         }
         val connection = (URL(config.url).openConnection() as HttpURLConnection).apply {
+                instanceFollowRedirects = false
             requestMethod = "POST"
             connectTimeout = config.connectTimeoutMs.toInt()
             readTimeout = timeoutMs.toInt()

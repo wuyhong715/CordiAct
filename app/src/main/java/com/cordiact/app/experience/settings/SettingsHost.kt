@@ -3,6 +3,8 @@ package com.cordiact.app.experience.settings
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.background
+import android.content.res.Configuration
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
@@ -25,6 +27,8 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.cordiact.app.experience.AppGlyph
+import com.cordiact.app.experience.settings.components.SettingsGroup
+import com.cordiact.app.experience.settings.components.SettingsRow
 import com.cordiact.app.experience.GlyphName
 import com.cordiact.app.experience.settings.components.*
 import com.cordiact.core.conversation.ModelId
@@ -73,6 +77,13 @@ fun SettingsHost(vm: SettingsViewModel, initialLink: String? = null, onBack: () 
         else applyNavigation(target)
     }
     fun navigate(target: SettingsRoute) = requestNavigation(navigation.push(target))
+    val directoryRoute = settingsDirectoryRoute(route)
+    fun openDirectory(target: SettingsRoute) {
+        if (route != target) requestNavigation(SettingsNavigation().push(target))
+    }
+    val presetContext = androidx.compose.ui.platform.LocalContext.current.applicationContext
+    val agentPresets = remember(presetContext) { AgentPresetStore(presetContext) }
+    var presetId by rememberSaveable { mutableStateOf("") }
     var requestSearchFocus by remember { mutableStateOf(false) }
     var searchActive by rememberSaveable { mutableStateOf(false) }
     var settingsQuery by rememberSaveable { mutableStateOf("") }
@@ -161,6 +172,10 @@ fun SettingsHost(vm: SettingsViewModel, initialLink: String? = null, onBack: () 
     val keyboardVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
     val showSections = sections.isNotEmpty() && !editor.active && !keyboardVisible
     var sectionBarHeight by remember { mutableIntStateOf(0) }
+    val config = LocalConfiguration.current
+    val wide = config.screenWidthDp >= (if (config.fontScale > 1.3f) 760 else 600)
+    val dockAtEnd = wide || config.orientation == Configuration.ORIENTATION_LANDSCAPE
+    val railWidth = if (config.screenWidthDp < 760) 200.dp else 232.dp
     val sectionBottom = with(LocalDensity.current) { if (showSections || showSearch) sectionBarHeight.toDp() else 0.dp }
     // Keep a separate scroll position per section without discarding the page's draft state.
     val firstScroll = rememberSaveable(route.name, saver = androidx.compose.foundation.ScrollState.Saver) { androidx.compose.foundation.ScrollState(0) }
@@ -174,26 +189,56 @@ fun SettingsHost(vm: SettingsViewModel, initialLink: String? = null, onBack: () 
       CompositionLocalProvider(LocalBackdrop provides backdrop, LocalSettingsSection provides selectedSection, LocalSettingsEditor provides editor) {
         Box(Modifier.padding(inset).consumeWindowInsets(inset).fillMaxSize()) {
         Row(Modifier.fillMaxSize().hazeSource(backdrop)) {
-            val wide = LocalConfiguration.current.screenWidthDp >= 600
-            if (wide && !showResults) {
-                Column(Modifier.width(300.dp).fillMaxHeight().verticalScroll(if (showSearch) homeScroll else firstScroll).padding(start = 16.dp, end = 16.dp, top = toolbarDp + 20.dp, bottom = sectionBottom + 24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    SettingsMenu(state, ::navigate, ::openLink)
+            if (wide) {
+                Column(Modifier.width(railWidth).fillMaxHeight().background(MaterialTheme.colorScheme.surfaceContainerLowest)
+                    .verticalScroll(homeScroll).padding(start = 16.dp, end = 12.dp, top = toolbarDp + 13.dp, bottom = if (showSearch) sectionBottom + 24.dp else 24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    WorkspaceScopePicker(state, busy || dirty || securityBusy, vm::selectWorkspace)
+                    SettingsMenu(state, ::openDirectory, ::openLink, selectedRoute = directoryRoute, compact = true)
                 }
-                VerticalDivider()
             }
             Box(Modifier.weight(1f).fillMaxHeight(), contentAlignment = Alignment.TopCenter) {
-            key(route, providerId) {
+            key(route, providerId, if (route == SettingsRoute.AGENT_PRESET_EDITOR) presetId else "") {
             Column(Modifier.widthIn(max = 640.dp).fillMaxWidth().fillMaxHeight().verticalScroll(when { showResults && settingsQuery.isNotBlank() -> resultsScroll; showSearch && (!wide || showResults) -> homeScroll; else -> sectionScroll }).padding(start = 16.dp, end = 16.dp, top = toolbarDp + 20.dp, bottom = sectionBottom + 24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
                 notice?.let { Text(it, color = MaterialTheme.colorScheme.secondary) }
                 error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                 when(route) {
+                    SettingsRoute.MODELS, SettingsRoute.PLUGINS, SettingsRoute.SECURITY, SettingsRoute.APP_PREFERENCES -> SettingsBranch(route, ::navigate)
+                    SettingsRoute.PROVIDER_DRAFTS, SettingsRoute.MCP_DRAFTS -> {
+                        val provider = route == SettingsRoute.PROVIDER_DRAFTS
+                        WorkspaceDeclarationsPage(state,
+                            if (provider) com.cordiact.core.settings.WorkspaceDeclarations.Kind.PROVIDER else com.cordiact.core.settings.WorkspaceDeclarations.Kind.MCP,
+                            onDirty = { dirty = it }, onBusy = { securityBusy = it }, onConnectionChanged = { vm.reload() }) {
+                            navigate(if (provider) SettingsRoute.PROVIDERS else SettingsRoute.MCP)
+                        }
+                    }
+                    SettingsRoute.WORKSPACE_TOOLS -> WorkspaceToolsPage(state) { securityBusy = it }
+                    SettingsRoute.PROJECT_INSTRUCTIONS -> ProjectInstructionsPage(state, onDirty = { dirty = it }, onBusy = { securityBusy = it })
+                    SettingsRoute.WORKSPACE_DEFAULTS -> {
+                        WorkspaceDefaultsPage(state, agentPresets, busy, vm::selectWorkspace)
+                        SettingsGroup {
+                            SettingsRow("项目指令", "AGENTS.md · 不授予权限", GlyphName.File) { navigate(SettingsRoute.PROJECT_INSTRUCTIONS) }
+                            SettingsRow("Agent 预设库", "此客户端 · 系统提示词与默认模型", GlyphName.AgentPreset) { navigate(SettingsRoute.AGENT_PRESETS) }
+                        }
+                    }
                     SettingsRoute.HOME -> if (showResults && settingsQuery.isNotBlank()) {
                         SettingsSearchResults(settingsQuery, ::openResult)
-                    } else if (wide && !showResults) {
-                        Text("选择左侧设置项", style = MaterialTheme.typography.titleMedium)
-                        Text("模型、凭据和连接为全局设置；权限、搜索策略和能力开关作用于选定工作区。")
-                    } else SettingsMenu(state, ::navigate, ::openLink)
+
+                    } else if (wide) {
+                        Text("工作区设置", style = MaterialTheme.typography.headlineSmall)
+                        Text(state.workspaces.firstOrNull { it.id == state.capabilityWorkspaceId }?.name ?: "未选择工作区")
+                        Text("从左侧选择工作区默认、模型与提供商、插件与连接或权限与安全。", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    } else {
+                        WorkspaceScopePicker(state, busy || dirty || securityBusy, vm::selectWorkspace)
+                        SettingsMenu(state, ::navigate, ::openLink)
+                    }
+                    SettingsRoute.AGENT_PRESETS -> AgentPresetLibrary(agentPresets, state, wide) {
+                        presetId = it
+                        navigate(SettingsRoute.AGENT_PRESET_EDITOR)
+                    }
+                    SettingsRoute.AGENT_PRESET_EDITOR -> AgentPresetEditor(agentPresets, presetId, state.models, selectedSection,
+                        onDirty = { dirty = it }, onSaved = { applyNavigation(navigation.pop()) },
+                        onCopy = { presetId = "copy:$it" }, onPermissions = { openDirectory(SettingsRoute.PERMISSIONS) })
                     SettingsRoute.PROVIDERS -> ProviderList(state) { providerId = it; navigate(SettingsRoute.DETAIL) }
                     SettingsRoute.ADD -> ProviderEditor(vm, busy, { dirty = it }) { applyNavigation(navigation.providerList()) }
                     SettingsRoute.DETAIL -> state.providers.firstOrNull { it.id == providerId }?.let {
@@ -236,7 +281,8 @@ fun SettingsHost(vm: SettingsViewModel, initialLink: String? = null, onBack: () 
         ViewportFade(backdrop, true, Modifier.align(Alignment.TopCenter).fillMaxWidth().height(toolbarDp + 16.dp))
         ViewportFade(backdrop, false, Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(sectionBottom + 16.dp))
         if (showSections) SettingsSectionBar(sections, selectedSection, { selectedSection = it },
-            Modifier.align(Alignment.BottomCenter).onSizeChanged { sectionBarHeight = it.height }.padding(horizontal = 20.dp, vertical = 12.dp))
+            Modifier.align(if (dockAtEnd) Alignment.BottomEnd else Alignment.BottomCenter).onSizeChanged { sectionBarHeight = it.height }.padding(horizontal = 20.dp, vertical = 12.dp),
+            maxBarWidth = if (dockAtEnd) 324.dp else 440.dp)
         if (showSearch) SettingsSearchBar(searchActive, settingsQuery, searchFocus, requestSearchFocus,
             onFocused = { requestSearchFocus = false }, activate = { requestSearchFocus = true; searchActive = true }, edit = {
                 settingsQuery = it
@@ -249,7 +295,11 @@ fun SettingsHost(vm: SettingsViewModel, initialLink: String? = null, onBack: () 
             FrostedSurface(radius = 24.dp) {
                 IconButton(onClick = { back() }, enabled = !busy && !securityBusy) { AppGlyph(GlyphName.Back, "返回") }
             }
-            Text(route.title, Modifier.weight(1f).padding(horizontal = 12.dp), style = MaterialTheme.typography.titleLarge)
+            Text(when (route) {
+                SettingsRoute.AGENT_PRESETS -> if (wide) "设置" else "Agent 预设"
+                SettingsRoute.AGENT_PRESET_EDITOR -> "Agent 预设"
+                else -> route.title
+            }, Modifier.weight(1f).padding(horizontal = 12.dp), style = MaterialTheme.typography.titleLarge)
             if (route == SettingsRoute.PROVIDERS) FrostedSurface(radius = 24.dp) {
                 TextButton({ navigate(SettingsRoute.ADD) }, enabled = !busy) { Text("添加") }
             }
@@ -259,17 +309,18 @@ fun SettingsHost(vm: SettingsViewModel, initialLink: String? = null, onBack: () 
     }
 }
 @Composable
-private fun SettingsMenu(state: SettingsSnapshot, navigate: (SettingsRoute) -> Unit, openLink: (String?) -> Unit) {
-    SettingsOverview(state, navigate, openLink)
+private fun SettingsMenu(state: SettingsSnapshot, navigate: (SettingsRoute) -> Unit, openLink: (String?) -> Unit,
+                         selectedRoute: SettingsRoute? = null, compact: Boolean = false) {
+    SettingsOverview(state, navigate, openLink, selectedRoute, compact)
 }
 @Composable
 private fun ProviderList(state: SettingsSnapshot, select: (String) -> Unit) {
     if (state.providers.isEmpty()) Text("尚无提供商。点右上角「添加」，填写 URL 与 Key 后选择要启用的模型。")
     state.providers.groupBy { it.protocol }.forEach { (protocol, providers) ->
         Text(protocol.label(), style = MaterialTheme.typography.titleMedium)
-        providers.forEach { p ->
-            SettingsRow(p.name, "${java.net.URI(p.endpoint).host} · ${p.enabled.size}/${p.discovered.size} 启用 · ${if (p.keyIsSet) "Key 已设置" else "需要设置 Key"}") { select(p.id) }
-        }
+        SettingsGroup { providers.forEach { p ->
+            SettingsRow(p.name, "${java.net.URI(p.endpoint).host} · ${p.enabled.size}/${p.discovered.size} 启用 · ${if (p.keyIsSet) "凭据已设置" else "需要设置凭据"}", GlyphName.Link) { select(p.id) }
+        } }
     }
 }
 @Composable
@@ -330,67 +381,70 @@ private fun ProviderEditor(vm: SettingsViewModel, busy: Boolean, dirty: (Boolean
 private fun ProviderDetail(p: ProviderSummary, state: SettingsSnapshot, vm: SettingsViewModel, busy: Boolean, dirty: (Boolean) -> Unit, deleted: () -> Unit) {
     var name by remember(p.name) { mutableStateOf(p.name) }
     var enabled by remember(p.enabled, p.discovered) { mutableStateOf(p.enabled) }
-    var defaults by remember(p.modelDefaults) { mutableStateOf(p.modelDefaults) }
     var secret by remember { mutableStateOf("") }
     var changingKey by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
     var clearKey by remember { mutableStateOf(false) }
     var query by remember { mutableStateOf("") }
     var diff by remember { mutableStateOf<ModelsDiff?>(null) }
-    val changed = name != p.name || enabled != p.enabled || secret.isNotEmpty() || defaults != p.modelDefaults
-    LaunchedEffect(changed) { dirty(changed) }
-    Text(p.protocol.label()); Text(p.endpoint)
-    OutlinedTextField(name, { name = it }, label = { Text("名称") }, enabled = !busy, modifier = Modifier.fillMaxWidth())
-    StatusChip(if (p.keyIsSet) SettingsStatus.READY else SettingsStatus.NEEDS_ACTION, if (p.keyIsSet) "API Key 已设置（不回显）" else "API Key 未设置")
-    Row { TextButton({ changingKey = !changingKey }, enabled = !busy) { Text("更换 Key") }; if (p.keyIsSet) TextButton({ clearKey = true }, enabled = !busy) { Text("清除 Key") } }
-    if (changingKey) SecretField(secret, { secret = it }, !busy)
-    TextButton({ vm.perform { val started = System.nanoTime(); diff = vm.facade.refreshProvider(p.id); vm.notice.value = "模型目录检测成功 · ${(System.nanoTime() - started) / 1_000_000}ms" } }, enabled = !busy && !changed && p.keyIsSet) { Text("测试连接并重新拉取") }
-    diff?.let { Text("新增 ${it.added.size} / 下架 ${it.removed.size}；新增模型不会自动启用。") }
     val affected = state.roles.filterValues { it is ModelRoleSelection.Explicit && it.model.providerId == p.id }
-    affected.forEach { (role, value) ->
-        val model = (value as ModelRoleSelection.Explicit).model
-        if (model.modelId !in enabled) Text("${role.title}将失效：${model.modelId}", color = MaterialTheme.colorScheme.error)
+    val changed = name != p.name || enabled != p.enabled || secret.isNotEmpty()
+    LaunchedEffect(changed) { dirty(changed) }
+    var showModels by rememberSaveable(p.id) { mutableStateOf(true) }
+    var editingModel by rememberSaveable(p.id) { mutableStateOf<String?>(null) }
+    var addModel by rememberSaveable(p.id) { mutableStateOf(false) }
+    if (editingModel != null && editingModel in p.discovered) {
+        ProviderModelEditor(p, requireNotNull(editingModel), vm, busy, dirty) { editingModel = null }
+        return
     }
-    Text("启用模型 ${enabled.size}/${p.discovered.size}", style = MaterialTheme.typography.titleMedium)
-    OutlinedTextField(query, { query = it }, label = { Text("搜索模型") }, modifier = Modifier.fillMaxWidth())
-    p.discovered.filter { it.contains(query, true) }.forEach { model ->
-        Row(Modifier.fillMaxWidth().heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically) {
-            Checkbox(model in enabled, { checked -> enabled = if (checked) enabled + model else enabled - model }, enabled = !busy); Text(model, Modifier.weight(1f))
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        FilterChip(selected = showModels, onClick = { showModels = true }, label = { Text("模型") })
+        FilterChip(selected = !showModels, onClick = { showModels = false }, label = { Text("连接配置") })
+    }
+    if (!showModels) {
+        SettingsGroup {
+            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(p.protocol.label()); Text(p.endpoint)
+                Text("换地址或协议需新建提供商，现有 Key 不会迁移。", style = MaterialTheme.typography.bodySmall)
+            }
         }
-        p.capabilities[model]?.let { capability ->
-            val value = defaults[model] ?: com.cordiact.core.conversation.GenerationParameters.NONE
-            if (capability.reasoningEffortValues.isNotEmpty()) ParameterMenu("推理", value.reasoningEffort?.name ?: "AUTO",
-                listOf("AUTO") + capability.reasoningEffortValues.keys.sortedBy { it.ordinal }.map { it.name }, busy) { selected ->
-                defaults = defaults + (model to value.copy(reasoningEffort = com.cordiact.core.conversation.ReasoningEffort.valueOf(selected)))
+        OutlinedTextField(name, { name = it }, label = { Text("名称") }, enabled = !busy, modifier = Modifier.fillMaxWidth())
+        StatusChip(if (p.keyIsSet) SettingsStatus.READY else SettingsStatus.NEEDS_ACTION, if (p.keyIsSet) "API Key 已设置（不回显）" else "API Key 未设置")
+        Row { TextButton({ changingKey = !changingKey }, enabled = !busy) { Text("更换 Key") }; if (p.keyIsSet) TextButton({ clearKey = true }, enabled = !busy) { Text("清除 Key") } }
+        if (changingKey) SecretField(secret, { secret = it }, !busy)
+    } else {
+        TextButton({ addModel = true }, enabled = !busy && !changed) { Text("按模型 ID 手动添加") }
+        if (addModel) {
+            var manual by rememberSaveable { mutableStateOf("") }
+            AlertDialog(onDismissRequest = { if (!busy) addModel = false }, title = { Text("手动添加模型") },
+                text = { OutlinedTextField(manual, { manual = it.take(256) }, label = { Text("请求模型 ID") }, singleLine = true) },
+                dismissButton = { TextButton({ addModel = false }, enabled = !busy) { Text("取消") } },
+                confirmButton = { TextButton({ vm.perform(success = { addModel = false }) {
+                    vm.facade.addProviderModel(p.id, manual); vm.notice.value = "已添加，勾选并保存后启用"
+                } }, enabled = !busy && manual.isNotBlank() && manual.trim() !in p.discovered) { Text("添加") } })
+        }
+        TextButton({ vm.perform { val started = System.nanoTime(); diff = vm.facade.refreshProvider(p.id); vm.notice.value = "模型目录已刷新（未测试模型能力） · ${(System.nanoTime() - started) / 1_000_000}ms" } }, enabled = !busy && !changed && p.keyIsSet) { Text("获取模型") }
+        diff?.let { Text("新增 ${it.added.size} / 下架 ${it.removed.size}；新增模型不会自动启用。") }
+        affected.forEach { (role, value) ->
+            val model = (value as ModelRoleSelection.Explicit).model
+            if (model.modelId !in enabled) Text("${role.title}将失效：${model.modelId}", color = MaterialTheme.colorScheme.error)
+        }
+        Text("启用模型 ${enabled.size}/${p.discovered.size}", style = MaterialTheme.typography.titleMedium)
+        OutlinedTextField(query, { query = it }, label = { Text("搜索模型") }, modifier = Modifier.fillMaxWidth())
+        p.discovered.filter { it.contains(query, true) }.forEach { model ->
+            Row(Modifier.fillMaxWidth().heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically) {
+                Checkbox(model in enabled, { checked -> enabled = if (checked) enabled + model else enabled - model }, enabled = !busy); Text(model, Modifier.weight(1f))
             }
-            if (capability.responseSpeedValues.isNotEmpty()) ParameterMenu("速度", value.responseSpeed?.name ?: "AUTO",
-                listOf("AUTO") + capability.responseSpeedValues.keys.sortedBy { it.ordinal }.map { it.name }, busy) { selected ->
-                defaults = defaults + (model to value.copy(responseSpeed = com.cordiact.core.conversation.ResponseSpeed.valueOf(selected)))
-            }
-            OutlinedTextField(
-                value = value.maxOutputTokens?.toString().orEmpty(),
-                onValueChange = { raw ->
-                    val tokens = raw.filter(Char::isDigit).take(7).toIntOrNull()
-                    defaults = defaults + (model to value.copy(maxOutputTokens = tokens?.takeIf { it in 1..com.cordiact.core.conversation.GenerationParameters.MAX_OUTPUT_TOKENS }))
-                },
-                label = { Text("最大输出 Token（留空为默认）") },
-                enabled = !busy,
-                singleLine = true,
-                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
-                    keyboardType = androidx.compose.ui.text.input.KeyboardType.Number,
-                ),
-                modifier = Modifier.fillMaxWidth(),
-            )
+            SettingsRow("模型声明与参数", model) { if (!busy && !changed) editingModel = model }
         }
     }
     Button({ vm.perform(success = { secret = ""; changingKey = false; dirty(false) }) {
         if (name != p.name) vm.facade.updateProvider(p.id, name, p.endpoint)
         if (secret.isNotEmpty()) vm.facade.setKey(p.id, secret)
         if (enabled != p.enabled) vm.facade.setEnabledModels(p.id, enabled)
-        if (defaults != p.modelDefaults) vm.facade.setModelDefaults(p.id, defaults)
         vm.notice.value = "已保存"
-    } }, enabled = changed && !busy) { Text("保存") }
-    TextButton({ confirmDelete = true }, enabled = !busy) { Text("删除提供商") }
+    } }, enabled = changed && !busy && enabled.isNotEmpty()) { Text("保存") }
+    if (!showModels) TextButton({ confirmDelete = true }, enabled = !busy) { Text("删除提供商") }
     if (confirmDelete) DangerConfirmDialog("删除 ${p.name}？", "删除全部模型与 Key。以下角色保留引用并显示失效：${affected.keys.joinToString { it.title }.ifBlank { "无" }}。", busy, { confirmDelete = false }, onConfirm = {
         vm.perform(success = { confirmDelete = false; deleted() }) { vm.facade.removeProvider(p.id) }
     })
