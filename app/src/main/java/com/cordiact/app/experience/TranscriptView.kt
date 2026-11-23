@@ -104,18 +104,21 @@ fun TranscriptView(state: ExperienceState, onPrompt: (String) -> Unit, onInspect
             BoxWithConstraints(
                 Modifier.fillMaxSize().padding(LocalChromeBoundsPadding.current)
                     .padding(horizontal = 27.dp, vertical = 16.dp),
+                contentAlignment = Alignment.TopCenter,
             ) {
                 val viewportHeight = maxHeight
                 EmptyConversation(
                     onPrompt = onPrompt,
                     compact = viewportHeight < 320.dp,
-                    modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState())
+                    modifier = Modifier.widthIn(max = 640.dp).fillMaxWidth().verticalScroll(rememberScrollState())
                         .heightIn(min = viewportHeight),
                 )
             }
         } else {
+            // Reading measure: ~720dp column, centred in landscape/tablet; phones keep 16dp gutters.
+            val gutter = with(androidx.compose.ui.platform.LocalDensity.current) { ((androidx.compose.ui.platform.LocalWindowInfo.current.containerSize.width.toDp() - 720.dp) / 2).coerceAtLeast(16.dp) }
             LazyColumn(
-                state = list, contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = LocalChromePadding.current.calculateTopPadding(), bottom = LocalChromePadding.current.calculateBottomPadding()),
+                state = list, contentPadding = PaddingValues(start = gutter, end = gutter, top = LocalChromePadding.current.calculateTopPadding(), bottom = LocalChromePadding.current.calculateBottomPadding()),
                 verticalArrangement = Arrangement.spacedBy(20.dp),
                 modifier = Modifier.fillMaxSize().nestedScroll(connection).testTag("transcript"),
             ) {
@@ -209,9 +212,8 @@ private fun Suggestion(title: String, prompt: String, icon: GlyphName, onPrompt:
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun TurnView(turn: TranscriptTurn, onInspect: (ToolActivity) -> Unit) {
+internal fun TurnView(turn: TranscriptTurn, onInspect: (ToolActivity) -> Unit) {
     var thoughtsExpanded by rememberSaveable(turn.id) { mutableStateOf(false) }
-    var expandedOverride by rememberSaveable(turn.id) { mutableStateOf<Boolean?>(null) }
     var menu by remember { mutableStateOf(false) }
     val clipboard = LocalClipboardManager.current
     Column(verticalArrangement = Arrangement.spacedBy(13.dp)) {
@@ -224,8 +226,9 @@ private fun TurnView(turn: TranscriptTurn, onInspect: (ToolActivity) -> Unit) {
         if (turn.prompt.isNotEmpty()) {
             Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {
                 Surface(
-                    shape = RoundedCornerShape(16.dp, 16.dp, 5.dp, 16.dp),
-                    color = MaterialTheme.colorScheme.surfaceContainer,
+                    shape = RoundedCornerShape(20.dp, 20.dp, 6.dp, 20.dp),
+                    color = MaterialTheme.colorScheme.surface,
+                    shadowElevation = 0.5.dp,
                     modifier = Modifier.fillMaxWidth(.85f).widthIn(max = 520.dp).combinedClickable(onClick = {}, onLongClick = { menu = true }),
                 ) {
                     SelectionContainer { Text(turn.prompt, Modifier.padding(horizontal = 16.dp, vertical = 12.dp), style = MaterialTheme.typography.bodyLarge) }
@@ -247,37 +250,7 @@ private fun TurnView(turn: TranscriptTurn, onInspect: (ToolActivity) -> Unit) {
                 }
             }
         }
-        if (turn.tools.isNotEmpty()) {
-            Column(Modifier.animateContentSize(tween(motionDuration(Motion.Standard)))) {
-                val quiet = MaterialTheme.colorScheme.onSurfaceVariant
-                val live = turn.tools.count { it.phase == ToolPhase.RUNNING }
-                val failed = turn.tools.count { it.phase == ToolPhase.FAILED }
-                val done = turn.tools.count { it.phase == ToolPhase.SUCCEEDED }
-                val toolsExpanded = expandedOverride ?: (failed > 0 || live > 0)
-                Row(Modifier.clickable { expandedOverride = !toolsExpanded }.heightIn(min = 48.dp).padding(end = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(7.dp)) {
-                    AppGlyph(GlyphName.Trace, tint = quiet, modifier = Modifier.size(14.dp))
-                    Text(if (failed > 0) "执行过程 · $failed 步失败" else if (live > 0) "执行过程 · $live 步进行中" else if (done == turn.tools.size) "执行过程 · $done 步完成" else "执行过程 · $done / ${turn.tools.size} 步完成", style = MaterialTheme.typography.labelMedium, color = quiet)
-                    AppGlyph(if (toolsExpanded) GlyphName.Close else GlyphName.ChevronDown, if (toolsExpanded) "收起步骤" else "展开步骤", modifier = Modifier.size(13.dp), tint = quiet)
-                }
-                if (toolsExpanded) turn.tools.forEachIndexed { index, step ->
-                    val line = MaterialTheme.colorScheme.outlineVariant
-                    val node = if (step.phase == ToolPhase.FAILED) MaterialTheme.colorScheme.error else quiet
-                    Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable { onInspect(step) }
-                        .drawBehind {
-                            val x = 7.dp.toPx()
-                            if (index > 0) drawLine(line, Offset(x, 0f), Offset(x, center.y), strokeWidth = 1.dp.toPx())
-                            if (index < turn.tools.lastIndex) drawLine(line, Offset(x, center.y), Offset(x, size.height), strokeWidth = 1.dp.toPx())
-                            drawCircle(node, radius = 2.5.dp.toPx(), center = Offset(x, center.y))
-                        }.padding(start = 19.dp, end = 3.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Text(step.name, Modifier.weight(1f), style = MaterialTheme.typography.labelMedium, color = quiet, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Text(when (step.phase) { ToolPhase.SUCCEEDED -> "完成"; ToolPhase.FAILED -> "失败"; ToolPhase.RUNNING -> "执行中"; else -> "待处理" },
-                            style = MaterialTheme.typography.labelSmall, color = node, modifier = Modifier.padding(horizontal = 6.dp))
-                        AppGlyph(GlyphName.ChevronRight, tint = quiet, modifier = Modifier.size(12.dp))
-                    }
-                }
-            }
-        }
+        StepTrack(turn.tools, turn.isRunning, onInspect)
         if (turn.answer.isNotEmpty()) {
             SafeMarkdown(
                 markdown = turn.answer,

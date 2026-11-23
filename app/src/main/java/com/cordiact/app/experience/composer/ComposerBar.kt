@@ -30,9 +30,10 @@ import kotlin.math.roundToInt
 @Composable
 internal fun ComposerBar(state: ExperienceState, composer: ComposerState, controller: ComposerController,
     insert: String, onInserted: () -> Unit, onSend: (String) -> Boolean, onStop: () -> Unit,
-    onSelect: (ModelId) -> Unit, onManage: () -> Unit, onSecurity: () -> Unit) {
+    onSelect: (ModelId) -> Unit, onManage: () -> Unit, onSecurity: () -> Unit,
+    compact: Boolean = false, maxEditorLines: Int = 3) {
     var waiting by remember(state.sessionId) { mutableStateOf(false) }
-    var confirmLocal by remember { mutableStateOf(false) }
+    var confirmLocal by remember(state.sessionId) { mutableStateOf(false) }
     val context = LocalContext.current
     var cameraPath by rememberSaveable { mutableStateOf<String?>(null) }
     var pickSession by rememberSaveable { mutableStateOf<String?>(null) }
@@ -63,17 +64,99 @@ internal fun ComposerBar(state: ExperienceState, composer: ComposerState, contro
     }
         .register(ComposerAction("photo", "照片", GlyphName.Image) { captureTarget(); photo.launch(AttachmentPickerRequests.imageRequest()) })
         .register(ComposerAction("file", "文件", GlyphName.File) { captureTarget(); files.launch(arrayOf("*/*")) }) }
-    LaunchedEffect(insert) { if (insert.isNotEmpty()) { controller.text(insert); onInserted() } }
+    LaunchedEffect(insert, state.loading) { if (insert.isNotEmpty() && !state.loading) { controller.text(insert); onInserted() } }
     fun submit() {
+        if (state.loading || state.running || state.stopping) return
         if (composer.localOnlyCount > 0) confirmLocal = true
         else onSend(composer.text)
     }
-    LaunchedEffect(waiting, composer.sendAvailability) {
+    LaunchedEffect(waiting, composer.sendAvailability, state.loading) {
+        if (state.loading) { waiting = false; confirmLocal = false; return@LaunchedEffect }
         if (waiting && composer.sendAvailability == ComposerRules.SendAvailability.READY) { waiting = false; submit() }
         else if (composer.sendAvailability == ComposerRules.SendAvailability.BLOCKED) waiting = false
     }
+    val editor: @Composable () -> Unit = {
+        Box(Modifier.fillMaxWidth()) {
+            CompletionEditor(context.applicationContext as? com.cordiact.app.CordiActApplication,
+                state.sessionId.orEmpty(), state.workspace?.id, composer.text,
+                !state.loading && !waiting, controller::text,
+                maxLines = if (compact) maxEditorLines else 6, compact = compact,
+                onSubmit = { if (!state.loading && !state.running && !state.stopping && !waiting &&
+                    composer.model != null && composer.sendAvailability == ComposerRules.SendAvailability.READY) submit() })
+        }
+    }
+    val attach: @Composable () -> Unit = {
+        Box {
+            IconButton(onClick = { controller.popover(ComposerPopover.Attach) }, enabled = !state.loading && !state.running && !waiting) { Box {
+                AppGlyph(GlyphName.Plus, if (composer.attachments.isEmpty()) "添加附件" else "附件 ${composer.attachments.size} 个",
+                    tint = if (composer.popover == ComposerPopover.Attach) MaterialTheme.colorScheme.primary else LocalContentColor.current)
+                if (compact && composer.attachments.isNotEmpty()) Badge(Modifier.align(Alignment.TopEnd))
+            } }
+            AnchoredPopover(composer.popover == ComposerPopover.Attach, { controller.popover(null) }) {
+                if (compact && composer.attachments.isNotEmpty()) {
+                    AttachmentTray(composer.attachments, if (state.running) null else controller::remove,
+                        if (state.running) null else controller::retry)
+                }
+                if (compact) composer.banner?.let { Text(it.text, style = MaterialTheme.typography.bodySmall) }
+                registry.actions().forEach { action ->
+                    Row(Modifier.fillMaxWidth().clickable { controller.popover(null); action.invoke() }.heightIn(min = 48.dp).padding(horizontal = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                        AppGlyph(action.glyph, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(22.dp))
+                        Text(action.label, style = MaterialTheme.typography.bodyLarge)
+                    }
+                }
+                if (!composer.capabilities.attachments.declared) Text("当前模型不能读取附件，仅存到工作区", Modifier.padding(8.dp), style = MaterialTheme.typography.bodySmall)
+            }
+        }
+    }
+    val model: @Composable (Boolean) -> Unit = { iconOnly ->
+        Box(Modifier.fillMaxWidth()) {
+            Surface(onClick = { if (composer.model == null) onManage() else controller.popover(ComposerPopover.Effort) }, enabled = !compact || !state.loading, shape = CircleShape,
+                color = Color.Transparent, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).semantics { contentDescription = "模型与思考深度：${composer.pillLabel()}" }) {
+                Row(Modifier.padding(horizontal = 4.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    if (compact && iconOnly) AppGlyph(GlyphName.Model)
+                    if ((!compact || !iconOnly) && composer.speed != ResponseSpeed.AUTO) AppGlyph(GlyphName.Bolt, size = GlyphSize.Small)
+                    if (!compact || !iconOnly) Text(composer.pillLabel(), maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.weight(1f, fill = false))
+                    if (!compact || !iconOnly) AppGlyph(GlyphName.ChevronDown, size = GlyphSize.Small)
+                }
+            }
+            AnchoredPopover(composer.popover == ComposerPopover.Effort, { controller.popover(null) }) {
+                EffortPanel(composer, controller)
+            }
+            AnchoredPopover(composer.popover == ComposerPopover.Model, { controller.popover(null) }) {
+                ModelList(state.models, composer.model, controller.pinned, controller.recent,
+                    onSelect = { onSelect(it); controller.popover(null) }, onPin = controller::pin,
+                    onManage = { controller.popover(null); onManage() })
+            }
+        }
+    }
+    val trailing: @Composable () -> Unit = {
+        ComposerPermission(state.workspace?.id, composer.model, !state.running && !state.loading && !state.stopping && !waiting, onSecurity)
+        SendAction(state, composer, waiting, {
+            if (state.running) onStop() else if (waiting) waiting = false else if (composer.sendAvailability == ComposerRules.SendAvailability.WAIT_FOR_ATTACHMENTS) waiting = true else submit()
+        })
+    }
+    if (compact) {
+        Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceContainerLowest)) {
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            BoxWithConstraints(Modifier.fillMaxWidth()) {
+                val iconOnly = maxWidth < 410.dp || maxEditorLines < 3
+                Row(Modifier.fillMaxWidth().heightIn(min = 51.dp).padding(horizontal = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    attach()
+                    Box(Modifier.weight(1f)) { editor() }
+                    Box(Modifier.width(if (iconOnly) 48.dp else 106.dp)) { model(iconOnly) }
+                    trailing()
+                }
+            }
+        }
+    } else {
     val duration = motionDuration(Motion.Standard)
-    Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
+    Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+    Column(Modifier.widthIn(max = 760.dp).fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
         AnimatedVisibility(composer.banner != null || composer.localOnlyCount > 0 || composer.failedCount > 0) {
             Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                 val message = composer.banner?.text ?: if (composer.failedCount > 0) "${composer.failedCount} 个附件失败，请移除或重试"
@@ -82,7 +165,7 @@ internal fun ComposerBar(state: ExperienceState, composer: ComposerState, contro
                 if (composer.localOnlyCount > 0) TextButton(onClick = { controller.popover(ComposerPopover.Model) }) { Text("换模型") }
             }
         }
-        com.cordiact.app.experience.FrostedSurface(
+        com.cordiact.app.experience.FrostedSurface(radius = 28.dp,
             modifier = Modifier.fillMaxWidth().animateContentSize(tween(duration))) {
             Column(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp)) {
                 AnimatedVisibility(composer.attachments.isNotEmpty(), enter = expandVertically(tween(duration)) + fadeIn(), exit = shrinkVertically(tween(duration)) + fadeOut()) {
@@ -92,78 +175,35 @@ internal fun ComposerBar(state: ExperienceState, composer: ComposerState, contro
                     Text("本轮运行中，草稿已保留", Modifier.padding(horizontal = 10.dp),
                         color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall)
                 }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(Modifier.weight(1f)) {
-                        CompletionEditor(context.applicationContext as? com.cordiact.app.CordiActApplication,
-                            state.sessionId.orEmpty(), state.workspace?.id, composer.text,
-                            !state.loading && !waiting, controller::text,
-                            onSubmit = { if (!state.loading && !state.running && !state.stopping && !waiting &&
-                                composer.model != null && composer.sendAvailability == ComposerRules.SendAvailability.READY) submit() })
-                    }
-
-                }
+                editor()
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Box {
-                        IconButton(onClick = { controller.popover(ComposerPopover.Attach) }, enabled = !state.loading && !state.running && !waiting) { AppGlyph(GlyphName.Plus, "添加附件", tint = if (composer.popover == ComposerPopover.Attach) MaterialTheme.colorScheme.primary else LocalContentColor.current) }
-                        AnchoredPopover(composer.popover == ComposerPopover.Attach, { controller.popover(null) }) {
-                            registry.actions().forEach { action ->
-                                Row(Modifier.fillMaxWidth().clickable { controller.popover(null); action.invoke() }.heightIn(min = 48.dp).padding(horizontal = 8.dp),
-                                    verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                                    AppGlyph(action.glyph, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(22.dp))
-                                    Text(action.label, style = MaterialTheme.typography.bodyLarge)
-                                }
-                            }
-                            if (!composer.capabilities.attachments.declared) Text("当前模型不能读取附件，仅存到工作区", Modifier.padding(8.dp), style = MaterialTheme.typography.bodySmall)
-                        }
-                    }
-
-                        Box(Modifier.weight(1f)) {
-                            Surface(onClick = { if (composer.model == null) onManage() else controller.popover(ComposerPopover.Effort) }, shape = CircleShape,
-                                color = Color.Transparent, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).semantics { contentDescription = "模型与思考深度：${composer.pillLabel()}" }) {
-                                Row(Modifier.padding(horizontal = 4.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                    if (composer.speed != ResponseSpeed.AUTO) AppGlyph(GlyphName.Bolt, size = GlyphSize.Small)
-                                    Text(composer.pillLabel(), maxLines = 1, overflow = TextOverflow.Ellipsis,
-                                        style = MaterialTheme.typography.labelMedium,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        modifier = Modifier.weight(1f, fill = false))
-                                    AppGlyph(GlyphName.ChevronDown, size = GlyphSize.Small)
-                                }
-                            }
-                            AnchoredPopover(composer.popover == ComposerPopover.Effort, { controller.popover(null) }) {
-                                EffortPanel(composer, controller)
-                            }
-                            AnchoredPopover(composer.popover == ComposerPopover.Model, { controller.popover(null) }) {
-                                ModelList(state.models, composer.model, controller.pinned, controller.recent,
-                                    onSelect = { onSelect(it); controller.popover(null) }, onPin = controller::pin,
-                                    onManage = { controller.popover(null); onManage() })
-                            }
-                        }
-                    ComposerPermission(state.workspace?.id, composer.model, !state.running && !state.loading && !state.stopping && !waiting, onSecurity)
-                    SendAction(state, composer, waiting, {
-                        if (state.running) onStop() else if (waiting) waiting = false else if (composer.sendAvailability == ComposerRules.SendAvailability.WAIT_FOR_ATTACHMENTS) waiting = true else submit()
-                    })
+                    attach()
+                    Box(Modifier.weight(1f)) { model(false) }
+                    trailing()
                 }
             }
         }
+    }
     }
     if (confirmLocal) AlertDialog(onDismissRequest = { confirmLocal = false }, title = { Text("附件无法读取") },
         text = { Text("${composer.localOnlyCount} 个附件不会发送给当前模型。可以换模型，或仅发送可读取的内容，其余附件仍保存在本地。") },
         confirmButton = { TextButton(onClick = { confirmLocal = false; onSend(composer.text) }) { Text("仅发送可读取内容") } },
         dismissButton = { TextButton(onClick = { confirmLocal = false; controller.popover(ComposerPopover.Model) }) { Text("换模型") } })
+    }
 }
 
 @Composable
 private fun SendAction(state: ExperienceState, composer: ComposerState, waiting: Boolean, onClick: () -> Unit) {
     val duration = motionDuration(Motion.Standard)
     val enabled = !state.loading && !state.stopping && (state.running || waiting || (composer.model != null && composer.sendAvailability in setOf(ComposerRules.SendAvailability.READY, ComposerRules.SendAvailability.WAIT_FOR_ATTACHMENTS)))
-    val color by animateColorAsState(if (enabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceContainerHigh, tween(duration))
+    val color by animateColorAsState(when { !enabled -> MaterialTheme.colorScheme.surfaceContainerHigh; state.running -> com.cordiact.app.experience.Lumen.Signal; else -> MaterialTheme.colorScheme.onSurface }, tween(duration))
     IconButton(onClick, enabled = enabled, modifier = Modifier.size(48.dp).testTag(if (state.running) "stop-generation" else "send-message")) {
         Surface(color = color, shape = CircleShape) {
             Box(Modifier.size(36.dp), contentAlignment = Alignment.Center) {
                 if (waiting || state.stopping) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
                 else AnimatedContent(state.running, label = "send-stop", transitionSpec = { fadeIn(tween(duration)) togetherWith fadeOut(tween(duration)) }) { running ->
                     AppGlyph(if (running) GlyphName.Stop else GlyphName.Send, if (running) "停止当前回合" else "发送消息",
-                        tint = if (enabled) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant)
+                        tint = if (!enabled) MaterialTheme.colorScheme.onSurfaceVariant else if (state.running) com.cordiact.app.experience.Lumen.Ink else MaterialTheme.colorScheme.surface)
                 }
             }
         }

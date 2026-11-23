@@ -1,6 +1,7 @@
 package com.cordiact.app.experience
 
 import com.cordiact.app.experience.model.*
+import com.cordiact.core.action.ApprovalOwner
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -112,4 +113,27 @@ class SidebarModelsTest {
         assertNull(sidebarSessionNameError("  对话 🗂️  "))
         assertNull(sidebarSessionNameError("a".repeat(120)))
     }
+
+    @Test fun overviewIsFlatPinnedThenRecentAndArchiveIsSeparate() {
+        val workspaces = listOf(a, b.copy(sessions = b.sessions + listOf(
+            SidebarConversation("pin", "Pinned", 0, pinnedAtMillis = 100),
+            SidebarConversation("archived", "Archived", 50, archivedAtMillis = 60),
+        )))
+        assertEquals(listOf("pin", "new", "beta", "old"),
+            overviewSessions(workspaces, "", null, OverviewStatus.ALL, false, emptySet(), emptySet()).map { it.session.id })
+        assertEquals(listOf("archived"),
+            overviewSessions(workspaces, "research", null, OverviewStatus.ALL, true, emptySet(), emptySet()).map { it.session.id })
+    }
+
+    @Test fun overviewIntersectsFiltersAndUsesTrustedApprovalOwner() {
+        val running = setOf("new", "beta")
+        val approvals = setOf(ApprovalOwner("a", "new"), ApprovalOwner("wrong", "beta"), ApprovalOwner("b"))
+        for (status in listOf(OverviewStatus.PENDING, OverviewStatus.RUNNING)) {
+            val item = overviewSessions(listOf(a, b), "默认", "a", status, false, running, approvals).single()
+            assertEquals("new", item.session.id)
+            assertTrue(item.running && item.pending)
+        }
+        assertTrue(overviewSessions(listOf(a, b), "", "b", OverviewStatus.PENDING, false, running, approvals).isEmpty())
+    }
+
 }

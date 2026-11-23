@@ -40,6 +40,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.cordiact.app.experience.model.ToolActivity
 import com.cordiact.app.experience.model.ToolPhase
+import com.cordiact.app.experience.tabs.WorkTab
 import kotlinx.coroutines.launch
 
 internal enum class StudioPane(val label: String) { Conversation("对话"), Activity("执行轨迹"), Artifacts("产物") }
@@ -48,9 +49,7 @@ internal enum class StudioPane(val label: String) { Conversation("对话"), Acti
 @Composable
 fun ExperienceScreen(viewModel: ExperienceViewModel) {
     val state by viewModel.state.collectAsStateWithLifecycle()
-    val drawer = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
-    var pane by rememberSaveable { mutableStateOf(StudioPane.Conversation) }
     val saveable = rememberSaveableStateHolder()
     val saveableKey = "${state.workspace?.id}:${state.sessionId}"
     var approvalId by rememberSaveable { mutableStateOf<String?>(null) }
@@ -68,78 +67,131 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
         com.cordiact.app.experience.settings.SettingsHost(settingsVm, initialLink = settingsLink) { manageModels = false; settingsLink = null; viewModel.refreshSettingsModels() }
         return
     }
-    val wide = LocalConfiguration.current.screenWidthDp >= 840
-    var showWideSidebar by rememberSaveable { mutableStateOf(true) }
-    val closeSidebar: () -> Unit = { if (wide) showWideSidebar = false else scope.launch { drawer.close() } }
-    val closeAfterSelection: () -> Unit = { pane = StudioPane.Conversation; inspected = null; if (!wide) closeSidebar() }
-    BackHandler(wide && showWideSidebar && !manageModels) { showWideSidebar = false }
-    BackHandler(pane != StudioPane.Conversation && !drawer.isOpen) { pane = StudioPane.Conversation }
-    BackHandler(inspected != null && !drawer.isOpen) { inspected = null }
-    val sidebar: @Composable () -> Unit = {
-        saveable.SaveableStateProvider("navigation-sidebar") {
-            androidx.compose.runtime.CompositionLocalProvider(LocalApprovalOwners provides state.approvalOwners) {
-                ConversationSidebar(
-                    groups = state.sidebar, activeWorkspaceId = state.workspace?.id, activeSessionId = state.sessionId,
-                    runningSessionIds = state.runningSessionIds, busy = state.loading, error = state.error,
-                    onClose = closeSidebar,
-                    onNewSession = { workspace -> viewModel.newSession(workspace ?: state.workspace?.id, closeAfterSelection) },
-                    onSelectWorkspace = { viewModel.selectWorkspace(it, closeAfterSelection) },
-                    onSelectSession = { viewModel.selectSession(it, closeAfterSelection) },
-                    onCreateWorkspace = { name, onSuccess -> viewModel.createWorkspace(name) { closeAfterSelection(); onSuccess() } },
-                    onRenameWorkspace = { id, name, onSuccess -> viewModel.renameWorkspace(id, name, onSuccess) },
-                    onRenameSession = { id, title, done -> viewModel.renameSession(id, title, done) },
-                    onArchiveSession = viewModel::archiveSession,
-                    onRestoreSession = { viewModel.restoreSession(it) },
-                    onPinSession = viewModel::pinSession,
-                    onRetry = viewModel::refresh,
-                    onSettings = { closeAfterSelection(); settingsVm.reload(); openSettings() },
-                    onAutomationTasks = {
-                        closeAfterSelection()
-                        settingsVm.reload()
-                        openSettings("settings://tasks")
-                    },
-                )
+    val tabContext = LocalContext.current.applicationContext
+    val tabs = remember { com.cordiact.app.experience.tabs.registerBuiltinTabs(); com.cordiact.app.experience.tabs.TabsController(com.cordiact.app.experience.tabs.PrefsTabStore(tabContext)) }
+    var overview by rememberSaveable { mutableStateOf(false) }
+    val activeTab = tabs.active
+    LaunchedEffect(state.sessionId) { tabs.followSession(state.sessionId) }
+    LaunchedEffect(state.sidebar) {
+        val live = state.sidebar.flatMap { it.sessions }.filter { !it.isArchived }.map { it.id }.toSet()
+        if (live.isNotEmpty()) tabs.prune(live + setOfNotNull(state.sessionId), com.cordiact.app.experience.tabs.TabRegistry.contributors.map { it.id }.toSet())
+    }
+    // A session tab is the selection: activating one moves the view model onto that session.
+    LaunchedEffect(activeTab?.key) {
+        val tab = activeTab as? com.cordiact.app.experience.tabs.WorkTab.Session ?: return@LaunchedEffect
+        if (tab.sessionId != state.sessionId) viewModel.selectSession(tab.sessionId)
+    }
+    val tabHost = remember {
+        object : com.cordiact.app.experience.tabs.TabHost {
+            override fun inspect(step: ToolActivity) { inspected = step }
+            override fun openSession(sessionId: String) { tabs.open(com.cordiact.app.experience.tabs.WorkTab.Session(sessionId)) }
+        }
+    }
+    val ownerLabel: (com.cordiact.core.action.ApprovalOwner?) -> String = { owner ->
+        val group = owner?.let { key -> state.sidebar.firstOrNull { it.id == key.workspaceId } }
+        val title = group?.sessions?.firstOrNull { it.id == owner.sessionId }?.title
+        when {
+            owner == null -> "全局请求"
+            group == null -> "工作区审批"
+            title != null -> "${group.name} / $title"
+            owner.sessionId != null -> "${group.name} / 其他会话"
+            else -> "${group.name} / 工作区请求"
+        }
+    }
+    val configuration = LocalConfiguration.current
+    val landscape = configuration.screenWidthDp > configuration.screenHeightDp && configuration.screenWidthDp >= 600
+    var requestedTab by remember { mutableStateOf<WorkTab?>(null) }
+    var loadingTab by remember { mutableStateOf<WorkTab.Session?>(null) }
+    val committedKey = if (activeTab is WorkTab.Plugin) activeTab.key else state.sessionId?.let { "s:$it" }
+    val pendingSessionId = (requestedTab as? WorkTab.Session)?.sessionId ?: loadingTab?.sessionId
+    val switchPending = requestedTab != null || loadingTab != null
+    LaunchedEffect(requestedTab, loadingTab, state.loading) {
+        val target = requestedTab ?: return@LaunchedEffect
+        if (loadingTab != null || state.loading) return@LaunchedEffect
+        if (target is WorkTab.Plugin || (target as? WorkTab.Session)?.sessionId == state.sessionId) {
+            if (tabs.tabs.any { it.key == target.key }) tabs.select(target.key)
+            requestedTab = null
+        } else if (target is WorkTab.Session) {
+            loadingTab = target
+            viewModel.selectWorkbenchSession(target.sessionId,
+                shouldCommit = { requestedTab == target && tabs.tabs.any { it.key == target.key } }) {
+                if (requestedTab == target) requestedTab = null
+                loadingTab = null
             }
         }
     }
+    val closeAfterSelection: () -> Unit = { overview = false; inspected = null }
+    BackHandler(overview) { overview = false }
+    BackHandler(inspected != null && !overview) { inspected = null }
     val workbench: @Composable () -> Unit = {
-        Surface(color = MaterialTheme.colorScheme.background, modifier = Modifier.fillMaxSize()) {
+        if (landscape && activeTab !is WorkTab.Plugin) {
+            LandscapeWorkbench(state, pendingSessionId,
+                onOverview = { overview = true; inspected = null },
+                onNew = { viewModel.newSession(state.workspace?.id) },
+                onOpenApproval = { approvalId = it }, ownerLabel = ownerLabel,
+                tabs = { modifier ->
+                    com.cordiact.app.experience.tabs.TabStrip(state, tabs,
+                        onClose = { if (!switchPending && !state.loading) tabs.close(it) }, modifier = modifier,
+                        onSelect = { requestedTab = it }, displayedKey = committedKey,
+                        pendingKey = pendingSessionId?.let { "s:$it" }, compact = true)
+                },
+                composer = { lines ->
+                    if (state.archived) TextButton(onClick = { state.sessionId?.let { viewModel.restoreSession(it) } },
+                        enabled = !state.loading && !switchPending) { Text("恢复并继续") }
+                    else com.cordiact.app.experience.composer.ComposerBar(
+                        if (switchPending) state.copy(loading = true) else state, composer, viewModel.composerController, promptToInsert,
+                        { promptToInsert = "" }, { text -> if (requestedTab != null || loadingTab != null) false else viewModel.send(text) }, { if (requestedTab == null && loadingTab == null) viewModel.stop() },
+                        viewModel::selectModel, { openSettings("settings://models/providers") },
+                        { openSettings("settings://security/permissions") }, compact = true, maxEditorLines = lines,
+                    )
+                })
+        } else Surface(color = MaterialTheme.colorScheme.background, modifier = Modifier.fillMaxSize()) {
             Box(Modifier.fillMaxSize()) {
                 ExperienceFrame(
                     top = {
-                    Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
-                        FrostedSurface(radius = 24.dp) { IconButton(onClick = { if (wide) showWideSidebar = !showWideSidebar else scope.launch { drawer.open() } }, modifier = Modifier.testTag("open-navigation")) { AppGlyph(GlyphName.Menu, if (wide && showWideSidebar) "收起会话侧栏" else "打开工作区和会话") } }
-                        Column(Modifier.weight(1f).padding(horizontal = 6.dp)) {
-                            Text(state.workspace?.name ?: "CordiAct", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            Text(state.sessions.find { it.id == state.sessionId }?.title?.ifBlank { "新对话" } ?: "新对话", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        }
-                        StudioPaneMenu(pane, state.activeTools,
-                            com.cordiact.app.render.PreviewInbox.unseenCount(state.sessionId),
-                            onSelect = { pane = it })
+                    val openApprovals = {
+                        viewModel.composerController.popover(null)
+                        approvalId = (state.currentApprovals.firstOrNull() ?: state.approvals.firstOrNull())?.id
                     }
+                    LumenTopChrome(
+                        workspace = state.workspace?.name ?: "CordiAct",
+                        session = state.sessions.find { it.id == state.sessionId }?.title?.ifBlank { "新对话" } ?: "新对话",
+                        mode = state.islandMode(),
+                        tabCount = tabs.tabs.size,
+                        onMenu = { overview = true },
+                        onIsland = {
+                            if (state.turns.any { it.tools.isNotEmpty() }) tabs.open(com.cordiact.app.experience.tabs.WorkTab.Plugin(com.cordiact.app.experience.tabs.TraceTab.id))
+                            else overview = true
+                        },
+                        onApprovals = openApprovals,
+                    ) {
+                        IconButton(onClick = { viewModel.newSession(state.workspace?.id) }, enabled = !state.loading,
+                            modifier = Modifier.testTag("new-tab")) { AppGlyph(GlyphName.Plus, "新对话标签") }
+                    }
+                    com.cordiact.app.experience.tabs.TabStrip(state, tabs, onClose = { tabs.close(it) }, modifier = Modifier.padding(top = 4.dp, bottom = 2.dp))
                     },
                     content = { viewportModifier ->
                     Column(viewportModifier) {
                     if (state.error != null) Box(Modifier.padding(horizontal = 18.dp, vertical = 5.dp)) { ErrorStrip(state.error!!, viewModel::dismissError, { openSettings() }) }
                     Box(Modifier.weight(1f).fillMaxWidth()) {
-                        saveable.SaveableStateProvider("$saveableKey:${pane.name}") {
-                            when (pane) {
-                                StudioPane.Conversation -> TranscriptView(state, onPrompt = { promptToInsert = it }, onInspect = { inspected = it })
-                                StudioPane.Activity -> TrajectoryView(state, onInspect = { inspected = it })
-                                StudioPane.Artifacts -> PreviewView(state, modifier = Modifier.padding(LocalChromePadding.current))
+                        // A tab click precedes the asynchronous session load. Key the transcript by
+                        // the loaded session, so old text doesn't remount under the destination tab.
+                        val contentTabKey = (activeTab as? com.cordiact.app.experience.tabs.WorkTab.Plugin)?.key
+                            ?: state.sessionId?.let { "s:$it" }
+                        saveable.SaveableStateProvider("$saveableKey:$contentTabKey") {
+                            when (val tab = activeTab) {
+                                is com.cordiact.app.experience.tabs.WorkTab.Plugin -> {
+                                    val contributor = com.cordiact.app.experience.tabs.TabRegistry.find(tab.pluginId)
+                                    if (contributor != null) contributor.Content(state, tabHost)
+                                    else Text("该插件已卸载", Modifier.padding(LocalChromePadding.current).padding(24.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                                else -> TranscriptView(state, onPrompt = { promptToInsert = it }, onInspect = { inspected = it })
                             }
                         }
                     }
                     }
                     },
                     bottom = {
-                    WorkbenchDock(state,
-                        onApprovals = {
-                            viewModel.composerController.popover(null)
-                            approvalId = (state.currentApprovals.firstOrNull() ?: state.approvals.firstOrNull())?.id
-                        },
-                        onTrace = { pane = StudioPane.Activity },
-                    )
                     if (state.undoArchivedSessionId != null) {
                         Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp), verticalAlignment = Alignment.CenterVertically) {
                             Text("会话已归档，运行任务不受影响", Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
@@ -161,23 +213,6 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
                     )
                     },
                 )
-                approvalId?.let { id ->
-                    val currentIds = state.currentApprovals.mapTo(hashSetOf()) { it.id }
-                    val sortedRequests = state.approvals.sortedBy { it.id !in currentIds }
-                    ApprovalDecisionDialog(sortedRequests, state.decidingApprovals, state.approvalErrors,
-                        ownerLabel = { owner ->
-                            val group = owner?.let { key -> state.sidebar.firstOrNull { it.id == key.workspaceId } }
-                            val title = group?.sessions?.firstOrNull { it.id == owner.sessionId }?.title
-                            when {
-                                owner == null -> "全局请求"
-                                group == null -> "工作区审批"
-                                title != null -> "${group.name} / $title"
-                                owner.sessionId != null -> "${group.name} / 其他会话"
-                                else -> "${group.name} / 工作区请求"
-                            }
-                        },
-                        selected = id, onSelect = { approvalId = it }, onDismiss = { approvalId = null }, onDecide = viewModel::decide)
-                }
                 inspected?.let { step ->
                     CompactInspector(step = step, onClose = { inspected = null }, onSettings = { link -> openSettings(link) }, modifier = Modifier.align(Alignment.BottomCenter).windowInsetsPadding(WindowInsets.systemBars.union(WindowInsets.ime)))
                 }
@@ -185,20 +220,42 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
             }
         }
     }
-    if (wide) {
-        Row(Modifier.fillMaxSize()) {
-            if (showWideSidebar) {
-                Box(Modifier.width(300.dp).fillMaxHeight().windowInsetsPadding(WindowInsets.systemBars)) { sidebar() }
-                VerticalDivider()
-            }
-            Box(Modifier.weight(1f).fillMaxHeight()) { workbench() }
+    Box(Modifier.fillMaxSize()) {
+        workbench()
+        approvalId?.let { id ->
+            val currentIds = state.currentApprovals.mapTo(hashSetOf()) { it.id }
+            val sortedRequests = state.approvals.sortedBy { it.id !in currentIds }
+            ApprovalDecisionDialog(sortedRequests, state.decidingApprovals, state.approvalErrors,
+                ownerLabel = ownerLabel,
+                selected = id, onSelect = { approvalId = it }, onDismiss = { approvalId = null }, onDecide = viewModel::decide)
         }
-    } else {
-        ModalNavigationDrawer(drawerState = drawer, gesturesEnabled = drawer.isOpen || pane == StudioPane.Conversation,
-            drawerContent = {
-                ModalDrawerSheet(Modifier.width(minOf(LocalConfiguration.current.screenWidthDp.dp * .84f, 360.dp)),
-                    drawerContainerColor = MaterialTheme.colorScheme.surfaceContainerLowest) { sidebar() }
-            }, content = workbench)
+        androidx.compose.animation.AnimatedVisibility(overview,
+            enter = androidx.compose.animation.fadeIn(tween(com.cordiact.app.experience.composer.motionDuration(220))) + androidx.compose.animation.scaleIn(tween(com.cordiact.app.experience.composer.motionDuration(220)), initialScale = .96f),
+            exit = androidx.compose.animation.fadeOut(tween(com.cordiact.app.experience.composer.motionDuration(160))) + androidx.compose.animation.scaleOut(tween(com.cordiact.app.experience.composer.motionDuration(160)), targetScale = .96f)) {
+            com.cordiact.app.experience.tabs.TabOverview(
+                state, tabs,
+                onClose = { tabs.close(it) },
+                onDismiss = { overview = false },
+                onNewSession = { viewModel.newSession(state.workspace?.id, closeAfterSelection) },
+                onSettings = { closeAfterSelection(); settingsVm.reload(); openSettings() },
+            ) { m ->
+                AllSessionsPane(
+                    state, viewModel,
+                    onOpenSession = { id ->
+                        if (state.sessionId == id) {
+                            tabs.open(com.cordiact.app.experience.tabs.WorkTab.Session(id))
+                            closeAfterSelection()
+                        } else viewModel.selectSession(id) {
+                            tabs.open(com.cordiact.app.experience.tabs.WorkTab.Session(id))
+                            closeAfterSelection()
+                        }
+                    },
+                    onWorkspaceOpened = closeAfterSelection,
+                    onAutomationTasks = { closeAfterSelection(); settingsVm.reload(); openSettings("settings://tasks") },
+                    modifier = m,
+                )
+            }
+        }
     }
 
 }
@@ -207,8 +264,11 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
 internal fun CompactInspector(step: ToolActivity, onClose: () -> Unit, modifier: Modifier = Modifier, onSettings: ((String?) -> Unit)? = null) {
     val clipboard = LocalClipboardManager.current
     BoxWithConstraints(modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
-        val maxSheet = maxHeight * .45f
-        Surface(Modifier.fillMaxWidth().heightIn(max = maxSheet).padding(horizontal = 8.dp, vertical = 4.dp), shape = RoundedCornerShape(23.dp), shadowElevation = 12.dp, color = MaterialTheme.colorScheme.surface, border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
+        // Landscape: a side panel beside the transcript instead of a sheet squeezed into 360dp of height.
+        val side = maxWidth > maxHeight && maxWidth >= 600.dp
+        val maxSheet = if (side) maxHeight else maxHeight * .45f
+        Surface((if (side) Modifier.align(Alignment.CenterEnd).width(minOf(420.dp, maxWidth * .45f)).fillMaxHeight()
+                else Modifier.fillMaxWidth()).heightIn(max = maxSheet).padding(horizontal = 8.dp, vertical = 4.dp).testTag("tool-inspector"), shape = RoundedCornerShape(23.dp), shadowElevation = 12.dp, color = MaterialTheme.colorScheme.surface, border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
             Column {
                 PeekHandle(onClose)
                 Row(Modifier.padding(start = 17.dp, end = 5.dp), verticalAlignment = Alignment.CenterVertically) {

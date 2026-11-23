@@ -86,7 +86,7 @@ internal fun ArtifactPreviewWindow(
 }
 
 @Composable
-private fun ArtifactStage(item: PreviewItem) {
+internal fun ArtifactStage(item: PreviewItem) {
     var status by remember(item.id) { mutableStateOf("正在初始化渲染器…") }
     var viewport by remember(item.id) { mutableStateOf(item.viewport) }
     var compare by remember(item.id) { mutableStateOf(false) }
