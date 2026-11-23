@@ -73,7 +73,7 @@ class AndroidSettingsFacade(private val app: CordiActApplication) : SettingsFaca
     override suspend fun snapshot() = withContext(Dispatchers.IO) {
         val providers = registry.providers().map { config ->
             ProviderSummary(config.providerId, config.displayName, config.protocol, config.endpoint,
-                config.discoveredModels, config.models.toSet(), credentials.has("model", config.providerId), config.parameterCapabilities, config.modelDefaults)
+                config.discoveredModels, config.models.toSet(), credentials.has("model", config.providerId), config.parameterCapabilities, config.modelDefaults, config.contextWindows, config.attachmentCapabilities)
         }
         val available = app.modelAdapter.models()
         val roles = mapOf(SettingsModelRole.SUMMARY to summary.selection(), SettingsModelRole.EXTRACTION to extraction.selection())
@@ -104,7 +104,7 @@ class AndroidSettingsFacade(private val app: CordiActApplication) : SettingsFaca
             CapabilitySummary(id, status.title, entry.workspaceEnabled == true && app.hasPluginCapabilityConsent(workspaceId, id), status)
         }.distinctBy { it.id }
         val connectionReadiness = capabilities.map { c -> c.readiness.let { r -> SettingsReadiness(r.id, c.label, SettingsStatus.valueOf(r.state.name), r.summary, r.reasonCode, "settings://connections/${c.id}") } }
-        SettingsSnapshot(providers, available, readiness + connectionReadiness, providers.map { CredentialMeta("model", it.id, it.keyIsSet) }, roles, default, attachmentSettings.limits(), workspaceId, capabilities, app.workspaceManager.list().map { SecurityWorkspace(it.id, it.name) })
+        SettingsSnapshot(providers, available + app.workspaceConnections.models(workspaceId), readiness + connectionReadiness, providers.map { CredentialMeta("model", it.id, it.keyIsSet) }, roles, default, attachmentSettings.limits(), workspaceId, capabilities, app.workspaceManager.list().map { SecurityWorkspace(it.id, it.name) })
     }
     override suspend fun discover(draft: ProviderDraft, key: String) = withContext(Dispatchers.IO) {
         HttpModelDiscoveryService().discover(draft.connection(), key.trim())
@@ -139,7 +139,7 @@ class AndroidSettingsFacade(private val app: CordiActApplication) : SettingsFaca
         audited("model.provider.update", ::providerRevision) {
             registry.updateProvider(ModelProviderConfig(old.providerId, name.trim().ifBlank { id }, old.protocol, endpoint,
                 old.models, old.connectTimeoutMillis, old.readTimeoutMillis, old.defaults, old.parameterCapabilities,
-                old.attachmentCapabilities, discoveredModels = old.discoveredModels, modelDefaults = old.modelDefaults))
+                old.attachmentCapabilities, discoveredModels = old.discoveredModels, modelDefaults = old.modelDefaults, contextWindows = old.contextWindows))
         }
     }
     override suspend fun setKey(id: String, key: String?) = withContext(Dispatchers.IO) {
@@ -183,6 +183,55 @@ class AndroidSettingsFacade(private val app: CordiActApplication) : SettingsFaca
     }
     companion object { private val AUDIT_WRITE_LOCK = Any() }
     private fun readDefault(): ModelId? = defaults.defaultModel()
+    override suspend fun addProviderModel(id: String, model: String) = withContext(Dispatchers.IO) {
+        val old = config(id)
+        val wire = model.trim()
+        require(wire.isNotEmpty() && wire.length <= 256 && wire.none(Char::isWhitespace)) { "模型 ID 无效" }
+        require(wire !in old.discoveredModels) { "模型 ID 已存在" }
+        audited("model.provider.models", ::providerRevision) {
+            registry.updateProvider(old.withModels(old.models, old.discoveredModels + wire))
+        }
+    }
+
+    override suspend fun setModelDeclaration(id: String, model: String, vision: Boolean?, efforts: Set<com.cordiact.core.conversation.ReasoningEffort>?, context: Int?, output: Int?, effort: com.cordiact.core.conversation.ReasoningEffort?) = withContext(Dispatchers.IO) {
+        val old = config(id)
+        require(model in old.discoveredModels && old.protocol != ModelProtocol.OPENAI_IMAGES)
+        val previous = old.attachmentCapabilities[model]
+        val media = if (vision == null) old.attachmentCapabilities else {
+            val mode = com.cordiact.core.attachment.Interpretation.VISION
+            val cap = previous ?: com.cordiact.core.attachment.AttachmentInputCapability()
+            val next = if (vision) cap.copy(
+                interpretations = cap.interpretations + mode,
+                mimeTypes = cap.mimeTypes + setOf("image/png", "image/jpeg"),
+                maxFileBytes = cap.maxFileBytes.takeIf { it > 0 } ?: 5_000_000,
+                maxRequestBytes = cap.maxRequestBytes.takeIf { it > 0 } ?: 10_000_000,
+                maxCount = cap.maxCount.takeIf { it > 0 } ?: 4,
+            ) else cap.copy(interpretations = cap.interpretations - mode)
+            if (next.interpretations.isEmpty()) old.attachmentCapabilities - model else old.attachmentCapabilities + (model to next)
+        }
+        val parameters = if (efforts == null) old.parameterCapabilities else {
+            require(old.protocol in setOf(ModelProtocol.OPENAI_RESPONSES, ModelProtocol.OPENAI_CHAT_COMPLETIONS)) { "当前协议不支持手动映射推理档位" }
+            val previousValues = old.parameterCapabilities[model]
+            val mappings = com.cordiact.model.providers.ModelParameterCapabilities.openAi(efforts, supportsFast = false)
+                .copy(responseSpeedValues = previousValues?.responseSpeedValues.orEmpty())
+            if (mappings.reasoningEffortValues.isEmpty() && mappings.responseSpeedValues.isEmpty()) old.parameterCapabilities - model
+            else old.parameterCapabilities + (model to mappings)
+        }
+        require(context == null || context > 0)
+        require(output == null || output > 0 && (context == null || output <= context))
+        require(effort == null || effort in parameters[model]?.reasoningEffortValues?.keys.orEmpty())
+        val generation = (old.modelDefaults[model] ?: com.cordiact.core.conversation.GenerationParameters.NONE)
+            .copy(reasoningEffort = effort, maxOutputTokens = output)
+        val defaults = if (generation == com.cordiact.core.conversation.GenerationParameters.NONE) old.modelDefaults - model
+            else old.modelDefaults + (model to generation)
+        val windows = if (context == null) old.contextWindows - model else old.contextWindows + (model to context)
+        audited("model.provider.update", ::providerRevision) {
+            registry.updateProvider(ModelProviderConfig(old.providerId, old.displayName, old.protocol, old.endpoint,
+                old.models, old.connectTimeoutMillis, old.readTimeoutMillis, old.defaults, parameters, media,
+                discoveredModels = old.discoveredModels, modelDefaults = defaults, contextWindows = windows))
+        }
+    }
+
     private fun config(id: String) = registry.providers().first { it.providerId == id }
     private fun ProviderDraft.connection() = ModelProviderConnection(id, name.trim().ifBlank { java.net.URI(url).host ?: id }, protocol, url.trim())
 }

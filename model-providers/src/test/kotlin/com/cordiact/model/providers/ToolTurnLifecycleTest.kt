@@ -44,8 +44,17 @@ class ToolTurnLifecycleTest {
             }
         }
         val service = ConversationTurnService(sessions, adapter)
-        service.submitWithTools("s", ModelId("p", "m"), "prompt", spec, loop(), ToolDispatcher { _, call -> toolResult(call) }, ToolInvocationContext("ws")) { event ->
-            if (event is ModelEvent.Completed) assertEquals("answer", sessions.stored.last().content)
+        val foreground = AuthoredPluginForeground().apply { resume(Any()); select("ws", "s") }
+        val authoring = requireNotNull(foreground.openTurn("ws", "s"))
+        service.submitWithTools("s", ModelId("p", "m"), "prompt", spec, loop(), ToolDispatcher { _, call -> toolResult(call) },
+            ToolInvocationContext("ws", sessionId = "s", authoredPluginTurn = authoring)) { event ->
+            if (event is ModelEvent.Completed) {
+                assertEquals("answer", sessions.stored.last().content)
+                assertFalse(authoring.isOpen)
+                val trace = com.google.gson.JsonParser.parseString(sessions.stored.last().metadataJson).asJsonObject.getAsJsonObject("trace")
+                assertEquals(30L, trace.get("inputTokens").asLong)
+                assertEquals("read", trace.getAsJsonArray("tools").single().asJsonObject.get("name").asString)
+            }
             events += event
         }
         assertEquals(2, rounds)

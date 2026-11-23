@@ -38,12 +38,11 @@ class BuiltInToolEffectClassifier : ToolEffectClassifier {
         toolId in setOf("priv_exec", "priv_shell") -> ToolEffectClass.COMMAND
         toolId == "termux_status" -> ToolEffectClass.DEVICE_READ
         toolId.startsWith("termux_") -> ToolEffectClass.COMMAND
-        // The manager can disable/remove plugins and install remote MCP endpoints. Treat the
-        // whole surface as destructive so a read-only envelope cannot reach it by argument.
+        // Keep the manager destructive and classify remote calls only for their host-owned lanes.
         toolId == "plugin_manager" -> ToolEffectClass.DESTRUCTIVE
-        // MCP tools run on a user-configured remote server; their transport effect is network.
-        // The server's own semantics are opaque to this host, so do not downgrade them to PURE.
-        toolId.startsWith("core.mcp.") -> ToolEffectClass.NETWORK
+        ownerPluginId == com.cordiact.core.tool.TOOL_MANAGER_PLUGIN_ID && toolId.startsWith("core.mcp.wsmcp_") -> ToolEffectClass.NETWORK
+        ownerPluginId == "core.mcp" && toolId.startsWith("core.mcp.") && !toolId.startsWith("core.mcp.wsmcp_") -> ToolEffectClass.NETWORK
+        ownerPluginId.startsWith("core.mcp.") && !ownerPluginId.startsWith("core.mcp.wsmcp_") && toolId.startsWith("$ownerPluginId.") -> ToolEffectClass.NETWORK
         toolId.startsWith("plugin_") -> ToolEffectClass.UNKNOWN
         toolId.startsWith("core.subagent.") || toolId.startsWith("core.orchestration.") -> ToolEffectClass.PURE
         toolId == "preview.push" -> ToolEffectClass.PURE

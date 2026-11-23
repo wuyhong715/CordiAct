@@ -57,13 +57,18 @@ class ExperienceComponentTest {
             { error("No catalogue needed in text input test") }, { error("No importer needed in text input test") }) }
         val draft by controller.state.collectAsState()
         com.cordiact.app.experience.composer.ComposerBar(state, draft.copy(model = model), controller,
-            "", {}, { text -> val accepted = send(text); if (accepted) controller.text(""); accepted }, stop, {}, {}, {})
+            "", {}, { text -> val accepted = send(text); if (accepted) controller.text(""); accepted }, stop, {})
     }
 
-    @Test fun composer_withoutModelOffersOnlyPreparedLocalCommand() {
+    @Test fun composer_withoutModelOffersOnlyPreparedLocalCommand() = assertLocalCommandWithoutModel(compact = false)
+
+    @Test fun compactComposer_withoutModelOffersOnlyPreparedLocalCommand() = assertLocalCommandWithoutModel(compact = true)
+
+    private fun assertLocalCommandWithoutModel(compact: Boolean) {
         val offered = com.cordiact.interaction.PreparedInteraction(null, emptyList(), emptyList())
         val workspace = com.cordiact.core.workspace.Workspace("w", "工作区", 0, 0)
         var sent: com.cordiact.interaction.PreparedInteraction? = null
+        var sessionId by mutableStateOf("test-session")
         content {
             val app = org.robolectric.RuntimeEnvironment.getApplication()
             val scope = rememberCoroutineScope()
@@ -73,19 +78,29 @@ class ExperienceComponentTest {
             val prepare = remember { { text: String, owner: com.cordiact.interaction.InteractionContext ->
                 offered.takeIf { text == "/local" && owner.workspaceId == "w" && owner.sessionId == "test-session" }
             } }
-            com.cordiact.app.experience.composer.ComposerBar(ready().copy(workspace = workspace, model = null, models = emptyList()),
-                draft, controller, "", {}, { error("No ordinary send") }, {}, {}, {}, {},
-                onSendLocal = { sent = it; true }, prepareLocal = prepare)
+            com.cordiact.app.experience.composer.ComposerBar(
+                ready().copy(workspace = workspace, sessionId = sessionId, model = null, models = emptyList()),
+                draft, controller, "", {}, { error("No ordinary send") }, {}, {},
+                compact = compact, maxEditorLines = if (compact) 1 else 3,
+                onSendLocal = { sent = it; true }, prepareLocal = prepare,
+            )
         }
         val input = compose.onNodeWithTag("composer-input")
         input.performTextInput("ordinary")
         compose.onNodeWithTag("send-message").assertIsNotEnabled()
-        input.performTextReplacement("/local")
-        compose.waitUntil(5_000) {
+        fun awaitOffer() = compose.waitUntil(5_000) {
             compose.onAllNodes(hasTestTag("send-message") and isEnabled()).fetchSemanticsNodes().isNotEmpty()
         }
+        input.performTextReplacement("/local")
+        awaitOffer()
+        compose.runOnIdle { sessionId = "other-session" }
+        compose.onNodeWithTag("send-message").assertIsNotEnabled()
+        compose.runOnIdle { sessionId = "test-session" }
+        awaitOffer()
         compose.onNodeWithTag("send-message").performClick()
-        assertSame(offered, sent)
+        compose.runOnIdle { assertSame(offered, sent) }
+        input.performTextReplacement("/not-local")
+        compose.onNodeWithTag("send-message").assertIsNotEnabled()
     }
 
     @Test fun settingsSections_selectsOnlyRequestedSection() {
@@ -151,21 +166,21 @@ class ExperienceComponentTest {
         assertEquals(1, stopped)
         assertEquals(0, sends)
     }
-    @Test fun toolGroup_isCollapsedUntilUserExpands() {
+    @Test fun stepTrack_collapsesStepsAndTapInspects() {
         val step = ToolActivity("c", "read_file", "{}", "found config", ToolPhase.SUCCEEDED, 100, 200, 100)
         var inspect: ToolActivity? = null
         content { TranscriptView(ready(listOf(TranscriptTurn("t", "prompt", tools = listOf(step)))), {}, { inspect = it }) }
         compose.onNodeWithText("read_file").assertDoesNotExist()
-        compose.onNodeWithText("执行过程 · 1 步完成").performClick()
-        compose.mainClock.advanceTimeBy(1000)
+        compose.onNodeWithText("执行过程 · 1 项调用").assertExists().performClick()
+        compose.onNodeWithText("read_file").assertIsDisplayed().performClick()
         compose.waitForIdle()
-        compose.onNodeWithText("read_file").performScrollTo().assertIsDisplayed().performClick()
         assertEquals("c", inspect?.id)
     }
     @Test fun reasoning_isOptInInlineContent() {
         content { TranscriptView(ready(listOf(TranscriptTurn("t", "prompt", reasoning = "provider reasoning"))), {}, {}) }
         compose.onNodeWithText("provider reasoning").assertDoesNotExist()
-        compose.onNodeWithText("思考过程").performClick()
+        compose.onNodeWithText("模型过程").performClick()
+        compose.onNodeWithText("查看模型过程").performClick()
         compose.onNodeWithText("provider reasoning").assertIsDisplayed()
     }
     @Test fun preview_neverRendersAssistantTextAsArtifact() {
@@ -188,7 +203,7 @@ class ExperienceComponentTest {
             val scope = rememberCoroutineScope()
             val controller = remember { com.cordiact.app.experience.composer.ComposerController(app, scope, { error("No catalogue needed for input test") }, { error("No import needed for input test") }) }
             val state by controller.state.collectAsState()
-            com.cordiact.app.experience.composer.ComposerBar(ready(), state.copy(model = model), controller, "", {}, { true }, {}, {}, {}, {})
+            com.cordiact.app.experience.composer.ComposerBar(ready(), state.copy(model = model), controller, "", {}, { true }, {}, {})
         }
         // The composers rails were retired: tokens stay typeable, the hint carries the affordance.
         listOf("/", "@", "#").forEach { compose.onNodeWithText(it).assertDoesNotExist() }
@@ -290,15 +305,27 @@ class ExperienceComponentTest {
         assertEquals(before, compose.onNodeWithTag("frame-composer").getUnclippedBoundsInRoot().bottom.value, 1f)
     }
 
-    @Test fun studioMenu_routesToArtifactsAndReportsSelection() {
-        var pane by mutableStateOf(StudioPane.Conversation)
-        content { StudioPaneMenu(pane, tools = 2, previews = 3, onSelect = { pane = it }) }
-        compose.onNodeWithText("产物 3").assertExists()
-        compose.onNodeWithTag("studio-pane-menu").performClick()
-        compose.onNodeWithTag("studio-pane-conversation").assertIsSelected()
-        compose.onNodeWithTag("studio-pane-artifacts").performClick()
-        compose.onNodeWithTag("studio-pane-menu").performClick()
-        compose.onNodeWithTag("studio-pane-artifacts").assertIsSelected()
+    @Test fun workbenchPluginMenu_keepsWorkspaceAndSessionActionsSeparate() {
+        var workspaceReady by mutableStateOf(false)
+        var sessionReady by mutableStateOf(false)
+        var workspaceOpens = 0
+        var sessionOpens = 0
+        content {
+            WorkbenchPluginMenu(
+                onWorkspacePlugins = if (workspaceReady) ({ workspaceOpens++ }) else null,
+                onSessionPlugins = if (sessionReady) ({ sessionOpens++ }) else null,
+            )
+        }
+        val menu = compose.onNodeWithTag("workbench-plugin-menu")
+        menu.assertIsNotEnabled()
+        compose.runOnIdle { workspaceReady = true }
+        menu.performClick()
+        compose.onNodeWithTag("workbench-session-plugins").assertDoesNotExist()
+        compose.onNodeWithTag("workbench-workspace-plugins").performClick()
+        compose.runOnIdle { assertEquals(1, workspaceOpens); assertEquals(0, sessionOpens); sessionReady = true }
+        menu.performClick()
+        compose.onNodeWithTag("workbench-session-plugins").performClick()
+        compose.runOnIdle { assertEquals(1, workspaceOpens); assertEquals(1, sessionOpens) }
     }
 
     @Test fun sessionPlugins_canOpenFromWorkbenchWithoutModelAndRevokeOnlyAfterConfirmation() {
@@ -306,14 +333,14 @@ class ExperienceComponentTest {
         var shown by mutableStateOf(false)
         var revoked: AuthoredPluginReceipt? = null
         content {
-            StudioPaneMenu(StudioPane.Conversation, tools = 0, previews = 0, onSelect = {}, onSessionPlugins = { shown = true })
+            WorkbenchPluginMenu(onWorkspacePlugins = null, onSessionPlugins = { shown = true })
             if (shown) SessionPluginsDialog(
                 receipts = listOf(receipt), reading = false, busy = false, note = null, failure = null,
                 onDismiss = { shown = false }, onRefresh = {}, onRevoke = { revoked = it },
             )
         }
-        compose.onNodeWithTag("studio-pane-menu").performClick()
-        compose.onNodeWithTag("studio-session-plugins").performClick()
+        compose.onNodeWithTag("workbench-plugin-menu").performClick()
+        compose.onNodeWithTag("workbench-session-plugins").performClick()
         compose.onNodeWithText("extension.authored.demo.show").assertExists()
         compose.onNodeWithTag("session-plugin-revoke-demo").performClick()
         compose.runOnIdle { assertNull(revoked) }

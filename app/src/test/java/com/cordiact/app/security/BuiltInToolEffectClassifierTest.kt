@@ -47,6 +47,11 @@ class BuiltInToolEffectClassifierTest {
         assertEquals(ToolEffectClass.NETWORK, classifier.classify("core.mcp.demo.create_issue", "core.mcp"))
         assertEquals(ToolEffectClass.UNKNOWN, classifier.classify("core.mcp", "core.mcp"))
         assertEquals(ToolEffectClass.UNKNOWN, classifier.classify("core.mcpx.tool", "core.mcp"))
+        assertEquals(ToolEffectClass.NETWORK, classifier.classify("core.mcp.demo.echo", "core.mcp.demo"))
+        assertEquals(ToolEffectClass.UNKNOWN, classifier.classify("core.mcp.demo.echo", "core.mcp.other"))
+        val workspaceTool = "core.mcp.wsmcp_digest.echo"
+        assertEquals(ToolEffectClass.NETWORK, classifier.classify(workspaceTool, com.cordiact.core.tool.TOOL_MANAGER_PLUGIN_ID))
+        assertEquals(ToolEffectClass.UNKNOWN, classifier.classify(workspaceTool, "core.mcp"))
         // A legacy plugin_* tool that is not the manager still fails closed.
         assertEquals(ToolEffectClass.UNKNOWN, classifier.classify("plugin_other", "core.plugin-manager"))
     }

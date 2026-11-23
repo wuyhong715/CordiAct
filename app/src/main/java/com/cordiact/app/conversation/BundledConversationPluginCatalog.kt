@@ -262,15 +262,18 @@ class BundledConversationPlugins private constructor(
         set(value) {
             field = value
             value?.let { service ->
-                registerPluginManagerTools(registry, service, confirmMcpInstall = { context, config -> mcpInstallApproval?.invoke(context, config) == true }, registerCredential = { name, header, hValue ->
-                    (mcpCredentialWriter ?: error("MCP_CREDENTIAL_STORE_UNAVAILABLE")).invoke(name, header, hValue)
-                })
+                registerPluginManagerTools(registry, service, ::declareWorkspaceMcp)
             }
         }
 
-    /** Persists an MCP auth header without putting it in the plugin config. */
-    var mcpInstallApproval: ((ToolInvocationContext, com.cordiact.core.mcp.McpServerConfig) -> Boolean)? = null
-    var mcpCredentialWriter: ((serverName: String, headerName: String, headerValue: String) -> Unit)? = null
+    private fun declareWorkspaceMcp(context: ToolInvocationContext, name: String, endpoint: String) {
+        val declarations = com.cordiact.core.settings.WorkspaceDeclarations(fileManager)
+        val kind = com.cordiact.core.settings.WorkspaceDeclarations.Kind.MCP
+        val workspace = context.workspaceId
+        val snapshot = declarations.read(workspace, kind)
+        declarations.add(workspace, kind, snapshot.revision, "draft-${java.util.UUID.randomUUID()}", name.trim(), endpoint.trim(), "STREAMABLE_HTTP")
+    }
+
     val searchApiKeyStore: AndroidSearchApiKeyStore? get() = configuredSearchApiKeys
     fun hasSearchApiKey(providerId: String): Boolean = if (providerId.startsWith("deepseek")) {
         configuredSearchApiKeys?.has("deepseek") == true || !providerCredentialFor("deepseek").apiKey().isNullOrBlank()
@@ -341,7 +344,7 @@ class BundledConversationPlugins private constructor(
             ),
         )
 
-        val searchPolicies = AndroidSearchPolicyStore(conversationStore)
+        val searchPolicies = AndroidSearchPolicyStore(conversationStore, com.cordiact.core.settings.WorkspaceToolPreferences(fileManagerPlugin))
         val searchUsage = AndroidSearchUsageStore(conversationStore)
         val providerSettings = configuredSearchProviderSettings
         val searchKeys = configuredSearchApiKeys
@@ -437,9 +440,7 @@ class BundledConversationPlugins private constructor(
         // The plugin manager tool is registered with the other tools but wired in the app host,
         // because only the host owns the lifecycle manager and the plugin factories.
         pluginManagerService?.let { service ->
-            registerPluginManagerTools(registry, service, confirmMcpInstall = { context, config -> mcpInstallApproval?.invoke(context, config) == true }, registerCredential = { name, header, value ->
-                (mcpCredentialWriter ?: error("MCP_CREDENTIAL_STORE_UNAVAILABLE")).invoke(name, header, value)
-            })
+            registerPluginManagerTools(registry, service, ::declareWorkspaceMcp)
         }
 
         attachmentGc = com.cordiact.core.attachment.AttachmentGarbageCollector(

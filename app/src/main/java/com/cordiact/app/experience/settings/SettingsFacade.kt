@@ -12,6 +12,8 @@ data class ProviderSummary(
     val discovered: List<String>, val enabled: Set<String>, val keyIsSet: Boolean,
     val capabilities: Map<String, com.cordiact.model.providers.ModelParameterCapabilities> = emptyMap(),
     val modelDefaults: Map<String, com.cordiact.core.conversation.GenerationParameters> = emptyMap(),
+    val contextWindows: Map<String, Int> = emptyMap(),
+    val attachments: Map<String, com.cordiact.core.attachment.AttachmentInputCapability> = emptyMap(),
 )
 data class CredentialMeta(val namespace: String, val owner: String, val isSet: Boolean)
 data class SettingsSnapshot(
@@ -52,6 +54,8 @@ interface SettingsFacade {
     suspend fun setKey(id: String, key: String?)
     suspend fun removeProvider(id: String)
     suspend fun setModelDefaults(id: String, values: Map<String, com.cordiact.core.conversation.GenerationParameters>)
+    suspend fun addProviderModel(id: String, model: String) { error("MODEL_EDITOR_UNAVAILABLE") }
+    suspend fun setModelDeclaration(id: String, model: String, vision: Boolean?, efforts: Set<com.cordiact.core.conversation.ReasoningEffort>?, context: Int?, output: Int?, effort: com.cordiact.core.conversation.ReasoningEffort?) { error("MODEL_EDITOR_UNAVAILABLE") }
     suspend fun setRole(role: SettingsModelRole, selection: ModelRoleSelection)
 }
 

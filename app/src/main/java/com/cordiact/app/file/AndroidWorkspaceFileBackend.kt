@@ -64,6 +64,7 @@ class AndroidWorkspaceFileBackend : WorkspaceFileBackend {
         if (!file.isFile) throw failure(WorkspaceFileException.Code.NOT_A_REGULAR_FILE, "Path is not a regular file")
         if (file.length() > MAX_FILE_BYTES) throw failure(WorkspaceFileException.Code.SIZE_LIMIT_EXCEEDED, "File size limit exceeded")
         if (offset > file.length()) throw failure(WorkspaceFileException.Code.SIZE_LIMIT_EXCEEDED, "Read offset exceeds file size")
+        val before = stamp(file)
         val bytes = FileInputStream(file).use { input ->
             var remaining = offset
             while (remaining > 0) {
@@ -81,7 +82,10 @@ class AndroidWorkspaceFileBackend : WorkspaceFileBackend {
             }
             buffer.copyOf(count)
         }
-        WorkspaceFileContent(bytes, revision(file, allowCache = true))
+        val revision = revision(file, allowCache = true)
+        if (before != stamp(file)) throw failure(WorkspaceFileException.Code.REVISION_CONFLICT, "File changed while reading")
+        val observation = if (before.key != null && before.changed >= 0) sha256(before.toString().encodeToByteArray()) else null
+        WorkspaceFileContent(bytes, revision, observation)
     }
 
     override fun write(root: File, relativePath: String, bytes: ByteArray, expectedRevision: String?): WorkspaceFileMutation = synchronized(lock) {
@@ -155,6 +159,9 @@ class AndroidWorkspaceFileBackend : WorkspaceFileBackend {
     }
 
     private val lock = Any()
+    // Exact root documents only; the directory itself and all other hidden paths remain inaccessible.
+    private val CONFIG_ROOT = ".cordiact"
+    private val CONFIG_NAMES = setOf("agent.toml", "models.toml", "plugins.toml", "tools.toml")
 
     private fun resolve(root: File, relativePath: String, allowRoot: Boolean): File {
         validatePath(relativePath, allowRoot)
@@ -209,7 +216,8 @@ class AndroidWorkspaceFileBackend : WorkspaceFileBackend {
             (path.isNotEmpty() && segments.any { it.isEmpty() || it == "." || it == ".." })) {
             throw invalidPath()
         }
-        if (path.isNotEmpty() && segments.any { it.startsWith(".") }) {
+        val configFile = segments.size == 2 && segments[0] == CONFIG_ROOT && segments[1] in CONFIG_NAMES
+        if (!configFile && path.isNotEmpty() && segments.any { it.startsWith(".") }) {
             throw failure(WorkspaceFileException.Code.HIDDEN_PATH_NOT_ALLOWED, "Hidden paths are not accessible")
         }
     }

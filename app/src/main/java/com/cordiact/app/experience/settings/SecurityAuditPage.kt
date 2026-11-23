@@ -1,5 +1,6 @@
 package com.cordiact.app.experience.settings
 
+import com.cordiact.app.experience.settings.components.SettingsCard
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
@@ -104,7 +105,7 @@ fun SecurityAuditPage(app: CordiActApplication) {
         catch (_: Exception) { exportPending = false; exportSnapshot = null; exportNotice = "无法打开系统保存窗口" }
     }) { Text(if (exportPending) "导出中…" else "导出当前脱敏结果") }
     exportNotice?.let { Text(it) }
-    visible.forEach { event -> Surface(shape = MaterialTheme.shapes.medium, color = MaterialTheme.colorScheme.surfaceContainerLowest) {
+    visible.forEach { event -> SettingsCard() {
         Text("${event.occurredAt} · ${event.draft.category}\n${event.draft.outcome} · ${event.draft.reasonCode}", Modifier.fillMaxWidth().clickable { selected = event }.padding(16.dp), style = MaterialTheme.typography.bodySmall)
     } }
     selected?.let { event ->

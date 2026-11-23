@@ -150,6 +150,10 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
     }
 
     fun selectSession(id: String, onSelected: () -> Unit = {}) = loadSession(id, null, onSelected = onSelected)
+    /** Used by landscape navigation: no speculative controller selection or silent failure. */
+    internal fun selectWorkbenchSession(id: String, shouldCommit: () -> Boolean, complete: () -> Unit) =
+        loadSession(id, null, onSelected = complete, onFailed = complete, shouldCommit = shouldCommit)
+
     fun selectWorkspace(id: String, onSelected: () -> Unit = {}) = loadSession(null, id, onSelected = onSelected)
     fun newSession(workspaceId: String? = mutable.value.workspace?.id, onSelected: () -> Unit = {}) =
         loadSession(null, workspaceId, create = true, onSelected = onSelected)
@@ -257,28 +261,73 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
     }
 
     private fun readTranscript(workspaceId: String, sessionId: String): List<StoredMessage> =
-        app.sessions.messages(sessionId).map { StoredMessage(it.id, it.role.name, it.content, it.createdAtMillis,
-                            it.parts.filterIsInstance<com.cordiact.core.attachment.MessagePart.Attachment>().mapNotNull { part ->
-                                app.attachments.find(workspaceId, part.id)?.let { descriptor ->
-                                    TranscriptAttachment(descriptor, part.interpretation, part.renditionId)
-                                }
-                            }, phase = it.metadataJson?.let { metadata ->
-                                runCatching {
-                                    val status = org.json.JSONObject(metadata)
-                                    when {
-                                        status.optBoolean("outputLimitReached") -> RunPhase.TRUNCATED
-                                        status.optBoolean("toolLimitReached") -> RunPhase.PARTIAL
-                                        else -> RunPhase.COMPLETE
-                                    }
-                                }.getOrDefault(RunPhase.COMPLETE)
-                            } ?: RunPhase.COMPLETE) }
+        app.sessions.messages(sessionId).map { message ->
+            val parsedMeta = message.metadataJson?.let { runCatching { org.json.JSONObject(it) }.getOrNull() }
+            val phase = when {
+                parsedMeta?.optBoolean("outputLimitReached") == true -> RunPhase.TRUNCATED
+                parsedMeta?.optBoolean("toolLimitReached") == true -> RunPhase.PARTIAL
+                else -> RunPhase.COMPLETE
+            }
+            val trace = parsedMeta?.optJSONObject("trace")?.let { obj ->
+                val toolsArray = obj.optJSONArray("tools")
+                val tools = buildList {
+                    if (toolsArray != null) {
+                        for (i in 0 until toolsArray.length()) {
+                            val t = toolsArray.optJSONObject(i) ?: continue
+                            val id = t.optString("id").takeIf { it.isNotBlank() } ?: continue
+                            val name = t.optString("name").takeIf { it.isNotBlank() } ?: continue
+                            val startedAt = t.optLong("startedAt", 0L)
+                            val finishedAt = if (t.has("finishedAt") && !t.isNull("finishedAt")) t.optLong("finishedAt") else null
+                            val duration = if (t.has("durationMillis") && !t.isNull("durationMillis")) t.optLong("durationMillis") else null
+                            val phaseVal = when {
+                                !t.has("success") || t.isNull("success") -> ToolPhase.INTERRUPTED
+                                t.optBoolean("success") -> ToolPhase.SUCCEEDED
+                                else -> ToolPhase.FAILED
+                            }
+                            add(ToolActivity(
+                                id = id,
+                                name = name,
+                                arguments = t.optString("arguments", ""),
+                                summary = t.optString("summary", "").takeIf { it.isNotBlank() },
+                                phase = phaseVal,
+                                startedAt = startedAt,
+                                finishedAt = finishedAt,
+                                durationMillis = duration,
+                            ))
+                        }
+                    }
+                }
+                StoredTurnTrace(
+                    startedAt = if (obj.has("startedAt") && !obj.isNull("startedAt")) obj.optLong("startedAt") else null,
+                    finishedAt = if (obj.has("finishedAt") && !obj.isNull("finishedAt")) obj.optLong("finishedAt") else null,
+                    inputTokens = if (obj.has("inputTokens") && !obj.isNull("inputTokens")) obj.optLong("inputTokens") else null,
+                    outputTokens = if (obj.has("outputTokens") && !obj.isNull("outputTokens")) obj.optLong("outputTokens") else null,
+                    reasoning = obj.optString("reasoning", "").takeIf { it.isNotBlank() },
+                    tools = tools,
+                )
+            }
+            StoredMessage(
+                id = message.id,
+                role = message.role.name,
+                content = message.content,
+                at = message.createdAtMillis,
+                attachments = message.parts.filterIsInstance<com.cordiact.core.attachment.MessagePart.Attachment>().mapNotNull { part ->
+                    app.attachments.find(workspaceId, part.id)?.let { descriptor ->
+                        TranscriptAttachment(descriptor, part.interpretation, part.renditionId)
+                    }
+                },
+                phase = phase,
+                trace = trace,
+            )
+        }
 
     private fun loadSession(
         sessionId: String?, workspaceId: String?, create: Boolean = false,
-        newWorkspaceName: String? = null, onSelected: () -> Unit = {},
+        newWorkspaceName: String? = null, onSelected: () -> Unit = {}, onFailed: () -> Unit = {},
+        shouldCommit: () -> Boolean = { true },
     ) {
         // Serialize user navigation and mutations: a rapid double tap must not create two sessions.
-        if (loadingSession) return
+        if (loadingSession) { onFailed(); return }
         if (newWorkspaceName != null) {
             val error = sidebarNameError(newWorkspaceName)
             if (error != null) { mutable.update { it.copy(error = error) }; return }
@@ -299,12 +348,18 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
                     require(workspace.archivedAtMillis == null) { "工作区已归档" }
                     val sessions = app.sessions.listSessions(workspace.id).filter { it.kind == SessionKind.USER }
                         .sortedWith(compareByDescending<ConversationSession> { it.updatedAtMillis }.thenBy { it.id })
+                    var defaults: NewConversationDefaults? = null
+                    fun newConversation(): ConversationSession {
+                        val created = com.cordiact.app.conversation.WorkspaceConversationFactory(app).create(workspace.id, "新对话")
+                        defaults = NewConversationDefaults(created.draft.model, created.draft.effort)
+                        return created.session
+                    }
                     val selected = when {
-                        create -> app.sessions.createSession(workspace.id, "新对话")
+                        create -> newConversation()
                         requested != null -> requested.also { require(it.kind == SessionKind.USER) { "无法选择内部执行会话" } }
-                        workspaceId != null -> sessions.firstOrNull { it.archivedAtMillis == null } ?: app.sessions.createSession(workspace.id, "新对话")
+                        workspaceId != null -> sessions.firstOrNull { it.archivedAtMillis == null } ?: newConversation()
                         else -> app.activeSessionId?.let(app.sessions::getSession)?.takeIf { it.workspaceId == workspace.id && it.kind == SessionKind.USER && it.archivedAtMillis == null }
-                            ?: sessions.firstOrNull { it.archivedAtMillis == null } ?: app.sessions.createSession(workspace.id, "新对话")
+                            ?: sessions.firstOrNull { it.archivedAtMillis == null } ?: newConversation()
                     }
                     require(selected.workspaceId == workspace.id)
                     val workspaces = app.workspaceManager.list()
@@ -315,9 +370,24 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
                             })
                     }
                     Loaded(workspace, workspaces, app.sessions.listSessions(workspace.id).filter { it.kind == SessionKind.USER }, selected,
-                        app.modelAdapter.models(), readTranscript(workspace.id, selected.id), sidebar)
+                        app.workspaceModels(workspace.id), readTranscript(workspace.id, selected.id), sidebar,
+                        defaults)
                 }
                 if (version != selectionVersion) return@launch
+                reconcile(snapshot.selected.id, snapshot.messages)
+                val preferred = composer.value.model ?: mutable.value.model ?: app.getSharedPreferences("cordiact.settings.models", android.content.Context.MODE_PRIVATE).let { prefs ->
+                    snapshot.models.firstOrNull { it.id.providerId == prefs.getString("provider", null) && it.id.modelId == prefs.getString("model", null) }?.id
+                }
+                val model = snapshot.models.find { it.id == preferred }?.id
+                    ?: snapshot.models.firstOrNull()?.id
+                val prepared = composerController.prepareSession(snapshot.selected.id, snapshot.workspace.id, snapshot.models, model,
+                    snapshot.defaults?.model, snapshot.defaults?.effort)
+                if (version != selectionVersion || !shouldCommit()) {
+                    mutable.update { it.copy(loading = false) }
+                    loadingSession = false
+                    onFailed()
+                    return@launch
+                }
                 selectionMutex.withLock {
                     withContext(Dispatchers.IO) {
                         val previous = app.workspaceManager.activeWorkspace().id
@@ -331,33 +401,36 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
                         }
                     }
                 }
-                reconcile(snapshot.selected.id, snapshot.messages)
-                val preferred = composer.value.model ?: mutable.value.model ?: app.getSharedPreferences("cordiact.settings.models", android.content.Context.MODE_PRIVATE).let { prefs ->
-                    snapshot.models.firstOrNull { it.id.providerId == prefs.getString("provider", null) && it.id.modelId == prefs.getString("model", null) }?.id
-                }
-                val model = snapshot.models.find { it.id == preferred }?.id
-                    ?: snapshot.models.firstOrNull()?.id
-                composerController.open(snapshot.selected.id, snapshot.workspace.id, snapshot.models, model)
-                composer.value.model?.let { selected -> withContext(Dispatchers.IO) {
-                    com.cordiact.app.model.ConversationModelSelectionStore(app).setForSession(snapshot.selected.id, selected)
-                } }
-                if (version != selectionVersion) return@launch
+                composerController.bindSession(snapshot.selected.id, snapshot.workspace.id, prepared)
                 mutable.update { it.copy(loading = false, workspace = snapshot.workspace, workspaces = snapshot.workspaces,
                     sessions = snapshot.sessions, sidebar = snapshot.sidebar, sessionId = snapshot.selected.id, models = snapshot.models, providerNames = app.modelProviders.providers().associate { it.providerId to it.displayName }, model = composer.value.model,
                     turns = cache[snapshot.selected.id].orEmpty(), error = null) }
+                val selected = prepared.model
+                if (selected != null) viewModelScope.launch(Dispatchers.IO) {
+                    runCatching { com.cordiact.app.model.ConversationModelSelectionStore(app).setForSession(snapshot.selected.id, selected) }
+                }
+                loadingSession = false
                 onSelected()
             } catch (cancel: CancellationException) { throw cancel }
-            catch (error: Exception) { if (version == selectionVersion) mutable.update { it.copy(loading = false, error = error.message ?: "读取会话失败") } }
-            finally { if (version == selectionVersion) loadingSession = false }
+            catch (error: Exception) {
+                if (version == selectionVersion) {
+                    mutable.update { it.copy(loading = false, error = error.message ?: "读取会话失败") }
+                    loadingSession = false
+                    onFailed()
+                }
+            } finally { if (version == selectionVersion) loadingSession = false }
         }
     }
 
     private data class Loaded(val workspace: Workspace, val workspaces: List<Workspace>, val sessions: List<ConversationSession>,
-        val selected: ConversationSession, val models: List<ModelDescriptor>, val messages: List<StoredMessage>, val sidebar: List<SidebarWorkspace>)
+        val selected: ConversationSession, val models: List<ModelDescriptor>, val messages: List<StoredMessage>, val sidebar: List<SidebarWorkspace>,
+        val defaults: NewConversationDefaults?)
+
+    private data class NewConversationDefaults(val model: ModelId?, val effort: ReasoningEffort)
 
     fun refreshSettingsModels() {
         viewModelScope.launch {
-            val models = withContext(Dispatchers.IO) { app.modelAdapter.models() }
+            val models = withContext(Dispatchers.IO) { mutable.value.workspace?.id?.let(app::workspaceModels) ?: app.modelAdapter.models() }
             val prefs = app.getSharedPreferences("cordiact.settings.models", android.content.Context.MODE_PRIVATE)
             val preferred = models.firstOrNull { it.id.providerId == prefs.getString("provider", null) && it.id.modelId == prefs.getString("model", null) }?.id
             mutable.update { current -> current.copy(models = models,
@@ -381,7 +454,7 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
             try {
                 val models = withContext(Dispatchers.IO) {
                     app.modelProviders.refreshModels(providerId)
-                    app.modelAdapter.models()
+                    mutable.value.workspace?.id?.let(app::workspaceModels) ?: app.modelAdapter.models()
                 }
                 mutable.update { current -> current.copy(models = models,
                     model = current.model?.takeIf { selected -> models.any { it.id == selected } } ?: models.firstOrNull()?.id) }
@@ -508,6 +581,47 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
         }
     }
 
+
+    // Command deck (landscape): every open conversation plus its sub-agents, as lanes of one tree.
+    private val graphState = MutableStateFlow<List<GraphLane>>(emptyList())
+    val graph = graphState.asStateFlow()
+    private var graphJob: Job? = null
+
+    fun refreshGraph(sessionIds: List<String>) {
+        if (sessionIds.isEmpty()) return
+        val current = mutable.value
+        // Cache is access-ordered: read it on the main thread only.
+        val known = sessionIds.associateWith { id -> if (id == current.sessionId) current.turns else cache[id] }
+        graphJob?.cancel()
+        graphJob = viewModelScope.launch {
+            val lanes = try {
+                withContext(Dispatchers.IO) {
+                    val out = mutableListOf<GraphLane>()
+                    val seen = hashSetOf<String>()
+                    fun lane(session: ConversationSession, turns: List<TranscriptTurn>?) {
+                        if (!seen.add(session.id)) return
+                        val resolved = turns ?: restoreTranscript(readTranscript(session.workspaceId, session.id))
+                        out += GraphLane(session.id, session.agentLabel ?: session.title.ifBlank { "新对话" }, session.kind,
+                            session.parentSessionId, session.createdAtMillis,
+                            resolved.mapIndexed { i, turn -> GraphNode(session.id, turn, i) },
+                            session.id in current.runningSessionIds || resolved.any { it.isRunning })
+                    }
+                    val roots = sessionIds.mapNotNull { app.sessions.getSession(it) }
+                    roots.forEach { lane(it, known[it.id]) }
+                    // Two levels of delegation are enough for a phone; deeper agents fold into their parent.
+                    var parents = roots.map { it.id }.toSet()
+                    repeat(2) {
+                        val children = roots.map { it.workspaceId }.distinct().flatMap { ws -> app.sessions.listSessions(ws) }
+                            .filter { it.parentSessionId in parents && it.kind != SessionKind.USER }
+                        children.forEach { lane(it, null) }
+                        parents = children.map { it.id }.toSet()
+                    }
+                    out
+                }
+            } catch (cancel: CancellationException) { throw cancel } catch (_: Exception) { return@launch }
+            graphState.value = lanes
+        }
+    }
 
     fun decide(requestId: String, approved: Boolean) {
         val current = mutable.value

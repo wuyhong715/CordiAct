@@ -40,8 +40,8 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.cordiact.app.experience.model.ToolActivity
 import com.cordiact.app.experience.model.ToolPhase
+import com.cordiact.app.experience.tabs.WorkTab
 import com.cordiact.interaction.InteractionContext
-import kotlinx.coroutines.launch
 
 internal enum class StudioPane(val label: String) { Conversation("对话"), Activity("执行轨迹"), Artifacts("产物") }
 
@@ -49,9 +49,6 @@ internal enum class StudioPane(val label: String) { Conversation("对话"), Acti
 @Composable
 fun ExperienceScreen(viewModel: ExperienceViewModel) {
     val state by viewModel.state.collectAsStateWithLifecycle()
-    val drawer = rememberDrawerState(DrawerValue.Closed)
-    val scope = rememberCoroutineScope()
-    var pane by rememberSaveable { mutableStateOf(StudioPane.Conversation) }
     val saveable = rememberSaveableStateHolder()
     val saveableKey = "${state.workspace?.id}:${state.sessionId}"
     var approvalId by rememberSaveable { mutableStateOf<String?>(null) }
@@ -60,204 +57,462 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
     var settingsLink by remember { mutableStateOf<String?>(null) }
     var manageModels by remember { mutableStateOf(false) }
     var pluginWorkspaceId by remember(state.workspace?.id) { mutableStateOf<String?>(null) }
-    var showSessionPlugins by remember(saveableKey, state.archived) { mutableStateOf(false) }
-    val pluginOwner = state.workspace?.id?.let { workspaceId ->
-        state.sessionId?.takeUnless { state.archived || state.loading }?.let { InteractionContext(it, workspaceId) }
-    }
+    var sessionPluginsOwner by remember(saveableKey, state.archived) { mutableStateOf<InteractionContext?>(null) }
     val composer by viewModel.composer.collectAsStateWithLifecycle()
     val settingsApp = LocalContext.current.applicationContext as com.cordiact.app.CordiActApplication
+    val prepareLocal = remember(settingsApp) { settingsApp.interactionService::prepareLocalCommand }
     val settingsVm: com.cordiact.app.experience.settings.SettingsViewModel = androidx.lifecycle.viewmodel.compose.viewModel(
         factory = com.cordiact.app.experience.settings.SettingsViewModel.factory(
             remember(settingsApp) { com.cordiact.app.experience.settings.AndroidSettingsFacade(settingsApp) }))
-    fun openSettings(link: String? = null) { settingsLink = link; inspected = null; showSessionPlugins = false; manageModels = true }
+    fun openSettings(link: String? = null) { settingsLink = link; inspected = null; sessionPluginsOwner = null; manageModels = true }
     if (manageModels) {
         com.cordiact.app.experience.settings.SettingsHost(settingsVm, initialLink = settingsLink) { manageModels = false; settingsLink = null; viewModel.refreshSettingsModels() }
         return
     }
-    val pluginsWorkspace = state.workspace?.takeIf { it.id == pluginWorkspaceId }
-    if (pluginsWorkspace != null) {
-        WorkspacePluginsRoute(settingsApp, pluginsWorkspace.id, pluginsWorkspace.name) { pluginWorkspaceId = null }
-        return
+    val tabContext = LocalContext.current.applicationContext
+    val tabs = remember { com.cordiact.app.experience.tabs.registerBuiltinTabs(); com.cordiact.app.experience.tabs.TabsController(com.cordiact.app.experience.tabs.PrefsTabStore(tabContext)) }
+    var overview by rememberSaveable { mutableStateOf(false) }
+    val activeTab = tabs.active
+    LaunchedEffect(state.sessionId) { tabs.followSession(state.sessionId) }
+    LaunchedEffect(state.sidebar) {
+        val live = state.sidebar.flatMap { it.sessions }.filter { !it.isArchived }.map { it.id }.toSet()
+        if (live.isNotEmpty()) tabs.prune(live + setOfNotNull(state.sessionId), com.cordiact.app.experience.tabs.TabRegistry.contributors.map { it.id }.toSet())
     }
-    val wide = LocalConfiguration.current.screenWidthDp >= 840
-    var showWideSidebar by rememberSaveable { mutableStateOf(true) }
-    val closeSidebar: () -> Unit = { if (wide) showWideSidebar = false else scope.launch { drawer.close() } }
-    val closeAfterSelection: () -> Unit = { pane = StudioPane.Conversation; inspected = null; if (!wide) closeSidebar() }
-    BackHandler(wide && showWideSidebar && !manageModels) { showWideSidebar = false }
-    BackHandler(pane != StudioPane.Conversation && !drawer.isOpen) { pane = StudioPane.Conversation }
-    BackHandler(inspected != null && !drawer.isOpen) { inspected = null }
-    val sidebar: @Composable () -> Unit = {
-        saveable.SaveableStateProvider("navigation-sidebar") {
-            androidx.compose.runtime.CompositionLocalProvider(LocalApprovalOwners provides state.approvalOwners) {
-                ConversationSidebar(
-                    groups = state.sidebar, activeWorkspaceId = state.workspace?.id, activeSessionId = state.sessionId,
-                    runningSessionIds = state.runningSessionIds, busy = state.loading, error = state.error,
-                    onClose = closeSidebar,
-                    onNewSession = { workspace -> viewModel.newSession(workspace ?: state.workspace?.id, closeAfterSelection) },
-                    onSelectWorkspace = { viewModel.selectWorkspace(it, closeAfterSelection) },
-                    onSelectSession = { viewModel.selectSession(it, closeAfterSelection) },
-                    onCreateWorkspace = { name, onSuccess -> viewModel.createWorkspace(name) { closeAfterSelection(); onSuccess() } },
-                    onRenameWorkspace = { id, name, onSuccess -> viewModel.renameWorkspace(id, name, onSuccess) },
-                    onRenameSession = { id, title, done -> viewModel.renameSession(id, title, done) },
-                    onArchiveSession = viewModel::archiveSession,
-                    onRestoreSession = { viewModel.restoreSession(it) },
-                    onPinSession = viewModel::pinSession,
-                    onRetry = viewModel::refresh,
-                    onWorkspacePlugins = { id ->
-                        closeAfterSelection()
-                        showSessionPlugins = false
-                        pluginWorkspaceId = id
-                    },
-                    onSettings = { closeAfterSelection(); settingsVm.reload(); openSettings() },
-                    onAutomationTasks = {
-                        closeAfterSelection()
-                        settingsVm.reload()
-                        openSettings("settings://tasks")
-                    },
-                )
+    // A session tab is the selection: activating one moves the view model onto that session.
+    LaunchedEffect(activeTab?.key) {
+        val tab = activeTab as? com.cordiact.app.experience.tabs.WorkTab.Session ?: return@LaunchedEffect
+        if (tab.sessionId != state.sessionId) viewModel.selectSession(tab.sessionId)
+    }
+    val tabHost = remember {
+        object : com.cordiact.app.experience.tabs.TabHost {
+            override fun inspect(step: ToolActivity) { inspected = step }
+            override fun openSession(sessionId: String) { tabs.open(com.cordiact.app.experience.tabs.WorkTab.Session(sessionId)) }
+        }
+    }
+    val ownerLabel: (com.cordiact.core.action.ApprovalOwner?) -> String = { owner ->
+        val group = owner?.let { key -> state.sidebar.firstOrNull { it.id == key.workspaceId } }
+        val title = group?.sessions?.firstOrNull { it.id == owner.sessionId }?.title
+        when {
+            owner == null -> "全局请求"
+            group == null -> "工作区审批"
+            title != null -> "${group.name} / $title"
+            owner.sessionId != null -> "${group.name} / 其他会话"
+            else -> "${group.name} / 工作区请求"
+        }
+    }
+    val configuration = LocalConfiguration.current
+    val landscape = configuration.screenWidthDp > configuration.screenHeightDp && configuration.screenWidthDp >= 600
+    var requestedTab by remember { mutableStateOf<WorkTab?>(null) }
+    var loadingTab by remember { mutableStateOf<WorkTab.Session?>(null) }
+    val committedKey = if (activeTab is WorkTab.Plugin) activeTab.key else state.sessionId?.let { "s:$it" }
+    val pendingSessionId = (requestedTab as? WorkTab.Session)?.sessionId ?: loadingTab?.sessionId
+    val switchPending = requestedTab != null || loadingTab != null
+    LaunchedEffect(requestedTab, loadingTab, state.loading) {
+        val target = requestedTab ?: return@LaunchedEffect
+        if (loadingTab != null || state.loading) return@LaunchedEffect
+        if (target is WorkTab.Plugin || (target as? WorkTab.Session)?.sessionId == state.sessionId) {
+            if (tabs.tabs.any { it.key == target.key }) tabs.select(target.key)
+            requestedTab = null
+        } else if (target is WorkTab.Session) {
+            loadingTab = target
+            viewModel.selectWorkbenchSession(target.sessionId,
+                shouldCommit = { requestedTab == target && tabs.tabs.any { it.key == target.key } }) {
+                if (requestedTab == target) requestedTab = null
+                loadingTab = null
             }
         }
     }
+    val closeAfterSelection: () -> Unit = { overview = false; inspected = null }
+    val ownerPending = switchPending || state.loading ||
+        (activeTab is WorkTab.Session && activeTab.sessionId != state.sessionId)
+    val pluginWorkspace = state.workspace?.takeUnless { ownerPending }
+    val pluginOwner = pluginWorkspace?.let { workspace ->
+        state.sessionId?.takeUnless { state.archived }?.let { InteractionContext(it, workspace.id) }
+    }
+    LaunchedEffect(pluginOwner) {
+        if (sessionPluginsOwner != pluginOwner) sessionPluginsOwner = null
+    }
+    state.workspace?.takeIf { it.id == pluginWorkspaceId }?.let { workspace ->
+        WorkspacePluginsRoute(settingsApp, workspace.id, workspace.name) { pluginWorkspaceId = null }
+        return
+    }
+    val pluginActions: @Composable () -> Unit = {
+        WorkbenchPluginMenu(
+            onWorkspacePlugins = pluginWorkspace?.let { workspace ->
+                {
+                    closeAfterSelection()
+                    viewModel.composerController.popover(null)
+                    sessionPluginsOwner = null
+                    pluginWorkspaceId = workspace.id
+                }
+            },
+            onSessionPlugins = pluginOwner?.let { owner ->
+                {
+                    closeAfterSelection()
+                    viewModel.composerController.popover(null)
+                    sessionPluginsOwner = owner
+                }
+            },
+        )
+    }
+    BackHandler(overview) { overview = false }
+    BackHandler(inspected != null && !overview) { inspected = null }
     val workbench: @Composable () -> Unit = {
-        Surface(color = MaterialTheme.colorScheme.background, modifier = Modifier.fillMaxSize()) {
+        if (landscape) {
+            val activity = rememberWorkbenchActivity(settingsApp, state.workspace?.id, state.sessionId, state.runningSessionIds)
+            LandscapeWorkbench(state, pendingSessionId, committedKey.orEmpty(), activeTab is WorkTab.Plugin, activity,
+                onOverview = { overview = true; inspected = null },
+                onNew = { viewModel.newSession(state.workspace?.id) },
+                onOpenApproval = { approvalId = it }, ownerLabel = ownerLabel,
+                tabs = { modifier ->
+                    Row(modifier, verticalAlignment = Alignment.CenterVertically) {
+                        com.cordiact.app.experience.tabs.TabStrip(state, tabs,
+                            onClose = { if (!switchPending && !state.loading) tabs.close(it) }, modifier = Modifier.weight(1f),
+                            onSelect = { requestedTab = it }, displayedKey = committedKey,
+                            pendingKey = pendingSessionId?.let { "s:$it" }, compact = true)
+                        pluginActions()
+                    }
+                },
+                body = { openStep ->
+                    val landscapeHost = object : com.cordiact.app.experience.tabs.TabHost by tabHost {
+                        override fun inspect(step: ToolActivity) = openStep(step)
+                    }
+                    Column(Modifier.fillMaxSize()) {
+                        state.error?.let { message ->
+                            Box(Modifier.padding(horizontal = 12.dp, vertical = 3.dp)) {
+                                ErrorStrip(message, viewModel::dismissError, { openSettings() })
+                            }
+                        }
+                        Box(Modifier.weight(1f).fillMaxWidth()) {
+                            val plugin = activeTab as? WorkTab.Plugin
+                            if (plugin == null) TranscriptView(
+                                state,
+                                onPrompt = { promptToInsert = it },
+                                onInspect = openStep,
+                                onDecideApproval = viewModel::decide,
+                                onOpenApprovalQueue = {
+                                    approvalId = (state.currentApprovals.firstOrNull() ?: state.approvals.firstOrNull())?.id
+                                },
+                                onOpenTrace = { tabs.open(WorkTab.Plugin(com.cordiact.app.experience.tabs.TraceTab.id)) },
+                            )
+                            else {
+                                val contributor = com.cordiact.app.experience.tabs.TabRegistry.find(plugin.pluginId)
+                                if (contributor != null) contributor.Content(state, landscapeHost)
+                                else Text("该插件已卸载", Modifier.padding(18.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                    }
+                },
+                composer = { lines ->
+                    state.undoArchivedSessionId?.let {
+                        Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text("会话已归档", Modifier.weight(1f), style = MaterialTheme.typography.labelSmall)
+                            TextButton(onClick = { viewModel.restoreSession(it) }) { Text("撤销") }
+                        }
+                    }
+                    if (state.archived) TextButton(onClick = { state.sessionId?.let { viewModel.restoreSession(it) } },
+                        enabled = !state.loading && !switchPending) { Text("恢复并继续") }
+                    else com.cordiact.app.experience.composer.ComposerBar(
+                        if (switchPending) state.copy(loading = true) else state, composer, viewModel.composerController, promptToInsert,
+                        { promptToInsert = "" }, { text -> if (requestedTab != null || loadingTab != null) false else viewModel.send(text) }, { if (requestedTab == null && loadingTab == null) viewModel.stop() },
+                        viewModel::selectModel, compact = true, maxEditorLines = lines,
+                        onSendLocal = { if (requestedTab != null || loadingTab != null) false else viewModel.sendLocal(it) },
+                        prepareLocal = prepareLocal,
+                    )
+                })
+        } else Surface(color = MaterialTheme.colorScheme.background, modifier = Modifier.fillMaxSize()) {
             Box(Modifier.fillMaxSize()) {
                 ExperienceFrame(
                     top = {
-                    Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
-                        FrostedSurface(radius = 24.dp) { IconButton(onClick = { if (wide) showWideSidebar = !showWideSidebar else scope.launch { drawer.open() } }, modifier = Modifier.testTag("open-navigation")) { AppGlyph(GlyphName.Menu, if (wide && showWideSidebar) "收起会话侧栏" else "打开工作区和会话") } }
-                        Column(Modifier.weight(1f).padding(horizontal = 6.dp)) {
-                            Text(state.workspace?.name ?: "CordiAct", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            Text(state.sessions.find { it.id == state.sessionId }?.title?.ifBlank { "新对话" } ?: "新对话", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        }
-                        StudioPaneMenu(pane, state.activeTools,
-                            com.cordiact.app.render.PreviewInbox.unseenCount(state.sessionId),
-                            onSelect = { pane = it },
-                            onSessionPlugins = if (pluginOwner != null) ({ showSessionPlugins = true }) else null,
-                        )
+                    val openApprovals = {
+                        viewModel.composerController.popover(null)
+                        approvalId = (state.currentApprovals.firstOrNull() ?: state.approvals.firstOrNull())?.id
                     }
+                    LumenTopChrome(
+                        workspace = state.workspace?.name ?: "CordiAct",
+                        session = state.sessions.find { it.id == state.sessionId }?.title?.ifBlank { "新对话" } ?: "新对话",
+                        mode = state.islandMode(),
+                        tabCount = tabs.tabs.size,
+                        onMenu = { overview = true },
+                        onIsland = {
+                            if (state.turns.any { it.tools.isNotEmpty() }) tabs.open(com.cordiact.app.experience.tabs.WorkTab.Plugin(com.cordiact.app.experience.tabs.TraceTab.id))
+                            else overview = true
+                        },
+                        onApprovals = openApprovals,
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            IconButton(onClick = { viewModel.newSession(state.workspace?.id) }, enabled = !state.loading,
+                                modifier = Modifier.testTag("new-tab")) { AppGlyph(GlyphName.Plus, "新对话标签") }
+                            pluginActions()
+                        }
+                    }
+                    com.cordiact.app.experience.tabs.TabStrip(state, tabs, onClose = { tabs.close(it) }, modifier = Modifier.padding(top = 4.dp, bottom = 2.dp))
                     },
                     content = { viewportModifier ->
                     Column(viewportModifier) {
                     if (state.error != null) Box(Modifier.padding(horizontal = 18.dp, vertical = 5.dp)) { ErrorStrip(state.error!!, viewModel::dismissError, { openSettings() }) }
                     Box(Modifier.weight(1f).fillMaxWidth()) {
-                        saveable.SaveableStateProvider("$saveableKey:${pane.name}") {
-                            when (pane) {
-                                StudioPane.Conversation -> TranscriptView(state, onPrompt = { promptToInsert = it }, onInspect = { inspected = it })
-                                StudioPane.Activity -> TrajectoryView(state, onInspect = { inspected = it })
-                                StudioPane.Artifacts -> PreviewView(state, modifier = Modifier.padding(LocalChromePadding.current))
+                        // A tab click precedes the asynchronous session load. Key the transcript by
+                        // the loaded session, so old text doesn't remount under the destination tab.
+                        val contentTabKey = (activeTab as? com.cordiact.app.experience.tabs.WorkTab.Plugin)?.key
+                            ?: state.sessionId?.let { "s:$it" }
+                        saveable.SaveableStateProvider("$saveableKey:$contentTabKey") {
+                            when (val tab = activeTab) {
+                                is com.cordiact.app.experience.tabs.WorkTab.Plugin -> {
+                                    val contributor = com.cordiact.app.experience.tabs.TabRegistry.find(tab.pluginId)
+                                    if (contributor != null) contributor.Content(state, tabHost)
+                                    else Text("该插件已卸载", Modifier.padding(LocalChromePadding.current).padding(24.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                                else -> TranscriptView(
+                                    state,
+                                    onPrompt = { promptToInsert = it },
+                                    onInspect = { inspected = it },
+                                    onDecideApproval = viewModel::decide,
+                                    onOpenApprovalQueue = {
+                                        viewModel.composerController.popover(null)
+                                        approvalId = (state.currentApprovals.firstOrNull() ?: state.approvals.firstOrNull())?.id
+                                    },
+                                    onOpenTrace = { tabs.open(WorkTab.Plugin(com.cordiact.app.experience.tabs.TraceTab.id)) },
+                                )
                             }
                         }
                     }
                     }
                     },
                     bottom = {
-                    WorkbenchDock(state,
-                        onApprovals = {
-                            viewModel.composerController.popover(null)
-                            approvalId = (state.currentApprovals.firstOrNull() ?: state.approvals.firstOrNull())?.id
-                        },
-                        onTrace = { pane = StudioPane.Activity },
-                    )
-                    if (state.undoArchivedSessionId != null) {
-                        Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Text("会话已归档，运行任务不受影响", Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
-                            TextButton(onClick = viewModel::undoArchive, enabled = !state.loading) { Text("撤销") }
-                            TextButton(onClick = viewModel::dismissArchiveUndo) { Text("关闭") }
+                        if (activeTab !is WorkTab.Plugin) {
+                            val otherApprovals = state.approvals.size - state.currentApprovals.size
+                            if (otherApprovals > 0) {
+                                Box(Modifier.fillMaxWidth().padding(bottom = 6.dp), contentAlignment = Alignment.Center) {
+                                    ApprovalDockPill(
+                                        label = "其他会话待审批 $otherApprovals 项 · 查看队列",
+                                        onClick = {
+                                            viewModel.composerController.popover(null)
+                                            approvalId = (state.approvals.firstOrNull { it !in state.currentApprovals } ?: state.approvals.firstOrNull())?.id
+                                        },
+                                    )
+                                }
+                            }
+                            if (state.undoArchivedSessionId != null) {
+                                Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Text("会话已归档，运行任务不受影响", Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+                                    TextButton(onClick = viewModel::undoArchive, enabled = !state.loading) { Text("撤销") }
+                                    TextButton(onClick = viewModel::dismissArchiveUndo) { Text("关闭") }
+                                }
+                            }
+                            if (state.archived) {
+                                Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Text("此会话已归档", Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+                                    if (state.running) TextButton(onClick = viewModel::stop) { Text("停止") }
+                                    TextButton(onClick = { state.sessionId?.let { viewModel.restoreSession(it) } }, enabled = !state.loading) { Text("恢复并继续") }
+                                }
+                            } else com.cordiact.app.experience.composer.ComposerBar(
+                                state, composer, viewModel.composerController, promptToInsert,
+                                { promptToInsert = "" }, viewModel::send, viewModel::stop,
+                                viewModel::selectModel,
+                                onSendLocal = { prepared ->
+                                    val selected = tabs.active as? WorkTab.Session
+                                    if (selected != null && selected.sessionId != state.sessionId) false
+                                    else viewModel.sendLocal(prepared)
+                                },
+                                prepareLocal = prepareLocal.takeUnless { ownerPending },
+                            )
                         }
-                    }
-                    if (state.archived) {
-                        Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Text("此会话已归档", Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
-                            if (state.running) TextButton(onClick = viewModel::stop) { Text("停止") }
-                            TextButton(onClick = { state.sessionId?.let { viewModel.restoreSession(it) } }, enabled = !state.loading) { Text("恢复并继续") }
-                        }
-                    } else com.cordiact.app.experience.composer.ComposerBar(
-                        state, composer, viewModel.composerController, promptToInsert,
-                        { promptToInsert = "" }, viewModel::send, viewModel::stop,
-                        viewModel::selectModel, { openSettings("settings://models/providers") },
-                        { openSettings("settings://security/permissions") },
-                        onSendLocal = viewModel::sendLocal,
-                        prepareLocal = settingsApp.interactionService::prepareLocalCommand,
-                    )
                     },
                 )
-                approvalId?.let { id ->
-                    val currentIds = state.currentApprovals.mapTo(hashSetOf()) { it.id }
-                    val sortedRequests = state.approvals.sortedBy { it.id !in currentIds }
-                    ApprovalDecisionDialog(sortedRequests, state.decidingApprovals, state.approvalErrors,
-                        ownerLabel = { owner ->
-                            val group = owner?.let { key -> state.sidebar.firstOrNull { it.id == key.workspaceId } }
-                            val title = group?.sessions?.firstOrNull { it.id == owner.sessionId }?.title
-                            when {
-                                owner == null -> "全局请求"
-                                group == null -> "工作区审批"
-                                title != null -> "${group.name} / $title"
-                                owner.sessionId != null -> "${group.name} / 其他会话"
-                                else -> "${group.name} / 工作区请求"
-                            }
-                        },
-                        selected = id, onSelect = { approvalId = it }, onDismiss = { approvalId = null }, onDecide = viewModel::decide)
-                }
                 inspected?.let { step ->
                     CompactInspector(step = step, onClose = { inspected = null }, onSettings = { link -> openSettings(link) }, modifier = Modifier.align(Alignment.BottomCenter).windowInsetsPadding(WindowInsets.systemBars.union(WindowInsets.ime)))
                 }
-                if (showSessionPlugins && pluginOwner != null) {
-                    SessionPluginsRoute(settingsApp, pluginOwner) { showSessionPlugins = false }
-                }
-
             }
         }
     }
-    if (wide) {
-        Row(Modifier.fillMaxSize()) {
-            if (showWideSidebar) {
-                Box(Modifier.width(300.dp).fillMaxHeight().windowInsetsPadding(WindowInsets.systemBars)) { sidebar() }
-                VerticalDivider()
-            }
-            Box(Modifier.weight(1f).fillMaxHeight()) { workbench() }
+    Box(Modifier.fillMaxSize()) {
+        workbench()
+        sessionPluginsOwner?.takeIf { it == pluginOwner }?.let { owner ->
+            SessionPluginsRoute(settingsApp, owner) { sessionPluginsOwner = null }
         }
-    } else {
-        ModalNavigationDrawer(drawerState = drawer, gesturesEnabled = drawer.isOpen || pane == StudioPane.Conversation,
-            drawerContent = {
-                ModalDrawerSheet(Modifier.width(minOf(LocalConfiguration.current.screenWidthDp.dp * .84f, 360.dp)),
-                    drawerContainerColor = MaterialTheme.colorScheme.surfaceContainerLowest) { sidebar() }
-            }, content = workbench)
+        approvalId?.let { id ->
+            val currentIds = state.currentApprovals.mapTo(hashSetOf()) { it.id }
+            val sortedRequests = state.approvals.sortedBy { it.id !in currentIds }
+            ApprovalDecisionDialog(sortedRequests, state.decidingApprovals, state.approvalErrors,
+                ownerLabel = ownerLabel,
+                selected = id, onSelect = { approvalId = it }, onDismiss = { approvalId = null }, onDecide = viewModel::decide)
+        }
+        androidx.compose.animation.AnimatedVisibility(overview,
+            enter = androidx.compose.animation.fadeIn(tween(com.cordiact.app.experience.composer.motionDuration(220))) + androidx.compose.animation.scaleIn(tween(com.cordiact.app.experience.composer.motionDuration(220)), initialScale = .96f),
+            exit = androidx.compose.animation.fadeOut(tween(com.cordiact.app.experience.composer.motionDuration(160))) + androidx.compose.animation.scaleOut(tween(com.cordiact.app.experience.composer.motionDuration(160)), targetScale = .96f)) {
+            com.cordiact.app.experience.tabs.TabOverview(
+                state, tabs,
+                onClose = { tabs.close(it) },
+                onDismiss = { overview = false },
+                onNewSession = { viewModel.newSession(state.workspace?.id, closeAfterSelection) },
+                onSettings = { closeAfterSelection(); settingsVm.reload(); openSettings() },
+            ) { m, overviewSegments ->
+                AllSessionsPane(
+                    state, viewModel,
+                    onOpenSession = { id ->
+                        if (state.sessionId == id) {
+                            tabs.open(com.cordiact.app.experience.tabs.WorkTab.Session(id))
+                            closeAfterSelection()
+                        } else viewModel.selectSession(id) {
+                            tabs.open(com.cordiact.app.experience.tabs.WorkTab.Session(id))
+                            closeAfterSelection()
+                        }
+                    },
+                    onWorkspaceOpened = closeAfterSelection,
+                    onAutomationTasks = { closeAfterSelection(); settingsVm.reload(); openSettings("settings://tasks") },
+                    modifier = m,
+                    overviewSegments = overviewSegments,
+                )
+            }
+        }
     }
 
 }
 
 @Composable
+internal fun WorkbenchPluginMenu(onWorkspacePlugins: (() -> Unit)?, onSessionPlugins: (() -> Unit)?) {
+    val enabled = onWorkspacePlugins != null || onSessionPlugins != null
+    var expanded by remember(enabled) { mutableStateOf(false) }
+    Box {
+        IconButton(onClick = { expanded = true }, enabled = enabled, modifier = Modifier.testTag("workbench-plugin-menu")) {
+            AppGlyph(GlyphName.More, "插件管理")
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            if (onWorkspacePlugins != null) {
+                DropdownMenuItem(
+                    text = { Text("工作区插件") },
+                    onClick = { expanded = false; onWorkspacePlugins() },
+                    modifier = Modifier.testTag("workbench-workspace-plugins"),
+                )
+            }
+            if (onSessionPlugins != null) {
+                DropdownMenuItem(
+                    text = { Text("会话插件") },
+                    onClick = { expanded = false; onSessionPlugins() },
+                    modifier = Modifier.testTag("workbench-session-plugins"),
+                )
+            }
+        }
+    }
+}
+
+@Composable
 internal fun CompactInspector(step: ToolActivity, onClose: () -> Unit, modifier: Modifier = Modifier, onSettings: ((String?) -> Unit)? = null) {
     val clipboard = LocalClipboardManager.current
+    val colors = MaterialTheme.colorScheme
+    var tab by remember(step.id) { mutableIntStateOf(0) } // 0: 概览, 1: 输入参数, 2: 返回内容
+    val statusText = when (step.phase) {
+        ToolPhase.SUCCEEDED -> "完成"
+        ToolPhase.FAILED -> "失败"
+        ToolPhase.RUNNING -> "执行中"
+        ToolPhase.INTERRUPTED -> "中断"
+    }
+    val statusColor = when (step.phase) {
+        ToolPhase.FAILED -> colors.error
+        ToolPhase.RUNNING -> colors.primary
+        else -> colors.onSurfaceVariant
+    }
     BoxWithConstraints(modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
-        val maxSheet = maxHeight * .45f
-        Surface(Modifier.fillMaxWidth().heightIn(max = maxSheet).padding(horizontal = 8.dp, vertical = 4.dp), shape = RoundedCornerShape(23.dp), shadowElevation = 12.dp, color = MaterialTheme.colorScheme.surface, border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
+        // Landscape: a side panel beside the transcript instead of a sheet squeezed into 360dp of height.
+        val side = maxWidth > maxHeight && maxWidth >= 600.dp
+        val maxSheet = if (side) maxHeight else maxHeight * .46f
+        Surface(
+            (if (side) Modifier.align(Alignment.CenterEnd).width(minOf(420.dp, maxWidth * .45f)).fillMaxHeight()
+            else Modifier.fillMaxWidth()).heightIn(max = maxSheet).padding(horizontal = 8.dp, vertical = 4.dp).testTag("tool-inspector"),
+            shape = RoundedCornerShape(20.dp),
+            shadowElevation = 2.dp,
+            color = colors.surface,
+            border = BorderStroke(1.dp, colors.outlineVariant),
+        ) {
             Column {
                 PeekHandle(onClose)
-                Row(Modifier.padding(start = 17.dp, end = 5.dp), verticalAlignment = Alignment.CenterVertically) {
-                    AppGlyph(GlyphName.Terminal, modifier = Modifier.size(17.dp), tint = MaterialTheme.colorScheme.primary)
-                    Text(step.name, Modifier.weight(1f).padding(horizontal = 9.dp), style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    IconButton(onClick = { clipboard.setText(AnnotatedString(listOf(step.arguments, step.summary.orEmpty()).filter { it.isNotBlank() }.joinToString("\n\n"))) }) { AppGlyph(GlyphName.Copy, "复制工具详情", modifier = Modifier.size(17.dp)) }
+                Row(Modifier.padding(start = 16.dp, end = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.size(7.dp).clip(CircleShape).background(statusColor))
+                    Column(Modifier.weight(1f).padding(horizontal = 10.dp)) {
+                        Text(step.name, style = MaterialTheme.typography.titleSmall.copy(fontFamily = FontFamily.Monospace), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(
+                            listOfNotNull(statusText, step.durationMillis?.let { com.cordiact.app.experience.model.durationLabel(it) }).joinToString(" · "),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = statusColor,
+                        )
+                    }
+                    IconButton(onClick = { clipboard.setText(AnnotatedString(listOf(step.arguments, step.summary.orEmpty()).filter { it.isNotBlank() }.joinToString("\n\n"))) }) {
+                        AppGlyph(GlyphName.Copy, "复制工具详情", modifier = Modifier.size(17.dp))
+                    }
                     IconButton(onClick = onClose) { AppGlyph(GlyphName.Close, "关闭工具详情", modifier = Modifier.size(17.dp)) }
                 }
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    listOf("概览", "输入参数", "返回内容").forEachIndexed { idx, label ->
+                        val active = tab == idx
+                        Surface(
+                            onClick = { tab = idx },
+                            shape = CircleShape,
+                            color = if (active) colors.onSurface else colors.surfaceContainerLow,
+                        ) {
+                            Text(
+                                label,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (active) colors.surface else colors.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 11.dp, vertical = 5.dp),
+                            )
+                        }
+                    }
+                }
+                HorizontalDivider(thickness = 0.5.dp, color = colors.outlineVariant)
                 if (step.phase == ToolPhase.FAILED && onSettings != null) {
                     val link = when {
                         step.name.startsWith("ssh_") -> "settings://ssh"
                         step.name.startsWith("termux_") -> "settings://connections/termux"
                         step.name.startsWith("browser_") -> "settings://connections/browser"
                         step.name.startsWith("mcp") || step.name.startsWith("mcp_") -> "settings://mcp"
-                        step.name in setOf("root_exec", "shizuku_exec") -> "settings://connections/privilege"
+                        step.name in setOf("root_exec", "shizuku_exec", "priv_exec", "priv_shell", "priv_root") -> "settings://connections/privilege"
                         step.name in setOf("take_screenshot", "read_window_tree", "click_node", "tap", "swipe", "set_text", "scroll", "global_action") -> "settings://connections/screen"
                         step.name.startsWith("web_") || step.name == "search_web" -> "settings://search"
                         else -> null
                     }
-                    TextButton(onClick = { onSettings(link) }, modifier = Modifier.padding(horizontal = 16.dp)) { Text("前往设置检查连接与权限") }
+                    TextButton(onClick = { onSettings(link) }, modifier = Modifier.padding(horizontal = 12.dp)) { Text("前往设置检查连接与权限") }
                 }
-                SelectionContainer(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()).padding(horizontal = 17.dp, vertical = 12.dp)) {
-                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        if (step.arguments.isNotBlank()) { Text("输入参数", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant); Text(step.arguments, fontFamily = FontFamily.Monospace, fontSize = 12.sp, lineHeight = 18.sp) }
-                        Text("返回内容", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text(step.summary ?: "工具尚未返回内容", fontFamily = FontFamily.Monospace, fontSize = 12.sp, lineHeight = 18.sp)
+                SelectionContainer(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 12.dp)) {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        when (tab) {
+                            0 -> {
+                                Text(
+                                    step.summary?.takeIf { it.isNotBlank() } ?: "工具尚未返回摘要",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = colors.onSurface,
+                                )
+                                if (step.arguments.isNotBlank()) {
+                                    Text("调用参数预览", style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
+                                    Text(
+                                        step.arguments.take(360),
+                                        fontFamily = FontFamily.Monospace,
+                                        fontSize = 12.sp,
+                                        lineHeight = 18.sp,
+                                        color = colors.onSurfaceVariant,
+                                    )
+                                }
+                            }
+                            1 -> {
+                                Text(
+                                    step.arguments.ifBlank { "无输入参数" },
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 12.sp,
+                                    lineHeight = 18.sp,
+                                )
+                            }
+                            else -> {
+                                Text(
+                                    step.summary?.ifBlank { "工具尚未返回内容" } ?: "工具尚未返回内容",
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 12.sp,
+                                    lineHeight = 18.sp,
+                                )
+                            }
+                        }
                     }
                 }
             }

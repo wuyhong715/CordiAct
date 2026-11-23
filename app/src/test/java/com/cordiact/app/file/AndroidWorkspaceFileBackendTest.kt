@@ -15,6 +15,24 @@ class AndroidWorkspaceFileBackendTest {
     private val backend = AndroidWorkspaceFileBackend()
 
     @Test
+    fun exposesOnlyExactWorkspaceConfigPathsAndRejectsLinks() {
+        val root = createTempDirectory("cordiact-config").toFile()
+        val other = createTempDirectory("cordiact-config-outside").toFile()
+        try {
+            val bytes = "presetId = \"default\"".encodeToByteArray()
+            val allowed = ".cordiact/agent.toml"
+            backend.write(root, allowed, bytes, null)
+            assertArrayEquals(bytes, backend.read(root, allowed, 0, 1024).bytes)
+            for (bad in listOf(".git/config", ".cordiact/internal.toml", "nested/.cordiact/models.toml", ".cordiact/sub/tools.toml")) {
+                assertThrows(WorkspaceFileException::class.java) { backend.write(root, bad, bytes, null) }
+            }
+            Files.createSymbolicLink(root.toPath().resolve(".cordiact/tools.toml"), other.toPath().resolve("tools.toml"))
+            assertThrows(WorkspaceFileException::class.java) { backend.write(root, ".cordiact/tools.toml", bytes, null) }
+            assertFalse(other.resolve("tools.toml").exists())
+        } finally { root.deleteRecursively(); other.deleteRecursively() }
+    }
+
+    @Test
     fun writesReadsAndUsesRevisionPreconditions() {
         val root = createTempDirectory("cordiact-workspace").toFile()
         try {

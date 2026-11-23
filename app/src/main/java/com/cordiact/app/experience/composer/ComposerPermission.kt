@@ -2,6 +2,15 @@ package com.cordiact.app.experience.composer
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.stateDescription
+import com.cordiact.app.experience.AppGlyph
+import com.cordiact.app.experience.GlyphName
+import com.cordiact.app.experience.GlyphSize
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -9,7 +18,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -24,7 +32,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
 @Composable
-internal fun ComposerPermission(workspaceId: String?, model: ModelId?, canEdit: Boolean, onSecurity: () -> Unit) = key(workspaceId) {
+internal fun ComposerPermission(workspaceId: String?, model: ModelId?, canEdit: Boolean) = key(workspaceId) {
     val app = LocalContext.current.applicationContext as? CordiActApplication
     val facade = remember(app) { app?.let(::SecuritySettingsFacade) }
     val scope = rememberCoroutineScope()
@@ -102,34 +110,50 @@ internal fun ComposerPermission(workspaceId: String?, model: ModelId?, canEdit: 
                 if (auto || full) drawCircle(tint, 2.dp.toPx(), Offset(20*x, 4*y))
             }
         }
-        DropdownMenu(expanded = expanded, onDismissRequest = { if (!busy) expanded = false }, modifier = Modifier.widthIn(min = 200.dp, max = 260.dp)) {
-            Text("权限与审批", Modifier.padding(horizontal = 14.dp, vertical = 6.dp), style = MaterialTheme.typography.labelLarge)
-            val editable = current != null && canEdit && !busy
-            val options = listOf(PermissionPreset.READ_ONLY to "只读", PermissionPreset.WORKSPACE_ONLY to "仅工作区", PermissionPreset.FULL_ACCESS to "完全权限")
-            options.forEach { (preset, name) ->
-                val selected = preset == active || (preset == PermissionPreset.WORKSPACE_ONLY && active == PermissionPreset.AUTO_APPROVAL)
-                DropdownMenuItem(text = { Text(name, color = if (selected) MaterialTheme.colorScheme.primary else LocalContentColor.current) },
-                    enabled = editable && !selected, onClick = { if (preset == PermissionPreset.FULL_ACCESS) { expanded = false; confirm = true } else save(preset) })
+        AnchoredPopover(expanded, { if (!busy) expanded = false }, width = 222.dp, maxHeight = 218.dp, alignEnd = true) {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                val editable = current != null && canEdit && !busy
+                val options = listOf(
+                    Triple(PermissionPreset.READ_ONLY, "只读", GlyphName.Eye),
+                    Triple(PermissionPreset.WORKSPACE_ONLY, "仅工作区", GlyphName.Folder),
+                    Triple(PermissionPreset.FULL_ACCESS, "完全权限", GlyphName.Unlock),
+                )
+                options.forEach { (preset, name, icon) ->
+                    val selected = preset == active || (preset == PermissionPreset.WORKSPACE_ONLY && active == PermissionPreset.AUTO_APPROVAL)
+                    val tint = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                    DropdownMenuItem(text = { Text(name, color = if (selected) tint else LocalContentColor.current) },
+                        leadingIcon = { AppGlyph(icon, tint = tint, size = GlyphSize.Small) },
+                        trailingIcon = if (selected) ({ AppGlyph(GlyphName.Check, "已选中", tint = tint, size = GlyphSize.Small) }) else null,
+                        enabled = editable && !selected, contentPadding = PaddingValues(horizontal = 8.dp),
+                        onClick = { if (preset == PermissionPreset.FULL_ACCESS) { expanded = false; confirm = true } else save(preset) })
+                }
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = .50f))
+                val reason = when {
+                    current == null -> "尚未读取权限"
+                    !canEdit -> "请在当前回合结束后修改"
+                    active != PermissionPreset.WORKSPACE_ONLY && active != PermissionPreset.AUTO_APPROVAL -> "仅工作区档位可开启"
+                    current.reviewerInvalid || (current.reviewer == null && rememberedReviewer == null) -> "未配置可用的审核模型"
+                    model == null || model == (current.reviewer ?: rememberedReviewer) -> "审核模型须与当前对话模型不同"
+                    else -> null
+                }
+                val configured = auto || autoSelected
+                val allowed = editable && (reason == null || configured)
+                Row(Modifier.fillMaxWidth().heightIn(min = 48.dp)
+                    .toggleable(value = configured, enabled = allowed, role = Role.Switch) {
+                        save(if (it) PermissionPreset.AUTO_APPROVAL else PermissionPreset.WORKSPACE_ONLY)
+                    }.semantics { if (reason != null) stateDescription = reason }
+                    .padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    AppGlyph(GlyphName.Shield, size = GlyphSize.Small)
+                    Text("自动审批", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                    Switch(checked = configured, onCheckedChange = null, enabled = allowed)
+                }
             }
-            HorizontalDivider(Modifier.padding(horizontal = 12.dp))
-            val reason = when {
-                current == null -> "尚未读取权限。"
-                !canEdit -> "请在当前回合结束后修改。"
-                active != PermissionPreset.WORKSPACE_ONLY && active != PermissionPreset.AUTO_APPROVAL -> "仅工作区档位可开启。"
-                current.reviewerInvalid || (current.reviewer == null && rememberedReviewer == null) -> "请先在安全设置中配置可用的审核模型。"
-                model == null || model == (current.reviewer ?: rememberedReviewer) -> "审核模型须与当前对话模型不同。"
-                else -> null
-            }
-            Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text("自动审批", Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
-                Switch(checked = auto, onCheckedChange = { save(if (it) PermissionPreset.AUTO_APPROVAL else PermissionPreset.WORKSPACE_ONLY) },
-                    enabled = editable && (reason == null || auto))
-            }
-            if (autoSelected && !auto) DropdownMenuItem(text = { Text("停用已配置的自动审批") }, enabled = editable, onClick = { save(PermissionPreset.WORKSPACE_ONLY) })
-            Text(feedback ?: reason ?: "独立审核模型逐项判断，不扩大权限。",
-                Modifier.padding(horizontal = 14.dp, vertical = 4.dp), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            DropdownMenuItem(text = { Text("安全设置") }, enabled = !busy, onClick = { expanded = false; onSecurity() })
         }
+    }
+    val context = LocalContext.current
+    LaunchedEffect(feedback) {
+        feedback?.takeUnless { it == "已生效" }?.let { android.widget.Toast.makeText(context, it, android.widget.Toast.LENGTH_SHORT).show() }
     }
     if (confirm) AlertDialog(onDismissRequest = { confirm = false }, title = { Text("切换到完全权限？") },
         text = { Text("权限范围将扩展到当前工作区与设备存储，并允许任意 Shell。切回「仅工作区」可撤销。") },
