@@ -274,6 +274,13 @@ class AuthoredPluginInstallations(
         expectedInstallationId: String? = null,
     ): AuthoredPluginDefinition = readVerified(workspaceId, pluginId, expectedSha256, expectedInstallationId).definition
 
+    /** Returns the exact validated snapshot as a package candidate, without granting install or run. */
+    fun previewSavedPackage(record: AuthoredPluginInstalledRecord): ExtensionPackageArtifact {
+        val verified = readVerified(record.workspaceId, record.id, record.sha256, record.installationId)
+        if (verified.record != record) installedChanged()
+        return ExtensionPackageArtifact.decode(verified.source, ExtensionPackageArtifact.Format.LEGACY_AUTHORED, record.id)
+    }
+
     private fun readVerified(
         workspaceId: String,
         pluginId: String,
@@ -405,7 +412,7 @@ class AuthoredPluginInstallations(
     }
 
     private sealed class Verification(val status: AuthoredPluginInstallationStatus) {
-        data class Ready(val record: AuthoredPluginInstalledRecord, val definition: AuthoredPluginDefinition) :
+        data class Ready(val record: AuthoredPluginInstalledRecord, val definition: AuthoredPluginDefinition, val source: ByteArray) :
             Verification(AuthoredPluginInstallationStatus.READY)
         data object Corrupt : Verification(AuthoredPluginInstallationStatus.CORRUPT)
         data object Unsupported : Verification(AuthoredPluginInstallationStatus.UNSUPPORTED)
@@ -419,7 +426,7 @@ class AuthoredPluginInstallations(
                 val record = stored.record
                 if (record.formatVersion <= 0) return Verification.Corrupt
                 if (record.formatVersion != FORMAT_VERSION) return Verification.Unsupported
-                val bytes = stored.sourceBytes
+                val bytes = stored.sourceBytes.copyOf()
                 if (record.workspaceId != workspaceId || bytes.size !in 1..AuthoredPluginSource.MAX_SOURCE_BYTES ||
                     record.sizeBytes != bytes.size ||
                     !SHA256.matches(record.sha256) || record.schemaVersion <= 0 ||
@@ -438,7 +445,7 @@ class AuthoredPluginInstallations(
                 val verified = manifest(workspaceId, definition, bytes.size, record.installedAtEpochMillis, record.installationId)
                 if (verified != record) return Verification.Corrupt
                 if (definition.schemaVersion !in 1..MAX_SUPPORTED_SCHEMA) return Verification.Unsupported
-                Verification.Ready(verified, definition)
+                Verification.Ready(verified, definition, bytes)
             }
         }
     }

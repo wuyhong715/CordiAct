@@ -37,16 +37,20 @@ fun interface ToolEffectClassifier {
 class EnvelopeToolAccessPolicy(
     private val classifier: ToolEffectClassifier,
 ) {
-    fun evaluate(context: SecurityContext, toolId: String, ownerPluginId: String): ToolAccessDecision {
-        val decision = evaluateEnvelope(context, toolId, ownerPluginId)
+    fun evaluate(context: SecurityContext, toolId: String, ownerPluginId: String): ToolAccessDecision =
+        evaluate(context, toolId, ownerPluginId, hostEffect = null)
+
+    internal fun evaluate(
+        context: SecurityContext, toolId: String, ownerPluginId: String, hostEffect: ToolEffectClass?,
+    ): ToolAccessDecision {
+        val decision = evaluateEnvelope(context, hostEffect ?: classifier.classify(toolId, ownerPluginId))
         if (decision != ToolAccessDecision.Allow) return decision
         return if (context.profile.preset == PermissionPreset.AUTO_APPROVAL &&
             ownerPluginId != CREDENTIAL_VAULT_PLUGIN_ID
         ) ToolAccessDecision.RequireReview else ToolAccessDecision.Allow
     }
 
-    private fun evaluateEnvelope(context: SecurityContext, toolId: String, ownerPluginId: String): ToolAccessDecision {
-        val effect = classifier.classify(toolId, ownerPluginId)
+    private fun evaluateEnvelope(context: SecurityContext, effect: ToolEffectClass): ToolAccessDecision {
         val envelope = context.profile.accessEnvelope
         return when (effect) {
             ToolEffectClass.UNKNOWN -> ToolAccessDecision.Deny("UNCLASSIFIED_TOOL_DENIED")

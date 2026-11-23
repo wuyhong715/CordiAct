@@ -153,6 +153,46 @@ class ScopedInteractionCommandsTest {
         assertTrue(failure.message.orEmpty().contains("registration is no longer active"))
     }
 
+    @Test fun `only exact host-owned local registration runs without a model or executor`() {
+        val id = PluginInstanceId("demo", "a")
+        val descriptor = command("demo", "project", "must not call executor").copy(executor =
+            InteractionCommandExecutor { _, _, _, _ -> error("local path must not call executor") })
+        kernel.register(id, object : ContextPlugin {
+            override fun start(context: PluginContext) = adapter.registerDeclarativePackageCommand(context, descriptor, { true }, "literal @not-a-reference")
+        })
+        kernel.enable(id)
+        registry.register(command("host", "global", "not local"))
+        val service = InteractionService(registry, directory, fills, InteractionAuthorization { _, _, _ -> AuthorizationDecision(true) }).also { it.setEnabled(true) }
+        for (text in listOf("ordinary text", "/global", "/pro", "/project @other", "/project:body", "/project:")) {
+            assertNull(service.prepareLocalCommand(text, a1), text)
+        }
+        assertNull(service.prepareLocalCommand("/project", b1))
+        val prepared = requireNotNull(service.prepareLocalCommand("  /project-alias  ", a2))
+        assertEquals("literal @not-a-reference", service.dispatchLocalCommand(prepared).message)
+        val copied = prepared.copy(envelope = prepared.envelope!!.copy(command = prepared.envelope.command!!.copy()))
+        assertThrows(IllegalStateException::class.java) { service.dispatchLocalCommand(copied) }
+        kernel.restart(id)
+        assertThrows(IllegalStateException::class.java) { service.dispatchLocalCommand(prepared) }
+        assertNotNull(service.prepareLocalCommand("/project", a2))
+    }
+
+    @Test fun `local dispatch rechecks the registration after authorization`() {
+        val id = PluginInstanceId("demo", "a")
+        kernel.register(id, object : ContextPlugin {
+            override fun start(context: PluginContext) = adapter.registerDeclarativePackageCommand(context, command("demo", "project", "executor"), { true }, "literal")
+        })
+        kernel.enable(id)
+        val denied = InteractionService(registry, directory, fills, InteractionAuthorization { _, _, _ -> AuthorizationDecision(true, requiresConfirmation = true) }).also { it.setEnabled(true) }
+        val prepared = requireNotNull(denied.prepareLocalCommand("/project", a1))
+        assertThrows(IllegalStateException::class.java) { denied.dispatchLocalCommand(prepared) }
+        val service = InteractionService(registry, directory, fills, InteractionAuthorization { _, _, _ ->
+            kernel.disable(id)
+            AuthorizationDecision(true)
+        }).also { it.setEnabled(true) }
+        assertThrows(IllegalStateException::class.java) { service.dispatchLocalCommand(prepared) }
+        assertNull(service.prepareLocalCommand("/project", a1))
+    }
+
     private fun mount(id: PluginInstanceId, descriptor: CommandDescriptor) {
         kernel.register(id, object : ContextPlugin {
             override fun start(context: PluginContext) = adapter.register(context, descriptor)

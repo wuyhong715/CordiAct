@@ -302,6 +302,40 @@ class InteractionService(
         return parser.parse(text, context, allowEmptyWithAttachments = attachments.isNotEmpty())
     }
 
+    /** Offers an exact bare command or alias; no attachments, references, fill expansion or model. */
+    fun prepareLocalCommand(text: String, context: InteractionContext): PreparedInteraction? {
+        val name = text.trim().removePrefix("/")
+        if (!enabled || !text.trim().startsWith('/') || name.isEmpty() || name.any { it.isWhitespace() || it in "/:：" }) return null
+        val command = commands.find(name, context) ?: return null
+        if (commands.localText(command, context) == null) return null
+        val prepared = parser.parse(text.trim(), context)
+        return prepared.takeIf { it.valid && it.envelope?.command === command }
+    }
+
+    /** No plugin executor or model submitter is reachable from this path. */
+    fun dispatchLocalCommand(prepared: PreparedInteraction): CommandExecutionResult {
+        check(enabled) { "Interaction plugin is disabled" }
+        require(prepared.valid) { "Interaction has syntax errors" }
+        val envelope = requireNotNull(prepared.envelope)
+        val command = requireNotNull(envelope.command)
+        require((command.aliases + command.name).any { envelope.originalText == "/$it" } &&
+            envelope.commandInput.isEmpty() && envelope.attachments.isEmpty() && envelope.mentions.isEmpty() &&
+            envelope.pronounBindings.isEmpty() && envelope.requiredCapabilities.isEmpty()) { "Only a bare local command is supported" }
+        check(commands.localText(command, envelope.context) != null) { "Local command is unavailable" }
+        val decision = authorization.authorize(envelope.context, command, emptyList())
+        check(decision.allowed && !decision.requiresConfirmation) { decision.reason ?: "Interaction is not authorized" }
+        val task = taskTracker.start(command, envelope.context)
+        try {
+            val text = if (enabled) commands.localText(command, envelope.context) else null
+            check(text != null) { "Command registration is no longer active in this session" }
+            taskTracker.finish(task.id, InteractionTaskState.COMPLETED)
+            return CommandExecutionResult(true, text)
+        } catch (failure: Exception) {
+            taskTracker.finish(task.id, InteractionTaskState.FAILED, failure.message)
+            throw failure
+        }
+    }
+
     fun dispatch(
         prepared: PreparedInteraction,
         modelId: ModelId,

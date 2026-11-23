@@ -62,7 +62,9 @@ class SecuritySettingsFacade(private val app: CordiActApplication) {
                 override fun commit(expectedRevision: Long) = app.authoredPluginForeground.whileUpdatingPolicy(workspaceId) {
                     // A plugin commit already in progress can finish; no old or new confirmation
                     // can be submitted during the subsequent settings write.
-                    profiles.setPreset(workspaceId, preset, reviewer = resolved, expectedRevision = expectedRevision)
+                    app.workspaceExtensionPackages.whileUpdatingPolicy(workspaceId) {
+                        profiles.setPreset(workspaceId, preset, reviewer = resolved, expectedRevision = expectedRevision)
+                    }
                 }
             })
             SecurityWriteReceipt(revision, audited)

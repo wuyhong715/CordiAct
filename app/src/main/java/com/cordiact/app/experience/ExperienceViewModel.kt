@@ -324,6 +324,7 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
                         try {
                             app.workspaceManager.select(snapshot.workspace.id)
                             app.selectForegroundSession(snapshot.selected.id)
+                            app.workspaceExtensionPackages.enterWorkspace(snapshot.workspace.id)
                         } catch (failure: Exception) {
                             runCatching { app.workspaceManager.select(previous) }
                             throw failure
@@ -392,18 +393,30 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
     fun dismissError() { mutable.update { it.copy(error = null) } }
 
     /** Returns false when not accepted; the composer then keeps its draft. */
-    fun send(text: String): Boolean {
+    fun send(text: String): Boolean = send(text, null)
+
+    internal fun sendLocal(prepared: com.cordiact.interaction.PreparedInteraction): Boolean =
+        send(composer.value.text, prepared)
+
+    private fun send(text: String, local: com.cordiact.interaction.PreparedInteraction?): Boolean {
         val state = mutable.value
         val session = state.sessionId ?: return false
         val workspace = state.workspace ?: return false
         val draft = composer.value.copy(text = text)
         if (loadingSession) return false
         if (state.archived) { mutable.update { it.copy(error = "请先恢复此归档会话再继续") }; return false }
-        val model = draft.model ?: state.model ?: run { mutable.update { it.copy(error = "请先配置并选择模型") }; return false }
+        val model = draft.model ?: state.model
+        val interactionContext = InteractionContext(session, workspace.id)
+        if (local != null) {
+            if (draft.attachments.isNotEmpty() || local.envelope?.let { it.context == interactionContext && it.originalText == text.trim() } != true) return false
+        } else if (model == null) {
+            mutable.update { it.copy(error = "请先配置并选择模型") }
+            return false
+        }
         if (state.loading || state.running || state.stopping || (text.isBlank() && draft.sendableParts().isEmpty()) || calls.containsKey(session)) return false
         if (draft.sendAvailability != com.cordiact.core.composer.ComposerRules.SendAvailability.READY) return false
         val turnId = UUID.randomUUID().toString()
-        val authoring = app.authoredPluginForeground.openTurn(workspace.id, session)
+        val authoring = if (local == null) app.authoredPluginForeground.openTurn(workspace.id, session) else null
         val owner = OwnedCall(turnId, authoring)
         calls[session] = owner
         val turn = TranscriptTurn(turnId, text.trim(), phase = RunPhase.RUNNING, startedAt = System.currentTimeMillis(),
@@ -417,7 +430,15 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
                 val requestContext = currentCoroutineContext()
                 runInterruptible(Dispatchers.IO) {
                 requestContext.ensureActive()
-                val prepared = app.interactionService.prepare(text.trim(), InteractionContext(session, workspace.id), draft.sendableParts())
+                if (local != null) {
+                    val result = app.interactionService.dispatchLocalCommand(local)
+                    viewModelScope.launch { composerController.clearSubmittedText(session, draft.text) }
+                    result.message?.let { events.trySend(OwnedEvent(session, turnId, TranscriptEvent.Answer(it))) }
+                    events.trySend(OwnedEvent(session, turnId, TranscriptEvent.Finished(RunPhase.COMPLETE, System.currentTimeMillis())))
+                    return@runInterruptible
+                }
+                val selectedModel = requireNotNull(model)
+                val prepared = app.interactionService.prepare(text.trim(), interactionContext, draft.sendableParts())
                 require(prepared.diagnostics.isEmpty()) { prepared.diagnostics.joinToString("\n") { it.toString() } }
                 val callback: (ModelEvent) -> Unit = { event ->
                     val now = System.currentTimeMillis()
@@ -441,7 +462,7 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
                 }
                 requestContext.ensureActive()
                 if (prepared.envelope?.command == null) {
-                    val call = app.interactionService.submitOrdinary(prepared, model,
+                    val call = app.interactionService.submitOrdinary(prepared, selectedModel,
                             parameters = com.cordiact.core.composer.ComposerRules.parameters(draft.tuning),
                             attachments = draft.sendableParts(),
                             onUserMessagePersisted = { viewModelScope.launch { composerController.submitted(session, draft); refreshSessionMetadata() } },
@@ -452,7 +473,7 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
                 }
                 else {
                     require(draft.attachments.isEmpty()) { "行为指令不能携带附件，请分开发送" }
-                    val result = app.interactionService.dispatch(prepared, model,
+                    val result = app.interactionService.dispatch(prepared, selectedModel,
                         parameters = com.cordiact.core.composer.ComposerRules.parameters(draft.tuning), onEvent = callback)
                     viewModelScope.launch { composerController.clearSubmittedText(session, draft.text) }
                     result.modelCall?.let(owner::attach) ?: run {

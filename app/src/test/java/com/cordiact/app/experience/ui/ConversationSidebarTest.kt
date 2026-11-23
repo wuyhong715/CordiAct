@@ -30,6 +30,7 @@ class ConversationSidebarTest {
     private var submitted = ""
     private var settings = 0
     private var retries = 0
+    private var pluginsWorkspace: String? = null
 
     private fun show(data: List<SidebarWorkspace> = groups, busy: Boolean = false, error: String? = null, width: Int = 354) {
         compose.setContent {
@@ -39,7 +40,8 @@ class ConversationSidebarTest {
                         ConversationSidebar(data, "default", "a", setOf("b"), busy, error,
                             onClose = {}, onNewSession = { newAt = it }, onSelectWorkspace = { selected = "workspace:$it" },
                             onSelectSession = { selected = "session:$it" }, onCreateWorkspace = { _, _ -> }, onRenameWorkspace = { _, _, _ -> },
-                            onRetry = { retries++ }, onSettings = { settings++ })
+                            onRetry = { retries++ }, onSettings = { settings++ },
+                            onWorkspacePlugins = { pluginsWorkspace = it })
                     }
                 }
             }
@@ -63,6 +65,16 @@ class ConversationSidebarTest {
         compose.onNodeWithText("侧边栏设计").assertIsDisplayed().assertIsSelected()
         compose.onNodeWithText("资料收集").assertDoesNotExist()
         compose.onNodeWithText("接口审查").assert(SemanticsMatcher.expectValue(androidx.compose.ui.semantics.SemanticsProperties.StateDescription, "执行中"))
+    }
+
+    @Test fun pluginEntryUsesOnlyCurrentWorkspace() {
+        show()
+        compose.onNodeWithContentDescription("工作区 研究项目 的更多操作").performClick()
+        compose.onNodeWithText("插件").assertDoesNotExist()
+        compose.onNodeWithText("在此新建对话").performClick()
+        compose.onNodeWithContentDescription("工作区 默认工作区 的更多操作").performClick()
+        compose.onNodeWithText("插件").performClick()
+        assertEquals("default", pluginsWorkspace)
     }
 
     @Test fun collapseDoesNotChangeSelectedWorkspace() {

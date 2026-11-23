@@ -202,7 +202,10 @@ data class ToolInvocationContext(
 }
 
 /** Host-only identity of one published definition. Never serialize it to a model or a log. */
-class ToolRegistration internal constructor(internal val scope: ToolContributionScope)
+class ToolRegistration internal constructor(
+    internal val scope: ToolContributionScope,
+    internal val hostEffect: com.cordiact.core.security.ToolEffectClass? = null,
+)
 
 /** Explicit publication scope, separate from @ grants and other data-read permissions. */
 internal data class ToolContributionScope(val workspaceId: String? = null, val sessionId: String? = null) {
@@ -239,6 +242,9 @@ interface MutableToolPreferenceStore : ToolPreferenceStore {
 
 fun interface ToolPluginStateLookup {
     fun state(pluginId: String): PluginState?
+
+    /** Only registrations already verified by the manager can select an exact scoped owner. */
+    fun scopedState(pluginId: String, workspaceId: String, sessionId: String?): PluginState? = state(pluginId)
 }
 
 fun interface ToolCapabilityGate {
@@ -289,14 +295,17 @@ class InMemoryToolDefinitionRegistry : ToolDefinitionRegistry {
 
     /** The activation reader must be lock-free and must never invoke plugin code. */
     @Synchronized internal fun publish(
-        definition: ToolDefinition, scope: ToolContributionScope, active: () -> Boolean,
+        definition: ToolDefinition,
+        scope: ToolContributionScope,
+        hostEffect: com.cordiact.core.security.ToolEffectClass? = null,
+        active: () -> Boolean,
     ): AutoCloseable {
         val descriptor = snapshotDescriptor(definition.descriptor)
         validateDescriptor(descriptor)
         validateExecutionDeclaration(descriptor)
         val bindings = definitions.getOrPut(descriptor.id) { linkedMapOf() }
         require(bindings.keys.none(scope::overlaps)) { "Tool '${descriptor.id}' is already registered in an overlapping scope" }
-        val token = ToolRegistration(scope)
+        val token = ToolRegistration(scope, hostEffect)
         bindings[scope] = Binding(ToolDefinition(descriptor, definition.executor, token), active)
         return AutoCloseable { withdraw(descriptor.id, scope, token) }
     }
@@ -597,7 +606,7 @@ class ToolManagerPlugin(
             ToolManagerException.Code.TOOL_NOT_REGISTERED, "Tool is not registered for this turn",
         )
         val descriptor = definition.descriptor
-        if (pluginStates.state(descriptor.ownerPluginId) != PluginState.ENABLED) {
+        if (!isOwnerEnabled(definition)) {
             throw failure(ToolManagerException.Code.OWNER_PLUGIN_UNAVAILABLE, "Tool owner plugin is unavailable")
         }
         if (!capabilities.grantsTool(context.workspaceId, descriptor)) {
@@ -617,7 +626,9 @@ class ToolManagerPlugin(
         }
         var requiresReview = false
         if (accessPolicy != null && securityContext != null) {
-            when (val access = accessPolicy.evaluate(securityContext, descriptor.id, descriptor.ownerPluginId)) {
+            when (val access = accessPolicy.evaluate(
+                securityContext, descriptor.id, descriptor.ownerPluginId, definition.registration?.hostEffect,
+            )) {
                 is com.cordiact.core.security.ToolAccessDecision.Deny -> throw failure(
                     ToolManagerException.Code.APPROVAL_DENIED,
                     access.reasonCode,
@@ -630,7 +641,7 @@ class ToolManagerPlugin(
         fun recheck() {
             checkManagerEnabled()
             validateWorkspace(context.workspaceId)
-            if (pluginStates.state(descriptor.ownerPluginId) != PluginState.ENABLED) {
+            if (!isOwnerEnabled(definition)) {
                 throw failure(ToolManagerException.Code.OWNER_PLUGIN_UNAVAILABLE, "Tool owner plugin is unavailable")
             }
             if (!capabilities.grantsTool(context.workspaceId, descriptor)) {
@@ -786,12 +797,20 @@ class ToolManagerPlugin(
         value,
     )
 
+    private fun isOwnerEnabled(definition: ToolDefinition): Boolean {
+        val owner = definition.descriptor.ownerPluginId
+        val scope = definition.registration?.scope
+        val workspace = scope?.workspaceId
+        val state = if (workspace == null) pluginStates.state(owner) else pluginStates.scopedState(owner, workspace, scope.sessionId)
+        return state == PluginState.ENABLED
+    }
+
     private fun availability(workspaceId: String, definition: ToolDefinition): ToolAvailability {
         val descriptor = definition.descriptor
         return ToolAvailability(
             descriptor = descriptor,
             enabledForWorkspace = isEnabled(workspaceId, definition),
-            ownerEnabled = pluginStates.state(descriptor.ownerPluginId) == PluginState.ENABLED,
+            ownerEnabled = isOwnerEnabled(definition),
             capabilitiesGranted = capabilities.grantsTool(workspaceId, descriptor),
         )
     }

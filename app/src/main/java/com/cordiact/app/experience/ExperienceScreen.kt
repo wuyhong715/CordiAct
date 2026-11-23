@@ -59,6 +59,7 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
     var promptToInsert by remember { mutableStateOf("") }
     var settingsLink by remember { mutableStateOf<String?>(null) }
     var manageModels by remember { mutableStateOf(false) }
+    var pluginWorkspaceId by remember(state.workspace?.id) { mutableStateOf<String?>(null) }
     var showSessionPlugins by remember(saveableKey, state.archived) { mutableStateOf(false) }
     val pluginOwner = state.workspace?.id?.let { workspaceId ->
         state.sessionId?.takeUnless { state.archived || state.loading }?.let { InteractionContext(it, workspaceId) }
@@ -71,6 +72,11 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
     fun openSettings(link: String? = null) { settingsLink = link; inspected = null; showSessionPlugins = false; manageModels = true }
     if (manageModels) {
         com.cordiact.app.experience.settings.SettingsHost(settingsVm, initialLink = settingsLink) { manageModels = false; settingsLink = null; viewModel.refreshSettingsModels() }
+        return
+    }
+    val pluginsWorkspace = state.workspace?.takeIf { it.id == pluginWorkspaceId }
+    if (pluginsWorkspace != null) {
+        WorkspacePluginsRoute(settingsApp, pluginsWorkspace.id, pluginsWorkspace.name) { pluginWorkspaceId = null }
         return
     }
     val wide = LocalConfiguration.current.screenWidthDp >= 840
@@ -97,6 +103,11 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
                     onRestoreSession = { viewModel.restoreSession(it) },
                     onPinSession = viewModel::pinSession,
                     onRetry = viewModel::refresh,
+                    onWorkspacePlugins = { id ->
+                        closeAfterSelection()
+                        showSessionPlugins = false
+                        pluginWorkspaceId = id
+                    },
                     onSettings = { closeAfterSelection(); settingsVm.reload(); openSettings() },
                     onAutomationTasks = {
                         closeAfterSelection()
@@ -165,6 +176,8 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
                         { promptToInsert = "" }, viewModel::send, viewModel::stop,
                         viewModel::selectModel, { openSettings("settings://models/providers") },
                         { openSettings("settings://security/permissions") },
+                        onSendLocal = viewModel::sendLocal,
+                        prepareLocal = settingsApp.interactionService::prepareLocalCommand,
                     )
                     },
                 )

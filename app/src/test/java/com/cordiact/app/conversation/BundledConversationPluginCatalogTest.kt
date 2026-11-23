@@ -19,6 +19,24 @@ import com.cordiact.core.plugin.PluginLifecycleManager
 import com.cordiact.core.plugin.PluginOrigin
 import com.cordiact.core.plugin.PluginOwnedData
 import com.cordiact.core.plugin.PluginState
+import com.cordiact.core.plugin.ExtensionPackageChange
+import com.cordiact.core.plugin.ExtensionPackageInstaller
+import com.cordiact.core.plugin.WorkspaceExtensionPackages
+import com.cordiact.core.tool.ToolPluginStateLookup
+import com.cordiact.core.tool.ToolActivationContext
+import com.cordiact.core.tool.ToolInvocationContext
+import com.cordiact.core.tool.ToolArguments
+import com.cordiact.core.tool.ToolManagerException
+import com.cordiact.core.tool.ToolValue
+import com.cordiact.core.security.EffectiveSecurityProfile
+import com.cordiact.core.security.Principal
+import com.cordiact.core.security.SecurityContext
+import com.cordiact.interaction.InteractionContext
+import com.cordiact.interaction.InteractionModelSubmitter
+import com.cordiact.core.conversation.ModelId
+import com.cordiact.core.conversation.SessionManagerService
+import com.cordiact.app.plugin.AndroidExtensionPackageStore
+import org.junit.Assert.assertThrows
 import com.cordiact.core.sandbox.SandboxLaunchRequest
 import com.cordiact.core.sandbox.SandboxLimits
 import org.junit.After
@@ -116,6 +134,67 @@ class BundledConversationPluginCatalogTest {
             } catch (_: PluginLifecycleException) {
                 assertEquals(PluginState.ENABLED, manager.get(plugin.spec.id)?.state)
             }
+        }
+    }
+
+    @Test
+    fun installedWorkspacePackageDispatchesThroughAppRegistriesAndWithdrawsBothContributions() {
+        val catalog = BundledConversationPlugins.create(conversationStore, context.noBackupFilesDir)
+        AndroidExtensionPackageStore(context).use { store ->
+            val service = WorkspaceExtensionPackages(
+                ExtensionPackageInstaller(store),
+                { id -> catalog.workspaceManager.findSessionWorkspace(id)?.let { EffectiveSecurityProfile.fullAccess(id) } },
+                runtime = catalog.workspacePackageRuntime(),
+            )
+            val plugins = catalog.create(stateLookup = object : ToolPluginStateLookup {
+                override fun state(pluginId: String) = manager.get(pluginId)?.state
+                override fun scopedState(pluginId: String, workspaceId: String, sessionId: String?) =
+                    service.scopedOwnerState(pluginId, workspaceId, sessionId)
+            })
+            plugins.forEach { manager.registerBundledSystem(it); manager.enable(it.spec.id) }
+            val workspace = catalog.workspaceManager.create("Plugin smoke")
+            val other = catalog.workspaceManager.create("Other workspace")
+            val sessions = plugins.filterIsInstance<SessionManagerService>().single()
+            val session = sessions.createSession(workspace.id, "Plugins")
+            val otherSession = sessions.createSession(other.id, "Other")
+            val owner = InteractionContext(session.id, workspace.id)
+            val toolId = "extension.pkg.checkpoint.message"
+            val tools = catalog.toolManagerPlugin
+            val interaction = catalog.interactionService
+            interaction.attachModelSubmitter(InteractionModelSubmitter { _, _, _, _ -> error("Local command must not submit a model call") })
+            fun bindings(sessionId: String, workspaceId: String) = tools.resolveForTurn(ToolActivationContext(workspaceId, sessionId = sessionId))
+                .filter { it.descriptor.id == toolId }.associate { it.descriptor.id to requireNotNull(it.registration) }
+            fun commands(ctx: InteractionContext) = interaction.commandCandidates(ctx).map { it.name }
+            val page = service.openPage(workspace.id)
+            service.resume(Any())
+            val preview = page.preview("""
+                {"schemaVersion":1,"id":"checkpoint","version":"1.0.0","title":"Checkpoint","description":"Test fixture",
+                 "host":{"api":1,"minVersion":"0.1.0"},"capabilities":["tool.publish","command.publish"],
+                 "tools":[{"name":"message","description":"Read fixture","kind":"static_text","text":"fixture tool output"}],
+                 "commands":[{"name":"package-checkpoint","aliases":[],"description":"Show fixture","text":"fixture command output"}]}
+            """.trimIndent().byteInputStream())
+            val installed = page.approveInstall(preview).commit() as ExtensionPackageChange.Applied
+            assertFalse(installed.record.enableIntent)
+            assertTrue(bindings(session.id, workspace.id).isEmpty())
+            assertFalse("package-checkpoint" in commands(owner))
+            val enabled = page.approveEnable(installed.record, true).commit() as ExtensionPackageChange.Applied
+            val context = ToolInvocationContext(workspace.id, sessionId = session.id,
+                toolRegistrations = bindings(session.id, workspace.id),
+                securityContext = SecurityContext(workspace.id, session.id, "run", "turn", "call", listOf(Principal("main")), EffectiveSecurityProfile.fullAccess(workspace.id)))
+            assertEquals(ToolValue.StringValue("fixture tool output"), tools.invoke(context, toolId, ToolArguments()).values["text"])
+            val command = interaction.prepare("/package-checkpoint", owner)
+            assertTrue(command.valid)
+            assertEquals("fixture command output", interaction.dispatch(command, ModelId("test", "fixture")) { }.message)
+            val local = requireNotNull(interaction.prepareLocalCommand("/package-checkpoint", owner))
+            assertEquals("fixture command output", interaction.dispatchLocalCommand(local).message)
+            assertTrue(bindings(otherSession.id, other.id).isEmpty())
+            assertFalse("package-checkpoint" in commands(InteractionContext(otherSession.id, other.id)))
+            page.approveEnable(enabled.record, false).commit()
+            assertTrue(bindings(session.id, workspace.id).isEmpty())
+            assertFalse("package-checkpoint" in commands(owner))
+            assertThrows(ToolManagerException::class.java) { tools.invoke(context, toolId, ToolArguments()) }
+            assertThrows(IllegalStateException::class.java) { interaction.dispatch(command, ModelId("test", "fixture")) { } }
+            assertThrows(IllegalStateException::class.java) { interaction.dispatchLocalCommand(local) }
         }
     }
 

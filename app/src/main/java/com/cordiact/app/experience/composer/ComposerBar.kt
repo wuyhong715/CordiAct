@@ -30,7 +30,10 @@ import kotlin.math.roundToInt
 @Composable
 internal fun ComposerBar(state: ExperienceState, composer: ComposerState, controller: ComposerController,
     insert: String, onInserted: () -> Unit, onSend: (String) -> Boolean, onStop: () -> Unit,
-    onSelect: (ModelId) -> Unit, onManage: () -> Unit, onSecurity: () -> Unit) {
+    onSelect: (ModelId) -> Unit, onManage: () -> Unit, onSecurity: () -> Unit,
+    onSendLocal: ((com.cordiact.interaction.PreparedInteraction) -> Boolean)? = null,
+    prepareLocal: ((String, com.cordiact.interaction.InteractionContext) -> com.cordiact.interaction.PreparedInteraction?)? = null,
+) {
     var waiting by remember(state.sessionId) { mutableStateOf(false) }
     var confirmLocal by remember { mutableStateOf(false) }
     val context = LocalContext.current
@@ -64,8 +67,23 @@ internal fun ComposerBar(state: ExperienceState, composer: ComposerState, contro
         .register(ComposerAction("photo", "照片", GlyphName.Image) { captureTarget(); photo.launch(AttachmentPickerRequests.imageRequest()) })
         .register(ComposerAction("file", "文件", GlyphName.File) { captureTarget(); files.launch(arrayOf("*/*")) }) }
     LaunchedEffect(insert) { if (insert.isNotEmpty()) { controller.text(insert); onInserted() } }
+    val workspaceId = state.workspace?.id
+    val sessionId = state.sessionId
+    var localOffer by remember(prepareLocal, workspaceId, sessionId, composer.text, composer.attachments, state.loading, state.archived) {
+        mutableStateOf<com.cordiact.interaction.PreparedInteraction?>(null)
+    }
+    LaunchedEffect(prepareLocal, workspaceId, sessionId, composer.text, composer.attachments, state.loading, state.archived) {
+        localOffer = if (onSendLocal != null && prepareLocal != null && workspaceId != null && sessionId != null &&
+            !state.loading && !state.archived && composer.attachments.isEmpty() && composer.text.trimStart().startsWith('/')) {
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                prepareLocal(composer.text, com.cordiact.interaction.InteractionContext(sessionId, workspaceId))
+            }
+        } else null
+    }
     fun submit() {
-        if (composer.localOnlyCount > 0) confirmLocal = true
+        val offer = localOffer
+        if (offer != null && onSendLocal != null) onSendLocal(offer)
+        else if (composer.localOnlyCount > 0) confirmLocal = true
         else onSend(composer.text)
     }
     LaunchedEffect(waiting, composer.sendAvailability) {
@@ -98,7 +116,7 @@ internal fun ComposerBar(state: ExperienceState, composer: ComposerState, contro
                             state.sessionId.orEmpty(), state.workspace?.id, composer.text,
                             !state.loading && !waiting, controller::text,
                             onSubmit = { if (!state.loading && !state.running && !state.stopping && !waiting &&
-                                composer.model != null && composer.sendAvailability == ComposerRules.SendAvailability.READY) submit() })
+                                (composer.model != null || localOffer != null) && composer.sendAvailability == ComposerRules.SendAvailability.READY) submit() })
                     }
 
                 }
@@ -139,7 +157,7 @@ internal fun ComposerBar(state: ExperienceState, composer: ComposerState, contro
                             }
                         }
                     ComposerPermission(state.workspace?.id, composer.model, !state.running && !state.loading && !state.stopping && !waiting, onSecurity)
-                    SendAction(state, composer, waiting, {
+                    SendAction(state, composer, waiting, localOffer != null, {
                         if (state.running) onStop() else if (waiting) waiting = false else if (composer.sendAvailability == ComposerRules.SendAvailability.WAIT_FOR_ATTACHMENTS) waiting = true else submit()
                     })
                 }
@@ -153,9 +171,9 @@ internal fun ComposerBar(state: ExperienceState, composer: ComposerState, contro
 }
 
 @Composable
-private fun SendAction(state: ExperienceState, composer: ComposerState, waiting: Boolean, onClick: () -> Unit) {
+private fun SendAction(state: ExperienceState, composer: ComposerState, waiting: Boolean, localReady: Boolean, onClick: () -> Unit) {
     val duration = motionDuration(Motion.Standard)
-    val enabled = !state.loading && !state.stopping && (state.running || waiting || (composer.model != null && composer.sendAvailability in setOf(ComposerRules.SendAvailability.READY, ComposerRules.SendAvailability.WAIT_FOR_ATTACHMENTS)))
+    val enabled = !state.loading && !state.stopping && (state.running || waiting || (localReady && composer.sendAvailability == ComposerRules.SendAvailability.READY) || (composer.model != null && composer.sendAvailability in setOf(ComposerRules.SendAvailability.READY, ComposerRules.SendAvailability.WAIT_FOR_ATTACHMENTS)))
     val color by animateColorAsState(if (enabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceContainerHigh, tween(duration))
     IconButton(onClick, enabled = enabled, modifier = Modifier.size(48.dp).testTag(if (state.running) "stop-generation" else "send-message")) {
         Surface(color = color, shape = CircleShape) {

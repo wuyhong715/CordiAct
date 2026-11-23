@@ -576,12 +576,16 @@ class CordiActApplication : Application(), androidx.work.Configuration.Provider 
                     it.kind == com.cordiact.core.conversation.SessionKind.USER && it.archivedAtMillis == null } == true
         }
         val plugins = conversationCatalog.create(
-            stateLookup = { pluginId ->
-                // The protected host must be enabled. The exact authored instance is separately
-                // checked by its scoped registry binding; no user spec is admitted to this lane.
-                val owner = if (com.cordiact.core.plugin.AuthoredPluginNames.isOwner(pluginId))
-                    com.cordiact.core.plugin.AUTHORED_PLUGIN_HOST_ID else pluginId
-                pluginLifecycle.manager.get(owner)?.state
+            stateLookup = object : com.cordiact.core.tool.ToolPluginStateLookup {
+                override fun state(pluginId: String): PluginState? {
+                    val owner = if (com.cordiact.core.plugin.AuthoredPluginNames.isOwner(pluginId))
+                        com.cordiact.core.plugin.AUTHORED_PLUGIN_HOST_ID else pluginId
+                    return pluginLifecycle.manager.get(owner)?.state
+                }
+
+                override fun scopedState(pluginId: String, workspaceId: String, sessionId: String?): PluginState? =
+                    if (pluginId.startsWith("pkg.")) workspaceExtensionPackages.scopedOwnerState(pluginId, workspaceId, sessionId)
+                    else state(pluginId)
             },
             capabilityGate = object : com.cordiact.core.tool.ToolCapabilityGate {
                 override fun grantsAll(workspaceId: String, capabilityIds: Set<String>): Boolean = capabilityIds.isEmpty()
@@ -816,9 +820,37 @@ class CordiActApplication : Application(), androidx.work.Configuration.Provider 
     fun activeSessionWorkspaceId(): String? =
         activeSessionId?.let { id -> sessions.getSession(id)?.workspaceId }
 
+    internal val workspaceExtensionPackages by lazy {
+        com.cordiact.core.plugin.WorkspaceExtensionPackages(
+            installer = com.cordiact.core.plugin.ExtensionPackageInstaller(com.cordiact.app.plugin.AndroidExtensionPackageStore(this)),
+            profileForLiveWorkspace = { id ->
+                workspaceManager.findSessionWorkspace(id)?.let { credentialVaultRuntime.profileStore.profileFor(id) }
+            },
+            reservedPackageIds = setOf(com.cordiact.app.plugin.BundledDeclarativePackages.manifest.id),
+            runtime = conversationCatalog.workspacePackageRuntime(),
+        )
+    }
+
     private val authoredPluginDrafts by lazy { AuthoredPluginDrafts(workspaceFiles) }
     private val authoredPluginInstallations by lazy {
         AuthoredPluginInstallations(workspaceFiles, AndroidAuthoredPluginInstallStore(this))
+    }
+
+    /** Workspace plugin page: only private, verified saved trials can become a package candidate. */
+    internal fun listSavedTrialsForPackage(workspaceId: String) = withActivePluginWorkspace(workspaceId) {
+        authoredPluginInstallations.list(workspaceId)
+    }
+
+    internal fun readSavedTrialPackage(workspaceId: String, record: AuthoredPluginInstalledRecord) =
+        withActivePluginWorkspace(workspaceId) {
+            require(record.workspaceId == workspaceId)
+            authoredPluginInstallations.previewSavedPackage(record)
+        }
+
+    private fun <T> withActivePluginWorkspace(workspaceId: String, read: () -> T): T {
+        fun active() = workspaceManager.activeWorkspace().id == workspaceId && workspaceManager.findSessionWorkspace(workspaceId) != null
+        check(active()) { "PACKAGE_WORKSPACE_UNAVAILABLE" }
+        return read().also { check(active()) { "PACKAGE_WORKSPACE_UNAVAILABLE" } }
     }
 
     /** Trusted workbench actions. The UI supplies only the currently open, persisted user session. */

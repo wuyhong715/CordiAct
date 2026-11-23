@@ -364,6 +364,60 @@ class ToolManagerPluginTest {
         assertEquals(2, calls)
     }
 
+    @Test
+    fun declarativeEffectIsBoundToTheHostExecutorAndDoesNotAuthorizeItsReplacement() {
+        val registry = InMemoryToolDefinitionRegistry()
+        val manager = ToolManagerPlugin(
+            registry, FakePreferences(), FakeWorkspaceManager(), ToolPluginStateLookup { PluginState.ENABLED },
+            accessPolicy = EnvelopeToolAccessPolicy { _, _ -> ToolEffectClass.UNKNOWN },
+            sessionWorkspace = { if (it == "session-1") WORKSPACE_A else null },
+        ).also { it.onEnable() }
+        val manifest = com.cordiact.core.plugin.ExtensionPackageSource.compile("""
+            {"schemaVersion":1,"id":"notes","version":"1.0.0","title":"Notes","description":"Notes",
+             "host":{"api":1,"minVersion":"0.1.0"},"capabilities":["tool.publish"],
+             "tools":[{"name":"show","description":"Show note","kind":"static_text","text":"literal"}],"commands":[]}
+        """.trimIndent().toByteArray())
+        val kernel = com.cordiact.core.plugin.PluginKernel()
+        val contributions = com.cordiact.core.plugin.PluginToolContributions(registry)
+        val id = com.cordiact.core.plugin.PluginInstanceId("pkg.notes", WORKSPACE_A)
+        val toolId = "extension.pkg.notes.show"
+        kernel.register(id, object : com.cordiact.core.plugin.ContextPlugin {
+            override fun start(context: com.cordiact.core.plugin.PluginContext) {
+                contributions.registerDeclarativePackage(context, manifest)
+            }
+        })
+        kernel.enable(id)
+        val definition = manager.resolveForTurn(ToolActivationContext(WORKSPACE_A, sessionId = "session-1")).single()
+        fun contextFor(definition: ToolDefinition) = ToolInvocationContext(
+            WORKSPACE_A, sessionId = "session-1",
+            securityContext = securityContext(EffectiveSecurityProfile.readOnly(WORKSPACE_A)),
+            toolRegistrations = mapOf(toolId to requireNotNull(definition.registration)),
+        )
+        val old = contextFor(definition)
+        assertEquals(ToolValue.StringValue("literal"), manager.invoke(old, toolId, ToolArguments()).values["text"])
+        kernel.disable(id)
+        kernel.unregister(id)
+        var replacementCalls = 0
+        kernel.register(id, object : com.cordiact.core.plugin.ContextPlugin {
+            override fun start(context: com.cordiact.core.plugin.PluginContext) {
+                contributions.register(context, definition.copy(executor = ToolExecutor { _, _ ->
+                    replacementCalls++
+                    ToolResult()
+                }))
+            }
+        })
+        kernel.enable(id)
+        assertEquals(ToolManagerException.Code.TOOL_NOT_REGISTERED, assertFailsWith<ToolManagerException> {
+            manager.invoke(old, toolId, ToolArguments())
+        }.code)
+        val replacement = manager.resolveForTurn(ToolActivationContext(WORKSPACE_A, sessionId = "session-1")).single()
+        val refusal = assertFailsWith<ToolManagerException> {
+            manager.invoke(contextFor(replacement), toolId, ToolArguments())
+        }
+        assertEquals(ToolManagerException.Code.APPROVAL_DENIED, refusal.code)
+        assertEquals(0, replacementCalls)
+    }
+
     private fun securityContext(profile: EffectiveSecurityProfile) = SecurityContext(
         workspaceId = WORKSPACE_A,
         sessionId = "session-1",

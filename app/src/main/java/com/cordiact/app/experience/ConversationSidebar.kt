@@ -55,6 +55,7 @@ fun ConversationSidebar(
     onSettings: () -> Unit,
     modifier: Modifier = Modifier,
     onAutomationTasks: () -> Unit = {},
+    onWorkspacePlugins: ((String) -> Unit)? = null,
     onRenameSession: (String, String, () -> Unit) -> Unit = { _, _, _ -> },
     onArchiveSession: (String) -> Unit = {},
     onRestoreSession: (String) -> Unit = {},
@@ -162,6 +163,9 @@ fun ConversationSidebar(
                                 }
                                 DropdownMenu(expanded = menuId == workspace.id, onDismissRequest = { menuId = null }) {
                                     DropdownMenuItem(text = { Text("在此新建对话") }, onClick = { menuId = null; onNewSession(workspace.id) })
+                                    if (onWorkspacePlugins != null && workspace.id == activeWorkspaceId) {
+                                        DropdownMenuItem(text = { Text("插件") }, onClick = { menuId = null; onWorkspacePlugins(workspace.id) })
+                                    }
                                     DropdownMenuItem(text = { Text("重命名工作区") }, onClick = {
                                         menuId = null; editingId = workspace.id; name = workspace.name; editorOpen = true
                                     })

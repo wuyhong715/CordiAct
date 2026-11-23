@@ -294,6 +294,18 @@ class BundledConversationPlugins private constructor(
     val pluginKernel = com.cordiact.core.plugin.PluginKernel()
     val toolContributions = com.cordiact.core.plugin.PluginToolContributions(registry)
 
+    internal fun workspacePackageRuntime() = com.cordiact.core.plugin.WorkspacePackageRuntime { record, admitted ->
+        DeclarativePackagePlugin(
+            manifest = record.manifest,
+            kernel = pluginKernel,
+            tools = toolContributions,
+            commands = interactionPlugin.commandContributions,
+            grantedCapabilities = record.grantedCapabilities,
+            workspaceId = record.workspaceId,
+            admitted = admitted,
+        )
+    }
+
     val spillStore: SpillStore by lazy {
         StandardSpillStore(spillStoreDir ?: File(System.getProperty("java.io.tmpdir"), "cordiact-spills"))
     }
@@ -502,7 +514,7 @@ class BundledConversationPlugins private constructor(
             kernel = pluginKernel,
             tools = toolContributions,
             commands = interactionPlugin.commandContributions,
-            commandRegistry = commandRegistry,
+            grantedCapabilities = BundledDeclarativePackages.manifest.capabilities,
         )
         return listOf(
             workspacePlugin,

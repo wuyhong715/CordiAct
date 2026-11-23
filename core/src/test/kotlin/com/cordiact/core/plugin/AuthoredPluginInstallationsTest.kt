@@ -106,6 +106,40 @@ class AuthoredPluginInstallationsTest {
     }
 
     @Test
+    fun `promoting a saved trial copies its exact bytes and refuses a stale saved generation`() {
+        val f = Fixture()
+        val raw = f.files.put(bytes = transform())
+        val saved = f.save(raw)
+        f.files.drafts.clear()
+        val packageService = WorkspaceExtensionPackages(ExtensionPackageInstaller(InMemoryExtensionPackageStore()),
+            { com.cordiact.core.security.EffectiveSecurityProfile.fullAccess(it) })
+        packageService.resume(Any())
+        val page = packageService.openPage(A)
+        val read = { f.service.previewSavedPackage(saved) }
+        val preview = page.previewSavedTrial(read)
+        assertEquals(digest(raw), preview.manifest.sha256)
+        assertEquals("0.0.1", preview.manifest.version)
+        assertTrue(preview.fromSavedTrial)
+        assertTrue(preview.manifest.commands.isEmpty())
+        assertFailsWith<IllegalArgumentException> { page.approveInstall(preview) }
+        val first = page.approveSavedTrial(preview, read)
+        val row = f.store.snapshot()
+        f.disk.rows[A to ID] = row.copy(record = row.record.copy(installationId = java.util.UUID.randomUUID().toString()))
+        installationError(Code.VERSION_CHANGED) { first.commit() }
+        assertTrue(page.list().isEmpty())
+
+        val current = f.service.list(A).single().record!!
+        val reread = { f.service.previewSavedPackage(current) }
+        val result = page.approveSavedTrial(page.previewSavedTrial(reread), reread).commit() as ExtensionPackageChange.Applied
+        assertContentEquals(raw, result.record.artifact.copySource())
+        assertFalse(result.record.enableIntent)
+        assertEquals(current, f.service.list(A).single().record)
+        assertContentEquals(raw, f.store.snapshot().sourceBytes)
+        assertTrue(packageService.openPage(B).list().isEmpty())
+        assertEquals(1, f.files.reads.size)
+    }
+
+    @Test
     fun `saved activation checks live authority and an exclusive pending ticket before publication`() {
         val f = Fixture()
         val saved = f.save(f.files.put(bytes = transform()))

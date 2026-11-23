@@ -8,7 +8,13 @@ class InteractionCommandRegistry(
     // The caller supplies a persisted, usable session-to-workspace check; no check means global only.
     private val isLiveContext: (InteractionContext) -> Boolean = { false },
 ) {
-    private class Registration(val descriptor: CommandDescriptor, val publisher: PluginContext?) {
+    private class Registration(
+        val descriptor: CommandDescriptor,
+        val publisher: PluginContext?,
+        val requiresOwnerSwitch: Boolean,
+        val admitted: () -> Boolean,
+        val localText: String?,
+    ) {
         private val workspaceId = publisher?.id?.workspaceId
         private val sessionId = publisher?.id?.sessionId
         val isGlobal = workspaceId == null
@@ -25,21 +31,27 @@ class InteractionCommandRegistry(
     private val enabledOwners = mutableSetOf<String>()
 
     /** Legacy built-ins remain global and use the existing owner enable switch. */
-    fun register(descriptor: CommandDescriptor): CommandDescriptor = add(descriptor, null)
+    fun register(descriptor: CommandDescriptor): CommandDescriptor = add(descriptor, null, requiresOwnerSwitch = true, admitted = { true }, localText = null)
 
-    internal fun publish(context: PluginContext, descriptor: CommandDescriptor): AutoCloseable {
-        val registration = add(descriptor, context)
+    internal fun publish(
+        context: PluginContext, descriptor: CommandDescriptor, requiresOwnerSwitch: Boolean, admitted: () -> Boolean,
+        localText: String?,
+    ): AutoCloseable {
+        val registration = add(descriptor, context, requiresOwnerSwitch, admitted, localText)
         return AutoCloseable { unregisterRegistration(registration) }
     }
 
     @Synchronized
-    private fun add(descriptor: CommandDescriptor, publisher: PluginContext?): CommandDescriptor {
+    private fun add(
+        descriptor: CommandDescriptor, publisher: PluginContext?, requiresOwnerSwitch: Boolean, admitted: () -> Boolean,
+        localText: String?,
+    ): CommandDescriptor {
         val snapshot = descriptor.copy(
             aliases = Collections.unmodifiableSet(descriptor.aliases.toSet()),
             allowedMentionTypes = Collections.unmodifiableSet(descriptor.allowedMentionTypes.toSet()),
             requiredCapabilities = Collections.unmodifiableSet(descriptor.requiredCapabilities.toSet()),
         )
-        val registration = Registration(snapshot, publisher)
+        val registration = Registration(snapshot, publisher, requiresOwnerSwitch, admitted, localText)
         require(registration.names.size == snapshot.aliases.size + 1) { "Command name duplicates an alias" }
         for (existing in registrations) {
             if (!existing.overlaps(registration)) continue
@@ -74,10 +86,17 @@ class InteractionCommandRegistry(
     fun find(name: String, context: InteractionContext? = null): CommandDescriptor? =
         visible(context, name).singleOrNull()
 
+    /** Text from the exact host-owned registration, never from a descriptor supplied by a caller. */
+    internal fun localText(command: CommandDescriptor, context: InteractionContext): String? =
+        visibleRegistrations(context, command.name).singleOrNull { it.descriptor === command }?.localText
+
     fun candidates(context: InteractionContext? = null): List<CommandDescriptor> =
         visible(context).sortedBy { it.name }
 
-    private fun visible(context: InteractionContext?, name: String? = null): List<CommandDescriptor> {
+    private fun visible(context: InteractionContext?, name: String? = null): List<CommandDescriptor> =
+        visibleRegistrations(context, name).map { it.descriptor }
+
+    private fun visibleRegistrations(context: InteractionContext?, name: String?): List<Registration> {
         // Do not read host storage to resolve a global-only view. Never hold the registry lock
         // across the persisted-session check, and sample publication after it returns.
         val needsScopedContext = context != null && synchronized(this) {
@@ -89,10 +108,12 @@ class InteractionCommandRegistry(
             val publication = mutableMapOf<PluginContext, Boolean>()
             registrations.asSequence().filter { registration ->
                 (name == null || name in registration.names) &&
-                    registration.descriptor.ownerPluginId in enabledOwners &&
+                    (!registration.requiresOwnerSwitch || registration.descriptor.ownerPluginId in enabledOwners) &&
                     registration.belongsTo(scopedContext) &&
-                    (registration.publisher?.let { publication.getOrPut(it, it::isContributionActive) } ?: true)
-            }.map { it.descriptor }.toList()
+                    (registration.publisher?.let { publisher ->
+                         publication.getOrPut(publisher) { publisher.isContributionActive() && registration.admitted() }
+                     } ?: true)
+            }.toList()
         }
     }
 }

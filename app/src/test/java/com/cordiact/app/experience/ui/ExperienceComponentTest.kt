@@ -60,6 +60,34 @@ class ExperienceComponentTest {
             "", {}, { text -> val accepted = send(text); if (accepted) controller.text(""); accepted }, stop, {}, {}, {})
     }
 
+    @Test fun composer_withoutModelOffersOnlyPreparedLocalCommand() {
+        val offered = com.cordiact.interaction.PreparedInteraction(null, emptyList(), emptyList())
+        val workspace = com.cordiact.core.workspace.Workspace("w", "工作区", 0, 0)
+        var sent: com.cordiact.interaction.PreparedInteraction? = null
+        content {
+            val app = org.robolectric.RuntimeEnvironment.getApplication()
+            val scope = rememberCoroutineScope()
+            val controller = remember { com.cordiact.app.experience.composer.ComposerController(app, scope,
+                { error("No catalogue") }, { error("No importer") }) }
+            val draft by controller.state.collectAsState()
+            val prepare = remember { { text: String, owner: com.cordiact.interaction.InteractionContext ->
+                offered.takeIf { text == "/local" && owner.workspaceId == "w" && owner.sessionId == "test-session" }
+            } }
+            com.cordiact.app.experience.composer.ComposerBar(ready().copy(workspace = workspace, model = null, models = emptyList()),
+                draft, controller, "", {}, { error("No ordinary send") }, {}, {}, {}, {},
+                onSendLocal = { sent = it; true }, prepareLocal = prepare)
+        }
+        val input = compose.onNodeWithTag("composer-input")
+        input.performTextInput("ordinary")
+        compose.onNodeWithTag("send-message").assertIsNotEnabled()
+        input.performTextReplacement("/local")
+        compose.waitUntil(5_000) {
+            compose.onAllNodes(hasTestTag("send-message") and isEnabled()).fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithTag("send-message").performClick()
+        assertSame(offered, sent)
+    }
+
     @Test fun settingsSections_selectsOnlyRequestedSection() {
         var selected by mutableStateOf("services")
         content {
