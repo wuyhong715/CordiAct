@@ -14,7 +14,7 @@
 [专用载体](ipc-follow.mjs)只拿读取服务和可信监督者已建立、由它独占的一对字节流；不打开监听器，不接受地址、路径、方法或控制命令。它不是常规 profile 的启动入口。测试通过额外继承的管道传输数据，日志与合成测试控制信道完全分开。
 
 - 请求为单行 ASCII：`cordiact-follow/1 <remoteWorkspaceId> <remoteSessionId> <token>` 加 LF。工作区和会话 ID 都限 128 字符，输入缓冲最多 384 字节，首行必须在 3 秒内结束。工作区、会话和协议版本精确匹配；一次通道最多验证一次，拒绝只关闭，不输出错误或发现清单。发完请求须保持输入端开放且静默；EOF 或后续字节终止整条流。
-- 响应只含 `delivery/cursor/active/running` 的紧凑 JSON 行；`delivery` 从 0 连续编号，不是 DSH 日志游标。单次只把一帧交给 writable，并等待该写完成再查询下一帧；等待超过 3 秒则关闭。整个打开窗口不超过 5 分钟，另受更早的授权期限约束。
+- 响应是固定顺序 `delivery/cursor/active/running` 的紧凑 ASCII JSON 行，以 LF 结束；`delivery` 从 0 连续编号，不是 DSH 日志游标。整数使用十进制，无前导零、指数、负零或分数；除 `cursor = -1` 外，数值都在 JavaScript 非负安全整数范围内。单次只把一帧交给 writable，并等待该写完成再查询下一帧；等待超过 3 秒则关闭。整个打开窗口不超过 5 分钟，另受更早的授权期限约束。
 - 授权失效或主动关闭后不再提交新帧，不等待写端冲洗、不排队发终止帧；对端以 EOF/错误/主动关闭结束当前选择。提交给内核或对端的字节不可追回。输入端仍开着时，仅关闭输出读端未必马上被检测到；监督者应把两端成组关闭。凭据为一次性 bearer，不绑定 PID；发行、传递和回收未消费凭据由可信控制面负责，绝不把授权服务传给载体。
 
 ## 验证
@@ -35,6 +35,17 @@ node deepseek-harness/host-follow/test/run-pinned-profile.mjs /absolute/path/to/
 已缓存所有锁定 npm 包时可加 `--offline`。普通 CI 分开执行核心回归和真实装配，不依赖 GitHub 密钥或已部署 Host。
 
 **工件限制：** 原样 npm 固定版仍不能启动：`@deepseek-ai/cordis-plugin-loader@1.1.0` 缺少 `dsh-app-boot` 静态导入的 `EntryValidationError`、`formatIssues`、`relocate` 和 `validateOptions`。同版 Include 包也与固定源码不同；它缺少 `parseEntryYaml` 和 `stringifyEntryYaml`，但这两个函数已内联到发布的 `dsh-app-boot`，不是这次静态链接失败的直接原因。上述命令使用 `0.2.3-alpha.1` npm 制品，但在测试子进程内以同一提交重建的 Cordis 系列模块替代相应发布包。它验证固定源码的 Host 装配，**不视为原样 npm 版通过，不是部署办法**。
+
+## Kotlin 端侧互操作验证
+
+[接收器](../src/main/kotlin/com/cordiact/harness/deepseek/FollowPipeReceiver.kt)一次只跟随已核验载体绑定的一代，最多缓冲 127 字节的行正文、单次接收 4 KiB。它直接校验 Host 序号和精确帧格式，拒绝重复、跳号、未知键、断帧和游标倒退；EOF 立即清除数据，不猜测是撤权还是普通断开。可信本地撤权可显式结束为 `ACCESS_LOST`。关闭、字节和渲染都必须持有原打开身份，不能把旧回调重贴给新选择。接收器不打开进程或连接，也不处理凭据。
+
+默认 JVM 测试覆盖解析和生命周期，不要求 Node；真实互操作测试显式运行：
+
+```sh
+./gradlew -p verification/jvm :deepseek-harness:followPipeInteropTest \
+  -PfollowNode="$(command -v node)" --no-daemon
+```
 
 ## 用同一源码树的正式构建验证
 

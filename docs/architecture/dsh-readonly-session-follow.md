@@ -18,18 +18,18 @@
 [状态归约器](../../deepseek-harness/src/main/kotlin/com/cordiact/harness/deepseek/ReadOnlySessionFollow.kt)只保留当前所选目标的一份内存状态：当前会话日志位置 `cursor`、是否附着 Agent、是否运行。`cursor` 不是落盘确认、恢复令牌或传输序号。没有 URL、凭据、网络、磁盘、命令、历史、工具输出或模型输入。现有写向抽象不是它的传输层，两者不衔接。
 
 - 目标组合独立绑定连接、CordiAct 本地工作区和远端会话。目标字段是本地路由身份，非服务端授权凭据；未来适配器必须从已经核验的请求捕获目标与世代，不能从响应猜测归属，也不能把旧响应重新盖章。
-- 每次选择或重连都创建新世代，即使所有 ID 相同；旧回调不能读、写、关闭新状态。必须先收到当前世代的完整基线。适配器按实际接收次序编号，首个为 `0`；丢弃旧编号，发现编号跳跃、游标倒退、错目标或无效状态则结束当前世代并清除内容。编号不是 Host 会话日志游标；后者允许相同或跳增。
+- 每次选择或重连都创建新世代，即使所有 ID 相同；旧回调不能读、写、关闭新状态。必须先收到当前世代的完整基线。进程内归约器会忽略已处理编号；[管道适配器](../../deepseek-harness/src/main/kotlin/com/cordiact/harness/deepseek/FollowPipeReceiver.kt)则严格使用 Host 帧自带的交付序号，首个为 `0`，重复、跳跃、游标倒退、畸形内容均结束当前世代并清除内容，绝不在客户端重新编号。编号不是 Host 会话日志游标；后者允许相同或跳增。
 - 断线或收到撤权时立即清除当前投影，不把旧内容当成在线状态；离开页面可清除整个选择。不自动重连、重放、读历史或恢复授权。本地清除不代替 Host 撤权或传输取消。
 
 ## 验证
 
-[本地回归](../../deepseek-harness/src/test/kotlin/com/cordiact/harness/deepseek/ReadOnlySessionFollowTest.kt)覆盖同游标状态替换、同目标重连、A→B→A、跨实例和错目标响应、重复／缺失／无效帧以及撤权后晚到数据。七模块 JVM 共 1,189 项通过，其中 8 项为此归约器新增测试；未连接真实 Host，也未生成新 APK。
+[本地回归](../../deepseek-harness/src/test/kotlin/com/cordiact/harness/deepseek/ReadOnlySessionFollowTest.kt)覆盖同游标状态替换、同目标重连、A→B→A、跨实例和错目标响应、重复／缺失／无效帧以及撤权后晚到数据。七模块 JVM 共 1,195 项通过，其中 8 项为归约器、6 项为管道接收器回归。另外 2 项显式互操作测试由 Kotlin 经真实子进程管道读取 Node Host 帧，验证首帧、更新、EOF 清除及晚到字节对同目标新世代无效。互操作使用合成数据、无网络，未生成 APK。
 
 ## Host 插件验证
 
 [进程内插件](../../deepseek-harness/host-follow/README.md)在独立验证 profile 使用真实 Loader 和 DSH 活态注册目录。可信控制面与读取服务分开；后者仅接受独立的一次性、单目标、短时授权。Host 不装 Gateway、Web、LLM 或通用命令，不查冷存储，也不注册监听器。撤权、过期、解绑/归档、会话换代及插件卸载可关闭现有进程内读流。测试的数据和目录均为合成，不访问生产会话。
 
-Node 7 项核心测试通过；另有 1 项真实 Loader 测试从空目录用锁定 npm 包和固定 Git 对象重建后通过，复现命令已纳入仓库 CI。原样 npm 固定包因 Loader 缺导出无法启动，混合验证工件不是可部署制品。[同树正式构建验证](../../deepseek-harness/host-follow/README.md#用同一源码树的正式构建验证)单独执行，不在任何模式间自动回退。Linux arm64 的干净固定 checkout 经冻结安装后，官方工件构建 8 阶段通过，并在禁网命名空间直接运行已构建 CLI，通过同一个合成 profile。随后以两个继承管道把实际 Loader 中的活态投影交给独立测试进程，覆盖首帧、更新和撤权断流；只验证本地 IPC，不开放网络或 Android。
+Node 16 项核心与 IPC 测试通过；另有 1 项真实 Loader 测试从空目录用锁定 npm 包和固定 Git 对象重建后通过，复现命令已纳入仓库 CI。原样 npm 固定包因 Loader 缺导出无法启动，混合验证工件不是可部署制品。[同树正式构建验证](../../deepseek-harness/host-follow/README.md#用同一源码树的正式构建验证)单独执行，不在任何模式间自动回退。Linux arm64 的干净固定 checkout 经冻结安装后，官方工件构建 8 阶段通过，并在禁网命名空间直接运行已构建 CLI，通过同一个合成 profile。随后以两个继承管道把实际 Loader 中的活态投影交给独立测试进程，覆盖首帧、更新和撤权断流；只验证本地 IPC，不开放网络或 Android。
 
 ## 接入前必须补的证据
 

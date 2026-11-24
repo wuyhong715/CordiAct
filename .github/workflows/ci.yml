@@ -30,6 +30,15 @@ jobs:
         run: |
           node --test deepseek-harness/host-follow/test/follow-service.test.mjs \
             deepseek-harness/host-follow/test/ipc-follow.test.mjs
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Verify Kotlin decoding against the actual Node carrier
+        run: |
+          ./gradlew -p verification/jvm :deepseek-harness:test :deepseek-harness:followPipeInteropTest \
+            -PfollowNode="$(command -v node)" --no-daemon
 
   readonly-host-profile:
     runs-on: ubuntu-latest
