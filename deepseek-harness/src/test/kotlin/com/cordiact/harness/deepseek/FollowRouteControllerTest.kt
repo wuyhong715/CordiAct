@@ -7,6 +7,10 @@ import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.security.KeyPairGenerator
 import java.security.Signature
+import java.security.SecureRandom
+import javax.crypto.Cipher
+import javax.crypto.spec.GCMParameterSpec
+import javax.crypto.spec.SecretKeySpec
 import java.security.interfaces.ECPublicKey
 import java.security.spec.ECGenParameterSpec
 import java.util.concurrent.Callable
@@ -27,6 +31,7 @@ class FollowRouteControllerTest {
     private val ip = InetAddress.getByAddress(byteArrayOf(127, 0, 0, 1))
     private val keys = KeyPairGenerator.getInstance("EC").apply { initialize(ECGenParameterSpec("secp256r1")) }.generateKeyPair()
     private val token = "caf1_" + "A".repeat(43)
+    private val delivery = ByteArray(32) { 1 }
 
     @Test fun delayedOldDialClosesItsOwnPipeWithoutStartingAReadOrReplacingNewSelection() {
         val scheduler = Executors.newSingleThreadScheduledExecutor()
@@ -104,7 +109,7 @@ class FollowRouteControllerTest {
         }
     }
 
-    @Test fun newChallengeOrClearInvalidatesUnusedApprovalsAndWipesLateOffers() {
+    @Test fun newChallengeOrClearInvalidatesUnusedApprovalsAndLateEnvelopes() {
         val scheduler = Executors.newSingleThreadScheduledExecutor()
         try {
             val address = InetSocketAddress(ip, 12345)
@@ -115,10 +120,9 @@ class FollowRouteControllerTest {
                     val challenge = assertNotNull(controller.challenge(route))
                     assertFalse(controller.connect(stale))
                     val offer = frame(challenge, address)
-                    val signature = sign(offer)
+                    val envelope = seal(challenge, offer, sign(offer))
                     assertTrue(controller.clear(route))
-                    assertNull(controller.approve(route, challenge, offer, signature))
-                    assertTrue(offer.all { it == 0.toByte() })
+                    assertNull(controller.approve(route, challenge, envelope))
                 }
         } finally {
             scheduler.shutdownNow()
@@ -135,31 +139,65 @@ class FollowRouteControllerTest {
                 val rotated = KeyPairGenerator.getInstance("EC").apply {
                     initialize(ECGenParameterSpec("secp256r1"))
                 }.generateKeyPair()
-                val replacement = assertNotNull(controller.configure(target, "remote-a", address, ByteArray(32), rotated.public as ECPublicKey))
+                val replacement = assertNotNull(controller.configure(target, "remote-a", address, ByteArray(32), rotated.public as ECPublicKey, delivery))
                 assertFalse(controller.connect(oldAttempt))
                 val challenge = assertNotNull(controller.challenge(replacement))
                 val staleSignature = frame(challenge, address)
-                assertNull(controller.approve(replacement, challenge, staleSignature, sign(staleSignature)))
+                assertNull(controller.approve(replacement, challenge, seal(challenge, staleSignature, sign(staleSignature))))
                 val offer = frame(challenge, address)
                 val signature = Signature.getInstance("SHA256withECDSA").run {
                     initSign(rotated.private)
                     update(offer)
                     sign()
                 }
-                assertNotNull(controller.approve(replacement, challenge, offer, signature))
+                assertNotNull(controller.approve(replacement, challenge, seal(challenge, offer, signature)))
             }
         } finally {
             scheduler.shutdownNow()
         }
     }
 
+    @Test fun sealedOnlyApprovalRejectsWrongKeyAadAndMutatedCiphertextWithoutConsumingChallenge() {
+        val scheduler = Executors.newSingleThreadScheduledExecutor()
+        try {
+            val address = InetSocketAddress(ip, 12345)
+            val configuredKey = delivery.copyOf()
+            FollowRouteController(scheduler, Executor { error("No reader") }).use { controller ->
+                val route = assertNotNull(controller.configure(target, "remote-a", address, ByteArray(32), keys.public as ECPublicKey, configuredKey))
+                configuredKey.fill(0)
+                val old = assertNotNull(controller.challenge(route))
+                val current = assertNotNull(controller.challenge(route))
+                val offer = frame(current, address)
+                val signature = sign(offer)
+                val exact = seal(current, offer, signature)
+                val cases = listOf(offer, exact.copyOf(37), ByteArray(865),
+                    seal(old, offer, signature), seal(current, offer, signature, ByteArray(32)),
+                    exact.copyOf().also { it[15] = (it[15].toInt() xor 1).toByte() },
+                    exact.copyOf().also { it[it.lastIndex] = (it.last().toInt() xor 1).toByte() })
+                for (envelope in cases) assertNull(controller.approve(route, current, envelope))
+                assertNotNull(controller.approve(route, current, exact))
+                assertNull(controller.approve(route, current, exact))
+            }
+        } finally {
+            scheduler.shutdownNow()
+        }
+    }
+
+    private fun seal(challenge: FollowPairing.Challenge, offer: ByteArray, signature: ByteArray, key: ByteArray = delivery): ByteArray {
+        val iv = ByteArray(12).also(SecureRandom()::nextBytes)
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(128, iv))
+        cipher.updateAAD("cordiact-follow-seal/1 ${challenge.nonce}\n".encodeToByteArray())
+        return iv + cipher.doFinal(byteArrayOf(signature.size.toByte()) + signature + offer)
+    }
+
     private fun configure(controller: FollowRouteController, address: InetSocketAddress) =
-        assertNotNull(controller.configure(target, "remote-a", address, ByteArray(32), keys.public as ECPublicKey))
+        assertNotNull(controller.configure(target, "remote-a", address, ByteArray(32), keys.public as ECPublicKey, delivery))
 
     private fun approve(controller: FollowRouteController, route: FollowRouteController.Route, address: InetSocketAddress): FollowRouteController.Attempt {
         val challenge = assertNotNull(controller.challenge(route))
         val offer = frame(challenge, address)
-        return assertNotNull(controller.approve(route, challenge, offer, sign(offer)))
+        return assertNotNull(controller.approve(route, challenge, seal(challenge, offer, sign(offer))))
     }
 
     private fun frame(challenge: FollowPairing.Challenge, address: InetSocketAddress) =

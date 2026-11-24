@@ -1,5 +1,5 @@
 import { isIPv4 } from 'node:net'
-import { sign } from 'node:crypto'
+import { createCipheriv, randomBytes, sign } from 'node:crypto'
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}(?![\s\S])/u
 const HEX_256 = /^[0-9a-f]{64}(?![\s\S])/u
@@ -9,8 +9,8 @@ const GRANT_MS = 15_000
 /**
  * Trusted control-plane helper, not a network handler. The caller supplies a route it has already
  * approved and a challenge nonce received out of band. Never expose authority or signingKey to the
- * TLS carrier. Deliver the returned offer through a confidential channel; its signature is not
- * encryption. The caller owns the offer bytes and the revoke handle.
+ * TLS carrier. This low-level function returns plaintext; use issueSealedFollowPairingOffer for
+ * delivery. The caller owns the offer bytes and the revoke handle.
  */
 export function issueFollowPairingOffer({ authority, signingKey, route, nonce }) {
   const { connectionId, localWorkspaceId, remoteWorkspaceId, remoteSessionId, ip, port, certificateSha256 } = route
@@ -34,5 +34,26 @@ export function issueFollowPairingOffer({ authority, signingKey, route, nonce })
     offer?.fill(0)
     grant.revoke()
     throw error
+  }
+}
+
+/** Seal a signed offer with a separately provisioned, per-route random 256-bit delivery key. */
+export function issueSealedFollowPairingOffer({ authority, signingKey, route, nonce, deliveryKey }) {
+  if (!Buffer.isBuffer(deliveryKey) || deliveryKey.length !== 32) throw new TypeError('Invalid pairing delivery key')
+  const issued = issueFollowPairingOffer({ authority, signingKey, route, nonce })
+  let plain
+  try {
+    const iv = randomBytes(12)
+    const cipher = createCipheriv('aes-256-gcm', deliveryKey, iv, { authTagLength: 16 })
+    cipher.setAAD(Buffer.from(`cordiact-follow-seal/1 ${nonce}\n`, 'ascii'))
+    plain = Buffer.concat([Buffer.from([issued.signature.length]), issued.signature, issued.offer])
+    const envelope = Buffer.concat([iv, cipher.update(plain), cipher.final(), cipher.getAuthTag()])
+    return Object.freeze({ envelope, revoke: issued.revoke })
+  } catch (error) {
+    issued.revoke()
+    throw error
+  } finally {
+    plain?.fill(0)
+    issued.offer.fill(0)
   }
 }

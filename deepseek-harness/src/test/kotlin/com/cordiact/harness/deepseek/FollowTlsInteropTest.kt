@@ -10,6 +10,7 @@ import java.nio.file.Path
 import java.security.KeyPairGenerator
 import java.security.KeyStore
 import java.security.MessageDigest
+import java.security.SecureRandom
 import java.security.interfaces.ECPublicKey
 import java.security.spec.ECGenParameterSpec
 import java.util.Base64
@@ -104,6 +105,7 @@ class FollowTlsInteropTest {
         private val grants: List<String>,
         private val pin: ByteArray,
         private val enrollmentKey: ECPublicKey,
+        private val deliveryKey: ByteArray,
         private val scheduler: ScheduledExecutorService,
     ) {
         fun follow(client: FollowPipeClient, index: Int, target: FollowTarget, remoteWorkspaceId: String = "remote-a"): FollowPipeLifecycle.Handle? {
@@ -115,16 +117,14 @@ class FollowTlsInteropTest {
         fun controller(client: FollowPipeClient) = FollowRouteController(scheduler, client, FollowPairing.Approval::connect)
 
         fun configure(controller: FollowRouteController, target: FollowTarget) =
-            checkNotNull(controller.configure(target, "remote-a", address, pin, enrollmentKey))
+            checkNotNull(controller.configure(target, "remote-a", address, pin, enrollmentKey, deliveryKey))
 
         fun followPaired(controller: FollowRouteController, route: FollowRouteController.Route): FollowRouteController.Attempt {
             val challenge = checkNotNull(controller.challenge(route))
             child.outputStream.write("pair ${challenge.nonce}\n".encodeToByteArray())
             child.outputStream.flush()
-            val fields = line(child.inputStream, 1_024).split(' ')
-            check(fields.size == 2) { "Invalid synthetic signed offer" }
-            val (offer, signature) = fields.map(Base64.getDecoder()::decode)
-            val attempt = checkNotNull(controller.approve(route, challenge, offer, signature)) { "Synthetic signed offer rejected" }
+            val envelope = Base64.getDecoder().decode(line(child.inputStream, 1_160))
+            val attempt = checkNotNull(controller.approve(route, challenge, envelope)) { "Synthetic sealed offer rejected" }
             check(controller.connect(attempt)) { "Synthetic paired TLS handshake failed" }
             check(!controller.connect(attempt))
             return attempt
@@ -142,6 +142,8 @@ class FollowTlsInteropTest {
         val store = directory.resolve("fixture.p12")
         val signer = directory.resolve("pairing-key.der")
         val cert = directory.resolve("fixture-cert.der")
+        val delivery = directory.resolve("fixture-delivery.bin")
+        val deliveryKey = ByteArray(32).also(SecureRandom()::nextBytes)
         val password = "synthetic-only"
         val control = Executors.newSingleThreadExecutor { task -> Thread(task, "follow-tls-fixture").apply { isDaemon = true } }
         val reads = Executors.newSingleThreadExecutor { task -> Thread(task, "follow-tls-reader").apply { isDaemon = true } }
@@ -165,7 +167,9 @@ class FollowTlsInteropTest {
             val pin = MessageDigest.getInstance("SHA-256").digest(encodedCert)
             val signingKey = KeyPairGenerator.getInstance("EC").apply { initialize(ECGenParameterSpec("secp256r1")) }.generateKeyPair()
             Files.write(signer, signingKey.private.encoded)
-            val child = ProcessBuilder(node, fixture.toString(), store.toString(), signer.toString(), cert.toString()).apply { environment().clear() }.start()
+            Files.write(delivery, deliveryKey)
+            val child = ProcessBuilder(node, fixture.toString(), store.toString(), signer.toString(), cert.toString(), delivery.toString())
+                .apply { environment().clear() }.start()
             try {
                 control.submit(Callable {
                     val fields = line(child.inputStream, 256).split(' ')
@@ -174,7 +178,9 @@ class FollowTlsInteropTest {
                     check(port != null && port in 1..65535 && grants.size == 2 && grants.all { GRANT.matches(it) }) {
                         "Invalid synthetic TLS control envelope"
                     }
-                    FollowPipeClient(scheduler, reads).use { test(Host(child, InetSocketAddress(loopback, port), grants, pin, signingKey.public as ECPublicKey, scheduler), it) }
+                    FollowPipeClient(scheduler, reads).use {
+                        test(Host(child, InetSocketAddress(loopback, port), grants, pin, signingKey.public as ECPublicKey, deliveryKey, scheduler), it)
+                    }
                     child.outputStream.close()
                     check(child.waitFor(3, TimeUnit.SECONDS) && child.exitValue() == 0) { "Synthetic TLS Host did not exit cleanly" }
                 }).get(18, TimeUnit.SECONDS)
@@ -189,6 +195,8 @@ class FollowTlsInteropTest {
             control.shutdownNow()
             reads.shutdownNow()
             scheduler.shutdownNow()
+            deliveryKey.fill(0)
+            Files.deleteIfExists(delivery)
             Files.deleteIfExists(signer)
             Files.deleteIfExists(cert)
             Files.deleteIfExists(store)

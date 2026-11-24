@@ -21,7 +21,7 @@ class FollowRouteController internal constructor(
     class Route internal constructor()
     class Attempt internal constructor()
 
-    private class Selection(val route: Route, val pairing: FollowPairing) {
+    private class Selection(val route: Route, val pairing: FollowPairing, val delivery: FollowPairingEnvelope) {
         var ready: Pending? = null
         var connecting: Pending? = null
         var current: Live? = null
@@ -41,15 +41,14 @@ class FollowRouteController internal constructor(
         address: InetSocketAddress,
         certificateSha256: ByteArray,
         enrollmentKey: ECPublicKey,
+        deliveryKey: ByteArray,
     ): Route? {
-        val pairing = FollowPairing(target, remoteWorkspaceId, address, certificateSha256, enrollmentKey, scheduler)
         return synchronized(lock) {
-            if (closed) {
-                pairing.close()
-                return null
-            }
-            selection?.let { retire(it); it.pairing.close() }
-            Route().also { selection = Selection(it, pairing) }
+            if (closed) return null
+            val pairing = FollowPairing(target, remoteWorkspaceId, address, certificateSha256, enrollmentKey, scheduler)
+            val delivery = FollowPairingEnvelope(deliveryKey)
+            selection?.let(::discard)
+            Route().also { selection = Selection(it, pairing, delivery) }
         }
     }
 
@@ -60,17 +59,12 @@ class FollowRouteController internal constructor(
         selected.pairing.challenge()
     }
 
-    /** Takes and clears the confidential offer bytes even if the route is already stale. */
-    fun approve(route: Route, challenge: FollowPairing.Challenge, offer: ByteArray, signature: ByteArray): Attempt? =
-        synchronized(lock) {
-            val selected = matching(route)
-            if (selected == null) {
-                offer.fill(0)
-                return null
-            }
-            val approval = selected.pairing.approve(challenge, offer, signature) ?: return null
-            Attempt().also { selected.ready = Pending(it, approval) }
-        }
+    /** Accept only the sealed response for the current challenge; there is no plaintext fallback. */
+    fun approve(route: Route, challenge: FollowPairing.Challenge, envelope: ByteArray): Attempt? = synchronized(lock) {
+        val selected = matching(route) ?: return null
+        val approval = selected.delivery.approve(selected.pairing, challenge, envelope) ?: return null
+        Attempt().also { selected.ready = Pending(it, approval) }
+    }
 
     /** Call off-thread. A late handshake cannot publish data or close a replacement selection. */
     fun connect(attempt: Attempt): Boolean {
@@ -114,19 +108,24 @@ class FollowRouteController internal constructor(
     fun clear(route: Route): Boolean = synchronized(lock) {
         val selected = matching(route) ?: return false
         selection = null
-        retire(selected)
-        selected.pairing.close()
+        discard(selected)
         true
     }
 
     override fun close() = synchronized(lock) {
         closed = true
-        selection?.let { retire(it); it.pairing.close() }
+        selection?.let(::discard)
         selection = null
         client.close()
     }
 
     private fun matching(route: Route) = selection?.takeIf { it.route === route }
+
+    private fun discard(selected: Selection) {
+        retire(selected)
+        selected.pairing.close()
+        selected.delivery.close()
+    }
 
     private fun retire(selected: Selection) {
         val live = selected.current

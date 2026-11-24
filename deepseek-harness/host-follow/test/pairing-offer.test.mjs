@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
-import { generateKeyPairSync, verify } from 'node:crypto'
+import { createDecipheriv, generateKeyPairSync, randomBytes, verify } from 'node:crypto'
 import test from 'node:test'
-import { issueFollowPairingOffer } from '../pairing-offer.mjs'
+import { issueFollowPairingOffer, issueSealedFollowPairingOffer } from '../pairing-offer.mjs'
 
 const { privateKey, publicKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' })
 const route = Object.freeze({ connectionId: 'host-a', localWorkspaceId: 'local-a', remoteWorkspaceId: 'remote-a',
@@ -21,6 +21,31 @@ test('signs the exact approved tuple and only requests a short scoped grant', ()
   assert.equal(verify('sha256', result.offer, publicKey, result.signature), true)
   result.revoke()
   assert.equal(revoked, 1)
+})
+
+test('delivery seals the signed grant and authenticates the challenge', () => {
+  const deliveryKey = randomBytes(32)
+  let issued = 0
+  const authority = { issue() { issued++; return { token, revoke() {} } } }
+  const options = { authority, signingKey: privateKey, route, nonce, deliveryKey }
+  assert.throws(() => issueSealedFollowPairingOffer({ ...options, deliveryKey: Buffer.alloc(31) }), TypeError)
+  assert.equal(issued, 0)
+  const result = issueSealedFollowPairingOffer(options)
+  const { envelope } = result
+  assert.deepEqual(Object.keys(result).sort(), ['envelope', 'revoke'])
+  assert.equal(envelope.includes(token), false)
+  assert.notDeepEqual(envelope.subarray(0, 12), issueSealedFollowPairingOffer(options).envelope.subarray(0, 12))
+  const open = challenge => {
+    const decipher = createDecipheriv('aes-256-gcm', deliveryKey, envelope.subarray(0, 12))
+    decipher.setAAD(Buffer.from(`cordiact-follow-seal/1 ${challenge}\n`, 'ascii'))
+    decipher.setAuthTag(envelope.subarray(-16))
+    return Buffer.concat([decipher.update(envelope.subarray(12, -16)), decipher.final()])
+  }
+  assert.throws(() => open('02'.repeat(32)))
+  const plain = open(nonce)
+  const split = plain[0] + 1
+  assert.equal(verify('sha256', plain.subarray(split), publicKey, plain.subarray(1, split)), true)
+  assert.equal(plain.subarray(split).toString('ascii').endsWith(` ${token}\n`), true)
 })
 
 test('invalid route, challenge, or key cannot reach issuance; malformed grants are retired', () => {
