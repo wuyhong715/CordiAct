@@ -61,7 +61,7 @@ internal fun SessionPluginsRoute(
 ): Unit = key(owner) {
     val scope = rememberCoroutineScope()
     // A reactivation of the exact same bytes yields equal data but a different revoke identity.
-    var receipts by remember(owner) { mutableStateOf<List<AuthoredPluginReceipt>>(emptyList(), referentialEqualityPolicy()) }
+    var inventory by remember(owner) { mutableStateOf(SessionPluginInventorySnapshot.EMPTY) }
     var reading by remember(owner) { mutableStateOf(true) }
     var busy by remember(owner) { mutableStateOf(false) }
     var failure by remember(owner) { mutableStateOf<String?>(null) }
@@ -72,11 +72,11 @@ internal fun SessionPluginsRoute(
     LaunchedEffect(owner, refresh) {
         reading = true
         try {
-            receipts = withContext(Dispatchers.IO) { app.listSessionPlugins(owner) }
+            inventory = SessionPluginInventorySnapshot(withContext(Dispatchers.IO) { app.listSessionPlugins(owner) })
         } catch (cancel: CancellationException) {
             throw cancel
         } catch (_: Exception) {
-            receipts = emptyList()
+            inventory = SessionPluginInventorySnapshot.EMPTY
             failure = "无法读取本会话插件。请确认会话仍然可用后刷新。"
         } finally {
             reading = false
@@ -84,7 +84,7 @@ internal fun SessionPluginsRoute(
     }
     SessionPluginsPanel(
         modifier = modifier,
-        receipts = receipts, reading = reading, busy = busy, note = note, failure = failure, onDismiss = onDismiss,
+        inventory = inventory, reading = reading, busy = busy, note = note, failure = failure, onDismiss = onDismiss,
         onRefresh = { failure = null; note = null; reading = true; refresh++ },
         onOpenDrafts = { if (!showSaved && !busy) showDrafts = true },
         onOpenSaved = { if (!showDrafts && !busy) showSaved = true },
@@ -132,9 +132,22 @@ internal fun SessionPluginsRoute(
     if (showDrafts) PluginDraftsRoute(app, owner) { showDrafts = false; returnToInventory() }
 }
 
+/** Identity survives Compose's value-based parameter and lambda comparisons. */
+internal class SessionPluginInventorySnapshot(receipts: List<AuthoredPluginReceipt>) {
+    internal val rows = receipts.map(::SessionPluginActivation)
+    internal fun contains(activation: SessionPluginActivation): Boolean = rows.any { it == activation }
+
+    companion object { val EMPTY = SessionPluginInventorySnapshot(emptyList()) }
+}
+
+internal class SessionPluginActivation(val receipt: AuthoredPluginReceipt) {
+    override fun equals(other: Any?): Boolean = other is SessionPluginActivation && receipt === other.receipt
+    override fun hashCode(): Int = System.identityHashCode(receipt)
+}
+
 @Composable
 internal fun SessionPluginsPanel(
-    receipts: List<AuthoredPluginReceipt>,
+    inventory: SessionPluginInventorySnapshot,
     reading: Boolean,
     busy: Boolean,
     note: String?,
@@ -146,7 +159,7 @@ internal fun SessionPluginsPanel(
     onOpenSaved: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
-    var confirming by remember { mutableStateOf<AuthoredPluginReceipt?>(null, referentialEqualityPolicy()) }
+    var confirming by remember { mutableStateOf<SessionPluginActivation?>(null, referentialEqualityPolicy()) }
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     DisposableEffect(lifecycle) {
         val observer = LifecycleEventObserver { _, event ->
@@ -180,15 +193,15 @@ internal fun SessionPluginsPanel(
                 }
                 val inventoryModifier = if (compactHeight) Modifier else Modifier.weight(1f).verticalScroll(scroll)
                 SessionPluginInventory(
-                    receipts, reading, busy, note, failure, onOpenDrafts, onOpenSaved, onRevoke = { confirming = it },
+                    inventory, reading, busy, note, failure, onOpenDrafts, onOpenSaved, onRevoke = { confirming = it },
                     modifier = inventoryModifier.fillMaxWidth().padding(start = 13.dp, end = 13.dp, bottom = 12.dp),
                     onRefresh = onRefresh,
                 )
             }
         }
     }
-    confirming?.let { receipt ->
-        SessionPluginRevokeConfirmation(receipt, receipts, reading, busy, onDismiss = { confirming = null }, onRevoke = onRevoke)
+    confirming?.let { activation ->
+        SessionPluginRevokeConfirmation(activation, inventory, reading, busy, onDismiss = { confirming = null }, onRevoke = onRevoke)
     }
 }
 
@@ -206,17 +219,18 @@ internal fun SessionPluginsDialog(
     onOpenDrafts: (() -> Unit)? = null,
     onOpenSaved: (() -> Unit)? = null,
 ) {
-    var confirming by remember { mutableStateOf<AuthoredPluginReceipt?>(null, referentialEqualityPolicy()) }
+    var confirming by remember { mutableStateOf<SessionPluginActivation?>(null, referentialEqualityPolicy()) }
+    val inventory = SessionPluginInventorySnapshot(receipts)
     val selected = confirming
     if (selected != null) {
-        SessionPluginRevokeConfirmation(selected, receipts, reading, busy, onDismiss = { confirming = null }, onRevoke = onRevoke)
+        SessionPluginRevokeConfirmation(selected, inventory, reading, busy, onDismiss = { confirming = null }, onRevoke = onRevoke)
     } else {
         AlertDialog(
             onDismissRequest = { if (!busy) onDismiss() },
             title = { Text("会话插件") },
             text = {
                 SessionPluginInventory(
-                    receipts, reading, busy, note, failure, onOpenDrafts, onOpenSaved, onRevoke = { confirming = it },
+                    inventory, reading, busy, note, failure, onOpenDrafts, onOpenSaved, onRevoke = { confirming = it },
                     modifier = Modifier.fillMaxWidth().heightIn(max = 440.dp).verticalScroll(rememberScrollState()),
                 )
             },
@@ -228,13 +242,14 @@ internal fun SessionPluginsDialog(
 
 @Composable
 private fun SessionPluginRevokeConfirmation(
-    receipt: AuthoredPluginReceipt,
-    receipts: List<AuthoredPluginReceipt>,
+    activation: SessionPluginActivation,
+    inventory: SessionPluginInventorySnapshot,
     reading: Boolean,
     busy: Boolean,
     onDismiss: () -> Unit,
     onRevoke: (AuthoredPluginReceipt) -> Unit,
 ) {
+    val currentInventory by androidx.compose.runtime.rememberUpdatedState(inventory)
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("撤回会话试用？", maxLines = 2, overflow = TextOverflow.Ellipsis) },
@@ -243,14 +258,19 @@ private fun SessionPluginRevokeConfirmation(
                 Modifier.fillMaxWidth().heightIn(max = 440.dp).verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Text(receipt.id, style = MaterialTheme.typography.titleSmall)
+                Text(activation.receipt.id, style = MaterialTheme.typography.titleSmall)
                 Text("只撤回本会话显示的启用版本。草稿与已有对话记录不受影响。")
             }
         },
         confirmButton = {
             TextButton(
-                enabled = !reading && !busy && receipts.any { it === receipt },
-                onClick = { onDismiss(); onRevoke(receipt) },
+                enabled = !reading && !busy && inventory.contains(activation),
+                onClick = {
+                    if (!reading && !busy && currentInventory.contains(activation)) {
+                        onDismiss()
+                        onRevoke(activation.receipt)
+                    }
+                },
                 modifier = Modifier.testTag("session-plugin-confirm-revoke"),
             ) { Text("确认撤回") }
         },
@@ -258,23 +278,16 @@ private fun SessionPluginRevokeConfirmation(
     )
 }
 
-// Equal receipt data can represent different activations. Use reference equality for the
-// composition key so nested content and click lambdas cannot retain an older activation.
-private class SessionPluginReceiptKey(private val receipt: AuthoredPluginReceipt) {
-    override fun equals(other: Any?): Boolean = other is SessionPluginReceiptKey && receipt === other.receipt
-    override fun hashCode(): Int = System.identityHashCode(receipt)
-}
-
 @Composable
 private fun SessionPluginInventory(
-    receipts: List<AuthoredPluginReceipt>,
+    inventory: SessionPluginInventorySnapshot,
     reading: Boolean,
     busy: Boolean,
     note: String?,
     failure: String?,
     onOpenDrafts: (() -> Unit)?,
     onOpenSaved: (() -> Unit)?,
-    onRevoke: (AuthoredPluginReceipt) -> Unit,
+    onRevoke: (SessionPluginActivation) -> Unit,
     modifier: Modifier,
     onRefresh: (() -> Unit)? = null,
 ) {
@@ -298,12 +311,13 @@ private fun SessionPluginInventory(
                 Text("查看工作区已保存版本")
             }
         }
-        if (reading && receipts.isEmpty()) CircularProgressIndicator()
-        if (!reading && failure == null && receipts.isEmpty()) Text("本会话没有已启用的插件。")
+        if (reading && inventory.rows.isEmpty()) CircularProgressIndicator()
+        if (!reading && failure == null && inventory.rows.isEmpty()) Text("本会话没有已启用的插件。")
         if (failure != null) Text(failure, color = MaterialTheme.colorScheme.error)
         if (note != null) Text(note, color = MaterialTheme.colorScheme.primary)
-        receipts.forEach { receipt ->
-            key(SessionPluginReceiptKey(receipt)) {
+        inventory.rows.forEach { activation ->
+            val receipt = activation.receipt
+            key(activation) {
                 Card(Modifier.fillMaxWidth().testTag("session-plugin-${receipt.id}")) {
                     Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
                         Text(receipt.id, style = MaterialTheme.typography.titleSmall)
@@ -313,7 +327,7 @@ private fun SessionPluginInventory(
                         }
                         receipt.toolIds.forEach { Text(it, style = MaterialTheme.typography.bodySmall) }
                         TextButton(
-                            onClick = { onRevoke(receipt) },
+                            onClick = { onRevoke(activation) },
                             enabled = !reading && !busy,
                             modifier = Modifier.testTag("session-plugin-revoke-${receipt.id}"),
                         ) { Text("撤回") }
