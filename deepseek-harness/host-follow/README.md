@@ -38,7 +38,7 @@ node deepseek-harness/host-follow/test/run-pinned-profile.mjs /absolute/path/to/
 
 ## Kotlin 端侧互操作验证
 
-[接收器](../src/main/kotlin/com/cordiact/harness/deepseek/FollowPipeReceiver.kt)一次只跟随已核验载体绑定的一代，最多缓冲 127 字节的行正文、单次接收 4 KiB。它直接校验 Host 序号和精确帧格式，拒绝重复、跳号、未知键、断帧和游标倒退；EOF 立即清除数据，不猜测是撤权还是普通断开。可信本地撤权可显式结束为 `ACCESS_LOST`。关闭、字节和渲染都必须持有原打开身份，不能把旧回调重贴给新选择。接收器不打开进程或连接，也不处理凭据。
+[接收器](../src/main/kotlin/com/cordiact/harness/deepseek/FollowPipeReceiver.kt)一次只跟随已核验载体绑定的一代，最多缓冲 127 字节的行正文、单次接收 4 KiB。它直接校验 Host 序号和精确帧格式，拒绝重复、跳号、未知键、断帧和游标倒退；EOF 立即清除数据，不猜测是撤权还是普通断开。可信本地撤权可显式结束为 `ACCESS_LOST`。关闭、字节和渲染都必须持有原打开身份，不能把旧回调重贴给新选择。接收器不打开进程或连接，也不处理凭据。[端侧生命周期](../src/main/kotlin/com/cordiact/harness/deepseek/FollowPipeLifecycle.kt)显式接管一次独占载体，使用调用方提供且不超过 30 秒的剩余授权预算；首帧最多等 3 秒。片段、正常更新和空闲都不续租。到期先清除状态，再请求关闭原载体。健康的静默 Host 也会按期关闭；这不是探活或网络分区检测。
 
 默认 JVM 测试覆盖解析和生命周期，不要求 Node；真实互操作测试显式运行：
 

@@ -4,6 +4,7 @@ import java.io.InputStream
 import java.io.OutputStream
 import java.nio.file.Path
 import java.util.concurrent.Callable
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import kotlin.test.Test
@@ -39,12 +40,55 @@ class FollowPipeInteropTest {
         assertEquals(FollowStatus.AwaitingBaseline, host.receiver.status(replacement))
     }
 
+    @Test fun silentHostLosesItsProjectionAndClosesTheRealPipeAtLocalExpiry() = withHost("silent") { host, token ->
+        val scheduler = Executors.newSingleThreadScheduledExecutor()
+        val cancelled = CountDownLatch(1)
+        try {
+            FollowPipeLifecycle(scheduler).use { follow ->
+                val pipe = FollowPipeOwnership(target) {
+                    try {
+                        host.disconnect()
+                    } finally {
+                        cancelled.countDown()
+                    }
+                }
+                val handle = checkNotNull(follow.begin(pipe, 1_500))
+                host.open(token)
+                host.readFrame { bytes -> assertEquals(FollowPipeReceiver.Receive.ACCEPTED, follow.receive(handle, bytes)) }
+                assertEquals(FollowStatus.Current(FollowSessionState(-1, false, false)), follow.status(handle))
+                // No read or status call triggers expiry; cancelled is signalled by the local timer.
+                assertTrue(cancelled.await(4, TimeUnit.SECONDS))
+                assertEquals(FollowStatus.Ended(FollowEnd.DISCONNECTED), follow.status(handle))
+                assertEquals(-1, host.input.read())
+                assertEquals(false, follow.eof(handle))
+            }
+        } finally {
+            scheduler.shutdownNow()
+        }
+    }
+
     private class Host(val input: InputStream, private val output: OutputStream) {
         val receiver = FollowPipeReceiver()
 
         fun open(token: String) {
             output.write("cordiact-follow/1 remote-a session-a $token\n".encodeToByteArray())
             output.flush()
+        }
+
+        fun disconnect() = output.close()
+
+        fun readFrame(accept: (ByteArray) -> Unit) {
+            val bytes = ByteArray(128)
+            for (i in bytes.indices) {
+                val next = input.read()
+                assertTrue(next >= 0, "EOF inside a follow frame")
+                bytes[i] = next.toByte()
+                if (next == 10) {
+                    accept(bytes.copyOf(i + 1))
+                    return
+                }
+            }
+            error("Follow frame exceeded its wire bound")
         }
 
         fun readLineInto(handle: FollowPipeReceiver.Handle, result: FollowPipeReceiver.Receive = FollowPipeReceiver.Receive.ACCEPTED) {
@@ -60,8 +104,8 @@ class FollowPipeInteropTest {
         }
     }
 
-    private fun withHost(body: (Host, String) -> Unit) {
-        val child = ProcessBuilder(node, fixture.toString()).apply { environment().clear() }.start()
+    private fun withHost(mode: String = "normal", body: (Host, String) -> Unit) {
+        val child = ProcessBuilder(node, fixture.toString(), mode).apply { environment().clear() }.start()
         val executor = Executors.newSingleThreadExecutor { thread -> Thread(thread, "follow-pipe-interop").apply { isDaemon = true } }
         try {
             val run = executor.submit(Callable {

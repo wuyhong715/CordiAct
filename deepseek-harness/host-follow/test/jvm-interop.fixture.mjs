@@ -13,8 +13,10 @@ const reader = { open(request) {
   let reads = 0
   return { ...lease, next() {
     reads++
-    if (reads === 2) state = { cursor: 7, active: true, running: true }
-    if (reads === 3) grant.revoke()
+    if (process.argv[2] !== 'silent') {
+      if (reads === 2) state = { cursor: 7, active: true, running: true }
+      if (reads === 3) grant.revoke()
+    }
     return lease.next()
   } }
 } }
