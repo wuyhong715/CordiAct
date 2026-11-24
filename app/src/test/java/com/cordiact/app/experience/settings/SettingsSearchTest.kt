@@ -1,6 +1,7 @@
 package com.cordiact.app.experience.settings
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -26,10 +27,13 @@ class SettingsSearchTest {
     @Test
     fun sharedSectionLabelKeepsParentPath() {
         val hits = searchSettings("诊断")
-        assertTrue(hits.isNotEmpty())
         assertTrue(hits.all { it.path.contains("›") })
-        assertTrue(hits.all { it.section == "diagnostics" })
-        assertEquals(setOf(SettingsRoute.SEARCH, SettingsRoute.MCP), hits.map { it.entry.route }.toSet())
+        assertEquals(setOf(SettingsRoute.SEARCH, SettingsRoute.MCP, SettingsRoute.PLUGIN_DIAGNOSTICS),
+            hits.map { it.entry.route }.toSet())
+        val plugin = hits.single { it.entry.route == SettingsRoute.PLUGIN_DIAGNOSTICS }
+        assertEquals("工作区设置 › 插件与连接", plugin.path)
+        assertNull(plugin.section)
+        assertTrue(hits.filterNot { it === plugin }.all { it.section == "diagnostics" })
         val ssh = searchSettings("连接检查").single()
         assertEquals(SettingsRoute.SSH, ssh.entry.route)
         assertEquals("diagnostics", ssh.section)

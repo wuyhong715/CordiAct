@@ -98,18 +98,25 @@ class SessionPluginsPanelTest {
                 }
             }
         }
-        compose.onNodeWithTag("session-plugin-refresh").performScrollTo().performClick()
-        compose.onNodeWithTag("session-plugin-drafts").performScrollTo().performClick()
-        compose.onNodeWithTag("session-plugin-saved-versions").performScrollTo().performClick()
+        compose.onNodeWithTag("session-plugin-refresh").performScrollTo().assertIsDisplayed().performClick()
+        compose.onNodeWithTag("session-plugin-drafts").performScrollTo().assertIsDisplayed().performClick()
+        compose.onNodeWithTag("session-plugin-saved-versions").performScrollTo().assertIsDisplayed().performClick()
         val revoke = compose.onNodeWithTag("session-plugin-revoke-demo")
-        revoke.performScrollTo().performClick()
-        compose.runOnIdle { assertNull(revoked); receipts = listOf(replacement) }
         val confirm = compose.onNodeWithTag("session-plugin-confirm-revoke")
+        revoke.performScrollTo().assertIsDisplayed().performClick()
+        confirm.assertIsEnabled()
+        compose.runOnIdle {
+            assertNull(revoked)
+            receipts = listOf(replacement)
+        }
         confirm.assertIsNotEnabled()
         compose.onNodeWithText("返回").performClick()
-        revoke.performScrollTo().performClick()
+        confirm.assertDoesNotExist()
+        compose.runOnIdle { assertNull(revoked) }
+        revoke.performScrollTo().assertIsDisplayed().performClick()
         confirm.assertIsEnabled().performClick()
-        compose.onNodeWithTag("session-plugins-close").performScrollTo().performClick()
+        confirm.assertDoesNotExist()
+        compose.onNodeWithTag("session-plugins-close").performScrollTo().assertIsDisplayed().performClick()
         compose.runOnIdle {
             assertSame(replacement, revoked)
             assertEquals(listOf("refresh", "drafts", "saved", "close"), actions)

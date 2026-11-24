@@ -11,6 +11,9 @@ import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performSemanticsAction
+import androidx.compose.ui.semantics.SemanticsActions
 import com.cordiact.app.experience.ExperienceTheme
 import com.cordiact.core.plugin.ExtensionPackageArtifact
 import com.cordiact.core.plugin.ExtensionPackageChange
@@ -105,23 +108,31 @@ class WorkspacePackageSettingsTest {
         }
         val vm = SettingsViewModel(fixture.facade)
         compose.setContent { ExperienceTheme { SettingsHost(vm) { error("Unexpected exit from Settings") } } }
-        compose.onNode(hasText("插件与连接") and hasClickAction()).performClick()
-        compose.onNode(hasText("插件诊断") and hasClickAction()).performClick()
-        compose.waitUntil(timeoutMillis = 5_000) { fixture.facade.diagnosticRequests.contains("a") }
-        compose.onNode(hasText("作用于：工作区甲 ▾") and hasClickAction()).performClick()
-        compose.onNode(hasText("工作区乙") and hasClickAction()).performClick()
-        compose.onNodeWithText("此工作区没有已安装插件包。").assertExists()
-        compose.onNodeWithText("core.bravo").assertHasNoClickAction()
-        compose.runOnIdle {
-            lateA.complete(com.cordiact.core.plugin.PluginDiagnosticSnapshot("a",
-                com.cordiact.core.plugin.WorkspacePackageDiagnostics.StorageNotCreated,
-                listOf(com.cordiact.core.plugin.BundledPluginDiagnostic("core.alpha", "1.0.0", null))))
+        try {
+            compose.onNode(hasText("插件与连接") and hasClickAction()).performClick()
+            // Bring the row into view and invoke its accessibility action, not a coordinate
+            // covered by the floating Settings chrome on the Robolectric viewport.
+            compose.onNode(hasText("插件诊断") and hasClickAction()).performScrollTo().assertIsDisplayed()
+                .performSemanticsAction(SemanticsActions.OnClick)
+            compose.onNodeWithText("只读快照 · 不启动插件或检测连接").assertExists()
+            compose.waitUntil(timeoutMillis = 5_000) { fixture.facade.diagnosticRequests.contains("a") }
+            compose.onNode(hasText("作用于：工作区甲 ▾") and hasClickAction()).performScrollTo()
+                .performSemanticsAction(SemanticsActions.OnClick)
+            compose.onNode(hasText("工作区乙") and hasClickAction()).performSemanticsAction(SemanticsActions.OnClick)
+            compose.onNodeWithText("此工作区没有已安装插件包。").assertExists()
+            compose.onNodeWithText("core.bravo").assertHasNoClickAction()
+            compose.runOnIdle {
+                lateA.complete(PluginDiagnosticSnapshot("a", WorkspacePackageDiagnostics.StorageNotCreated,
+                    listOf(com.cordiact.core.plugin.BundledPluginDiagnostic("core.alpha", "1.0.0", null))))
+            }
+            compose.onNodeWithText("core.alpha").assertDoesNotExist()
+            compose.onNodeWithText("core.bravo").assertHasNoClickAction()
+            compose.onNodeWithText("本页不读取会话试用或 MCP。").assertExists()
+            compose.onNodeWithContentDescription("返回").performClick()
+            builtIn().assertIsDisplayed()
+        } finally {
+            lateA.cancel()
         }
-        compose.onNodeWithText("core.alpha").assertDoesNotExist()
-        compose.onNodeWithText("core.bravo").assertHasNoClickAction()
-        compose.onNodeWithText("本页不读取会话试用或 MCP。").assertExists()
-        compose.onNodeWithContentDescription("返回").performClick()
-        builtIn().assertIsDisplayed()
     }
 
     @Test fun signedDiagnosticsSeparatesHistoricalReceiptFromObservedRelease() {

@@ -34,6 +34,7 @@ import com.cordiact.core.plugin.SignedPackageCatalog.PublisherSummary
 import com.cordiact.core.plugin.SignedPackageCatalog.VersionSummary
 import com.cordiact.core.plugin.WorkspaceExtensionPackages
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -50,6 +51,7 @@ internal fun SignedPackageDirectoryPanel(
     onBusy: (Boolean) -> Unit,
     onPreview: (WorkspaceExtensionPackages.Preview) -> Unit,
     prepareTrust: () -> WorkspaceExtensionPackages.SignedRefresh = { page.prepareTrustRefresh(trustSourceId) },
+    workDispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) {
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     key(page, trustSourceId, lifecycle) {
@@ -117,7 +119,7 @@ internal fun SignedPackageDirectoryPanel(
             fun isCurrent() = action === running && canInteract()
             running.job = scope.launch(start = CoroutineStart.LAZY) {
                 try {
-                    val result = try { runInterruptible(Dispatchers.IO) { work(running) } }
+                    val result = try { runInterruptible(workDispatcher) { work(running) } }
                     catch (cancelled: CancellationException) {
                         // The core can itself reject a retired scope. Only lifecycle/job cancellation is silent.
                         ensureActive()

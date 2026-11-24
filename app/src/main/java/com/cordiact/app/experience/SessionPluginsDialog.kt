@@ -146,7 +146,7 @@ internal fun SessionPluginsPanel(
     onOpenSaved: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
-    var confirming by remember { mutableStateOf<AuthoredPluginReceipt?>(null) }
+    var confirming by remember { mutableStateOf<AuthoredPluginReceipt?>(null, referentialEqualityPolicy()) }
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     DisposableEffect(lifecycle) {
         val observer = LifecycleEventObserver { _, event ->
@@ -206,7 +206,7 @@ internal fun SessionPluginsDialog(
     onOpenDrafts: (() -> Unit)? = null,
     onOpenSaved: (() -> Unit)? = null,
 ) {
-    var confirming by remember { mutableStateOf<AuthoredPluginReceipt?>(null) }
+    var confirming by remember { mutableStateOf<AuthoredPluginReceipt?>(null, referentialEqualityPolicy()) }
     val selected = confirming
     if (selected != null) {
         SessionPluginRevokeConfirmation(selected, receipts, reading, busy, onDismiss = { confirming = null }, onRevoke = onRevoke)
@@ -258,6 +258,13 @@ private fun SessionPluginRevokeConfirmation(
     )
 }
 
+// Equal receipt data can represent different activations. Use reference equality for the
+// composition key so nested content and click lambdas cannot retain an older activation.
+private class SessionPluginReceiptKey(private val receipt: AuthoredPluginReceipt) {
+    override fun equals(other: Any?): Boolean = other is SessionPluginReceiptKey && receipt === other.receipt
+    override fun hashCode(): Int = System.identityHashCode(receipt)
+}
+
 @Composable
 private fun SessionPluginInventory(
     receipts: List<AuthoredPluginReceipt>,
@@ -296,19 +303,21 @@ private fun SessionPluginInventory(
         if (failure != null) Text(failure, color = MaterialTheme.colorScheme.error)
         if (note != null) Text(note, color = MaterialTheme.colorScheme.primary)
         receipts.forEach { receipt ->
-            Card(Modifier.fillMaxWidth().testTag("session-plugin-${receipt.id}")) {
-                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                    Text(receipt.id, style = MaterialTheme.typography.titleSmall)
-                    Text("SHA-256", style = MaterialTheme.typography.labelSmall)
-                    SelectionContainer {
-                        Text(receipt.sha256, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
+            key(SessionPluginReceiptKey(receipt)) {
+                Card(Modifier.fillMaxWidth().testTag("session-plugin-${receipt.id}")) {
+                    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                        Text(receipt.id, style = MaterialTheme.typography.titleSmall)
+                        Text("SHA-256", style = MaterialTheme.typography.labelSmall)
+                        SelectionContainer {
+                            Text(receipt.sha256, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
+                        }
+                        receipt.toolIds.forEach { Text(it, style = MaterialTheme.typography.bodySmall) }
+                        TextButton(
+                            onClick = { onRevoke(receipt) },
+                            enabled = !reading && !busy,
+                            modifier = Modifier.testTag("session-plugin-revoke-${receipt.id}"),
+                        ) { Text("撤回") }
                     }
-                    receipt.toolIds.forEach { Text(it, style = MaterialTheme.typography.bodySmall) }
-                    TextButton(
-                        onClick = { onRevoke(receipt) },
-                        enabled = !reading && !busy,
-                        modifier = Modifier.testTag("session-plugin-revoke-${receipt.id}"),
-                    ) { Text("撤回") }
                 }
             }
         }
