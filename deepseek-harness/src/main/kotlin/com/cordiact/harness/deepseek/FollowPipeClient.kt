@@ -11,13 +11,14 @@ import java.util.concurrent.atomic.AtomicReference
  * bind it to the exact target and keep the request side open. Cancellation must be non-blocking,
  * stop both directions, and unblock a pending read. This is not an authentication mechanism.
  */
-class RequestedFollowPipe(
+internal class RequestedFollowPipe(
     val target: FollowTarget,
     input: InputStream,
+    send: () -> Unit = {},
     cancel: () -> Unit,
 ) {
-    internal class Port(val input: InputStream, val cancel: () -> Unit)
-    private val port = AtomicReference<Port?>(Port(input, cancel))
+    internal class Port(val input: InputStream, val send: () -> Unit, val cancel: () -> Unit)
+    private val port = AtomicReference<Port?>(Port(input, send, cancel))
     internal fun take(): Port? = port.getAndSet(null)
 }
 
@@ -29,21 +30,35 @@ class FollowPipeClient internal constructor(
     /** Supply a bounded off-thread executor that throws on rejection, separate from the deadline scheduler. */
     constructor(scheduler: ScheduledExecutorService, reads: Executor) : this(FollowPipeLifecycle(scheduler), reads)
 
-    /** Start a separate read loop for this pipe only. A transferred pipe cannot be reopened. */
-    fun begin(pipe: RequestedFollowPipe, remainingMillis: Long): FollowPipeLifecycle.Handle? {
-        require(remainingMillis in 1..MAX_FOLLOW_LEASE_MS)
+    /** Transfers one approved pair; sends its exact request off-thread, then reads only that pair. */
+    fun begin(pipe: ApprovedFollowPipe): FollowPipeLifecycle.Handle? {
+        val request = pipe.take() ?: return null
+        return beginUntil(request, pipe.deadlineNanos)
+    }
+
+    /** Internal path for an already requested pipe. */
+    internal fun begin(pipe: RequestedFollowPipe, remainingMillis: Long): FollowPipeLifecycle.Handle? =
+        beginUntil(pipe, followDeadline(System.nanoTime(), remainingMillis))
+
+    private fun beginUntil(pipe: RequestedFollowPipe, deadlineNanos: Long): FollowPipeLifecycle.Handle? {
         val port = pipe.take() ?: return null
         // The slot releases both resources when the lifecycle ends, even if the task is still queued.
         val pending = AtomicReference(port)
-        val handle = lifecycle.begin(FollowPipeOwnership(pipe.target) {
+        val handle = lifecycle.beginUntil(FollowPipeOwnership(pipe.target) {
             pending.set(null)
             port.cancel()
-        }, remainingMillis) ?: return null
+        }, deadlineNanos) ?: return null
         if (pending.get() == null) return handle
         try {
             reads.execute {
                 val current = pending.getAndSet(null) ?: return@execute
-                read(handle, current.input)
+                try {
+                    if (lifecycle.status(handle) != FollowStatus.AwaitingBaseline) return@execute
+                    current.send()
+                    read(handle, current.input)
+                } catch (_: Exception) {
+                    lifecycle.end(handle, FollowEnd.DISCONNECTED)
+                }
             }
         } catch (_: RejectedExecutionException) {
             lifecycle.end(handle, FollowEnd.DISCONNECTED)

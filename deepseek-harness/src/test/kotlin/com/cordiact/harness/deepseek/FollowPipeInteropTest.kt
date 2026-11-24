@@ -46,8 +46,7 @@ class FollowPipeInteropTest {
         val cancelled = CountDownLatch(1)
         try {
             FollowPipeClient(scheduler, reads).use { follow ->
-                host.open(token)
-                val pipe = RequestedFollowPipe(target, host.input) {
+                val pipe = host.approve(target, token, 2_500) {
                     try {
                         // Closing the request side makes the synthetic Host close its output.
                         host.disconnect()
@@ -55,7 +54,7 @@ class FollowPipeInteropTest {
                         cancelled.countDown()
                     }
                 }
-                val handle = checkNotNull(follow.begin(pipe, 2_500))
+                val handle = checkNotNull(follow.begin(pipe))
                 val baselineDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
                 var status = follow.status(handle)
                 while (status == FollowStatus.AwaitingBaseline && System.nanoTime() - baselineDeadline < 0) {
@@ -83,6 +82,9 @@ class FollowPipeInteropTest {
             output.write("cordiact-follow/1 remote-a session-a $token\n".encodeToByteArray())
             output.flush()
         }
+
+        fun approve(target: FollowTarget, token: String, ttlMillis: Long, cancel: () -> Unit) =
+            ApprovedFollowPipe(target, "remote-a", token, ttlMillis, input, output, cancel)
 
         fun disconnect() = output.close()
 

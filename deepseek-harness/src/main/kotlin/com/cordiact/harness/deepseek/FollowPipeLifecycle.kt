@@ -54,20 +54,24 @@ class FollowPipeLifecycle internal constructor(
      * Supply a conservative remaining grant budget; the local cap may end earlier than the Host.
      */
     fun begin(pipe: FollowPipeOwnership, remainingMillis: Long): Handle? {
-        require(remainingMillis in 1..MAX_FOLLOW_LEASE_MS)
+        return beginUntil(pipe, followDeadline(nowNanos(), remainingMillis))
+    }
+
+    /** Preserve the existing local deadline across request dispatch and carrier handoff. */
+    internal fun beginUntil(pipe: FollowPipeOwnership, deadlineNanos: Long): Handle? {
         val cancel = pipe.take() ?: return null
         var retire: (() -> Unit)? = null
         var reject: (() -> Unit)? = null
         val handle = synchronized(lock) {
-            if (closed) {
+            val start = nowNanos()
+            val lease = deadlineNanos - start
+            if (closed || lease <= 0 || lease > TimeUnit.MILLISECONDS.toNanos(MAX_FOLLOW_LEASE_MS)) {
                 reject = cancel
                 return@synchronized null
             }
             retire = selected?.let { detach(it) }
-            val start = nowNanos()
-            val lease = TimeUnit.MILLISECONDS.toNanos(remainingMillis)
             val baseline = minOf(lease, TimeUnit.MILLISECONDS.toNanos(BASELINE_MS))
-            val next = Selection(Handle(receiver.begin(pipe.target)), start + lease, start + baseline, cancel)
+            val next = Selection(Handle(receiver.begin(pipe.target)), deadlineNanos, start + baseline, cancel)
             selected = next
             try {
                 next.cancelLeaseTimer = schedule(lease) { expire(next) }
@@ -179,3 +183,8 @@ class FollowPipeLifecycle internal constructor(
 }
 
 internal const val MAX_FOLLOW_LEASE_MS = 30_000L
+
+internal fun followDeadline(nowNanos: Long, remainingMillis: Long): Long {
+    require(remainingMillis in 1..MAX_FOLLOW_LEASE_MS)
+    return nowNanos + TimeUnit.MILLISECONDS.toNanos(remainingMillis)
+}
