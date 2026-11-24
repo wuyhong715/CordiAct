@@ -43,34 +43,69 @@ internal fun LandscapeWorkbench(
     onOpenApproval: (String) -> Unit,
     ownerLabel: (ApprovalOwner?) -> String,
     tabs: @Composable (Modifier) -> Unit,
-    body: @Composable ((ToolActivity) -> Unit) -> Unit,
+    body: @Composable ((ToolActivity) -> Unit, (String) -> Unit) -> Unit,
     composer: @Composable (Int) -> Unit,
+    sessionPluginDetail: (@Composable () -> Unit)? = null,
+    onCloseSessionPluginDetail: () -> Unit = {},
+    tabPublication: Any? = null,
+    resultCardFor: (ToolActivity) -> com.cordiact.interaction.ToolResultCard? = { null },
 ) {
     val colors = MaterialTheme.colorScheme
     val backdrop = remember { HazeState() }
     val bodyState = rememberSaveableStateHolder()
-    val artifacts = PreviewInbox.forSession(state.sessionId)
+    val artifacts = state.sessionId?.let(PreviewInbox::forSession).orEmpty()
     val tools = remember(state.turns) { state.turns.flatMap { it.tools } }
     val failures = remember(tools) { tools.filter { it.phase == ToolPhase.FAILED } }
-    var detail by rememberSaveable(state.sessionId, viewKey) { mutableStateOf<Detail?>(null) }
-    var tool by remember(state.sessionId, viewKey) { mutableStateOf<ToolActivity?>(null) }
-    var artifactId by rememberSaveable(state.sessionId, viewKey) { mutableStateOf<String?>(null) }
+    var detail by remember(state.workspace?.id, state.sessionId, viewKey, tabPublication) { mutableStateOf<Detail?>(null) }
+    var tool by remember(state.workspace?.id, state.sessionId, viewKey, tabPublication) { mutableStateOf<ToolActivity?>(null) }
+    var artifactId by remember(state.workspace?.id, state.sessionId, viewKey, tabPublication) { mutableStateOf<String?>(null) }
+    val sessionPluginOpen = sessionPluginDetail != null
+    val visibleDetail = detail.takeUnless { sessionPluginOpen }
+    val hasInspector = sessionPluginOpen || visibleDetail != null
+    LaunchedEffect(sessionPluginOpen) { if (sessionPluginOpen) detail = null }
+    // Preserve the route (including modal state) when window resizing moves it between slots.
+    val currentSessionPluginDetail = rememberUpdatedState(sessionPluginDetail)
+    val pluginDetailContent = remember { movableContentOf { -> currentSessionPluginDetail.value?.invoke() } }
     // Existing requests do not reopen a dismissed panel; a newly arrived one for this
     // conversation may open it, without replacing a detail the user is reading.
     val approvalIds = state.currentApprovals.map { it.id }
     var seenApprovals by remember(state.sessionId) { mutableStateOf(approvalIds.toSet()) }
-    LaunchedEffect(approvalIds, pendingSessionId) {
-        if (pendingSessionId == null && approvalIds.any { it !in seenApprovals } && detail == null) detail = Detail.QUEUE
-        seenApprovals = approvalIds.toSet()
+    LaunchedEffect(approvalIds, pendingSessionId, sessionPluginOpen) {
+        // Leave approvals that arrive over the inventory unread until its slot becomes free.
+        if (!sessionPluginOpen) {
+            if (pendingSessionId == null && approvalIds.any { it !in seenApprovals } && detail == null) detail = Detail.QUEUE
+            seenApprovals = approvalIds.toSet()
+        }
     }
-    val closeDetail = { detail = null }
-    val inspectTool: (ToolActivity) -> Unit = { tool = it; detail = Detail.TOOL }
-    val inspectArtifact: (PreviewItem) -> Unit = {
-        PreviewInbox.markSeen(it.id)
-        artifactId = it.id
-        detail = Detail.ARTIFACT
+    val closeDetail = {
+        if (sessionPluginOpen) onCloseSessionPluginDetail() else detail = null
     }
-    BackHandler(detail != null, onBack = closeDetail)
+    fun openInspector(target: Detail?) {
+        detail = target
+        if (sessionPluginOpen) onCloseSessionPluginDetail()
+    }
+    fun toggleInspector(target: Detail) = openInspector(if (visibleDetail == target) null else target)
+    val inspectTool: (ToolActivity) -> Unit = { tool = it; openInspector(Detail.TOOL) }
+    val inspectArtifact: (String) -> Unit = { id ->
+        if (state.sessionId?.let(PreviewInbox::forSession)?.any { it.id == id } == true) {
+            PreviewInbox.markSeen(id)
+            artifactId = id
+            openInspector(Detail.ARTIFACT)
+        }
+    }
+    val inspector: @Composable (Modifier) -> Unit = { modifier ->
+        if (sessionPluginOpen) {
+            Box(modifier.testTag("landscape-session-plugin-detail"), propagateMinConstraints = true) { pluginDetailContent() }
+        } else if (visibleDetail != null) {
+            WorkbenchDetail(visibleDetail, state.approvals, failures,
+                tools.firstOrNull { it.id == tool?.id } ?: tool, artifacts.firstOrNull { it.id == artifactId },
+                activity, ownerLabel, onOpenApproval, closeDetail, inspectTool, modifier, resultCardFor)
+        }
+    }
+    BackHandler(hasInspector, onBack = closeDetail)
+    val inventoryApproval = if (sessionPluginOpen) {
+        state.currentApprovals.firstOrNull() ?: state.approvals.firstOrNull()
+    } else null
     val subtitle = state.workspace?.name ?: "默认工作区"
     val title = state.sessions.firstOrNull { it.id == state.sessionId }?.title?.ifBlank { null } ?: "新对话"
 
@@ -85,11 +120,16 @@ internal fun LandscapeWorkbench(
                     maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
-                StatusKey(GlyphName.Role, "子 Agent", activity.agents.count { it.active }, detail == Detail.AGENTS) {
-                    detail = if (detail == Detail.AGENTS) null else Detail.AGENTS
+                if (inventoryApproval != null) {
+                    IconButton(onClick = { onOpenApproval(inventoryApproval.id) }, modifier = Modifier.testTag("landscape-plugin-approval")) {
+                        AppGlyph(GlyphName.Shield, "待审批 ${state.approvals.size} 项")
+                    }
                 }
-                StatusKey(GlyphName.Bolt, "后台任务", activity.jobs.count { it.active }, detail == Detail.JOBS) {
-                    detail = if (detail == Detail.JOBS) null else Detail.JOBS
+                StatusKey(GlyphName.Role, "子 Agent", activity.agents.count { it.active }, visibleDetail == Detail.AGENTS) {
+                    toggleInspector(Detail.AGENTS)
+                }
+                StatusKey(GlyphName.Bolt, "后台任务", activity.jobs.count { it.active }, visibleDetail == Detail.JOBS) {
+                    toggleInspector(Detail.JOBS)
                 }
                 IconButton(onClick = onNew, enabled = !state.loading && pendingSessionId == null) {
                     AppGlyph(GlyphName.Plus, "新对话")
@@ -104,45 +144,45 @@ internal fun LandscapeWorkbench(
             val shortBody = maxHeight < 275.dp
             if (pluginPage) {
                 Box(Modifier.fillMaxSize()) {
-                    Box(Modifier.fillMaxSize().hazeSource(backdrop)) {
-                        bodyState.SaveableStateProvider("${state.sessionId}:$viewKey") {
-                            if (viewKey == "p:${com.cordiact.app.experience.tabs.ArtifactsTab.id}") ArtifactBoard(artifacts, inspectArtifact)
-                            else body(inspectTool)
+                    val dockPlugin = dockInspector && sessionPluginOpen
+                    Row(Modifier.fillMaxSize()) {
+                        Box(Modifier.weight(1f).fillMaxHeight().hazeSource(backdrop)) {
+                            bodyState.SaveableStateProvider("${state.sessionId}:$viewKey") {
+                                body(inspectTool, inspectArtifact)
+                            }
                         }
+                        if (dockPlugin) inspector(Modifier.width(252.dp).fillMaxHeight().padding(end = 12.dp, top = 5.dp))
                     }
-                    if (detail != null) WorkbenchDetail(detail!!, state.approvals, failures,
-                        tools.firstOrNull { it.id == tool?.id } ?: tool, artifacts.firstOrNull { it.id == artifactId },
-                        activity, ownerLabel, onOpenApproval, closeDetail, inspectTool,
-                        Modifier.align(Alignment.CenterEnd).widthIn(max = 320.dp).fillMaxWidth(.86f).fillMaxHeight())
+                    if (!dockPlugin && hasInspector) inspector(
+                        Modifier.align(Alignment.CenterEnd).widthIn(max = 320.dp).fillMaxWidth(.86f).fillMaxHeight(),
+                    )
                 }
             } else {
                 Row(Modifier.fillMaxSize()) {
                     WorkbenchBoard(state, tools, activity, subtitle, Modifier.width(boardWidth).fillMaxHeight(),
-                        onAgents = { detail = if (detail == Detail.AGENTS) null else Detail.AGENTS },
-                        onJobs = { detail = if (detail == Detail.JOBS) null else Detail.JOBS },
-                        onQueue = { detail = if (detail == Detail.QUEUE) null else Detail.QUEUE })
+                        onAgents = { toggleInspector(Detail.AGENTS) },
+                        onJobs = { toggleInspector(Detail.JOBS) },
+                        onQueue = { toggleInspector(Detail.QUEUE) })
                     Column(Modifier.weight(1f).fillMaxHeight()) {
                         Box(Modifier.weight(1f).fillMaxWidth()) {
                             Row(Modifier.fillMaxSize()) {
                                 Box(Modifier.weight(1f).fillMaxHeight()) {
                                     Box(Modifier.fillMaxSize().hazeSource(backdrop).padding(start = 8.dp, end = 10.dp)) {
                                         bodyState.SaveableStateProvider("${state.sessionId}:$viewKey") {
-                                            body(inspectTool)
+                                            body(inspectTool, inspectArtifact)
                                         }
                                     }
                                     ViewportFade(backdrop, top = true, Modifier.align(Alignment.TopCenter).fillMaxWidth().height(9.dp))
                                     ViewportFade(backdrop, top = false, Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(13.dp))
                                 }
-                                if (dockInspector && detail != null) WorkbenchDetail(detail!!, state.approvals, failures,
-                                    tools.firstOrNull { it.id == tool?.id } ?: tool, artifacts.firstOrNull { it.id == artifactId },
-                                    activity, ownerLabel, onOpenApproval, closeDetail, inspectTool,
-                                    Modifier.width(252.dp).fillMaxHeight().padding(end = 12.dp, top = 5.dp))
+                                if (dockInspector && hasInspector) inspector(
+                                    Modifier.width(252.dp).fillMaxHeight().padding(end = 12.dp, top = 5.dp),
+                                )
                             }
-                            if (!dockInspector && detail != null) WorkbenchDetail(detail!!, state.approvals, failures,
-                                tools.firstOrNull { it.id == tool?.id } ?: tool, artifacts.firstOrNull { it.id == artifactId },
-                                activity, ownerLabel, onOpenApproval, closeDetail, inspectTool,
+                            if (!dockInspector && hasInspector) inspector(
                                 Modifier.align(Alignment.CenterEnd).widthIn(max = 320.dp).fillMaxWidth(if (shortBody) 1f else .84f)
-                                    .fillMaxHeight().padding(top = 2.dp, end = 10.dp))
+                                    .fillMaxHeight().padding(top = 2.dp, end = 10.dp),
+                            )
                         }
                         CompositionLocalProvider(LocalBackdrop provides backdrop) {
                             Box(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 5.dp), contentAlignment = Alignment.Center) {
@@ -246,7 +286,7 @@ private fun WorkbenchBoard(
 }
 
 @Composable
-private fun ArtifactBoard(artifacts: List<PreviewItem>, open: (PreviewItem) -> Unit) {
+internal fun ArtifactBoard(artifacts: List<PreviewItem>, open: (PreviewItem) -> Unit) {
     LazyColumn(Modifier.fillMaxSize().testTag("artifact-preview"), contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(9.dp)) {
         item { Text("产物预览", style = MaterialTheme.typography.titleLarge) }
@@ -267,7 +307,9 @@ private fun ArtifactBoard(artifacts: List<PreviewItem>, open: (PreviewItem) -> U
 @Composable
 private fun WorkbenchDetail(detail: Detail, approvals: List<ApprovalRequest>, failures: List<ToolActivity>,
     tool: ToolActivity?, artifact: PreviewItem?, activity: WorkbenchActivity, ownerLabel: (ApprovalOwner?) -> String,
-    onApproval: (String) -> Unit, onClose: () -> Unit, onTool: (ToolActivity) -> Unit, modifier: Modifier) {
+    onApproval: (String) -> Unit, onClose: () -> Unit, onTool: (ToolActivity) -> Unit, modifier: Modifier,
+    resultCardFor: (ToolActivity) -> com.cordiact.interaction.ToolResultCard?,
+) {
     val shape = RoundedCornerShape(19.dp)
     Surface(modifier.testTag("landscape-inspector"), color = MaterialTheme.colorScheme.surfaceContainerLow, shape = shape) {
         Column(Modifier.fillMaxSize()) {
@@ -288,12 +330,16 @@ private fun WorkbenchDetail(detail: Detail, approvals: List<ApprovalRequest>, fa
                             DetailRow(req.toolName, risk + ownerLabel(req.owner)) { onApproval(req.id) }
                         }
                         if (failures.isNotEmpty()) item { BoardNote("当前会话失败步骤 · ${failures.size}") }
-                        items(failures, key = { "tool:${it.id}" }) { step -> DetailRow(step.name, step.summary) { onTool(step) } }
+                        items(failures, key = { "tool:${it.id}" }) { step -> DetailRow(step.name, step.forToolInspector().summary) { onTool(step) } }
                     }
                     Detail.TOOL -> tool?.let { step ->
+                        val preview = step.forToolInspector()
                         item { DetailRow(step.name, step.statusLabel()) }
-                        step.summary?.takeIf(String::isNotBlank)?.let { item { Text(it, style = MaterialTheme.typography.bodySmall) } }
-                        step.arguments.takeIf(String::isNotBlank)?.let { item { Text(it, style = MaterialTheme.typography.bodySmall) } }
+                        val card = resultCardFor(preview)
+                        if (card != null) item { ToolResultCardView(card) }
+                        else item { Text(preview.summary?.takeIf(String::isNotBlank) ?: "工具尚未返回可显示摘要",
+                            style = MaterialTheme.typography.bodySmall) }
+                        preview.arguments.takeIf(String::isNotBlank)?.let { item { Text(it, style = MaterialTheme.typography.bodySmall) } }
                     } ?: Unit
                     Detail.AGENTS, Detail.JOBS -> {
                         val entries = if (detail == Detail.AGENTS) activity.agents else activity.jobs

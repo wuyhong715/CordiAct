@@ -1,5 +1,7 @@
 package com.cordiact.core.search
 
+import com.cordiact.core.plugin.PluginContext
+
 const val SEARCH_PLUGIN_ID = "core.search"
 const val SEARCH_TOOL_ID = "search.web"
 const val FETCH_TOOL_ID = "search.fetch"
@@ -223,16 +225,51 @@ interface SearchService {
 
 /** Thread-safe provider registry. Ids are unique within each capability kind. */
 class SearchProviderRegistry {
-    private val searchProviders = linkedMapOf<String, SearchProvider>()
+    private class SearchEntry(val provider: SearchProvider, val context: PluginContext? = null) {
+        fun active() = context?.isContributionActive() != false
+    }
+
+    private val searchProviders = linkedMapOf<String, SearchEntry>()
     private val fetchProviders = linkedMapOf<String, FetchProvider>()
 
-    @Synchronized
-    fun registerSearch(provider: SearchProvider) {
-        require(provider.id.isNotBlank()) { "Search provider id must not be blank" }
-        require(searchProviders.putIfAbsent(provider.id, provider) == null) {
-            "Search provider '${provider.id}' is already registered"
+    fun registerSearch(provider: SearchProvider) = addSearch(provider.id, SearchEntry(provider))
+
+    /** APK composition only. A workbench or declaration package cannot publish network adapters. */
+    fun registerSearch(context: PluginContext, provider: SearchProvider) {
+        context.scope.requireOpen()
+        require(context.id.workspaceId == null && context.id.sessionId == null) { "Search adapters are host-global" }
+        val id = provider.id
+        val guarded = object : SearchProvider {
+            override val id = id
+            override val native = provider.native
+            override val routeProviderId = provider.routeProviderId
+            override val pricing = provider.pricing
+            override val billable = provider.billable
+            override fun available(): Boolean = context.isContributionActive() && provider.available() && context.isContributionActive()
+            override fun ready(route: ModelRoute?): Boolean = context.isContributionActive() && provider.ready(route) && context.isContributionActive()
+            override fun search(request: SearchRequest, signal: CancellationSignal): SearchResult {
+                val guardedSignal = CancellationSignal { signal.isCancelled() || Thread.currentThread().isInterrupted || !context.isContributionActive() }
+                if (guardedSignal.isCancelled()) throw retiredSearchProvider()
+                val result = try { provider.search(request, guardedSignal) } catch (failure: Exception) {
+                    if (guardedSignal.isCancelled()) throw retiredSearchProvider()
+                    throw failure
+                }
+                if (guardedSignal.isCancelled()) throw retiredSearchProvider()
+                return result
+            }
         }
+        val entry = SearchEntry(guarded, context)
+        addSearch(id, entry)
+        context.effect { synchronized(this) { searchProviders.remove(id, entry) } }
     }
+
+    @Synchronized
+    private fun addSearch(id: String, entry: SearchEntry) {
+        require(id.isNotBlank()) { "Search provider id must not be blank" }
+        require(searchProviders.putIfAbsent(id, entry) == null) { "Search provider '$id' is already registered" }
+    }
+
+    private fun retiredSearchProvider() = SearchException(SearchException.Code.CANCELLED, "Search provider registration retired")
 
     @Synchronized
     fun registerFetch(provider: FetchProvider) {
@@ -243,13 +280,13 @@ class SearchProviderRegistry {
     }
 
     @Synchronized
-    fun searchProviders(): List<SearchProvider> = searchProviders.values.toList()
+    fun searchProviders(): List<SearchProvider> = searchProviders.values.filter(SearchEntry::active).map { it.provider }
 
     @Synchronized
     fun fetchProviders(): List<FetchProvider> = fetchProviders.values.toList()
 
     @Synchronized
-    fun searchProvider(id: String): SearchProvider? = searchProviders[id]
+    fun searchProvider(id: String): SearchProvider? = searchProviders[id]?.takeIf(SearchEntry::active)?.provider
 
     @Synchronized
     fun fetchProvider(id: String): FetchProvider? = fetchProviders[id]

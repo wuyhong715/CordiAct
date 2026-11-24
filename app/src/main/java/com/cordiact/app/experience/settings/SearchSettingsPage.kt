@@ -54,7 +54,8 @@ internal fun SearchSettingsPage(facade: SearchSettings?, workspaceId: String, di
                 SettingsCard() { Column(Modifier.padding(16.dp)) {
                     Text(provider.id, style = MaterialTheme.typography.titleMedium)
                     Text(if (provider.keySet) "凭据已配置" else "凭据未设置或无需凭据", style = MaterialTheme.typography.bodySmall)
-                    TextButton(enabled = !busy, onClick = { work { result = facade.test(workspaceId, provider.id) } }) { Text("测试搜索（消耗服务额度）") }
+                    Text(if (provider.published) "适配器已注册 · 未检测连通性" else "适配器未注册 · 保留已保存配置", style = MaterialTheme.typography.bodySmall)
+                    TextButton(enabled = !busy && provider.published, onClick = { work { result = facade.test(workspaceId, provider.id) } }) { Text("测试搜索（消耗服务额度）") }
                 } }
             }
             result.forEach { Text(it) }
@@ -101,7 +102,8 @@ internal fun SearchSettingsPage(facade: SearchSettings?, workspaceId: String, di
                 editing = facade.snapshot(workspaceId).providers.first { it.id == provider.id }
             } }) { Text("保存服务配置") }
             TextButton(enabled = !busy, onClick = { work { facade.clearKey(provider.id); editing = facade.snapshot(workspaceId).providers.first { it.id == provider.id } } }) { Text("清除 Key") }
-            TextButton(enabled = !busy, onClick = { work { result = facade.test(workspaceId, provider.id) } }) { Text("测试搜索（会消耗服务额度）") }
+            TextButton(enabled = !busy && snapshot.providers.any { it.id == provider.id && it.published },
+                onClick = { work { result = facade.test(workspaceId, provider.id) } }) { Text("测试搜索（会消耗服务额度）") }
             result.forEach { Text(it) }
             TextButton(enabled = !busy && key.isBlank() && endpoint == snapshot.providers.first { it.id == provider.id }.endpoint, onClick = { editing = null; dirty(false) }) { Text("返回服务列表") }
         }

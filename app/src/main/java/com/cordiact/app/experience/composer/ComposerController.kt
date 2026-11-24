@@ -32,6 +32,7 @@ class ComposerController(
     private var pendingSave: Job? = null
     private var active: String? = null
     private var workspace: String? = null
+    private var draftRevision = 0L
     private var last = drafts.lastUsed()
     var pinned by mutableStatePreference(app, "pinned")
         private set
@@ -49,9 +50,13 @@ class ComposerController(
     private fun key(session: String) = "composer:$session"
     private fun update(session: String? = active, block: (ComposerState) -> ComposerState) {
         if (session == null) { mutable.update(block); return }
-        val next = block(if (active == session) mutable.value else snapshots[session] ?: ComposerState())
+        val previous = if (active == session) mutable.value else snapshots[session] ?: ComposerState()
+        val next = block(previous)
         snapshots[session] = next
-        if (active == session) mutable.value = next
+        if (active == session) {
+            if (next.text != previous.text || next.attachments != previous.attachments) draftRevision++
+            mutable.value = next
+        }
     }
 
     suspend fun prepareSession(session: String, workspaceId: String, models: List<ModelDescriptor>, fallback: ModelId?,
@@ -92,6 +97,7 @@ class ComposerController(
         active?.let { snapshots[it] = mutable.value.copy(popover = null) }
         active = session
         workspace = workspaceId
+        draftRevision++
         update(session) { prepared }
         save()
     }
@@ -119,6 +125,18 @@ class ComposerController(
         }
         save()
     }
+    /** Pin the exact empty draft across asynchronous host validation; never replace edited input. */
+    internal fun emptyDraftRevision(sessionId: String, workspaceId: String): Long? =
+        draftRevision.takeIf {
+            active == sessionId && workspace == workspaceId && mutable.value.text.isEmpty() && mutable.value.attachments.isEmpty()
+        }
+
+    internal fun insertIntoEmptyDraft(sessionId: String, workspaceId: String, revision: Long, value: String): Boolean {
+        if (emptyDraftRevision(sessionId, workspaceId) != revision) return false
+        text(value)
+        return true
+    }
+
     fun text(value: String) {
         update { it.copy(text = value, banner = null) }
         pendingSave?.cancel()

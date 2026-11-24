@@ -36,6 +36,8 @@ import com.cordiact.app.experience.model.OverviewSession
 import com.cordiact.app.experience.model.OverviewStatus
 import com.cordiact.app.experience.model.SidebarWorkspace
 import com.cordiact.app.experience.model.overviewSessions
+import com.cordiact.interaction.InteractionContext
+import com.cordiact.interaction.WorkspaceClientContributions.SessionActionOffer
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.hazeSource
 import java.time.Instant
@@ -52,6 +54,11 @@ internal fun AllSessionsPane(
     onWorkspaceOpened: () -> Unit,
     onAutomationTasks: () -> Unit,
     modifier: Modifier = Modifier,
+    currentPluginOwner: InteractionContext? = null,
+    sessionActions: List<SessionActionOffer> = emptyList(),
+    canInsertSessionAction: Boolean = false,
+    onSessionPlugins: (InteractionContext) -> Unit = {},
+    onSessionAction: (SessionActionOffer) -> Unit = {},
     overviewSegments: @Composable () -> Unit,
 ) {
     var query by rememberSaveable { mutableStateOf("") }
@@ -110,7 +117,9 @@ internal fun AllSessionsPane(
             onRename = { edit("session", it.session.id, it.session.title) },
             onPin = { viewModel.pinSession(it.session.id, !it.session.isPinned) },
             onArchive = { if (it.running || it.pending) confirmArchive = it.session.id else viewModel.archiveSession(it.session.id) },
-            onRestore = { viewModel.restoreSession(it.session.id) })
+            onRestore = { viewModel.restoreSession(it.session.id) },
+            currentPluginOwner = currentPluginOwner, sessionActions = sessionActions,
+            canInsertSessionAction = canInsertSessionAction, onSessionPlugins = onSessionPlugins, onSessionAction = onSessionAction)
     }
     val configuration = LocalConfiguration.current
     BoxWithConstraints(modifier.padding(horizontal = 16.dp).testTag("all-sessions-pane")) {
@@ -368,6 +377,8 @@ private fun SessionResults(
     archived: Boolean, busy: Boolean, current: String?, canReset: Boolean, onReset: () -> Unit,
     onOpen: (String) -> Unit, onRename: (OverviewSession) -> Unit, onPin: (OverviewSession) -> Unit,
     onArchive: (OverviewSession) -> Unit, onRestore: (OverviewSession) -> Unit,
+    currentPluginOwner: InteractionContext?, sessionActions: List<SessionActionOffer>,
+    canInsertSessionAction: Boolean, onSessionPlugins: (InteractionContext) -> Unit, onSessionAction: (SessionActionOffer) -> Unit,
 ) {
     val colors = MaterialTheme.colorScheme
     val haze = remember { HazeState() }
@@ -408,10 +419,16 @@ private fun SessionResults(
                         Surface(color = if (!archived && row.session.id == current) colors.primaryContainer.copy(alpha = .40f) else colors.surface,
                             shape = RoundedCornerShape(top, top, bottom, bottom),
                             border = BorderStroke(.5.dp, colors.outlineVariant.copy(alpha = .70f))) {
+                            val pluginOwner = currentPluginOwner?.takeIf {
+                                !archived && row.session.id == current && it.sessionId == row.session.id && it.workspaceId == row.workspace.id
+                            }
                             OverviewSessionRow(row, row.session.id == current, archived, busy,
                                 sessionTime(if (archived) row.session.archivedAtMillis ?: row.session.updatedAtMillis else row.session.updatedAtMillis, timezone, today),
                                 onOpen = { onOpen(row.session.id) }, onRename = { onRename(row) }, onPin = { onPin(row) },
-                                onArchive = { onArchive(row) }, onRestore = { onRestore(row) })
+                                onArchive = { onArchive(row) }, onRestore = { onRestore(row) },
+                                onSessionPlugins = pluginOwner?.let { owner -> { onSessionPlugins(owner) } },
+                                sessionActions = if (pluginOwner == null) emptyList() else sessionActions,
+                                canInsertSessionAction = canInsertSessionAction, onSessionAction = onSessionAction)
                         }
                     }
                 }
@@ -426,6 +443,8 @@ private fun SessionResults(
 private fun OverviewSessionRow(
     row: OverviewSession, current: Boolean, archived: Boolean, busy: Boolean, time: String,
     onOpen: () -> Unit, onRename: () -> Unit, onPin: () -> Unit, onArchive: () -> Unit, onRestore: () -> Unit,
+    onSessionPlugins: (() -> Unit)?, sessionActions: List<SessionActionOffer>,
+    canInsertSessionAction: Boolean, onSessionAction: (SessionActionOffer) -> Unit,
 ) {
     val colors = MaterialTheme.colorScheme
     var open by remember { mutableStateOf(false) }
@@ -454,13 +473,46 @@ private fun OverviewSessionRow(
             IconButton(onClick = { open = true }, enabled = !busy) {
                 AppGlyph(GlyphName.More, "会话操作：$title", modifier = Modifier.size(17.dp))
             }
-            AnchoredPopover(open, { open = false }, width = 160.dp, maxHeight = 156.dp, alignEnd = true, preferBelow = true) {
-                DropdownMenuItem(text = { Text("重命名") }, leadingIcon = { AppGlyph(GlyphName.File, size = GlyphSize.Small) },
-                    contentPadding = PaddingValues(horizontal = 8.dp), onClick = { open = false; onRename() })
-                DropdownMenuItem(text = { Text(if (row.session.isPinned) "取消置顶" else "置顶") }, leadingIcon = { AppGlyph(GlyphName.Pin, size = GlyphSize.Small) },
-                    contentPadding = PaddingValues(horizontal = 8.dp), onClick = { open = false; onPin() })
-                DropdownMenuItem(text = { Text("归档") }, leadingIcon = { AppGlyph(GlyphName.Archive, size = GlyphSize.Small) },
-                    contentPadding = PaddingValues(horizontal = 8.dp), onClick = { open = false; onArchive() })
+            SessionRowPopover(open, { open = false }, row.session.isPinned,
+                onRename, onPin, onArchive, onSessionPlugins, sessionActions, canInsertSessionAction, onSessionAction)
+        }
+    }
+}
+
+@Composable
+internal fun SessionRowPopover(
+    open: Boolean, onDismiss: () -> Unit, pinned: Boolean,
+    onRename: () -> Unit, onPin: () -> Unit, onArchive: () -> Unit,
+    onSessionPlugins: (() -> Unit)?, sessionActions: List<SessionActionOffer>,
+    canInsertSessionAction: Boolean, onSessionAction: (SessionActionOffer) -> Unit,
+) {
+    val hasExtensions = onSessionPlugins != null
+    AnchoredPopover(open, onDismiss, width = if (hasExtensions) 258.dp else 160.dp,
+        maxHeight = if (hasExtensions) 320.dp else 156.dp, alignEnd = true, preferBelow = true) {
+        Column(Modifier.verticalScroll(rememberScrollState())) {
+            DropdownMenuItem(text = { Text("重命名") }, leadingIcon = { AppGlyph(GlyphName.File, size = GlyphSize.Small) },
+                contentPadding = PaddingValues(horizontal = 8.dp), onClick = { onDismiss(); onRename() })
+            DropdownMenuItem(text = { Text(if (pinned) "取消置顶" else "置顶") }, leadingIcon = { AppGlyph(GlyphName.Pin, size = GlyphSize.Small) },
+                contentPadding = PaddingValues(horizontal = 8.dp), onClick = { onDismiss(); onPin() })
+            DropdownMenuItem(text = { Text("归档") }, leadingIcon = { AppGlyph(GlyphName.Archive, size = GlyphSize.Small) },
+                contentPadding = PaddingValues(horizontal = 8.dp), onClick = { onDismiss(); onArchive() })
+            if (onSessionPlugins != null) {
+                HorizontalDivider()
+                DropdownMenuItem(text = { Text("会话插件试用") }, leadingIcon = { AppGlyph(GlyphName.Sparkle, size = GlyphSize.Small) },
+                    modifier = Modifier.testTag("session-row-trials"), contentPadding = PaddingValues(horizontal = 8.dp),
+                    onClick = { onDismiss(); onSessionPlugins() })
+                sessionActions.forEach { offer ->
+                    val action = offer.action
+                    DropdownMenuItem(text = {
+                        Column {
+                            Text(action.description.label, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                            Text("${action.ownerPluginId} · /${action.description.command}", maxLines = 2,
+                                overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelSmall)
+                        }
+                    }, enabled = canInsertSessionAction, leadingIcon = { AppGlyph(GlyphName.Terminal, size = GlyphSize.Small) },
+                        modifier = Modifier.testTag("session-action-${action.ownerPluginId}-${action.description.id}"),
+                        contentPadding = PaddingValues(horizontal = 8.dp), onClick = { onDismiss(); onSessionAction(offer) })
+                }
             }
         }
     }

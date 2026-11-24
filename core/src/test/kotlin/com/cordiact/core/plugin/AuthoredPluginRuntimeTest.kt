@@ -654,6 +654,31 @@ class AuthoredPluginRuntimeTest {
     }
 
     @Test
+    fun `withdrawal confirmation expires on pause and cannot withdraw a replacement`() {
+        val f = Fixture()
+        val view = Any()
+        val foreground = AuthoredPluginForeground().apply { resume(view); select("a", "s") }
+        fun permit() = requireNotNull(foreground.openConfirmation("a", "s"))
+        f.put("same bytes")
+        val digest = AuthoredPluginDrafts(f.files).preview("a", ID).sha256
+        fun activate() = f.runtime.activateForSession(permit(), ID, digest) { true }
+        val first = activate()
+        val expired = permit()
+        foreground.pause(view)
+        foreground.resume(view)
+        assertEquals(Code.CALLER_UNAVAILABLE, assertFailsWith<AuthoredPluginException> {
+            f.runtime.revokeConfirmed(expired, first)
+        }.code)
+        assertSame(first, f.runtime.listForSession("a", "s").single())
+        assertSame(first, f.runtime.revokeConfirmed(permit(), first))
+        val replacement = activate()
+        assertEquals(Code.VERSION_CHANGED, assertFailsWith<AuthoredPluginException> {
+            f.runtime.revokeConfirmed(permit(), first)
+        }.code)
+        assertSame(replacement, f.runtime.listForSession("a", "s").single())
+    }
+
+    @Test
     fun `user confirmation never replaces an active source version and shares the session quota`() {
         val f = Fixture()
         val foreground = AuthoredPluginForeground().apply { resume(Any()); select("a", "s") }

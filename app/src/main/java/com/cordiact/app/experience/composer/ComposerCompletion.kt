@@ -20,10 +20,11 @@ import kotlinx.coroutines.withContext
 
 @Composable
 internal fun CompletionEditor(app: CordiActApplication?, sessionId: String, workspaceId: String?, text: String,
-    enabled: Boolean, onText: (String) -> Unit, onSubmit: () -> Unit, maxLines: Int = 6, compact: Boolean = false) {
+    enabled: Boolean, onText: (String) -> Unit, onSubmit: () -> Unit, maxLines: Int = 6, compact: Boolean = false,
+    commandRevision: Any? = null) {
     var editor by remember(sessionId, workspaceId) { mutableStateOf(TextFieldValue(text, TextRange(text.length))) }
-    var candidates by remember(sessionId, workspaceId) { mutableStateOf(emptyList<InputCompletionCandidate>()) }
-    var candidateOwner by remember(sessionId, workspaceId) { mutableStateOf<TextFieldValue?>(null) }
+    var candidates by remember(sessionId, workspaceId, commandRevision) { mutableStateOf(emptyList<InputCompletionCandidate>()) }
+    var candidateOwner by remember(sessionId, workspaceId, commandRevision) { mutableStateOf<TextFieldValue?>(null) }
     var dismissed by remember(sessionId, workspaceId) { mutableStateOf<TextFieldValue?>(null) }
     var selected by remember(sessionId, workspaceId) { mutableIntStateOf(0) }
     val focus = remember { FocusRequester() }
@@ -31,7 +32,7 @@ internal fun CompletionEditor(app: CordiActApplication?, sessionId: String, work
     val target = if (enabled && editor.composition == null && editor.selection.collapsed && workspaceId != null)
         InputSyntax.completionTarget(editor.text, editor.selection.start) else null
     val snapshot = editor
-    LaunchedEffect(snapshot, workspaceId, enabled, dismissed) {
+    LaunchedEffect(snapshot, sessionId, workspaceId, enabled, dismissed, commandRevision) {
         candidates = emptyList(); candidateOwner = null; selected = 0
         if (target != null && snapshot != dismissed && workspaceId != null && app != null) {
             val found = withContext(Dispatchers.IO) {

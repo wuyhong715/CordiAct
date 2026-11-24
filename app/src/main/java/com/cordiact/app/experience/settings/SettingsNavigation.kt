@@ -4,6 +4,7 @@ import java.net.URI
 
 internal enum class SettingsRoute(val title: String) {
     HOME("设置"), MODELS("模型与提供商"), PLUGINS("插件与连接"), SECURITY("权限与安全"),
+    WORKSPACE_PACKAGES("工作区插件包"), WORKSPACE_PACKAGE_DESCRIPTION("插件说明"), PLUGIN_DIAGNOSTICS("插件诊断"),
     WORKSPACE_TOOLS("工作区工具策略"), PROVIDER_DRAFTS("工作区提供商声明"), MCP_DRAFTS("工作区 MCP 声明"),
     APP_PREFERENCES("应用偏好"), PROJECT_INSTRUCTIONS("项目指令"), WORKSPACE_DEFAULTS("工作区默认"), PROVIDERS("模型提供商"), ADD("添加模型提供商"), DETAIL("提供商详情"),
     ROLES("模型角色"), AUDIT("审计日志"), PERMISSIONS("权限档位"), PRIVILEGE("特权执行"),
@@ -12,6 +13,8 @@ internal enum class SettingsRoute(val title: String) {
     INPUT_VARIABLES("预设变量"), TASKS("自动化任务"), SSH("SSH 主机"), MCP("MCP 服务器"), SEARCH("搜索服务"), USAGE("用量与统计"), ABOUT("关于")
 }
 
+private val workspaceExtensionRoutes = setOf(SettingsRoute.WORKSPACE_PACKAGES, SettingsRoute.WORKSPACE_PACKAGE_DESCRIPTION, SettingsRoute.PLUGIN_DIAGNOSTICS)
+
 /** Pure navigation state: a real stack, shared by system and toolbar back actions. */
 internal data class SettingsNavigation(val entries: List<SettingsRoute> = listOf(SettingsRoute.HOME)) {
     init { require(entries.isNotEmpty() && entries.first() == SettingsRoute.HOME) }
@@ -19,6 +22,8 @@ internal data class SettingsNavigation(val entries: List<SettingsRoute> = listOf
     fun push(route: SettingsRoute): SettingsNavigation = when {
         route == SettingsRoute.HOME -> SettingsNavigation()
         route == current -> this
+        route in workspaceExtensionRoutes && current != SettingsRoute.PLUGINS ->
+            push(SettingsRoute.PLUGINS).push(route)
         else -> copy(entries = entries + route)
     }
     fun pop(): SettingsNavigation? = if (entries.size == 1) null else copy(entries = entries.dropLast(1))
@@ -53,6 +58,7 @@ internal data class SettingsLink(val route: SettingsRoute, val providerId: Strin
                     path == listOf("roles") -> SettingsLink(SettingsRoute.ROLES)
                     else -> null
                 }
+                "plugins" -> if (uri.rawPath == "/packages") SettingsLink(SettingsRoute.WORKSPACE_PACKAGES) else null
                 "connections" -> when {
                     path.isEmpty() -> SettingsLink(SettingsRoute.CONNECTIONS)
                     path.size == 1 && path[0] in connections -> SettingsLink(SettingsRoute.CONNECTIONS,

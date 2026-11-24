@@ -33,12 +33,16 @@ class InteractionCommandRegistry(
     /** Legacy built-ins remain global and use the existing owner enable switch. */
     fun register(descriptor: CommandDescriptor): CommandDescriptor = add(descriptor, null, requiresOwnerSwitch = true, admitted = { true }, localText = null)
 
+    internal class Publication(val descriptor: CommandDescriptor, private val remove: () -> Unit) : AutoCloseable {
+        override fun close() = remove()
+    }
+
     internal fun publish(
         context: PluginContext, descriptor: CommandDescriptor, requiresOwnerSwitch: Boolean, admitted: () -> Boolean,
         localText: String?,
-    ): AutoCloseable {
+    ): Publication {
         val registration = add(descriptor, context, requiresOwnerSwitch, admitted, localText)
-        return AutoCloseable { unregisterRegistration(registration) }
+        return Publication(registration) { unregisterRegistration(registration) }
     }
 
     @Synchronized
@@ -89,6 +93,20 @@ class InteractionCommandRegistry(
     /** Text from the exact host-owned registration, never from a descriptor supplied by a caller. */
     internal fun localText(command: CommandDescriptor, context: InteractionContext): String? =
         visibleRegistrations(context, command.name).singleOrNull { it.descriptor === command }?.localText
+
+    /** Session-action insertion must not resolve a same-name replacement, alias, or model command. */
+    internal fun isCurrentLocalPrimary(
+        command: CommandDescriptor, context: InteractionContext, publisher: PluginContext,
+    ): Boolean = visibleRegistrations(context, command.name).singleOrNull()?.let {
+        it.publisher === publisher && it.descriptor === command && it.localText != null
+    } == true
+
+    /** Main-thread half of an already checked session action; does not perform a storage read. */
+    @Synchronized
+    internal fun remainsPublishedLocalPrimary(command: CommandDescriptor, publisher: PluginContext): Boolean =
+        publisher.isContributionActive() && registrations.any {
+            it.publisher === publisher && it.descriptor === command && it.localText != null && it.admitted()
+        }
 
     fun candidates(context: InteractionContext? = null): List<CommandDescriptor> =
         visible(context).sortedBy { it.name }

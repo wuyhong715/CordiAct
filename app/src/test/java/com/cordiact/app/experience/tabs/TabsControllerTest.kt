@@ -33,6 +33,14 @@ class TabsControllerTest {
         assertEquals("s:a", tabs.activeKey)
     }
 
+    @Test fun withdrawnPageAlwaysReturnsToLoadedConversation() {
+        val store = Memory(listOf("s:other", "p:cordiact.trace", "s:loaded"), "p:cordiact.trace")
+        val tabs = TabsController(store)
+        tabs.prune(emptySet(), emptySet(), loadedSession = "loaded")
+        assertEquals(listOf("s:other", "s:loaded"), store.keys)
+        assertEquals("s:loaded", store.active)
+    }
+
     @Test fun move_reorders() {
         val tabs = TabsController(Memory(listOf("s:a", "s:b", "s:c"), "s:a"))
         tabs.move(0, 2)

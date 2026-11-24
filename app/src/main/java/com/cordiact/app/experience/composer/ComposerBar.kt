@@ -41,6 +41,7 @@ internal fun ComposerBar(state: ExperienceState, composer: ComposerState, contro
     compact: Boolean = false, maxEditorLines: Int = 3,
     onSendLocal: ((PreparedInteraction) -> Boolean)? = null,
     prepareLocal: ((String, InteractionContext) -> PreparedInteraction?)? = null,
+    commandRevision: Any? = null,
 ) {
     var waiting by remember(state.sessionId) { mutableStateOf(false) }
     var confirmLocal by remember(state.sessionId) { mutableStateOf(false) }
@@ -83,14 +84,16 @@ internal fun ComposerBar(state: ExperienceState, composer: ComposerState, contro
         InteractionContext(sessionId, workspaceId)
     } else null
     // Reset immediately when the draft or owner changes, before the new IO lookup completes.
-    var localOffer by remember(prepareLocal, localOwner, composer.text) { mutableStateOf<PreparedInteraction?>(null) }
-    LaunchedEffect(prepareLocal, localOwner, composer.text) {
+    var localOffer by remember(prepareLocal, localOwner, composer.text, commandRevision) { mutableStateOf<PreparedInteraction?>(null) }
+    var checkingLocal by remember(prepareLocal, localOwner, composer.text, commandRevision) { mutableStateOf(localOwner != null) }
+    LaunchedEffect(prepareLocal, localOwner, composer.text, commandRevision) {
         if (prepareLocal != null && localOwner != null) {
             localOffer = withContext(Dispatchers.IO) { prepareLocal(composer.text, localOwner) }
+            checkingLocal = false
         }
     }
     fun submit() {
-        if (state.loading || state.archived || state.running || state.stopping ||
+        if (state.loading || state.archived || state.running || state.stopping || checkingLocal ||
             composer.sendAvailability != ComposerRules.SendAvailability.READY) return
         val offer = localOffer
         if (offer != null && onSendLocal != null) onSendLocal(offer)
@@ -109,7 +112,7 @@ internal fun ComposerBar(state: ExperienceState, composer: ComposerState, contro
             CompletionEditor(context.applicationContext as? com.cordiact.app.CordiActApplication,
                 sessionId.orEmpty(), workspaceId, composer.text,
                 !state.loading && !waiting, controller::text,
-                maxLines = if (compact) maxEditorLines else 6, compact = compact,
+                maxLines = if (compact) maxEditorLines else 6, compact = compact, commandRevision = commandRevision,
                 onSubmit = { if (!waiting) submit() })
         }
     }
@@ -160,7 +163,7 @@ internal fun ComposerBar(state: ExperienceState, composer: ComposerState, contro
     }
     val trailing: @Composable () -> Unit = {
         ComposerPermission(state.workspace?.id, composer.model, !state.running && !state.loading && !state.stopping && !waiting)
-        SendAction(state, composer, waiting, localReady = localOffer != null) {
+        SendAction(state, composer, waiting, localReady = localOffer != null, checkingLocal = checkingLocal) {
             if (state.running) onStop() else if (waiting) waiting = false else if (composer.sendAvailability == ComposerRules.SendAvailability.WAIT_FOR_ATTACHMENTS) waiting = true else submit()
         }
     }
@@ -231,14 +234,14 @@ internal fun ComposerBar(state: ExperienceState, composer: ComposerState, contro
 }
 
 @Composable
-private fun SendAction(state: ExperienceState, composer: ComposerState, waiting: Boolean, localReady: Boolean, onClick: () -> Unit) {
+private fun SendAction(state: ExperienceState, composer: ComposerState, waiting: Boolean, localReady: Boolean, checkingLocal: Boolean, onClick: () -> Unit) {
     val duration = motionDuration(Motion.Standard)
     val canSend = when (composer.sendAvailability) {
         ComposerRules.SendAvailability.READY -> localReady || composer.model != null
         ComposerRules.SendAvailability.WAIT_FOR_ATTACHMENTS -> composer.model != null
         ComposerRules.SendAvailability.BLOCKED, ComposerRules.SendAvailability.DISABLED -> false
     }
-    val enabled = !state.loading && !state.stopping && (state.running || (!state.archived && (waiting || canSend)))
+    val enabled = !state.loading && !state.stopping && (state.running || (!state.archived && (waiting || (!checkingLocal && canSend))))
     val color by animateColorAsState(when { !enabled -> MaterialTheme.colorScheme.surfaceContainerHigh; state.running -> com.cordiact.app.experience.Lumen.Signal; else -> MaterialTheme.colorScheme.onSurface }, tween(duration))
     IconButton(onClick, enabled = enabled, modifier = Modifier.size(48.dp).testTag(if (state.running) "stop-generation" else "send-message")) {
         Surface(color = color, shape = CircleShape) {

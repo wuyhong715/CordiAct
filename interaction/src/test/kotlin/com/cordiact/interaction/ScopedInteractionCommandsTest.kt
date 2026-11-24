@@ -158,7 +158,9 @@ class ScopedInteractionCommandsTest {
         val descriptor = command("demo", "project", "must not call executor").copy(executor =
             InteractionCommandExecutor { _, _, _, _ -> error("local path must not call executor") })
         kernel.register(id, object : ContextPlugin {
-            override fun start(context: PluginContext) = adapter.registerDeclarativePackageCommand(context, descriptor, { true }, "literal @not-a-reference")
+            override fun start(context: PluginContext) {
+                adapter.registerDeclarativePackageCommand(context, descriptor, { true }, "literal @not-a-reference")
+            }
         })
         kernel.enable(id)
         registry.register(command("host", "global", "not local"))
@@ -176,10 +178,32 @@ class ScopedInteractionCommandsTest {
         assertNotNull(service.prepareLocalCommand("/project", a2))
     }
 
+    @Test fun `client insertion checks the command publication even within the same publisher generation`() {
+        val id = PluginInstanceId("demo", "a")
+        val descriptor = command("demo", "project", "local text")
+        lateinit var publisher: PluginContext
+        lateinit var first: CommandDescriptor
+        kernel.register(id, object : ContextPlugin {
+            override fun start(context: PluginContext) {
+                publisher = context
+                first = adapter.registerDeclarativePackageCommand(context, descriptor, { true }, "fixed")
+            }
+        })
+        kernel.enable(id)
+        assertTrue(registry.isCurrentLocalPrimary(first, a1, publisher))
+        assertTrue(!registry.isCurrentLocalPrimary(first.copy(name = "project-alias"), a1, publisher))
+        assertTrue(registry.unregisterRegistration(first))
+        val replacement = adapter.registerDeclarativePackageCommand(publisher, descriptor, { true }, "fixed")
+        assertTrue(!registry.isCurrentLocalPrimary(first, a1, publisher))
+        assertTrue(registry.isCurrentLocalPrimary(replacement, a1, publisher))
+    }
+
     @Test fun `local dispatch rechecks the registration after authorization`() {
         val id = PluginInstanceId("demo", "a")
         kernel.register(id, object : ContextPlugin {
-            override fun start(context: PluginContext) = adapter.registerDeclarativePackageCommand(context, command("demo", "project", "executor"), { true }, "literal")
+            override fun start(context: PluginContext) {
+                adapter.registerDeclarativePackageCommand(context, command("demo", "project", "executor"), { true }, "literal")
+            }
         })
         kernel.enable(id)
         val denied = InteractionService(registry, directory, fills, InteractionAuthorization { _, _, _ -> AuthorizationDecision(true, requiresConfirmation = true) }).also { it.setEnabled(true) }

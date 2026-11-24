@@ -188,6 +188,20 @@ class ExperienceComponentTest {
         compose.onNodeWithText("等待可渲染产物").assertIsDisplayed()
         compose.onNodeWithText("not-an-artifact").assertDoesNotExist()
     }
+    @Test fun inspectorShowsHostCardOnlyWhileAvailableAndFallsBackToStoredText() {
+        val step = ToolActivity("c", "tool", summary = "保存的通用摘要", phase = ToolPhase.SUCCEEDED, startedAt = 100)
+        var card by mutableStateOf<com.cordiact.interaction.ToolResultCard?>(
+            com.cordiact.interaction.ToolResultCard("宿主结果卡", listOf("内置文案")),
+        )
+        content { CompactInspector(step, {}, card = card) }
+        compose.onNodeWithTag("tool-result-card").assertExists()
+        compose.onNodeWithText("宿主结果卡").assertExists()
+        compose.onNodeWithText("保存的通用摘要").assertDoesNotExist()
+        compose.runOnIdle { card = null }
+        compose.onNodeWithTag("tool-result-card").assertDoesNotExist()
+        compose.onNodeWithText("保存的通用摘要").assertExists()
+    }
+
     @Test fun inspector_staysBelowHalfViewport() {
         content { CompactInspector(ToolActivity("c", "terminal", "echo test", "x\n".repeat(200), startedAt = 100), {}) }
         compose.onNodeWithContentDescription("关闭工具详情").assertIsDisplayed()
@@ -305,47 +319,76 @@ class ExperienceComponentTest {
         assertEquals(before, compose.onNodeWithTag("frame-composer").getUnclippedBoundsInRoot().bottom.value, 1f)
     }
 
-    @Test fun workbenchPluginMenu_keepsWorkspaceAndSessionActionsSeparate() {
-        var workspaceReady by mutableStateOf(false)
-        var sessionReady by mutableStateOf(false)
-        var workspaceOpens = 0
-        var sessionOpens = 0
+    @Test fun currentSessionRow_keepsTrialEntryAmongNormalActions() {
+        var current by mutableStateOf(false)
+        var trialOpens = 0
         content {
-            WorkbenchPluginMenu(
-                onWorkspacePlugins = if (workspaceReady) ({ workspaceOpens++ }) else null,
-                onSessionPlugins = if (sessionReady) ({ sessionOpens++ }) else null,
-            )
+            Box(Modifier.padding(32.dp)) {
+                SessionRowPopover(open = true, onDismiss = {}, pinned = false, onRename = {}, onPin = {}, onArchive = {},
+                    onSessionPlugins = if (current) ({ trialOpens++ }) else null, sessionActions = emptyList(),
+                    canInsertSessionAction = false, onSessionAction = { error("No extension actions") })
+            }
         }
-        val menu = compose.onNodeWithTag("workbench-plugin-menu")
-        menu.assertIsNotEnabled()
-        compose.runOnIdle { workspaceReady = true }
-        menu.performClick()
-        compose.onNodeWithTag("workbench-session-plugins").assertDoesNotExist()
-        compose.onNodeWithTag("workbench-workspace-plugins").performClick()
-        compose.runOnIdle { assertEquals(1, workspaceOpens); assertEquals(0, sessionOpens); sessionReady = true }
-        menu.performClick()
-        compose.onNodeWithTag("workbench-session-plugins").performClick()
-        compose.runOnIdle { assertEquals(1, workspaceOpens); assertEquals(1, sessionOpens) }
+        compose.onNodeWithText("重命名").assertExists()
+        compose.onNodeWithTag("session-row-trials").assertDoesNotExist()
+        compose.runOnIdle { current = true }
+        compose.onNodeWithTag("session-row-trials").performClick()
+        compose.runOnIdle { assertEquals(1, trialOpens) }
     }
 
-    @Test fun sessionPlugins_canOpenFromWorkbenchWithoutModelAndRevokeOnlyAfterConfirmation() {
+    @Test fun sessionPlugins_canRevokeOnlyAfterConfirmation() {
         val receipt = AuthoredPluginReceipt("demo", "a".repeat(64), listOf("extension.authored.demo.show"))
-        var shown by mutableStateOf(false)
         var revoked: AuthoredPluginReceipt? = null
         content {
-            WorkbenchPluginMenu(onWorkspacePlugins = null, onSessionPlugins = { shown = true })
-            if (shown) SessionPluginsDialog(
+            SessionPluginsDialog(
                 receipts = listOf(receipt), reading = false, busy = false, note = null, failure = null,
-                onDismiss = { shown = false }, onRefresh = {}, onRevoke = { revoked = it },
+                onDismiss = {}, onRefresh = {}, onRevoke = { revoked = it },
             )
         }
-        compose.onNodeWithTag("workbench-plugin-menu").performClick()
-        compose.onNodeWithTag("workbench-session-plugins").performClick()
         compose.onNodeWithText("extension.authored.demo.show").assertExists()
         compose.onNodeWithTag("session-plugin-revoke-demo").performClick()
         compose.runOnIdle { assertNull(revoked) }
         compose.onNodeWithTag("session-plugin-confirm-revoke").performClick()
         compose.runOnIdle { assertSame(receipt, revoked) }
+    }
+
+    @Test fun clientAction_canFillOnlyTheUnchangedEmptyDraft() {
+        lateinit var controller: com.cordiact.app.experience.composer.ComposerController
+        content {
+            val scope = rememberCoroutineScope()
+            val app = org.robolectric.RuntimeEnvironment.getApplication()
+            controller = remember { com.cordiact.app.experience.composer.ComposerController(app, scope,
+                { error("No attachment read") }, { error("No import") }) }
+        }
+        compose.runOnIdle {
+            val empty = com.cordiact.app.experience.composer.ComposerState()
+            controller.bindSession("a", "workspace", empty)
+            val beforeEdit = requireNotNull(controller.emptyDraftRevision("a", "workspace"))
+            controller.text("keep my draft")
+            assertFalse(controller.insertIntoEmptyDraft("a", "workspace", beforeEdit, "/local"))
+            assertEquals("keep my draft", controller.state.value.text)
+            controller.text("")
+            assertFalse(controller.insertIntoEmptyDraft("a", "workspace", beforeEdit, "/local"))
+            val beforeSwitch = requireNotNull(controller.emptyDraftRevision("a", "workspace"))
+            controller.bindSession("b", "workspace", empty)
+            controller.bindSession("a", "workspace", empty)
+            assertFalse(controller.insertIntoEmptyDraft("a", "workspace", beforeSwitch, "/local"))
+            val attachment = com.cordiact.app.experience.composer.AttachmentChip(
+                com.cordiact.core.attachment.AttachmentDescriptor(com.cordiact.core.attachment.AttachmentId("file"),
+                    "workspace", "text/plain", "notes.txt", 3, "a".repeat(64), com.cordiact.core.attachment.AttachmentState.READY, 0,
+                    verifiedAtMillis = 0),
+                com.cordiact.core.attachment.AttachmentState.READY,
+            )
+            controller.bindSession("a", "workspace", empty.copy(attachments = listOf(attachment)))
+            assertNull(controller.emptyDraftRevision("a", "workspace"))
+            assertFalse(controller.insertIntoEmptyDraft("a", "workspace", beforeSwitch, "/local"))
+            assertEquals(listOf(attachment), controller.state.value.attachments)
+            controller.bindSession("a", "workspace", empty)
+            val current = requireNotNull(controller.emptyDraftRevision("a", "workspace"))
+            assertFalse(controller.insertIntoEmptyDraft("a", "other", current, "/local"))
+            assertTrue(controller.insertIntoEmptyDraft("a", "workspace", current, "/local"))
+            assertEquals("/local", controller.state.value.text)
+        }
     }
 
     @Test fun pluginDrafts_emptyFilteredPageCanAdvanceAndPreviewShowsDifferentActiveVersion() {

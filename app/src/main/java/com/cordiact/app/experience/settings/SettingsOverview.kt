@@ -71,6 +71,10 @@ internal val settingsCatalog = listOf(
         OverviewEntry("搜索服务", GlyphName.Search, SettingsRoute.SEARCH),
         OverviewEntry("MCP 服务器", GlyphName.Code, SettingsRoute.MCP),
         OverviewEntry("用量与统计", GlyphName.Trace, SettingsRoute.USAGE))),
+    OverviewCategory("工作区设置 › 插件与连接", listOf(
+        OverviewEntry(SettingsRoute.WORKSPACE_PACKAGES.title, GlyphName.Folder, SettingsRoute.WORKSPACE_PACKAGES),
+        OverviewEntry(SettingsRoute.PLUGIN_DIAGNOSTICS.title, GlyphName.Trace, SettingsRoute.PLUGIN_DIAGNOSTICS),
+    )),
     OverviewCategory("连接与执行", listOf(
         OverviewEntry("连接与能力", GlyphName.Link, SettingsRoute.CONNECTIONS),
         OverviewEntry("SSH 主机", GlyphName.Terminal, SettingsRoute.SSH),
@@ -100,7 +104,8 @@ internal val settingsDirectory = listOf(
 internal fun settingsDirectoryRoute(route: SettingsRoute): SettingsRoute = when (route) {
     SettingsRoute.AGENT_PRESETS, SettingsRoute.AGENT_PRESET_EDITOR, SettingsRoute.PROJECT_INSTRUCTIONS -> SettingsRoute.WORKSPACE_DEFAULTS
     SettingsRoute.PROVIDER_DRAFTS, SettingsRoute.PROVIDERS, SettingsRoute.ADD, SettingsRoute.DETAIL, SettingsRoute.ROLES -> SettingsRoute.MODELS
-    SettingsRoute.WORKSPACE_TOOLS, SettingsRoute.MCP_DRAFTS, SettingsRoute.CONNECTIONS, SettingsRoute.MCP, SettingsRoute.SSH, SettingsRoute.SEARCH -> SettingsRoute.PLUGINS
+    SettingsRoute.WORKSPACE_PACKAGES, SettingsRoute.WORKSPACE_PACKAGE_DESCRIPTION, SettingsRoute.PLUGIN_DIAGNOSTICS, SettingsRoute.WORKSPACE_TOOLS,
+    SettingsRoute.MCP_DRAFTS, SettingsRoute.CONNECTIONS, SettingsRoute.MCP, SettingsRoute.SSH, SettingsRoute.SEARCH -> SettingsRoute.PLUGINS
     SettingsRoute.PERMISSIONS, SettingsRoute.PRIVILEGE, SettingsRoute.CREDENTIALS, SettingsRoute.AUDIT -> SettingsRoute.SECURITY
     SettingsRoute.ATTACHMENTS, SettingsRoute.INPUT_VARIABLES, SettingsRoute.USAGE, SettingsRoute.TASKS -> SettingsRoute.APP_PREFERENCES
     else -> route
@@ -119,7 +124,9 @@ internal fun SettingsBranch(route: SettingsRoute, navigate: (SettingsRoute) -> U
                 Triple(SettingsRoute.ROLES, "模型角色", "辅助模型等客户端设置"),
             ),
         )
-        SettingsRoute.PLUGINS -> listOf("插件与连接" to listOf(
+        SettingsRoute.PLUGINS -> listOf("诊断" to listOf(
+            Triple(SettingsRoute.PLUGIN_DIAGNOSTICS, "插件诊断", "只读 · 查看已安装包和 APK 内置插件"),
+        ), "连接与策略" to listOf(
             Triple(SettingsRoute.MCP_DRAFTS, "MCP 声明", "当前工作区 · 不联网、不启用"),
             Triple(SettingsRoute.MCP, "MCP", "此客户端 · 传统连接管理"),
             Triple(SettingsRoute.SEARCH, "搜索", "客户端服务与工作区搜索策略"),

@@ -10,6 +10,7 @@ import com.cordiact.core.action.ApprovalRequest
 import com.cordiact.core.conversation.*
 import com.cordiact.core.workspace.Workspace
 import com.cordiact.interaction.InteractionContext
+import com.cordiact.interaction.WorkspaceClientContributions
 import com.cordiact.model.providers.ModelProtocol
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
@@ -293,7 +294,8 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
                                 startedAt = startedAt,
                                 finishedAt = finishedAt,
                                 durationMillis = duration,
-                            ))
+                                provenance = if (phaseVal == ToolPhase.SUCCEEDED) decodeToolTraceProvenance(t.optJSONObject("provenance")) else null,
+                            ).forToolInspector())
                         }
                     }
                 }
@@ -433,10 +435,12 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
             val models = withContext(Dispatchers.IO) { mutable.value.workspace?.id?.let(app::workspaceModels) ?: app.modelAdapter.models() }
             val prefs = app.getSharedPreferences("cordiact.settings.models", android.content.Context.MODE_PRIVATE)
             val preferred = models.firstOrNull { it.id.providerId == prefs.getString("provider", null) && it.id.modelId == prefs.getString("model", null) }?.id
-            mutable.update { current -> current.copy(models = models,
-                providerNames = app.modelProviders.providers().associate { it.providerId to it.displayName },
-                model = preferred ?: current.model?.takeIf { model -> models.any { it.id == model } } ?: models.firstOrNull()?.id) }
-            mutable.value.model?.let(::selectModel)
+            val current = mutable.value
+            val selected = composer.value.model ?: current.model
+            val next = selected?.takeIf { model -> models.any { it.id == model } } ?: preferred ?: models.firstOrNull()?.id
+            mutable.update { it.copy(models = models,
+                providerNames = app.modelProviders.providers().associate { it.providerId to it.displayName }, model = next) }
+            if (next != null && next != selected) selectModel(next)
         }
     }
 
@@ -464,6 +468,29 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
     }
 
     fun dismissError() { mutable.update { it.copy(error = null) } }
+
+    /** A client contribution can edit only its still-current empty draft, not submit a turn. */
+    internal suspend fun insertSessionAction(
+        offer: WorkspaceClientContributions.SessionActionOffer,
+        stillInHostView: () -> Boolean,
+    ): Boolean {
+        val owner = offer.context
+        val selection = selectionVersion
+        fun current(): Boolean {
+            val state = mutable.value
+            return selection == selectionVersion && !loadingSession && !state.loading && !state.archived &&
+                !state.running && !state.stopping && state.sessionId == owner.sessionId &&
+                state.workspace?.id == owner.workspaceId && app.activeSessionId == owner.sessionId && stillInHostView()
+        }
+        if (!current()) return false
+        val revision = composerController.emptyDraftRevision(owner.sessionId, owner.workspaceId) ?: return false
+        val catalog = app.conversationCatalog.workspaceClientContributions
+        val text = withContext(Dispatchers.IO) {
+            if (!app.isOpenPluginSession(owner)) null else catalog.draftInsertion(offer, owner, "", false)
+        } ?: return false
+        return current() && catalog.isInsertionCurrent(offer) &&
+            composerController.insertIntoEmptyDraft(owner.sessionId, owner.workspaceId, revision, text)
+    }
 
     /** Returns false when not accepted; the composer then keeps its draft. */
     fun send(text: String): Boolean = send(text, null)
@@ -518,8 +545,17 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
                     val rendered = when (event) {
                         is ModelEvent.Delta -> TranscriptEvent.Answer(event.text)
                         is ModelEvent.Thinking -> TranscriptEvent.Reasoning(event.text)
-                        is ModelEvent.ToolCallStarted -> TranscriptEvent.ToolStarted(event.callId, event.toolName, event.argumentsJson, now)
-                        is ModelEvent.ToolCallCompleted -> TranscriptEvent.ToolFinished(event.callId, event.toolName, event.success, event.summary, event.durationMillis, now)
+                        is ModelEvent.ToolCallStarted -> {
+                            val preview = ToolActivity(event.callId, event.toolName, event.argumentsJson, startedAt = now).forToolInspector()
+                            TranscriptEvent.ToolStarted(event.callId, event.toolName, preview.arguments, now)
+                        }
+                        is ModelEvent.ToolCallCompleted -> {
+                            val preview = ToolActivity(event.callId, event.toolName, summary = event.summary,
+                                phase = if (event.success) ToolPhase.SUCCEEDED else ToolPhase.FAILED,
+                                startedAt = now, provenance = event.provenance).forToolInspector()
+                            TranscriptEvent.ToolFinished(event.callId, event.toolName, event.success, preview.summary,
+                                event.durationMillis, now, preview.provenance)
+                        }
                         is ModelEvent.Completed -> TranscriptEvent.Finished(
                             when {
                                 event.outputLimitReached -> RunPhase.TRUNCATED

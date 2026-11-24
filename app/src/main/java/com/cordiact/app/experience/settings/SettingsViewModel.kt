@@ -15,7 +15,7 @@ class SettingsViewModel(val facade: SettingsFacade) : ViewModel() {
     var error = MutableStateFlow<String?>(null); private set
     var notice = MutableStateFlow<String?>(null); private set
     init { reload() }
-    fun selectWorkspace(id: String) = perform { facade.selectWorkspace(id); _snapshot.value = facade.snapshot() }
+    fun selectWorkspace(id: String) = perform { facade.selectWorkspace(id) }
     fun testRoot() = perform { facade.testRoot(); _snapshot.value = facade.snapshot() }
     fun testScreen() = perform { facade.testScreen(); _snapshot.value = facade.snapshot() }
     fun setCapability(workspaceId: String, id: String, enabled: Boolean) = perform { facade.setCapability(workspaceId, id, enabled); _snapshot.value = facade.snapshot() }

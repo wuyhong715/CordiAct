@@ -51,6 +51,27 @@ class ExtensionPackageArtifact private constructor(
     }
 }
 
+/** Historical attribution, never proof of current trust or permission to execute. */
+data class ExtensionPackageSourceReceipt(
+    val sourceId: String,
+    val publisherId: String,
+    val keyId: String,
+    val trustRevision: Long,
+    val indexRevision: Long,
+) {
+    init {
+        require(listOf(sourceId, publisherId, keyId).all { identity.matches(it) })
+        require(trustRevision in 1..MAX_REVISION && indexRevision in 1..MAX_REVISION)
+    }
+
+    fun samePublisher(other: ExtensionPackageSourceReceipt): Boolean = sourceId == other.sourceId && publisherId == other.publisherId
+
+    private companion object {
+        val identity = Regex("[a-z][a-z0-9-]{0,31}")
+        const val MAX_REVISION = 9_999_999_999_999_999L
+    }
+}
+
 /** One installed generation, its enable intent and an optional rollback artifact. */
 data class ExtensionPackageRecord(
     val workspaceId: String,
@@ -59,7 +80,18 @@ data class ExtensionPackageRecord(
     val installedAtEpochMillis: Long,
     val previous: ExtensionPackageArtifact? = null,
     val enableIntent: Boolean = false,
+    val sourceReceipt: ExtensionPackageSourceReceipt? = null,
+    val previousSourceReceipt: ExtensionPackageSourceReceipt? = null,
 ) {
+    init {
+        require(sourceReceipt == null || artifact.format == ExtensionPackageArtifact.Format.DECLARATIVE)
+        if (previous == null) require(previousSourceReceipt == null)
+        else {
+            require(previousSourceReceipt == null || previous.format == ExtensionPackageArtifact.Format.DECLARATIVE)
+            require(if (sourceReceipt == null) previousSourceReceipt == null
+                else previousSourceReceipt != null && sourceReceipt.samePublisher(previousSourceReceipt))
+        }
+    }
     val manifest get() = artifact.manifest
     // A receipt is written only after consent for the complete set, never for a subset.
     val grantedCapabilities get() = manifest.capabilities
@@ -139,7 +171,7 @@ sealed interface ExtensionPackageChange {
 
     enum class Code {
         INVALID_MANIFEST, VERSION_NOT_NEWER, CONFLICT, NOT_FOUND, NO_PREVIOUS,
-        STALE, QUOTA_EXCEEDED, STORE_FAILURE, COMMIT_UNKNOWN,
+        STALE, QUOTA_EXCEEDED, STORE_FAILURE, COMMIT_UNKNOWN, SOURCE_CONFLICT, SIGNED_SOURCE_REQUIRED, TRUST_UNAVAILABLE,
     }
 }
 
@@ -153,7 +185,62 @@ class ExtensionPackageInstaller(
     private val hostApi: Int = EXTENSION_PACKAGE_HOST_API,
     private val clock: () -> Long = System::currentTimeMillis,
     private val newInstallationId: () -> String = { UUID.randomUUID().toString() },
+    private val signedCatalog: SignedPackageCatalog? = null,
+    private val reservedSourceId: (String) -> Boolean = { false },
+    private val signedCatalogProvider: () -> SignedPackageCatalog? = { signedCatalog },
 ) {
+    private val activeCatalog get() = signedCatalogProvider()
+    /** Host namespaces can remain reserved even while no trusted catalog can be opened. */
+    internal fun requiresSignedSource(id: String): Boolean = reservedSourceId(id) || activeCatalog?.controlsPackageId(id) == true
+
+    internal fun signedDownload(): SignedPackageDownload = SignedPackageDownload(checkNotNull(activeCatalog) { "CATALOG_UNTRUSTED" })
+
+    internal fun signedRefresh(trustSourceId: String): SignedCatalogRefresh =
+        SignedCatalogRefresh(checkNotNull(activeCatalog) { "CATALOG_UNTRUSTED" }, trustSourceId)
+
+    internal fun signedPublishers() = checkNotNull(activeCatalog) { "CATALOG_UNTRUSTED" }.publishers()
+
+    internal fun signedVersions(sourceId: String) = checkNotNull(activeCatalog) { "CATALOG_UNTRUSTED" }.versions(sourceId)
+
+    internal fun selectSignedVersion(sourceId: String, packageId: String, version: String) =
+        checkNotNull(activeCatalog) { "CATALOG_UNTRUSTED" }.select(sourceId, packageId, version)
+
+    internal fun requireCurrent(candidate: SignedPackageCatalog.Verified) =
+        checkNotNull(activeCatalog) { "CATALOG_UNTRUSTED" }.withCurrent(candidate) {}
+
+    internal fun <T> withRuntimeTrust(record: ExtensionPackageRecord, admit: () -> T): T =
+        withArtifactTrust(record.artifact, record.sourceReceipt, admit)
+
+    internal fun canStart(record: ExtensionPackageRecord): Boolean = trustAllows { withRuntimeTrust(record) {} }
+
+    internal fun lease(record: ExtensionPackageRecord): SignedPackageCatalog.RuntimeLease? {
+        val receipt = record.sourceReceipt
+        if (receipt == null) {
+            check(!requiresSignedSource(record.manifest.id)) { "CATALOG_UNTRUSTED" }
+            return null
+        }
+        return checkNotNull(activeCatalog) { "CATALOG_UNTRUSTED" }.runtimeLease(record.artifact, receipt)
+    }
+
+    internal fun pollRuntimeTrust() { activeCatalog?.pollRuntimeTrust() }
+
+    private fun <T> withArtifactTrust(artifact: ExtensionPackageArtifact, receipt: ExtensionPackageSourceReceipt?, proceed: () -> T): T =
+        if (receipt == null) {
+            check(!requiresSignedSource(artifact.manifest.id)) { "CATALOG_UNTRUSTED" }
+            proceed()
+        } else checkNotNull(activeCatalog) { "CATALOG_UNTRUSTED" }.withInstalled(artifact, receipt, proceed)
+
+    private fun <T> publishWithTrust(check: (() -> T) -> T, commit: () -> T): T {
+        var entered = false
+        return try {
+            check { entered = true; commit() }
+        } catch (failure: Exception) {
+            if (entered || failure is CancellationException) throw failure
+            throw TrustUnavailable()
+        }
+    }
+
+    private class TrustUnavailable : IllegalStateException("CATALOG_UNTRUSTED")
     /** The immutable preview is the exact candidate; no path or mutable buffer is used to commit it. */
     fun inspect(bytes: ByteArray): ExtensionPackageArtifact =
         ExtensionPackageArtifact.decode(bytes, hostVersion = hostVersion, hostApi = hostApi)
@@ -163,16 +250,23 @@ class ExtensionPackageInstaller(
 
     fun list(workspaceId: String): List<ExtensionPackageRecord> = store.list(workspaceId)
 
+    internal fun get(workspaceId: String, packageId: String): ExtensionPackageRecord? = store.get(workspaceId, packageId)
+
     fun setEnableIntent(
         workspaceId: String, packageId: String, expectedInstallationId: String, enabled: Boolean,
         publish: (() -> Unit) -> Unit = { it() },
     ): ExtensionPackageChange = storageOperation {
         val current = store.get(workspaceId, packageId) ?: return@storageOperation notFound()
         if (current.installationId != expectedInstallationId) return@storageOperation stale()
+        if (enabled && !canStart(current)) return@storageOperation trustUnavailable()
         if (current.enableIntent == enabled) return@storageOperation ExtensionPackageChange.Unchanged(current)
         // An exact state-changing confirmation cannot be reused after an off/on cycle.
         val updated = current.copy(installationId = newInstallationId(), enableIntent = enabled)
-        write(workspaceId, packageId, expectedInstallationId, updated, ExtensionPackageChange.Applied(updated, upgraded = false), publish)
+        write(workspaceId, packageId, expectedInstallationId, updated, ExtensionPackageChange.Applied(updated, upgraded = false)) { commit ->
+            publish {
+                if (enabled) publishWithTrust({ withRuntimeTrust(current, it) }, commit) else commit()
+            }
+        }
     }
 
     /** A null expected generation requests a fresh install only. */
@@ -182,6 +276,29 @@ class ExtensionPackageInstaller(
         expectedInstallationId: String?,
         granted: Set<ExtensionPackageCapability>,
         publish: (() -> Unit) -> Unit = { it() },
+    ): ExtensionPackageChange = installArtifact(workspaceId, candidate, null, expectedInstallationId, granted, publish)
+
+    internal fun installVerified(
+        workspaceId: String,
+        candidate: SignedPackageCatalog.Verified,
+        expectedInstallationId: String?,
+        granted: Set<ExtensionPackageCapability>,
+        publish: (() -> Unit) -> Unit,
+    ): ExtensionPackageChange {
+        val catalog = activeCatalog ?: return trustUnavailable()
+        if (!trustAllows { catalog.withCurrent(candidate) {} }) return trustUnavailable()
+        return installArtifact(workspaceId, candidate.artifact, candidate.sourceReceipt, expectedInstallationId, granted) { commit ->
+            publish { publishWithTrust({ catalog.withCurrent(candidate, it) }, commit) }
+        }
+    }
+
+    private fun installArtifact(
+        workspaceId: String,
+        candidate: ExtensionPackageArtifact,
+        source: ExtensionPackageSourceReceipt?,
+        expectedInstallationId: String?,
+        granted: Set<ExtensionPackageCapability>,
+        publish: (() -> Unit) -> Unit,
     ): ExtensionPackageChange = storageOperation {
         val manifest = candidate.manifest
         if (!manifest.compatibleWith(hostApi, hostVersion)) {
@@ -189,6 +306,12 @@ class ExtensionPackageInstaller(
         }
         val current = store.get(workspaceId, manifest.id)
         if (current?.installationId != expectedInstallationId) return@storageOperation stale()
+        if (source == null && requiresSignedSource(manifest.id)) {
+            return@storageOperation rejected(ExtensionPackageChange.Code.SIGNED_SOURCE_REQUIRED, "A signed source is required")
+        }
+        if (current != null && !sameOrigin(current.sourceReceipt, source)) {
+            return@storageOperation rejected(ExtensionPackageChange.Code.SOURCE_CONFLICT, "Installed source has a different owner")
+        }
         val missing = manifest.capabilities - granted
         if (missing.isNotEmpty()) return@storageOperation ExtensionPackageChange.ConsentRequired(manifest, missing)
         if (current != null) {
@@ -198,7 +321,8 @@ class ExtensionPackageInstaller(
                 ExtensionPackageChange.Unchanged(current)
             } else rejected(ExtensionPackageChange.Code.CONFLICT, "The same version is installed with different content")
         }
-        val record = ExtensionPackageRecord(workspaceId, candidate, newInstallationId(), clock(), current?.artifact)
+        val record = ExtensionPackageRecord(workspaceId, candidate, newInstallationId(), clock(), current?.artifact,
+            sourceReceipt = source, previousSourceReceipt = current?.sourceReceipt)
         write(workspaceId, manifest.id, expectedInstallationId, record, ExtensionPackageChange.Applied(record, upgraded = current != null), publish)
     }
 
@@ -212,8 +336,12 @@ class ExtensionPackageInstaller(
         if (!previous.manifest.compatibleWith(hostApi, hostVersion)) {
             return@storageOperation rejected(ExtensionPackageChange.Code.INVALID_MANIFEST, "Incompatible previous version")
         }
-        val record = ExtensionPackageRecord(workspaceId, previous, newInstallationId(), clock())
-        write(workspaceId, packageId, expectedInstallationId, record, ExtensionPackageChange.Applied(record, upgraded = false), publish)
+        val receipt = current.previousSourceReceipt
+        if (!trustAllows { withArtifactTrust(previous, receipt) {} }) return@storageOperation trustUnavailable()
+        val record = ExtensionPackageRecord(workspaceId, previous, newInstallationId(), clock(), sourceReceipt = receipt)
+        write(workspaceId, packageId, expectedInstallationId, record, ExtensionPackageChange.Applied(record, upgraded = false)) { commit ->
+            publish { publishWithTrust({ withArtifactTrust(previous, receipt, it) }, commit) }
+        }
     }
 
     fun remove(
@@ -236,10 +364,21 @@ class ExtensionPackageInstaller(
         operation()
     } catch (cancelled: CancellationException) {
         throw cancelled
+    } catch (_: TrustUnavailable) {
+        trustUnavailable()
     } catch (failure: ExtensionPackageStoreException) {
         if (failure.commitUnknown) rejected(ExtensionPackageChange.Code.COMMIT_UNKNOWN, "Refresh the installed list before another change")
         else rejected(ExtensionPackageChange.Code.STORE_FAILURE, "Could not access package storage")
     }
+
+    private fun sameOrigin(old: ExtensionPackageSourceReceipt?, next: ExtensionPackageSourceReceipt?) =
+        if (old == null) next == null else next != null && old.samePublisher(next)
+
+    private inline fun trustAllows(block: () -> Unit): Boolean = try { block(); true }
+    catch (cancellation: CancellationException) { throw cancellation }
+    catch (_: Exception) { false }
+
+    private fun trustUnavailable() = rejected(ExtensionPackageChange.Code.TRUST_UNAVAILABLE, "Current signed source is unavailable")
 
     private fun stale() = rejected(ExtensionPackageChange.Code.STALE, "The installed generation has changed; refresh before retrying")
     private fun notFound() = rejected(ExtensionPackageChange.Code.NOT_FOUND, "Package is not installed in this workspace")

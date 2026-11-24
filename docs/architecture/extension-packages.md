@@ -1,6 +1,6 @@
-# 声明式扩展包（P2）
+# 声明式扩展包
 
-P2 的目标不是把 npm 或 Cordis 搬进 APK，而是让**不执行第三方代码**的扩展也能被安装、升级、撤回和迁移。一个包只声明宿主已经实现的有界贡献：固定文本工具、文本变换工具和固定文本斜杠命令。包本身没有解释器、文件、网络或命令执行能力。
+目标不是把 npm 或 Cordis 搬进 APK，而是让**不执行第三方代码**的扩展也能被安装、升级、撤回和迁移。包只声明宿主理解的有界贡献：固定文本工具、文本变换工具、固定文本斜杠命令，以及 v2 的客户端说明页与会话动作。包本身没有解释器、文件、网络或命令执行能力。
 
 ## 清单格式
 
@@ -31,6 +31,41 @@ P2 的目标不是把 npm 或 Cordis 搬进 APK，而是让**不执行第三方�
 - `capabilities` 必须与贡献精确匹配：有工具才有 `tool.publish`，有命令才有 `command.publish`；未知能力拒绝。
 - `host.api` 必须等于宿主的 API 版本；`host.minVersion` 必须不大于宿主版本；不满足时拒绝，不静默降级。
 - `sha256` 覆盖原始字节，安装记录和运行 spec 都绑定同一摘要。
+
+### 清单 v2：客户端贡献
+
+v2 在原有字段之外要求 `client`，其中至少有 `settingsPage` 或 `sessionActions`。宿主 API 仍为 1；不认识 v2 的旧宿主会拒绝，不会丢弃客户端声明后按 v1 安装。
+
+```json
+{
+  "schemaVersion": 2,
+  "id": "release-preflight",
+  "version": "1.0.0",
+  "title": "发布前检查",
+  "description": "不需要网络或模型的本地检查清单",
+  "host": { "api": 1, "minVersion": "0.1.0" },
+  "capabilities": ["command.publish", "ui.settings.publish", "ui.session-action.publish"],
+  "tools": [],
+  "commands": [
+    { "name": "release-preflight", "aliases": [], "description": "显示发布前检查清单", "text": "运行测试\n核对版本\n确认变更说明" }
+  ],
+  "client": {
+    "settingsPage": {
+      "title": "发布前检查",
+      "description": "使用会话动作把本地清单命令填入草稿。",
+      "rows": [{ "label": "网络", "value": "不需要" }]
+    },
+    "sessionActions": [
+      { "id": "insert", "label": "填入发布前检查命令", "command": "release-preflight" }
+    ]
+  }
+}
+```
+
+- 设置页为纯文本标题、说明和可选的最多四个 `label` / `value` 行。仅提供说明页的包可将 `tools` 与 `commands` 都设为空数组。
+- 会话动作若声明，须有 1–2 项。`id` 是包内唯一 slug，`command` 必须正好是同包 `commands` 中的主名称，不含 `/`、不接受别名。`title` / `label` 限 120 UTF-8 字节，`description` / `value` 限 480 字节，均为非空单行纯文本。
+- `ui.settings.publish` 与 `ui.session-action.publish` 各自与对应声明严格双向匹配。它们不授予设置写入、命令执行、权限、联网或发消息能力。会话动作只提供填入裸命令的能力；执行仍由用户独立发送并走宿主授权。示例刻意不用内置包已注册的 `/release-checklist`；重叠作用域的名称冲突不得覆盖。
+- Android 设置的「插件与连接」显示当前设置工作区的已发布说明页；「标签总览 → 全部会话 → 当前会话操作」显示已发布会话动作。安装预览不等于运行时发布，入口随停用撤回。可直接导入 [发布前检查](../testing/fixtures/extension-packages/release-preflight.json) 和 [会话交接](../testing/fixtures/extension-packages/session-notes.json)；真机流程以[验收手册](../testing/workspace-extension-packages.md)为准。
 
 ## 安装、升级、回滚、迁移
 
@@ -63,12 +98,13 @@ P2 的目标不是把 npm 或 Cordis 搬进 APK，而是让**不执行第三方�
 
 ## Android 工作区入口与当前边界
 
-在竖屏工作台顶部右侧或横屏标签条末端，打开「… → 工作区插件」进入当前工作区的[独立页面](../../app/src/main/java/com/cordiact/app/experience/WorkspacePluginsScreen.kt)。通过系统文件选择器选取一个 JSON，预览精确版本、工具行为、命令与所需能力后才能确认安装。只读工作区可以预览，不能写入。宿主仅读取选中文件，最多 32 KiB + 1 字节，不留存 URI、不扫描目录。确认在退出页面、退出前台或工作区权限写入后失效，并在 SQLite 提交点复核。
+从「标签总览 → 设置 → 插件与连接 → 工作区插件包」进入[管理页](../../app/src/main/java/com/cordiact/app/experience/WorkspacePluginsScreen.kt)，仅管理设置中选定的工作区，不切换聊天。通过系统文件选择器选取一个 JSON，预览精确版本、工具行为、命令与所需能力后才能确认安装。只读工作区可以预览，不能写入。宿主仅读取选中文件，最多 32 KiB + 1 字节，不留存 URI、不扫描目录。确认在退出页面、退出前台或工作区权限写入后失效，并在 SQLite 提交点复核。
 
 - 页面区分安装记录、工作区启用意图和实际运行状态。安装、更换或回滚本身不会运行包；用户可显式启停。进程重建后，只在首次进入对应工作区且当前权限允许时恢复已选择启用的代；会话试用不恢复。
 - 先停用并完成清理，才能更换、回滚或移除；不隐式启用其他版本。启动失败不发布贡献，确认重试只作用于同一已启用世代。清理失败会先关闭准入、再等待重试，不能视为可移除。权限收紧时撤回贡献，可在只读状态下清除启用意图。
 - Agent 创作的插件可先在会话插件中保存批准快照，再从工作区插件页选择「从已保存试用版本转包」。只取通过校验的指定快照，不读草稿；预览显示新旧工具 ID，确认前重读校验所选世代。转包为新安装，不改变原快照或正在运行的会话试用，也不带入启用权。
-- 没有签名、远程索引、版本解析或市场；`text_transform` 不支持模板、脚本、网络、文件或第二次工具调用。
+- 普通声明包可导出精确已安装版本的原始 JSON。使用系统保存器选位置并回到前台后二次确认；只读工作区、试用转包及受保护内置包不允许导出。只向本次 URI 写原字节，不保存选择、批准、运行状态、回滚或聊天；不读回、不重试未知结果。
+- App 还没有签名下载、可信来源收据或市场；已有的离线核验层和待接入边界见[受控分发设计](signed-package-distribution.md)。`text_transform` 不支持模板、脚本、网络、文件或第二次工具调用。
 - [Android SQLite 回归](../../app/src/test/java/com/cordiact/app/plugin/AndroidExtensionPackageStoreTest.kt)及[预览确认回归](../../app/src/test/java/com/cordiact/app/experience/ui/WorkspacePackagePromptTest.kt)待 Android CI 执行。[App 装配测试](../../app/src/test/java/com/cordiact/app/conversation/BundledConversationPluginCatalogTest.kt)用真实 Android 存储、工具管理器和命令分发验证安装、调用、隔离与撤回，不调用外部模型。真机验收流程见[工作区插件验收](../testing/workspace-extension-packages.md)。
 
 ## 验收

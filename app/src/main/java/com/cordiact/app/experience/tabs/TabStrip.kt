@@ -38,7 +38,7 @@ import com.cordiact.app.experience.SignalDot
 @Immutable
 data class TabFace(val title: String, val glyph: GlyphName, val running: Boolean, val approvals: Int, val badge: Int, val closable: Boolean)
 
-fun ExperienceState.faceOf(tab: WorkTab, sessionTabs: Int): TabFace = when (tab) {
+internal fun ExperienceState.faceOf(tab: WorkTab, sessionTabs: Int, publications: List<PublishedTab>): TabFace = when (tab) {
     is WorkTab.Session -> {
         val title = sidebar.asSequence().flatMap { it.sessions }.firstOrNull { it.id == tab.sessionId }?.title
             ?: sessions.firstOrNull { it.id == tab.sessionId }?.title
@@ -52,7 +52,7 @@ fun ExperienceState.faceOf(tab: WorkTab, sessionTabs: Int): TabFace = when (tab)
         )
     }
     is WorkTab.Plugin -> {
-        val c = TabRegistry.find(tab.pluginId)
+        val c = publications.firstOrNull { it.id == tab.pluginId }?.content
         TabFace(c?.title ?: tab.pluginId, c?.glyph ?: GlyphName.Bolt, false, 0, c?.badge(this) ?: 0, true)
     }
 }
@@ -62,8 +62,9 @@ fun ExperienceState.faceOf(tab: WorkTab, sessionTabs: Int): TabFace = when (tab)
  * (Long-press + drag down will detach into a mini window in the next step; reserved here.)
  */
 @Composable
-fun TabStrip(state: ExperienceState, controller: TabsController, onClose: (String) -> Unit, modifier: Modifier = Modifier,
-    onSelect: (WorkTab) -> Unit = { controller.select(it.key) }, displayedKey: String? = controller.activeKey,
+internal fun TabStrip(state: ExperienceState, controller: TabsController, publications: List<PublishedTab>,
+     onOpenPublication: (PublishedTab) -> Boolean, onClose: (String) -> Unit, modifier: Modifier = Modifier,
+    onSelect: (WorkTab.Session) -> Unit = { controller.select(it.key) }, displayedKey: String? = controller.activeKey,
     pendingKey: String? = null, compact: Boolean = false,
 ) {
     val haptics = LocalHapticFeedback.current
@@ -83,7 +84,7 @@ fun TabStrip(state: ExperienceState, controller: TabsController, onClose: (Strin
         verticalAlignment = Alignment.CenterVertically,
     ) {
         itemsIndexed(controller.tabs, key = { _, tab -> tab.key }) { index, tab ->
-            val face = state.faceOf(tab, sessionTabs)
+            val face = state.faceOf(tab, sessionTabs, publications)
             val selected = tab.key == displayedKey
             val dragging = dragKey == tab.key
             TabChip(
@@ -105,7 +106,12 @@ fun TabStrip(state: ExperienceState, controller: TabsController, onClose: (Strin
                         }
                     }
                     .testTag("tab-${tab.key}"),
-                onClick = { onSelect(tab) },
+                onClick = {
+                    when (tab) {
+                        is WorkTab.Plugin -> { publications.firstOrNull { it.id == tab.pluginId }?.let(onOpenPublication) }
+                        is WorkTab.Session -> onSelect(tab)
+                    }
+                },
                 onClose = { onClose(tab.key) },
             )
         }
@@ -158,13 +164,17 @@ private fun TabChip(face: TabFace, selected: Boolean, modifier: Modifier, onClic
  * complete conversation index (the old drawer content), passed in as [allSessions].
  */
 @Composable
-fun TabOverview(
+internal fun TabOverview(
     state: ExperienceState,
     controller: TabsController,
+    publications: List<PublishedTab>,
+    onOpenPublication: (PublishedTab) -> Boolean,
     onClose: (String) -> Unit,
     onDismiss: () -> Unit,
     onNewSession: () -> Unit,
     onSettings: () -> Unit,
+    onSelectTab: (WorkTab.Session) -> Unit = { controller.select(it.key) },
+    onSegmentChange: () -> Unit = {},
     allSessions: @Composable (Modifier, @Composable () -> Unit) -> Unit,
 ) {
     val colors = MaterialTheme.colorScheme
@@ -184,7 +194,7 @@ fun TabOverview(
                     listOf("已打开 ${controller.tabs.size}", "全部会话").forEachIndexed { i, label ->
                         val on = segment == i
                         Box(Modifier.clip(CircleShape).background(if (on) colors.surface else colors.surfaceContainer)
-                            .clickable { segment = i }.padding(horizontal = 16.dp, vertical = 7.dp)
+                            .clickable { if (segment != i) { onSegmentChange(); segment = i } }.padding(horizontal = 16.dp, vertical = 7.dp)
                             .semantics { selected = on; role = Role.Tab }) {
                             Text(label, style = MaterialTheme.typography.labelLarge, color = if (on) colors.onSurface else colors.onSurfaceVariant)
                         }
@@ -204,7 +214,7 @@ fun TabOverview(
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 if (segment == 0 && listLayout) {
                     bodyState.SaveableStateProvider("opened-list") {
-                        OpenedTabsList(state, controller, sessionTabs, onClose, onDismiss)
+                        OpenedTabsList(state, controller, sessionTabs, publications, onOpenPublication, onClose, onDismiss, onSelectTab)
                     }
                 } else if (segment == 0) {
                     bodyState.SaveableStateProvider("opened-grid") {
@@ -214,19 +224,26 @@ fun TabOverview(
                         ) {
                             items(controller.tabs.size, key = { controller.tabs[it].key }) { i ->
                                 val tab = controller.tabs[i]
-                                val face = state.faceOf(tab, sessionTabs)
+                                val face = state.faceOf(tab, sessionTabs, publications)
                                 TabCard(face, selected = tab.key == controller.activeKey,
-                                    onClick = { controller.select(tab.key); onDismiss() }, onClose = { onClose(tab.key) })
+                                    onClick = {
+                                        when (tab) {
+                                            is WorkTab.Plugin -> {
+                                                publications.firstOrNull { it.id == tab.pluginId }?.let { if (onOpenPublication(it)) onDismiss() }
+                                            }
+                                            is WorkTab.Session -> { onSelectTab(tab); onDismiss() }
+                                        }
+                                    }, onClose = { onClose(tab.key) })
                             }
-                            val closed = TabRegistry.contributors.filter { c -> controller.tabs.none { it.key == "p:${c.id}" } }
+                            val closed = publications.filter { c -> controller.tabs.none { it.key == "p:${c.id}" } }
                             items(closed.size, key = { "add:" + closed[it].id }) { i ->
                                 val c = closed[i]
-                                Surface(onClick = { controller.open(WorkTab.Plugin(c.id)); onDismiss() }, shape = RoundedCornerShape(18.dp),
+                                Surface(onClick = { if (onOpenPublication(c)) onDismiss() }, shape = RoundedCornerShape(18.dp),
                                     color = colors.surfaceContainerLow, modifier = Modifier.height(132.dp)) {
                                     Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
-                                        AppGlyph(c.glyph, tint = colors.onSurfaceVariant)
+                                        AppGlyph(c.content.glyph, tint = colors.onSurfaceVariant)
                                         Spacer(Modifier.height(8.dp))
-                                        Text("打开 ${c.title}", style = MaterialTheme.typography.labelLarge, color = colors.onSurfaceVariant)
+                                        Text("打开 ${c.content.title}", style = MaterialTheme.typography.labelLarge, color = colors.onSurfaceVariant)
                                     }
                                 }
                             }
@@ -296,15 +313,16 @@ private fun OpenedLayoutChoice(listLayout: Boolean, onChange: (Boolean) -> Unit)
 
 @Composable
 private fun OpenedTabsList(state: ExperienceState, controller: TabsController, sessionTabs: Int,
-    onClose: (String) -> Unit, onDismiss: () -> Unit,
+    publications: List<PublishedTab>, onOpenPublication: (PublishedTab) -> Boolean,
+    onClose: (String) -> Unit, onDismiss: () -> Unit, onSelectTab: (WorkTab.Session) -> Unit,
 ) {
     val colors = MaterialTheme.colorScheme
-    val closed = TabRegistry.contributors.filter { contributor -> controller.tabs.none { it.key == "p:${contributor.id}" } }
+    val closed = publications.filter { contributor -> controller.tabs.none { it.key == "p:${contributor.id}" } }
     LazyColumn(Modifier.fillMaxSize().testTag("opened-tabs-list"), contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(1.dp)) {
         items(controller.tabs.size, key = { controller.tabs[it].key }) { index ->
             val tab = controller.tabs[index]
-            val face = state.faceOf(tab, sessionTabs)
+            val face = state.faceOf(tab, sessionTabs, publications)
             val active = tab.key == controller.activeKey
             val top = if (index == 0) 14.dp else 0.dp
             val bottom = if (index == controller.tabs.lastIndex) 14.dp else 0.dp
@@ -313,7 +331,14 @@ private fun OpenedTabsList(state: ExperienceState, controller: TabsController, s
                 border = androidx.compose.foundation.BorderStroke(.65.dp, colors.outlineVariant)) {
                 Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), verticalAlignment = Alignment.CenterVertically) {
                     if (active) Box(Modifier.width(2.dp).fillMaxHeight().background(Lumen.Signal))
-                    Row(Modifier.weight(1f).clickable { controller.select(tab.key); onDismiss() }
+                    Row(Modifier.weight(1f).clickable {
+                        when (tab) {
+                            is WorkTab.Plugin -> {
+                                publications.firstOrNull { it.id == tab.pluginId }?.let { if (onOpenPublication(it)) onDismiss() }
+                            }
+                            is WorkTab.Session -> { onSelectTab(tab); onDismiss() }
+                        }
+                    }
                         .heightIn(min = 56.dp).padding(horizontal = 11.dp, vertical = 6.dp),
                         horizontalArrangement = Arrangement.spacedBy(9.dp), verticalAlignment = Alignment.CenterVertically) {
                         AppGlyph(face.glyph, tint = if (active) colors.primary else colors.onSurfaceVariant)
@@ -341,13 +366,13 @@ private fun OpenedTabsList(state: ExperienceState, controller: TabsController, s
             val plugin = closed[index]
             val top = if (index == 0) 14.dp else 0.dp
             val bottom = if (index == closed.lastIndex) 14.dp else 0.dp
-            Surface(onClick = { controller.open(WorkTab.Plugin(plugin.id)); onDismiss() },
+            Surface(onClick = { if (onOpenPublication(plugin)) onDismiss() },
                 shape = RoundedCornerShape(top, top, bottom, bottom), color = colors.surfaceContainerLow,
                 border = androidx.compose.foundation.BorderStroke(.65.dp, colors.outlineVariant)) {
                 Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(horizontal = 12.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    AppGlyph(plugin.glyph, tint = colors.onSurfaceVariant)
-                    Text("打开 ${plugin.title}", style = MaterialTheme.typography.labelLarge, color = colors.onSurfaceVariant)
+                    AppGlyph(plugin.content.glyph, tint = colors.onSurfaceVariant)
+                    Text("打开 ${plugin.content.title}", style = MaterialTheme.typography.labelLarge, color = colors.onSurfaceVariant)
                 }
             }
         }

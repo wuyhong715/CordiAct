@@ -1,5 +1,8 @@
 package com.cordiact.core.tool
 
+import com.cordiact.core.conversation.ToolHistoryFormat
+import com.cordiact.core.conversation.ToolHistoryProvenance
+import com.cordiact.core.conversation.ToolHistorySource
 import com.cordiact.core.plugin.ManagedPlugin
 import com.cordiact.core.plugin.PluginSpec
 import com.cordiact.core.plugin.PluginState
@@ -54,6 +57,8 @@ data class ToolResult(
      * approved sensitive transport must refuse to consume it instead of falling back to String.
      */
     val sensitivePayload: SensitivePayload? = null,
+    /** Issued (or cleared) by the manager, not copied from an executor's result. */
+    @Transient val historyReceipt: ToolHistoryReceipt? = null,
 )
 
 /**
@@ -191,6 +196,8 @@ data class ToolInvocationContext(
     @Transient val allowsPluginAuthoring: Boolean = false,
     /** Never serialized, delegated, or populated from model-supplied tool arguments. */
     @Transient val authoredPluginTurn: com.cordiact.core.plugin.AuthoredPluginTurn? = null,
+    /** One host loop dispatch; deliberately separate from the model's call ID. */
+    @Transient internal val historyInvocation: ToolHistoryInvocation? = null,
 ) {
     /** The grant covering [targetWorkspaceId], or null when it is not readable this turn. */
     fun scopeFor(targetWorkspaceId: String): GrantedScope? =
@@ -205,6 +212,17 @@ data class ToolInvocationContext(
 class ToolRegistration internal constructor(
     internal val scope: ToolContributionScope,
     internal val hostEffect: com.cordiact.core.security.ToolEffectClass? = null,
+    internal val hasSensitiveArguments: Boolean,
+)
+
+/** Identity of one dispatch, even if a model reuses the same public call ID. */
+class ToolHistoryInvocation internal constructor()
+
+/** Opaque manager receipt. Neither a model call nor tool-result JSON can mint or replay one. */
+class ToolHistoryReceipt internal constructor(
+    internal val invocation: ToolHistoryInvocation,
+    internal val registration: ToolRegistration,
+    internal val provenance: ToolHistoryProvenance,
 )
 
 /** Explicit publication scope, separate from @ grants and other data-read permissions. */
@@ -305,7 +323,7 @@ class InMemoryToolDefinitionRegistry : ToolDefinitionRegistry {
         validateExecutionDeclaration(descriptor)
         val bindings = definitions.getOrPut(descriptor.id) { linkedMapOf() }
         require(bindings.keys.none(scope::overlaps)) { "Tool '${descriptor.id}' is already registered in an overlapping scope" }
-        val token = ToolRegistration(scope, hostEffect)
+        val token = ToolRegistration(scope, hostEffect, descriptor.inputSchema.parameters.any(ToolParameter::sensitive))
         bindings[scope] = Binding(ToolDefinition(descriptor, definition.executor, token), active)
         return AutoCloseable { withdraw(descriptor.id, scope, token) }
     }
@@ -678,11 +696,15 @@ class ToolManagerPlugin(
         // An admitted action may have side effects; withdrawal invalidates its publication, not history.
         val invokeExecutor = {
             recheck()
-            definition.executor.invoke(context, arguments)
+            // The executor receives its authorization context, never the loop's event channel
+            // or receipt identity. A nested call is not the tool shown on this trace row.
+            definition.executor.invoke(context.copy(onEvent = null, historyInvocation = null), arguments)
         }
+        val executedResult = java.util.concurrent.atomic.AtomicReference<ToolResult?>()
         val execute = {
-            if (descriptor.concurrencySafe) executeWithTimeout(descriptor.timeoutMs, invokeExecutor)
-            else synchronized(serializedExecution) { executeWithTimeout(descriptor.timeoutMs, invokeExecutor) }
+            (if (descriptor.concurrencySafe) executeWithTimeout(descriptor.timeoutMs, invokeExecutor)
+            else synchronized(serializedExecution) { executeWithTimeout(descriptor.timeoutMs, invokeExecutor) })
+                .also(executedResult::set)
         }
         val result = if (requiresReview) {
             val reviewer = autoReview ?: throw failure(ToolManagerException.Code.APPROVAL_DENIED, "AUTO_REVIEW_UNAVAILABLE")
@@ -694,7 +716,21 @@ class ToolManagerPlugin(
             result.sensitivePayload?.close()
             throw refused
         }
-        return result
+        val registration = definition.registration
+        val invocation = context.historyInvocation
+        val receipt = if (invocation != null && registration != null &&
+            registration === context.toolRegistrations[toolId] && result === executedResult.get() &&
+            result.sensitivePayload == null && !registration.hasSensitiveArguments &&
+            (result.values["ok"] as? ToolValue.BooleanValue)?.value != false && "error" !in result.values
+        ) {
+            ToolHistoryReceipt(invocation, registration, ToolHistoryProvenance(
+                ownerPluginId = descriptor.ownerPluginId,
+                toolId = descriptor.id,
+                source = ToolHistorySource.HOST_REGISTRATION,
+                format = ToolHistoryFormat.BOUNDED_SUMMARY_V1,
+            ))
+        } else null
+        return if (receipt == null && result.historyReceipt == null) result else result.copy(historyReceipt = receipt)
     }
 
     private fun currentDefinition(context: ToolInvocationContext, toolId: String): ToolDefinition? {

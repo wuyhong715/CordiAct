@@ -29,6 +29,7 @@ import com.cordiact.core.conversation.ModelId
 import com.cordiact.core.conversation.ModelMessage
 import com.cordiact.core.conversation.SessionManagerService
 import com.cordiact.core.conversation.ModelToolSpec
+import com.cordiact.core.conversation.ToolHistoryProvenance
 import com.cordiact.core.conversation.TurnNotice
 import com.cordiact.core.conversation.TurnNoticeSource
 import com.cordiact.core.tool.ToolInvocationContext
@@ -241,7 +242,7 @@ class ConversationTurnService(
                             }
                         }
                         is ModelEvent.ToolCallStarted -> synchronized(traceLock) {
-                            if (traceTools.none { it.id == event.callId }) {
+                            if (traceTools.size < MAX_TRACE_TOOLS && traceTools.none { it.id == event.callId }) {
                                 traceTools += PersistedToolTrace(
                                     id = event.callId,
                                     name = event.toolName,
@@ -253,6 +254,7 @@ class ConversationTurnService(
                         is ModelEvent.ToolCallCompleted -> synchronized(traceLock) {
                             val now = System.currentTimeMillis()
                             val idx = traceTools.indexOfFirst { it.id == event.callId }
+                            if (idx < 0 && traceTools.size >= MAX_TRACE_TOOLS) return@synchronized
                             val dur = event.durationMillis.coerceAtLeast(0)
                             val updated = if (idx >= 0) {
                                 traceTools[idx].copy(
@@ -260,6 +262,7 @@ class ConversationTurnService(
                                     summary = event.summary?.take(MAX_TRACE_PREVIEW_CHARS),
                                     finishedAt = now,
                                     durationMillis = dur,
+                                    provenance = event.provenance.takeIf { event.success },
                                 )
                             } else {
                                 PersistedToolTrace(
@@ -271,6 +274,7 @@ class ConversationTurnService(
                                     startedAt = now - dur,
                                     finishedAt = now,
                                     durationMillis = dur,
+                                    provenance = event.provenance.takeIf { event.success },
                                 )
                             }
                             if (idx >= 0) traceTools[idx] = updated else traceTools += updated
@@ -289,9 +293,10 @@ class ConversationTurnService(
             onUserMessagePersisted?.invoke()
             val initial = buildProjectedHistory(sessionId, model, systemContext, pending, onEvent)
             var noticesAcknowledged = false
-            val effectiveContext = bindToolRegistrations(toolContext, tools).let {
-                if (it.onEvent == null) it.copy(onEvent = roundEvents) else it
-            }
+            val effectiveContext = bindToolRegistrations(toolContext, tools).copy(onEvent = { event ->
+                roundEvents(event)
+                if (!terminal.get()) toolContext.onEvent?.invoke(event)
+            })
             val providerTools = tools.map { it.copy(registration = null) }
             val guardedDispatcher = ToolDispatcher { context, call ->
                 check(!terminal.get()) { "Turn cancelled" }
@@ -482,7 +487,7 @@ class ConversationTurnService(
                 workspaceId = sessions.getSession(sessionId)?.workspaceId,
             ),
         ) { event ->
-            if (terminal.get() || finished.get()) return@generate
+            if (terminal.get() || finished.get() || event.isHostToolLifecycle()) return@generate
             when (event) {
                 is ModelEvent.Delta -> roundText.append(event.text)
                 is ModelEvent.ToolCallsRequested -> calls = event.calls
@@ -644,7 +649,7 @@ class ConversationTurnService(
                     ),
                 ) { event ->
                     synchronized(callbackLock) {
-                        if (terminal.get() || attempt != currentAttempt) return@generate
+                        if (terminal.get() || attempt != currentAttempt || event.isHostToolLifecycle()) return@generate
                         when (event) {
                             is ModelEvent.Delta -> reply.append(event.text)
                             is ModelEvent.Thinking -> {
@@ -819,6 +824,10 @@ class ConversationTurnService(
     }
 }
 
+/** Only the tool loop publishes lifecycle events; a provider may only request calls. */
+private fun ModelEvent.isHostToolLifecycle() =
+    this is ModelEvent.ToolCallStarted || this is ModelEvent.ToolCallCompleted
+
 internal data class PersistedToolTrace(
     val id: String,
     val name: String,
@@ -828,6 +837,7 @@ internal data class PersistedToolTrace(
     val startedAt: Long,
     val finishedAt: Long? = null,
     val durationMillis: Long? = null,
+    val provenance: ToolHistoryProvenance? = null,
 )
 
 internal data class PersistedTurnTrace(
@@ -870,6 +880,14 @@ private fun completionMetadata(
                                 addProperty("startedAt", tool.startedAt)
                                 tool.finishedAt?.let { addProperty("finishedAt", it) }
                                 tool.durationMillis?.let { addProperty("durationMillis", it) }
+                                tool.provenance?.let { provenance ->
+                                    add("provenance", com.google.gson.JsonObject().apply {
+                                        addProperty("ownerPluginId", provenance.ownerPluginId)
+                                        addProperty("toolId", provenance.toolId)
+                                        addProperty("source", provenance.source.wireValue)
+                                        addProperty("format", provenance.format.wireValue)
+                                    })
+                                }
                             })
                         }
                     })

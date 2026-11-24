@@ -1,7 +1,10 @@
 package com.cordiact.app.experience.settings
 
 import com.cordiact.core.search.*
-data class SearchProviderSummary(val id: String, val endpoint: String, val keySet: Boolean, val native: Boolean = false)
+data class SearchProviderSummary(
+    val id: String, val endpoint: String, val keySet: Boolean, val native: Boolean = false,
+    val published: Boolean = true,
+)
 data class SearchSettingsSnapshot(val workspaceId: String, val policy: WorkspaceSearchPolicy, val providers: List<SearchProviderSummary>, val monthlyCalls: Int, val localFetch: Boolean)
 interface SearchSettings {
     suspend fun snapshot(workspaceId: String): SearchSettingsSnapshot

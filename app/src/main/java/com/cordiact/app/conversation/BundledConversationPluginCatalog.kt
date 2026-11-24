@@ -162,6 +162,8 @@ object BundledConversationPluginCatalog {
         sandboxManagerPluginSpec(),
         interactionPluginSpec(),
         searchPluginSpec(),
+        com.cordiact.app.search.bundledSearchProviderSpec("tavily"),
+        com.cordiact.app.search.bundledSearchProviderSpec("brave"),
         subagentPluginSpec(),
         orchestrationPluginSpec(),
         backgroundSubagentPluginSpec(),
@@ -175,6 +177,8 @@ object BundledConversationPluginCatalog {
         com.cordiact.core.security.credentialVaultPluginSpec(),
         com.cordiact.core.security.securityAuditPluginSpec(),
         extensionPackageSpec(BundledDeclarativePackages.manifest),
+        com.cordiact.app.experience.tabs.workbenchTabsSpec(),
+        com.cordiact.app.experience.builtinToolResultCardsSpec(),
     )
 
     val verifier = BundledPluginVerifier { candidate -> candidate in trustedSpecs }
@@ -294,10 +298,21 @@ class BundledConversationPlugins private constructor(
     val toolRegistry: ToolDefinitionRegistry get() = registry
 
     /** Shared trusted-code runtime; durable lifecycle and approval remain authoritative. */
-    val pluginKernel = com.cordiact.core.plugin.PluginKernel()
+    internal val workbenchTabs = com.cordiact.interaction.TrustedWorkbenchTabs<com.cordiact.app.experience.tabs.TabContributor>()
+    internal val toolResultCards = com.cordiact.app.experience.builtinToolResultDirectory()
+    val pluginKernel = com.cordiact.core.plugin.PluginKernel {
+        workbenchTabs.refresh()
+        toolResultCards.refresh()
+    }
     val toolContributions = com.cordiact.core.plugin.PluginToolContributions(registry)
 
-    internal fun workspacePackageRuntime() = com.cordiact.core.plugin.WorkspacePackageRuntime { record, admitted ->
+    internal val workspaceClientContributions by lazy {
+        com.cordiact.interaction.WorkspaceClientContributions(interactionPlugin.commandRegistry)
+    }
+
+    internal fun workspacePackageRuntime() = com.cordiact.core.plugin.WorkspacePackageRuntime(
+        admissionChanged = { workspaceClientContributions.refreshAdmission() },
+    ) { record, admitted ->
         DeclarativePackagePlugin(
             manifest = record.manifest,
             kernel = pluginKernel,
@@ -305,6 +320,7 @@ class BundledConversationPlugins private constructor(
             commands = interactionPlugin.commandContributions,
             grantedCapabilities = record.grantedCapabilities,
             workspaceId = record.workspaceId,
+            clientContributions = workspaceClientContributions,
             admitted = admitted,
         )
     }
@@ -402,8 +418,6 @@ class BundledConversationPlugins private constructor(
             registerSearch(AnthropicNativeSearchProvider(apiKey = key("anthropic-native"), options = nativeOptions))
             registerSearch(OpenAiNativeSearchProvider(apiKey = key("openai-native"), options = nativeOptions))
             registerSearch(GeminiNativeSearchProvider(apiKey = key("gemini-native"), options = nativeOptions))
-            registerSearch(com.cordiact.search.providers.DynamicSearchProvider { TavilySearchProvider(tavilyConfig.copy(baseUrl = providerSettings?.baseUrl("tavily") ?: tavilyConfig.baseUrl)) })
-            registerSearch(com.cordiact.search.providers.DynamicSearchProvider { BraveSearchProvider(braveConfig.copy(baseUrl = providerSettings?.baseUrl("brave") ?: braveConfig.baseUrl)) })
             registerSearch(com.cordiact.search.providers.DynamicSearchProvider { ExaSearchProvider(exaConfig.copy(baseUrl = providerSettings?.baseUrl("exa") ?: exaConfig.baseUrl)) })
             registerSearch(com.cordiact.search.providers.DynamicSearchProvider { BochaSearchProvider(bochaConfig.copy(baseUrl = providerSettings?.baseUrl("bocha") ?: bochaConfig.baseUrl)) })
             registerSearch(com.cordiact.search.providers.DynamicSearchProvider { SearxngSearchProvider(searxngConfig.copy(baseUrl = providerSettings?.baseUrl("searxng") ?: searxngConfig.baseUrl)) })
@@ -415,6 +429,18 @@ class BundledConversationPlugins private constructor(
                 ),
             )
         }
+        val tavilySearch = com.cordiact.app.search.BundledSearchProviderPlugin(
+            com.cordiact.app.search.bundledSearchProviderSpec("tavily"), pluginKernel, searchProviders,
+            com.cordiact.search.providers.DynamicSearchProvider {
+                TavilySearchProvider(tavilyConfig.copy(baseUrl = providerSettings?.baseUrl("tavily") ?: tavilyConfig.baseUrl))
+            },
+        )
+        val braveSearch = com.cordiact.app.search.BundledSearchProviderPlugin(
+            com.cordiact.app.search.bundledSearchProviderSpec("brave"), pluginKernel, searchProviders,
+            com.cordiact.search.providers.DynamicSearchProvider {
+                BraveSearchProvider(braveConfig.copy(baseUrl = providerSettings?.baseUrl("brave") ?: braveConfig.baseUrl))
+            },
+        )
         val searchService = DefaultSearchService(
             registry = searchProviders,
             policies = searchPolicies,
@@ -523,11 +549,15 @@ class BundledConversationPlugins private constructor(
             skillPlugin,
             toolManagerPlugin,
             searchPlugin,
+            tavilySearch,
+            braveSearch,
             modelAdapter,
             sessionManager,
             modelProviderRegistryPlugin,
             interactionPlugin,
             bundledDeclarativePackage,
+            com.cordiact.app.experience.tabs.BuiltinWorkbenchTabs(pluginKernel, workbenchTabs),
+            com.cordiact.app.experience.BuiltinToolResultCards(pluginKernel, toolResultCards),
         ) + extraPlugins
     }
 

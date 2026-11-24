@@ -6,6 +6,7 @@ import com.cordiact.core.attachment.MessageParts
 import com.cordiact.core.plugin.ManagedPlugin
 import com.cordiact.core.plugin.PluginSpec
 import com.cordiact.core.plugin.PluginTarget
+import com.cordiact.core.tool.ToolHistoryReceipt
 import com.cordiact.core.workspace.WorkspaceSessionResolver
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
@@ -111,6 +112,10 @@ data class ModelMessage(
     val parts: List<MessagePart> = emptyList(),
     /** Host-only execution status; null for legacy dispatchers or non-tool messages. */
     val toolSuccess: Boolean? = null,
+    /** One dispatch only; the tool loop strips these host fields before the next model round. */
+    @Transient val toolHistoryReceipt: ToolHistoryReceipt? = null,
+    /** Suppress the preview of a sensitive result without altering its model transport. */
+    @Transient val suppressToolHistorySummary: Boolean = false,
 ) {
     init {
         require(role != MessageRole.TOOL || toolCallId != null) {
@@ -192,6 +197,23 @@ data class ModelGenerationRequest(
     val outputBudgetTokens: Int? = null,
 )
 
+/** Durable attribution of a host-observed tool result, never an authorization or a payload claim. */
+data class ToolHistoryProvenance(
+    val ownerPluginId: String,
+    val toolId: String,
+    val source: ToolHistorySource,
+    val format: ToolHistoryFormat,
+)
+
+enum class ToolHistorySource(val wireValue: String) {
+    HOST_REGISTRATION("host-registration"),
+}
+
+enum class ToolHistoryFormat(val wireValue: String) {
+    /** The existing bounded text preview; it is not a complete or trustworthy JSON document. */
+    BOUNDED_SUMMARY_V1("bounded-summary-v1"),
+}
+
 sealed interface ModelEvent {
     data class Delta(val text: String) : ModelEvent
 
@@ -235,6 +257,8 @@ sealed interface ModelEvent {
         val success: Boolean,
         val durationMillis: Long,
         val summary: String? = null,
+        /** Set by the host loop after a successful, precisely bound non-sensitive dispatch. */
+        val provenance: ToolHistoryProvenance? = null,
     ) : ModelEvent
 
     /** Emitted when context compaction triggers, notifying UI of memory reduction. */

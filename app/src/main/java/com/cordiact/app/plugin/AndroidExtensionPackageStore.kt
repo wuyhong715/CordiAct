@@ -10,16 +10,24 @@ import com.cordiact.core.plugin.ExtensionPackageArtifact
 import com.cordiact.core.plugin.ExtensionPackageArtifact.Format
 import com.cordiact.core.plugin.ExtensionPackageRecord
 import com.cordiact.core.plugin.ExtensionPackageSource
+import com.cordiact.core.plugin.ExtensionPackageSourceReceipt
 import com.cordiact.core.plugin.ExtensionPackageStore
 import com.cordiact.core.plugin.ExtensionPackageStore.Companion.MAX_PER_WORKSPACE
 import com.cordiact.core.plugin.ExtensionPackageStoreException
 import com.cordiact.core.plugin.ExtensionPackageStoreWrite
 import java.io.File
+import java.io.IOException
+import java.io.RandomAccessFile
+import java.nio.file.Files
+import java.nio.file.LinkOption.NOFOLLOW_LINKS
+import java.nio.file.NoSuchFileException
+import java.nio.file.attribute.BasicFileAttributes
 import java.util.UUID
 
 /** Persists only approved source bytes. The app still owns workspace authorization and runtime intent. */
 class AndroidExtensionPackageStore(context: Context) : ExtensionPackageStore, AutoCloseable {
-    private val database = lazy { PackageDatabase(context.applicationContext) }
+    private val appContext = context.applicationContext
+    private val database = lazy { PackageDatabase(appContext) }
     private val helper by database
 
     override fun close() {
@@ -28,14 +36,51 @@ class AndroidExtensionPackageStore(context: Context) : ExtensionPackageStore, Au
 
     override fun list(workspaceId: String): List<ExtensionPackageRecord> = storage {
         requireWorkspace(workspaceId)
-        helper.readableDatabase.query(
-            TABLE, columns, "workspace_id = ?", arrayOf(workspaceId), null, null, "package_id ASC",
-            (MAX_PER_WORKSPACE + 1).toString(),
-        ).use { rows ->
-            if (rows.count > MAX_PER_WORKSPACE) throw ExtensionPackageStoreException()
-            buildList { while (rows.moveToNext()) add(rows.record(workspaceId)) }
+        list(helper.readableDatabase, workspaceId)
+    }
+
+    /**
+     * Reads this workspace without opening the writable helper. A missing database returns null;
+     * an unsupported database version or a database that cannot be read without writes fails with
+     * [ExtensionPackageStoreException], as does an invalid record in the requested workspace.
+     */
+    fun readExistingForDiagnostics(workspaceId: String): List<ExtensionPackageRecord>? = storage {
+        requireWorkspace(workspaceId)
+        val file = existingDatabaseFile(appContext) ?: return@storage null
+        // SQLite read-only connections can still create -wal/-shm for a WAL-format file.
+        // Do not open that format, even when its sidecars currently happen to exist.
+        // With rollback journaling, OPEN_READONLY makes SQLite fail if recovery is required.
+        RandomAccessFile(file, "r").use { input ->
+            input.seek(SQLITE_FILE_VERSION_OFFSET)
+            if (input.readUnsignedByte() != 1 || input.readUnsignedByte() != 1) throw ExtensionPackageStoreException()
+        }
+        SQLiteDatabase.openDatabase(
+            file.path, null, SQLiteDatabase.OPEN_READONLY or SQLiteDatabase.NO_LOCALIZED_COLLATORS,
+            // Android's default corruption handler deletes the affected files.
+            { _ -> },
+        ).use { db ->
+            if (db.version != DATABASE_VERSION) throw ExtensionPackageStoreException()
+            list(db, workspaceId, diagnostics = true)
         }
     }
+
+    private fun list(db: SQLiteDatabase, workspaceId: String, diagnostics: Boolean = false): List<ExtensionPackageRecord> =
+        db.query(
+            TABLE, if (diagnostics) diagnosticsColumns else columns,
+            if (diagnostics) "workspace_id COLLATE BINARY = ?" else "workspace_id = ?",
+            arrayOf(workspaceId), null, null, if (diagnostics) null else "package_id ASC", (MAX_PER_WORKSPACE + 1).toString(),
+        ).use { rows ->
+            if (rows.count > MAX_PER_WORKSPACE) throw ExtensionPackageStoreException()
+            val seenIds = if (diagnostics) mutableSetOf<String>() else null
+            buildList<ExtensionPackageRecord> {
+                while (rows.moveToNext()) {
+                    if (diagnostics) require(rows.getString(columns.size) == workspaceId)
+                    val record = rows.record(workspaceId)
+                    if (seenIds != null) require(seenIds.add(record.manifest.id))
+                    add(record)
+                }
+            }.let { records -> if (diagnostics) records.sortedBy { it.manifest.id } else records }
+        }
 
     override fun get(workspaceId: String, packageId: String): ExtensionPackageRecord? = storage {
         requireWorkspace(workspaceId)
@@ -120,7 +165,23 @@ class AndroidExtensionPackageStore(context: Context) : ExtensionPackageStore, Au
         val previous = if (getInt(9) == 0) null else artifact(id, 6)
         require(previous == null || ExtensionPackageSource.compareVersions(previous.manifest.version, artifact.manifest.version) < 0)
         require(!isNull(10) && getInt(10) in 0..1)
-        return ExtensionPackageRecord(workspaceId, artifact, generation, installedAt, previous, enableIntent = getInt(10) == 1)
+        val sourceReceipt = sourceReceipt(11)
+        val previousSourceReceipt = sourceReceipt(13)
+        require(previous != null || previousSourceReceipt == null)
+        return ExtensionPackageRecord(
+            workspaceId, artifact, generation, installedAt, previous, enableIntent = getInt(10) == 1,
+            sourceReceipt = sourceReceipt, previousSourceReceipt = previousSourceReceipt,
+        )
+    }
+
+    private fun Cursor.sourceReceipt(column: Int): ExtensionPackageSourceReceipt? {
+        if (getInt(column + 1) == 0) return null
+        val bytes = requireNotNull(getBlob(column))
+        require(bytes.all { it in 0..127 })
+        val fields = bytes.decodeToString().split(' ', limit = 6)
+        require(fields.size == 5)
+        fun revision(index: Int): Long = fields[index].toLong().also { require(it.toString() == fields[index]) }
+        return ExtensionPackageSourceReceipt(fields[0], fields[1], fields[2], revision(3), revision(4))
     }
 
     private fun Cursor.artifact(packageId: String, column: Int): ExtensionPackageArtifact {
@@ -148,6 +209,19 @@ class AndroidExtensionPackageStore(context: Context) : ExtensionPackageStore, Au
         put("enable_intent", if (enableIntent) 1 else 0)
         putArtifact("current", artifact)
         putArtifact("previous", previous)
+        putSourceReceipt(CURRENT_RECEIPT, sourceReceipt)
+        putSourceReceipt(PREVIOUS_RECEIPT, previousSourceReceipt)
+    }
+
+    private fun ContentValues.putSourceReceipt(column: String, receipt: ExtensionPackageSourceReceipt?) {
+        if (receipt == null) putNull(column)
+        else {
+            // IDs cannot contain spaces; revisions use canonical decimal digits.
+            val (sourceId, publisherId, keyId, trustRevision, indexRevision) = receipt
+            val bytes = "$sourceId $publisherId $keyId $trustRevision $indexRevision".encodeToByteArray()
+            require(bytes.size <= MAX_RECEIPT_BYTES)
+            put(column, bytes)
+        }
     }
 
     private fun ContentValues.putArtifact(prefix: String, artifact: ExtensionPackageArtifact?) {
@@ -171,12 +245,14 @@ class AndroidExtensionPackageStore(context: Context) : ExtensionPackageStore, Au
         throw ExtensionPackageStoreException(cause = failure)
     } catch (failure: IllegalArgumentException) {
         throw ExtensionPackageStoreException(cause = failure)
-    } catch (failure: java.io.IOException) {
+    } catch (failure: IOException) {
+        throw ExtensionPackageStoreException(cause = failure)
+    } catch (failure: SecurityException) {
         throw ExtensionPackageStoreException(cause = failure)
     }
 
     private class PackageDatabase(context: Context) : SQLiteOpenHelper(
-        context, databaseFile(context).absolutePath, null, 2, { throw ExtensionPackageStoreException() },
+        context, databaseFile(context).absolutePath, null, DATABASE_VERSION, { throw ExtensionPackageStoreException() },
     ) {
         override fun onCreate(db: SQLiteDatabase) {
             val limit = ExtensionPackageSource.MAX_SOURCE_BYTES
@@ -193,6 +269,8 @@ class AndroidExtensionPackageStore(context: Context) : ExtensionPackageStore, Au
                     previous_format TEXT,
                     previous_digest TEXT,
                     previous_source BLOB,
+                    $CURRENT_RECEIPT BLOB,
+                    $PREVIOUS_RECEIPT BLOB,
                     PRIMARY KEY (workspace_id, package_id),
                     CHECK ((previous_source IS NULL AND previous_format IS NULL AND previous_digest IS NULL)
                         OR (previous_source IS NOT NULL AND previous_format IS NOT NULL AND previous_digest IS NOT NULL
@@ -202,19 +280,30 @@ class AndroidExtensionPackageStore(context: Context) : ExtensionPackageStore, Au
         }
 
         override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-            if (oldVersion != 1 || newVersion != 2) throw ExtensionPackageStoreException()
-            db.execSQL("ALTER TABLE $TABLE ADD COLUMN $ENABLE_COLUMN")
+            if (oldVersion !in 1..2 || newVersion != DATABASE_VERSION) throw ExtensionPackageStoreException()
+            if (oldVersion == 1) db.execSQL("ALTER TABLE $TABLE ADD COLUMN $ENABLE_COLUMN")
+            // NULL represents an existing local/trial package. Leave all artifact bytes untouched.
+            db.execSQL("ALTER TABLE $TABLE ADD COLUMN $CURRENT_RECEIPT BLOB")
+            db.execSQL("ALTER TABLE $TABLE ADD COLUMN $PREVIOUS_RECEIPT BLOB")
         }
     }
 
     companion object {
         private const val TABLE = "extension_packages"
+        private const val DATABASE_VERSION = 3
+        private const val CURRENT_RECEIPT = "current_source_receipt"
+        private const val PREVIOUS_RECEIPT = "previous_source_receipt"
+        // Three 32-byte ASCII IDs, four separators, and two 16-digit revisions.
+        private const val MAX_RECEIPT_BYTES = 3 * 32 + 4 + 2 * 16
+        private const val DATABASE_PATH = "cordiact/extension-packages.db"
+        private const val SQLITE_FILE_VERSION_OFFSET = 18L
+        private const val MAX_WORKSPACE_ID_LENGTH = 256
         private const val ENABLE_COLUMN = "enable_intent INTEGER NOT NULL DEFAULT 0 CHECK(enable_intent IN (0, 1))"
         private const val itemKey = "workspace_id = ? AND package_id = ?"
         private fun boundedColumn(name: String, type: String, max: Int): String =
             "CASE WHEN typeof($name) = '$type' AND length(CAST($name AS BLOB)) BETWEEN 1 AND $max THEN $name ELSE NULL END"
 
-        // Include a presence flag so a malformed rollback artifact is not silently dropped.
+        // Preserve presence separately so a malformed rollback artifact or receipt is not dropped.
         private val columns = arrayOf(
             boundedColumn("package_id", "text", 24), boundedColumn("installation_id", "text", 36),
             "CASE WHEN typeof(installed_at) = 'integer' THEN installed_at ELSE NULL END",
@@ -224,10 +313,28 @@ class AndroidExtensionPackageStore(context: Context) : ExtensionPackageStore, Au
             boundedColumn("previous_source", "blob", ExtensionPackageSource.MAX_SOURCE_BYTES),
             "(previous_format IS NOT NULL OR previous_digest IS NOT NULL OR previous_source IS NOT NULL)",
             "CASE WHEN typeof(enable_intent) = 'integer' AND enable_intent IN (0, 1) THEN enable_intent ELSE NULL END",
+            boundedColumn(CURRENT_RECEIPT, "blob", MAX_RECEIPT_BYTES), "$CURRENT_RECEIPT IS NOT NULL",
+            boundedColumn(PREVIOUS_RECEIPT, "blob", MAX_RECEIPT_BYTES), "$PREVIOUS_RECEIPT IS NOT NULL",
         )
+        private val diagnosticsColumns = columns +
+            boundedColumn("workspace_id", "text", MAX_WORKSPACE_ID_LENGTH * 4)
+
+        private fun existingDatabaseFile(context: Context): File? {
+            // Context.getNoBackupFilesDir() may create the root; Android's no-backup directory
+            // resides under getDataDir() for this application context, including its storage scope.
+            val file = File(File(context.dataDir, "no_backup").canonicalFile, DATABASE_PATH)
+            if (file.canonicalFile != file) throw ExtensionPackageStoreException()
+            val attrs = try {
+                Files.readAttributes(file.toPath(), BasicFileAttributes::class.java, NOFOLLOW_LINKS)
+            } catch (_: NoSuchFileException) {
+                return null
+            }
+            if (!attrs.isRegularFile) throw ExtensionPackageStoreException()
+            return file
+        }
 
         internal fun databaseFile(context: Context): File {
-            val file = File(context.noBackupFilesDir.canonicalFile, "cordiact/extension-packages.db")
+            val file = File(context.noBackupFilesDir.canonicalFile, DATABASE_PATH)
             val dir = requireNotNull(file.parentFile)
             if ((!dir.isDirectory && !dir.mkdirs() && !dir.isDirectory) || file.canonicalFile != file) {
                 throw ExtensionPackageStoreException()
@@ -235,7 +342,7 @@ class AndroidExtensionPackageStore(context: Context) : ExtensionPackageStore, Au
             return file
         }
         private val packageKey = Regex("[a-z][a-z0-9-]{1,23}")
-        private fun requireWorkspace(id: String) = require(id.isNotBlank() && id.length <= 256 && '\u0000' !in id)
+        private fun requireWorkspace(id: String) = require(id.isNotBlank() && id.length <= MAX_WORKSPACE_ID_LENGTH && '\u0000' !in id)
         private fun isCanonicalUuid(id: String) = UUID.fromString(id).toString() == id
     }
 }

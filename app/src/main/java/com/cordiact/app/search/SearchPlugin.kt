@@ -1,6 +1,5 @@
 package com.cordiact.app.search
 
-import com.cordiact.core.plugin.ManagedPlugin
 import com.cordiact.core.plugin.ContextManagedPlugin
 import com.cordiact.core.plugin.ContextPlugin
 import com.cordiact.core.plugin.PluginContext
@@ -39,7 +38,7 @@ class SearchPlugin(
 
     override fun runtimeStatus() = runtime.runtimeStatus()
     override fun onRegister() = runtime.onRegister()
-    override fun onEnable() = runtime.onEnable()
+    override fun onEnable() { runtime.onRegister(); runtime.onEnable() }
     override fun onDisable() = runtime.onDisable()
     override fun onUninstall() = runtime.onUninstall()
 

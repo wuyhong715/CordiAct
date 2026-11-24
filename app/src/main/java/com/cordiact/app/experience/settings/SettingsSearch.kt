@@ -34,6 +34,8 @@ private val aliases = mapOf(
     SettingsRoute.PERMISSIONS to "审批 沙箱 安全", SettingsRoute.CONNECTIONS to "代理 网络 Shizuku Termux 无障碍",
     SettingsRoute.SEARCH to "联网 网页 web 搜索引擎", SettingsRoute.CREDENTIALS to "密钥 Key 密码 凭证",
     SettingsRoute.MCP to "插件工具 工具服务器", SettingsRoute.SSH to "远程 终端 主机",
+    SettingsRoute.WORKSPACE_PACKAGES to "工作区插件 插件包管理 声明包 扩展包 导入 JSON 安装 停用 回滚 转包 workspace plugins packages",
+    SettingsRoute.PLUGIN_DIAGNOSTICS to "只读 状态 已安装 运行态 APK 内置 插件诊断 diagnostics runtime",
     SettingsRoute.ATTACHMENTS to "上传 图片 文件 大小", SettingsRoute.TASKS to "定时 计划 后台",
 )
 

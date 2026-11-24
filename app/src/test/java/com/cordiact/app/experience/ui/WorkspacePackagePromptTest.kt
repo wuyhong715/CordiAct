@@ -43,9 +43,27 @@ class WorkspacePackagePromptTest {
         assertEquals(0, approvals)
     }
 
+    @Test fun v2PreviewShowsClientConsentAndPlainDescriptionBeforeAnyApproval() {
+        val service = WorkspaceExtensionPackages(ExtensionPackageInstaller(InMemoryExtensionPackageStore()), { EffectiveSecurityProfile.fullAccess(it) })
+        service.resume(Any())
+        val prompt = PackagePrompt.Import(service.openPage("ws").preview("""
+            {"schemaVersion":2,"id":"notes","version":"1.0.0","title":"Notes","description":"Local package",
+             "host":{"api":1,"minVersion":"0.1.0"},"capabilities":["ui.settings.publish"],"commands":[],"tools":[],
+             "client":{"settingsPage":{"title":"Notes help","description":"Plain text help","rows":[{"label":"Source","value":"/not-a-command"}]}}}
+        """.trimIndent().byteInputStream()))
+        compose.setContent { ExperienceTheme { WorkspacePackagePrompt(prompt, { dismissed++ }, { approvals++ }) } }
+        compose.onNodeWithText("请求能力：在工作区设置中显示说明页").assertExists()
+        compose.onNodeWithText("说明页：Notes help").assertExists()
+        compose.onNodeWithText("Source：/not-a-command").assertExists()
+        compose.onNodeWithText("取消").performClick()
+        assertEquals(1, dismissed)
+        assertEquals(0, approvals)
+    }
+
     @Test fun savedTrialPreviewShowsToolIdentityChangeBeforeAnyApproval() {
         val installer = ExtensionPackageInstaller(InMemoryExtensionPackageStore())
         val service = WorkspaceExtensionPackages(installer, { workspace -> EffectiveSecurityProfile.fullAccess(workspace) })
+        service.resume(Any())
         val page = service.openPage("ws")
         val snapshot = installer.inspectLegacy("notes", """
             {"schemaVersion":1,"id":"notes","title":"Notes",
@@ -64,6 +82,7 @@ class WorkspacePackagePromptTest {
         val service = WorkspaceExtensionPackages(ExtensionPackageInstaller(InMemoryExtensionPackageStore()), { workspace ->
             if (readOnly) EffectiveSecurityProfile.readOnly(workspace) else EffectiveSecurityProfile.fullAccess(workspace)
         })
+        service.resume(Any())
         val prompt = PackagePrompt.Import(service.openPage("ws").preview("""
             {"schemaVersion":1,"id":"notes","version":"1.0.0","title":"Notes","description":"Notes",
              "host":{"api":1,"minVersion":"0.1.0"},"capabilities":["tool.publish"],"commands":[],

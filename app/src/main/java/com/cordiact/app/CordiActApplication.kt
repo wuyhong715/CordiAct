@@ -39,6 +39,7 @@ import com.cordiact.core.plugin.PluginSpec
 import com.cordiact.core.plugin.ManagedPlugin
 import com.cordiact.core.plugin.PluginLifecycleException
 import com.cordiact.core.plugin.PluginState
+import com.cordiact.core.plugin.SignedCatalogObservation
 import com.cordiact.core.skill.SkillIndexRenderer
 import com.cordiact.core.tool.ToolManagerService
 import com.cordiact.core.tool.ToolActivationContext
@@ -744,8 +745,9 @@ class CordiActApplication : Application(), androidx.work.Configuration.Provider 
             override val spec: PluginSpec = com.cordiact.core.plugin.authoredPluginHostSpec()
         }
         com.cordiact.core.plugin.registerAuthoredPluginTool(conversationCatalog.toolRegistry, authoredPlugins)
-        (plugins + automationRuntime.plugins() + sandboxManagerPlugin + subagentRuntime + orchestrationPlugin + backgroundSubagents + pluginManagerPlugin + authoredPluginHost)
-            .forEach(::registerAndEnableSystemPlugin)
+        val systemPlugins = plugins + automationRuntime.plugins() + sandboxManagerPlugin + subagentRuntime + orchestrationPlugin + backgroundSubagents + pluginManagerPlugin + authoredPluginHost
+        bundledDiagnosticPlugins = systemPlugins.filter { BundledConversationPluginCatalog.verifier.isTrustedBundled(it.spec) }
+        systemPlugins.forEach(::registerAndEnableSystemPlugin)
         com.cordiact.app.automation.tasks.registerAutomationTaskTools(
             conversationCatalog.toolRegistry, { automationTasks }, sessions,
         )
@@ -820,14 +822,41 @@ class CordiActApplication : Application(), androidx.work.Configuration.Provider 
     fun activeSessionWorkspaceId(): String? =
         activeSessionId?.let { id -> sessions.getSession(id)?.workspaceId }
 
+    private val extensionPackageStore = lazy { com.cordiact.app.plugin.AndroidExtensionPackageStore(this) }
+    private val signedCatalogPolicy by lazy { runCatching { com.cordiact.app.plugin.AndroidSignedCatalogAccess.fromApk(this) } }
+    internal val signedCatalogAccess get() = signedCatalogPolicy.getOrNull()
+    internal val signedCatalogPolicyInvalid get() = signedCatalogPolicy.isFailure
+    private val workspacePackageRuntime = lazy { conversationCatalog.workspacePackageRuntime() }
+    @Volatile private var bundledDiagnosticPlugins: List<ManagedPlugin> = emptyList()
+
+    internal fun readPluginDiagnostics(workspaceId: String, isSelected: () -> Boolean): com.cordiact.core.plugin.PluginDiagnosticSnapshot =
+        com.cordiact.core.plugin.PluginDiagnostics(
+            isCurrentWorkspace = { id -> isSelected() && workspaceManager.findSessionWorkspace(id) != null },
+            readExistingPackages = { id -> extensionPackageStore.value.readExistingForDiagnostics(id) },
+            packageRuntime = { record ->
+                if (workspacePackageRuntime.isInitialized()) workspacePackageRuntime.value.diagnosticStatus(record)
+                else com.cordiact.core.plugin.WorkspacePackageRuntime.Status.INACTIVE
+            },
+            bundled = bundledDiagnosticPlugins,
+            signedObservation = {
+                if (signedCatalogPolicyInvalid) SignedCatalogObservation.invalidPolicy()
+                else signedCatalogAccess?.diagnosticObservation() ?: SignedCatalogObservation.notConfigured()
+            },
+        ).snapshot(workspaceId)
+
     internal val workspaceExtensionPackages by lazy {
         com.cordiact.core.plugin.WorkspaceExtensionPackages(
-            installer = com.cordiact.core.plugin.ExtensionPackageInstaller(com.cordiact.app.plugin.AndroidExtensionPackageStore(this)),
+            installer = com.cordiact.core.plugin.ExtensionPackageInstaller(
+                extensionPackageStore.value,
+                // A malformed shipped policy cannot reveal which names it meant to reserve. Deny new local admissions.
+                reservedSourceId = { id -> signedCatalogPolicyInvalid || signedCatalogAccess?.reserves(id) == true },
+                signedCatalogProvider = { signedCatalogAccess?.catalog() },
+            ),
             profileForLiveWorkspace = { id ->
                 workspaceManager.findSessionWorkspace(id)?.let { credentialVaultRuntime.profileStore.profileFor(id) }
             },
             reservedPackageIds = setOf(com.cordiact.app.plugin.BundledDeclarativePackages.manifest.id),
-            runtime = conversationCatalog.workspacePackageRuntime(),
+            runtime = workspacePackageRuntime.value,
         )
     }
 
@@ -837,20 +866,20 @@ class CordiActApplication : Application(), androidx.work.Configuration.Provider 
     }
 
     /** Workspace plugin page: only private, verified saved trials can become a package candidate. */
-    internal fun listSavedTrialsForPackage(workspaceId: String) = withActivePluginWorkspace(workspaceId) {
+    internal fun listSavedTrialsForPackage(workspaceId: String) = withPackageWorkspace(workspaceId) {
         authoredPluginInstallations.list(workspaceId)
     }
 
     internal fun readSavedTrialPackage(workspaceId: String, record: AuthoredPluginInstalledRecord) =
-        withActivePluginWorkspace(workspaceId) {
+        withPackageWorkspace(workspaceId) {
             require(record.workspaceId == workspaceId)
             authoredPluginInstallations.previewSavedPackage(record)
         }
 
-    private fun <T> withActivePluginWorkspace(workspaceId: String, read: () -> T): T {
-        fun active() = workspaceManager.activeWorkspace().id == workspaceId && workspaceManager.findSessionWorkspace(workspaceId) != null
-        check(active()) { "PACKAGE_WORKSPACE_UNAVAILABLE" }
-        return read().also { check(active()) { "PACKAGE_WORKSPACE_UNAVAILABLE" } }
+    private fun <T> withPackageWorkspace(workspaceId: String, read: () -> T): T {
+        fun available() = workspaceManager.findSessionWorkspace(workspaceId) != null
+        check(available()) { "PACKAGE_WORKSPACE_UNAVAILABLE" }
+        return read().also { check(available()) { "PACKAGE_WORKSPACE_UNAVAILABLE" } }
     }
 
     /** Trusted workbench actions. The UI supplies only the currently open, persisted user session. */
@@ -940,16 +969,17 @@ class CordiActApplication : Application(), androidx.work.Configuration.Provider 
         return read().also { requireOpenPluginSession(context) }
     }
 
-    internal fun revokeSessionPlugin(context: InteractionContext, receipt: AuthoredPluginReceipt) {
+    internal fun revokeSessionPlugin(context: InteractionContext, confirmation: AuthoredPluginTurn, receipt: AuthoredPluginReceipt) {
+        require(confirmation.matches(context.workspaceId, context.sessionId)) { "插件确认不属于该会话" }
         requireOpenPluginSession(context)
-        authoredPlugins.revokeForSession(context.workspaceId, context.sessionId, receipt)
+        authoredPlugins.revokeConfirmed(confirmation, receipt)
     }
 
     private fun requireOpenPluginSession(context: InteractionContext) {
         require(isOpenPluginSession(context)) { "该会话已离开、归档或不可用" }
     }
 
-    private fun isOpenPluginSession(context: InteractionContext): Boolean {
+    internal fun isOpenPluginSession(context: InteractionContext): Boolean {
         val session = sessions.getSession(context.sessionId) ?: return false
         return session.id == activeSessionId && session.workspaceId == context.workspaceId &&
             session.kind == com.cordiact.core.conversation.SessionKind.USER && session.archivedAtMillis == null &&

@@ -45,10 +45,14 @@ class DefaultSearchService(
     private val summaryMaxChars: Int = 800,
     private val searchTimeoutMs: Long = 30_000,
     private val fetchTimeoutMs: Long = 30_000,
-) : SearchService {
+    /** Explicit host probe may pin the exact registration it displayed, not a same-ID replacement. */
+    private val expectedSearchProvider: SearchProvider? = null,
+) : SearchService, AutoCloseable {
     private val executor: ExecutorService = Executors.newFixedThreadPool(maxOf(2, maxQueries)) { runnable ->
         Thread(runnable, "cordiact-search").apply { isDaemon = true }
     }
+
+    override fun close() { executor.shutdownNow() }
 
     override fun search(
         workspaceId: String,
@@ -61,13 +65,19 @@ class DefaultSearchService(
         val normalized = normalizeQueries(queries)
         val cap = maxResults.coerceIn(1, this.maxResults)
         val policy = policies.policy(workspaceId)
-        val provider = resolveSearch(workspaceId, route)
+        val provider = resolveSearch(policy, route)
+        if (expectedSearchProvider != null && expectedSearchProvider !== provider) {
+            throw SearchException(SearchException.Code.CANCELLED, "Search provider changed; start a new probe")
+        }
         val budget = timeoutMs.takeIf { it > 0 } ?: searchTimeoutMs
         return try {
-            runSearch(workspaceId, route, provider, normalized, cap, oriQuestion, budget)
+            runSearch(workspaceId, route, provider, normalized, cap, oriQuestion, budget, policy)
         } catch (failure: SearchException) {
+            if (expectedSearchProvider != null || failure.code == SearchException.Code.CANCELLED) throw failure
+            ensureCurrent(provider)
+            if (policies.policy(workspaceId) != policy) throw failure
             val fallback = autoFallback(policy, route, provider, failure) ?: throw failure
-            runSearch(workspaceId, route, fallback, normalized, cap, oriQuestion, budget)
+            runSearch(workspaceId, route, fallback, normalized, cap, oriQuestion, budget, policy)
         }
     }
 
@@ -80,14 +90,22 @@ class DefaultSearchService(
         cap: Int,
         oriQuestion: String?,
         budget: Long,
+        expectedPolicy: WorkspaceSearchPolicy,
     ): SearchResult {
         // Fan-out means one tool call can spend several billable calls; reserve them all up front.
-        enforceBudget(workspaceId, provider, normalized.size)
+        ensureCurrent(provider)
+        val selectedPolicy = policies.policy(workspaceId)
+        if (selectedPolicy != expectedPolicy) throw SearchException(SearchException.Code.CANCELLED, "Search policy changed before dispatch")
+        enforceBudget(workspaceId, provider, normalized.size, selectedPolicy)
         val tasks = normalized.map { query ->
             Callable {
+                ensureCurrent(provider)
+                if (policies.policy(workspaceId) != selectedPolicy) {
+                    throw SearchException(SearchException.Code.CANCELLED, "Search policy changed before dispatch")
+                }
                 provider.search(
                     SearchRequest(query = query, maxResults = cap, oriQuestion = oriQuestion, route = route),
-                    CancellationSignal.NONE,
+                    CancellationSignal { Thread.currentThread().isInterrupted || registry.searchProvider(provider.id) !== provider },
                 )
             }
         }
@@ -101,11 +119,13 @@ class DefaultSearchService(
         val results = ArrayList<SearchResult>(futures.size)
         for (future in futures) {
             if (future.isCancelled) {
+                ensureCurrent(provider)
                 throw SearchException(SearchException.Code.TIMED_OUT, "Search timed out", retryable = true)
             }
             try {
                 results += future.get()
             } catch (failure: ExecutionException) {
+                ensureCurrent(provider)
                 when (val cause = failure.cause) {
                     is SearchException -> throw cause
                     else -> throw SearchException(
@@ -120,10 +140,20 @@ class DefaultSearchService(
                 throw SearchException(SearchException.Code.CANCELLED, "Search was interrupted", cause = interrupted)
             }
         }
+        ensureCurrent(provider)
+        if (policies.policy(workspaceId) != selectedPolicy) {
+            throw SearchException(SearchException.Code.CANCELLED, "Search policy changed before delivery")
+        }
         return merge(normalized, results, cap).copy(
             providerId = provider.id,
             estimatedCostUsd = provider.pricing.usdPerCall?.let { it * normalized.size },
         )
+    }
+
+    private fun ensureCurrent(provider: SearchProvider) {
+        if (registry.searchProvider(provider.id) !== provider) {
+            throw SearchException(SearchException.Code.CANCELLED, "Search provider registration retired")
+        }
     }
 
     /**
@@ -133,9 +163,9 @@ class DefaultSearchService(
      * [calls] is how many billable calls this operation will make, not how many
      * tool calls the model made. A four-query fan-out costs four.
      */
-    private fun enforceBudget(workspaceId: String, provider: SearchProvider, calls: Int) {
+    private fun enforceBudget(workspaceId: String, provider: SearchProvider, calls: Int, policy: WorkspaceSearchPolicy) {
         if (!provider.billable || calls <= 0) return
-        val limit = policies.policy(workspaceId).monthlyBudgetCalls ?: return
+        val limit = policy.monthlyBudgetCalls ?: return
         val used = usage.usedThisMonth(workspaceId)
         val remaining = limit - used
         if (remaining < calls) {
@@ -263,8 +293,7 @@ class DefaultSearchService(
         return runCatching { resolveExternal(policy, route) }.getOrNull()?.takeIf { it.id != failed.id }
     }
 
-    private fun resolveSearch(workspaceId: String, route: ModelRoute?): SearchProvider {
-        val policy = policies.policy(workspaceId)
+    private fun resolveSearch(policy: WorkspaceSearchPolicy, route: ModelRoute?): SearchProvider {
         if (policy.mode == SearchMode.OFF) {
             throw SearchException(SearchException.Code.UNSUPPORTED, "Web search is disabled for this workspace")
         }

@@ -22,6 +22,8 @@ const val EXTENSION_PACKAGE_HOST_VERSION = "0.1.0"
 enum class ExtensionPackageCapability(val wireName: String) {
     TOOL_PUBLISH("tool.publish"),
     COMMAND_PUBLISH("command.publish"),
+    UI_SETTINGS_PUBLISH("ui.settings.publish"),
+    UI_SESSION_ACTION_PUBLISH("ui.session-action.publish"),
 }
 
 /** One host-executed tool. [operation] is null for a fixed-text tool. */
@@ -42,6 +44,23 @@ data class ExtensionPackageCommand(
     val text: String,
 )
 
+/** Optional client contributions described by schema version 2; no package code is run. */
+data class ExtensionPackageClient(
+    val settingsPage: ExtensionPackageSettingsPage? = null,
+    val sessionActions: List<ExtensionPackageSessionAction> = emptyList(),
+)
+
+data class ExtensionPackageSettingsPage(
+    val title: String,
+    val description: String,
+    val rows: List<ExtensionPackageSettingsRow> = emptyList(),
+)
+
+data class ExtensionPackageSettingsRow(val label: String, val value: String)
+
+/** [command] is the primary name of a command from this package, without a leading slash. */
+data class ExtensionPackageSessionAction(val id: String, val label: String, val command: String)
+
 /** Immutable, validated package manifest. [sha256] covers the exact source bytes. */
 data class ExtensionPackageManifest(
     val schemaVersion: Int,
@@ -56,6 +75,7 @@ data class ExtensionPackageManifest(
     val commands: List<ExtensionPackageCommand>,
     val sha256: String,
     val sizeBytes: Int,
+    val client: ExtensionPackageClient? = null,
 )
 
 
@@ -76,6 +96,8 @@ object ExtensionPackageSource {
     const val MAX_SOURCE_BYTES = 32 * 1024
     const val MAX_TOOLS = 4
     const val MAX_COMMANDS = 4
+    private const val MAX_SETTINGS_ROWS = 4
+    private const val MAX_SESSION_ACTIONS = 2
     const val MAX_TITLE_BYTES = 120
     const val MAX_DESCRIPTION_BYTES = 480
     const val MAX_TEXT_BYTES = 4 * 1024
@@ -156,11 +178,12 @@ object ExtensionPackageSource {
         var capabilities: Set<ExtensionPackageCapability>? = null
         var tools: List<ExtensionPackageTool>? = null
         var commands: List<ExtensionPackageCommand>? = null
+        var client: ExtensionPackageClient? = null
         while (reader.hasNext()) {
             val field = reader.nextName()
             require(fields.add(field)) { "Duplicate package field" }
             when (field) {
-                "schemaVersion" -> schemaVersion = readVersion(reader, "schemaVersion")
+                "schemaVersion" -> schemaVersion = readSchemaVersion(reader)
                 "id" -> id = reader.readString().also { validateSlug(it, "Invalid package ID") }
                 "version" -> packageVersion = reader.readString().also {
                     require(isVersion(it)) { "Invalid package version" }
@@ -176,17 +199,30 @@ object ExtensionPackageSource {
                 "capabilities" -> capabilities = readCapabilities(reader)
                 "tools" -> tools = readTools(reader)
                 "commands" -> commands = readCommands(reader)
+                "client" -> client = readClient(reader)
                 else -> throw IllegalArgumentException("Unknown package field")
             }
         }
         reader.endObject()
         require(reader.peek() == JsonToken.END_DOCUMENT) { "Trailing package source content" }
-        require(fields.size == 9) { "Missing package field" }
+        val compiledSchema = requireNotNull(schemaVersion) { "Missing package schemaVersion" }
+        if (compiledSchema == 1) {
+            require(client == null) { "Unknown package field" }
+        } else {
+            require(client != null) { "Schema version 2 requires a client declaration" }
+        }
+        require(fields.size == if (compiledSchema == 1) 9 else 10) { "Missing package field" }
         val compiledTools = Collections.unmodifiableList(requireNotNull(tools))
         val compiledCommands = Collections.unmodifiableList(requireNotNull(commands))
         val required = requireNotNull(capabilities)
-        require((compiledTools.isNotEmpty() || compiledCommands.isNotEmpty())) {
-            "Package must declare at least one contribution"
+        if (compiledSchema == 1) {
+            require(compiledTools.isNotEmpty() || compiledCommands.isNotEmpty()) {
+                "Package must declare at least one contribution"
+            }
+            require(ExtensionPackageCapability.UI_SETTINGS_PUBLISH !in required &&
+                ExtensionPackageCapability.UI_SESSION_ACTION_PUBLISH !in required) {
+                "Unknown package capability"
+            }
         }
         require(required.contains(ExtensionPackageCapability.TOOL_PUBLISH) == compiledTools.isNotEmpty()) {
             "tool.publish must exactly match the tools declaration"
@@ -194,9 +230,19 @@ object ExtensionPackageSource {
         require(required.contains(ExtensionPackageCapability.COMMAND_PUBLISH) == compiledCommands.isNotEmpty()) {
             "command.publish must exactly match the commands declaration"
         }
-        require(requireNotNull(schemaVersion) == 1) { "Unsupported package schema version" }
+        if (client != null) {
+            require(required.contains(ExtensionPackageCapability.UI_SETTINGS_PUBLISH) == (client.settingsPage != null)) {
+                "ui.settings.publish must exactly match the settingsPage declaration"
+            }
+            require(required.contains(ExtensionPackageCapability.UI_SESSION_ACTION_PUBLISH) == client.sessionActions.isNotEmpty()) {
+                "ui.session-action.publish must exactly match the sessionActions declaration"
+            }
+            require(client.sessionActions.all { action -> compiledCommands.any { it.name == action.command } }) {
+                "Session action must name a primary command from this package"
+            }
+        }
         return ExtensionPackageManifest(
-            schemaVersion = 1,
+            schemaVersion = compiledSchema,
             id = requireNotNull(id),
             version = requireNotNull(packageVersion),
             title = requireNotNull(title),
@@ -208,16 +254,129 @@ object ExtensionPackageSource {
             commands = compiledCommands,
             sha256 = sha256(bytes),
             sizeBytes = bytes.size,
+            client = client,
         )
     }
 
-    private fun readVersion(reader: JsonReader, field: String): Int {
-        require(reader.peek() == JsonToken.NUMBER) { "Unsupported package $field" }
+    private fun readSchemaVersion(reader: JsonReader): Int {
+        require(reader.peek() == JsonToken.NUMBER) { "Unsupported package schemaVersion" }
         return when (reader.nextString()) {
             "1" -> 1
+            "2" -> 2
             else -> throw IllegalArgumentException("Unsupported package schema version")
         }
     }
+
+    private fun readClient(reader: JsonReader): ExtensionPackageClient {
+        var settingsPage: ExtensionPackageSettingsPage? = null
+        var sessionActions: List<ExtensionPackageSessionAction> = emptyList()
+        reader.readClientObject("client") { field ->
+            when (field) {
+                "settingsPage" -> settingsPage = readSettingsPage(reader)
+                "sessionActions" -> sessionActions = readSessionActions(reader)
+                else -> throw IllegalArgumentException("Unknown package client field")
+            }
+        }
+        require(settingsPage != null || sessionActions.isNotEmpty()) {
+            "Package client must declare settingsPage or sessionActions"
+        }
+        return ExtensionPackageClient(settingsPage, sessionActions)
+    }
+
+    private fun readSettingsPage(reader: JsonReader): ExtensionPackageSettingsPage {
+        var title: String? = null
+        var description: String? = null
+        var rows: List<ExtensionPackageSettingsRow> = emptyList()
+        reader.readClientObject("settings page") { field ->
+            when (field) {
+                "title" -> title = reader.readClientText(MAX_TITLE_BYTES, "settings page title")
+                "description" -> description = reader.readClientText(MAX_DESCRIPTION_BYTES, "settings page description")
+                "rows" -> {
+                    require(reader.peek() == JsonToken.BEGIN_ARRAY) { "Package settings rows must be an array" }
+                    reader.beginArray()
+                    val values = mutableListOf<ExtensionPackageSettingsRow>()
+                    while (reader.hasNext()) {
+                        require(values.size < MAX_SETTINGS_ROWS) { "Too many package settings rows" }
+                        values += readSettingsRow(reader)
+                    }
+                    reader.endArray()
+                    rows = Collections.unmodifiableList(values)
+                }
+                else -> throw IllegalArgumentException("Unknown package settings page field")
+            }
+        }
+        return ExtensionPackageSettingsPage(
+            title = requireNotNull(title) { "Missing package settings page title" },
+            description = requireNotNull(description) { "Missing package settings page description" },
+            rows = rows,
+        )
+    }
+
+    private fun readSettingsRow(reader: JsonReader): ExtensionPackageSettingsRow {
+        var label: String? = null
+        var value: String? = null
+        reader.readClientObject("settings row") { field ->
+            when (field) {
+                "label" -> label = reader.readClientText(MAX_TITLE_BYTES, "settings row label")
+                "value" -> value = reader.readClientText(MAX_DESCRIPTION_BYTES, "settings row value")
+                else -> throw IllegalArgumentException("Unknown package settings row field")
+            }
+        }
+        return ExtensionPackageSettingsRow(
+            label = requireNotNull(label) { "Missing package settings row label" },
+            value = requireNotNull(value) { "Missing package settings row value" },
+        )
+    }
+
+    private fun readSessionActions(reader: JsonReader): List<ExtensionPackageSessionAction> {
+        require(reader.peek() == JsonToken.BEGIN_ARRAY) { "Package session actions must be an array" }
+        reader.beginArray()
+        val actions = mutableListOf<ExtensionPackageSessionAction>()
+        val ids = mutableSetOf<String>()
+        while (reader.hasNext()) {
+            require(actions.size < MAX_SESSION_ACTIONS) { "Too many package session actions" }
+            val action = readSessionAction(reader)
+            require(ids.add(action.id)) { "Duplicate package session action id" }
+            actions += action
+        }
+        reader.endArray()
+        require(actions.isNotEmpty()) { "Package session actions must not be empty" }
+        return Collections.unmodifiableList(actions)
+    }
+
+    private fun readSessionAction(reader: JsonReader): ExtensionPackageSessionAction {
+        var id: String? = null
+        var label: String? = null
+        var command: String? = null
+        reader.readClientObject("session action") { field ->
+            when (field) {
+                "id" -> id = reader.readString().also { validateSlug(it, "Invalid session action id") }
+                "label" -> label = reader.readClientText(MAX_TITLE_BYTES, "session action label")
+                "command" -> command = reader.readString().also { validateSlug(it, "Invalid session action command") }
+                else -> throw IllegalArgumentException("Unknown package session action field")
+            }
+        }
+        return ExtensionPackageSessionAction(
+            id = requireNotNull(id) { "Missing package session action id" },
+            label = requireNotNull(label) { "Missing package session action label" },
+            command = requireNotNull(command) { "Missing package session action command" },
+        )
+    }
+
+    private inline fun JsonReader.readClientObject(name: String, readField: (String) -> Unit) {
+        require(peek() == JsonToken.BEGIN_OBJECT) { "Package $name must be an object" }
+        beginObject()
+        val fields = mutableSetOf<String>()
+        while (hasNext()) {
+            val field = nextName()
+            require(fields.add(field)) { "Duplicate package $name field" }
+            readField(field)
+        }
+        endObject()
+    }
+
+    private fun JsonReader.readClientText(maxBytes: Int, name: String): String =
+        readString().validatedText(maxBytes, multiline = false, error = "Invalid package $name")
 
     private fun readHost(reader: JsonReader): Pair<Int, String> {
         require(reader.peek() == JsonToken.BEGIN_OBJECT) { "Package host must be an object" }

@@ -2,7 +2,9 @@ package com.cordiact.app.experience.settings
 
 import com.cordiact.core.conversation.ModelDescriptor
 import com.cordiact.core.conversation.ModelId
+import com.cordiact.interaction.WorkspaceClientContributions
 import com.cordiact.model.providers.ModelProtocol
+import kotlinx.coroutines.flow.StateFlow
 
 /** UI DTOs never carry credentials or an execution-time credential reader. */
 enum class SettingsStatus { READY, NEEDS_ACTION, DISABLED, UNAVAILABLE, ERROR }
@@ -39,6 +41,8 @@ interface SettingsFacade {
     val sshSettings: SshSettings? get() = null
     val credentialSettings: AndroidCredentialSettings? get() = null
     val security: SecuritySettingsFacade? get() = null
+    val workspaceClientContributions: StateFlow<WorkspaceClientContributions.Snapshot>? get() = null
+    suspend fun pluginDiagnostics(workspaceId: String): com.cordiact.core.plugin.PluginDiagnosticSnapshot? = null
     suspend fun selectWorkspace(id: String) { error("WORKSPACE_SELECTION_UNAVAILABLE") }
     suspend fun testRoot() { error("ROOT_UNAVAILABLE") }
     suspend fun testScreen() { error("SCREEN_UNAVAILABLE") }

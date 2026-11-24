@@ -181,12 +181,13 @@ class AutomationService(
         runs = nextRuns
     }
 
+    /** Acknowledgements allow one new manual run; they do not clear the prior unknown results. */
     fun runNow(workspaceId: String, id: String, acknowledgedUnknownRunIds: Set<String> = emptySet()): AutomationRun = synchronized(lock) {
         val task = tasks[taskKey(workspaceId, id)]
             ?: throw IllegalArgumentException("Task not found: $id")
         activeRunFor(task)?.let { return it }
 
-        if (runs.values.any { it.workspaceId == workspaceId && it.taskId == id && it.externalResultUnknown && it.id !in acknowledgedUnknownRunIds }) {
+        if (hasUnconfirmedExternalResult(task, acknowledgedUnknownRunIds)) {
             throw UnconfirmedAutomationResultException()
         }
 
@@ -200,9 +201,11 @@ class AutomationService(
     }
 
     /**
-     * Queues one run per due task. Missed recurring occurrences collapse into a
-     * single catch-up run and the schedule jumps to the next future occurrence,
-     * so a long sleep never produces an unbounded burst.
+     * Queues at most one run per due task in an enabled workspace. Missed recurring
+     * occurrences collapse into a single catch-up run. If a run is already active
+     * or a prior external result is unknown, consume the due occurrence without
+     * queuing a run. Either way, recurring schedules advance to the next future
+     * occurrence and one-time schedules are spent; skipped work is not replayed.
      */
     fun enqueueDue(isWorkspaceEnabled: (String) -> Boolean = { true }): List<AutomationRun> = synchronized(lock) {
         val current = now()
@@ -221,7 +224,7 @@ class AutomationService(
             val scheduledAt = task.nextFireAt ?: continue
             val key = taskKey(task.workspaceId, task.id)
 
-            if (activeRunFor(task, nextRuns.values) == null) {
+            if (activeRunFor(task, nextRuns.values) == null && !hasUnconfirmedExternalResult(task)) {
                 val run = newRun(task, scheduledAt = scheduledAt, createdAt = current)
                 nextRuns[run.id] = run
                 created += run
@@ -446,14 +449,24 @@ class AutomationService(
                 (it.state == TaskRunState.QUEUED || it.state == TaskRunState.RUNNING)
         }
 
+    private fun hasUnconfirmedExternalResult(task: AutomationTask, acknowledgedRunIds: Set<String> = emptySet()): Boolean =
+        runs.values.any {
+            it.workspaceId == task.workspaceId && it.taskId == task.id &&
+                it.externalResultUnknown && it.id !in acknowledgedRunIds
+        }
+
     private fun trimRuns(source: Map<String, AutomationRun>): LinkedHashMap<String, AutomationRun> {
-        val terminal = source.values
-            .filter { it.state in TERMINAL_STATES }
-            .sortedWith(compareBy({ it.finishedAt ?: it.createdAt }, { it.id }))
+        val terminal = source.values.filter { it.state in TERMINAL_STATES }
         val excess = terminal.size - MAX_TERMINAL_RUNS
         if (excess <= 0) return LinkedHashMap(source)
 
-        val dropped = terminal.take(excess).mapTo(HashSet()) { it.id }
+        // Evict ordinary history first. If unknown results alone exceed the
+        // limit, keep them rather than implicitly unblocking any task.
+        val dropped = terminal.asSequence()
+            .filterNot { it.externalResultUnknown }
+            .sortedWith(compareBy({ it.finishedAt ?: it.createdAt }, { it.id }))
+            .take(excess)
+            .mapTo(HashSet()) { it.id }
         val result = LinkedHashMap<String, AutomationRun>(source.size)
         for ((id, run) in source) {
             if (id !in dropped) result[id] = run

@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 2,
+  "id": "release-preflight",
+  "version": "1.0.0",
+  "title": "发布前检查",
+  "description": "离线发布检查清单",
+  "host": { "api": 1, "minVersion": "0.1.0" },
+  "capabilities": ["command.publish", "ui.settings.publish", "ui.session-action.publish"],
+  "tools": [],
+  "commands": [
+    { "name": "release-preflight", "aliases": [], "description": "显示发布前检查清单", "text": "运行测试\n核对版本\n确认变更说明" }
+  ],
+  "client": {
+    "settingsPage": {
+      "title": "发布前检查说明",
+      "description": "从会话动作填入清单命令；按发送才会显示本地结果。",
+      "rows": [{ "label": "网络", "value": "不需要" }, { "label": "模型", "value": "不需要" }]
+    },
+    "sessionActions": [
+      { "id": "insert", "label": "填入发布检查命令", "command": "release-preflight" }
+    ]
+  }
+}

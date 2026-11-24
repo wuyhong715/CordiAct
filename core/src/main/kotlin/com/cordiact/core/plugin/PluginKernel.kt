@@ -58,7 +58,10 @@ class PluginContext internal constructor(
  * Does not replace PluginLifecycleManager's durable install/consent records. The host enables
  * an instance only AFTER authorization, and disables it before withdrawing authorization.
  */
-class PluginKernel {
+class PluginKernel(
+    // Optional host projection. It must not acquire the kernel recursively or perform I/O.
+    private val onPublicationChanged: () -> Unit = {},
+) {
     private class Entry(val id: PluginInstanceId, val plugin: ContextPlugin) {
         val requirements = plugin.requiredServices.toSet()
         var desired = false
@@ -149,7 +152,9 @@ class PluginKernel {
             }
         } while (changed)
         // Stop admitting new calls for the full closure before any disposer can block.
+        val withdrew = invalid.any { it.publication?.active == true }
         invalid.forEach { it.publication?.active = false }
+        if (withdrew) publicationChanged()
         var cleanupFailure: Exception? = null
         for (entry in started.toList().asReversed()) {
             if (entry in invalid) {
@@ -208,6 +213,7 @@ class PluginKernel {
             entry.error = null
             started.add(entry)
             publication.active = true
+            publicationChanged()
         } catch (failure: Exception) {
             entry.state = PluginInstanceState.FAILED
             entry.error = failure.message ?: failure.javaClass.name
@@ -217,6 +223,11 @@ class PluginKernel {
             entry.dependencies.clear()
             if (entry.scope != null) throw IllegalStateException("Partial plugin start cleanup failed: ${entry.id}", failure)
         }
+    }
+
+    private fun publicationChanged() {
+        // Rendering projection cannot change kernel admission or strand a disposer.
+        try { onPublicationChanged() } catch (_: Exception) { /* Live admission still governs actions. */ }
     }
 
     private fun stop(entry: Entry) {

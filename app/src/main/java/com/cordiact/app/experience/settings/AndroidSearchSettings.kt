@@ -18,8 +18,12 @@ class AndroidSearchSettings(private val app: CordiActApplication) : SearchSettin
     }
     override suspend fun snapshot(workspaceId: String) = withContext(Dispatchers.IO) {
         require(app.workspaceManager.get(workspaceId) != null)
-        SearchSettingsSnapshot(workspaceId, policies.policy(workspaceId), IDS.map { SearchProviderSummary(it, providerSettings.baseUrl(configId(it)) ?: "", it == "deepseek-search", com.cordiact.app.security.AndroidSystemCredentials.get(app).has("search", configId(it))) },
-            app.conversationCatalog.searchUsageStore.usedThisMonth(workspaceId), providerSettings.localFetchEnabled())
+        val published = app.conversationCatalog.searchRegistry?.searchProviders()?.mapTo(hashSetOf()) { it.id }.orEmpty()
+        val credentials = com.cordiact.app.security.AndroidSystemCredentials.get(app)
+        SearchSettingsSnapshot(workspaceId, policies.policy(workspaceId), IDS.map { id ->
+            SearchProviderSummary(id = id, endpoint = providerSettings.baseUrl(configId(id)) ?: "",
+                keySet = credentials.has("search", configId(id)), native = id == "deepseek-search", published = id in published)
+        }, app.conversationCatalog.searchUsageStore.usedThisMonth(workspaceId), providerSettings.localFetchEnabled())
     }
     override suspend fun savePolicy(workspaceId: String, value: WorkspaceSearchPolicy) = withContext(Dispatchers.IO) {
         require(value.providerOrder.distinct().size == value.providerOrder.size && value.providerOrder.all { it in THIRD_PARTY })
@@ -48,15 +52,28 @@ class AndroidSearchSettings(private val app: CordiActApplication) : SearchSettin
     }
     override suspend fun test(workspaceId: String, id: String): List<String> = withContext(Dispatchers.IO) {
         require(id in THIRD_PARTY)
-        val provider = checkNotNull(app.conversationCatalog.searchRegistry).searchProvider(id) ?: error("SEARCH_PROVIDER_UNAVAILABLE")
+        require(app.workspaceManager.findSessionWorkspace(workspaceId) != null) { "SEARCH_WORKSPACE_UNAVAILABLE" }
+        val registry = checkNotNull(app.conversationCatalog.searchRegistry)
+        val provider = registry.searchProvider(id) ?: error("SEARCH_PROVIDER_UNAVAILABLE")
         require(provider.ready(null)) { "SEARCH_PROVIDER_NOT_CONFIGURED" }
-        require(policies.policy(workspaceId).mode != SearchMode.OFF) { "SEARCH_DISABLED" }
-        require(policies.policy(workspaceId).enabledProviders?.contains(id) != false) { "SEARCH_PROVIDER_DISABLED" }
-        require(com.cordiact.app.settings.CapabilitySettingsStore(app).enabled(workspaceId, "search")) { "SEARCH_CAPABILITY_DISABLED" }
-        // Explicit user test, same budget/time enforcement, no temporary persistent policy changes.
-        val testPolicy = policies.policy(workspaceId).copy(mode = SearchMode.TOOL, searchProviderId = id, enabledProviders = setOf(id), providerOrder = listOf(id))
-        val service = com.cordiact.search.providers.DefaultSearchService(checkNotNull(app.conversationCatalog.searchRegistry), object : SearchPolicyStore { override fun policy(workspaceId: String) = testPolicy }, app.conversationCatalog.searchUsageStore)
-        service.search(workspaceId, null, listOf("CordiAct connectivity test"), null, 3, 10_000).sources.take(3).map { it.title ?: it.url }
+        // Explicit one-provider test. Re-read the selected workspace's gates, without changing its saved policy.
+        val probePolicy = object : SearchPolicyStore {
+            override fun policy(workspaceId: String): WorkspaceSearchPolicy {
+                require(app.workspaceManager.findSessionWorkspace(workspaceId) != null) { "SEARCH_WORKSPACE_UNAVAILABLE" }
+                val policy = policies.policy(workspaceId)
+                require(policy.mode != SearchMode.OFF) { "SEARCH_DISABLED" }
+                require(policy.enabledProviders?.contains(id) != false) { "SEARCH_PROVIDER_DISABLED" }
+                require(com.cordiact.app.settings.CapabilitySettingsStore(app).enabled(workspaceId, "search")) { "SEARCH_CAPABILITY_DISABLED" }
+                return policy.copy(mode = SearchMode.TOOL, searchProviderId = id, enabledProviders = setOf(id), providerOrder = listOf(id))
+            }
+        }
+        com.cordiact.search.providers.DefaultSearchService(
+            registry, probePolicy,
+            app.conversationCatalog.searchUsageStore, expectedSearchProvider = provider,
+        ).use { service ->
+            service.search(workspaceId, null, listOf("CordiAct connectivity test"), null, 3, 10_000)
+                .sources.take(3).map { it.title ?: it.url }
+        }
     }
     private fun configId(id: String) = if (id == "deepseek-search") "deepseek" else id
     companion object {

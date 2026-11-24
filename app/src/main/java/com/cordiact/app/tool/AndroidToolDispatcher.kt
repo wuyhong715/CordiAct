@@ -53,6 +53,7 @@ class AndroidToolDispatcher(
             if (sensitivePayloads == null) {
                 sensitive.close()
                 return failure(call, "SENSITIVE_TRANSPORT_UNAVAILABLE", "Sensitive result transport is not configured")
+                    .copy(suppressToolHistorySummary = true)
             }
             sensitivePayloads.register(
                 toolCallId = call.id,
@@ -70,6 +71,8 @@ class AndroidToolDispatcher(
             metadataJson = renderMetadata(call.name, result.metadata),
             toolSuccess = (result.values["ok"] as? ToolValue.BooleanValue)?.value != false &&
                 !result.values.containsKey("error"),
+            toolHistoryReceipt = result.historyReceipt,
+            suppressToolHistorySummary = sensitive != null,
         )
     }
 

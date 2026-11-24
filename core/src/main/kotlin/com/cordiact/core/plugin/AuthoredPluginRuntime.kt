@@ -95,6 +95,19 @@ class AuthoredPluginRuntime(
     fun revokeForSession(workspaceId: String, sessionId: String, expected: AuthoredPluginReceipt): AuthoredPluginReceipt =
         revokeForSession(Caller(workspaceId, sessionId), expected.id, expected.sha256, expectedReceipt = expected)
 
+    /** The confirmation must still be live when the exact activation is withdrawn. */
+    fun revokeConfirmed(confirmation: AuthoredPluginTurn, expected: AuthoredPluginReceipt): AuthoredPluginReceipt {
+        if (!confirmation.claimConfirmation()) unavailable()
+        try {
+            val caller = Caller(confirmation.workspaceId, confirmation.sessionId)
+            return synchronized(lock) {
+                confirmation.commit { revokeForSession(caller, expected.id, expected.sha256, expected) }
+            }
+        } finally {
+            confirmation.close()
+        }
+    }
+
     private fun revokeForSession(
         caller: Caller, pluginId: String, expectedSha256: String, expectedReceipt: AuthoredPluginReceipt?,
     ): AuthoredPluginReceipt = synchronized(lock) {

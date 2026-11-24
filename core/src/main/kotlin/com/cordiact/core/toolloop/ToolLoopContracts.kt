@@ -201,6 +201,7 @@ class ToolLoopPlugin(
         var calls = 0
         var lastText = ""
         val evidence = mutableListOf<ToolEvidence>()
+        val lifecycleIds = hashSetOf<String>()
 
         while (rounds < limits.maxRounds) {
             rounds++
@@ -270,25 +271,43 @@ class ToolLoopPlugin(
                     continue
                 }
                 calls++
+                val registration = context.toolRegistrations[call.name]
+                val invocation = com.cordiact.core.tool.ToolHistoryInvocation()
+                // Duplicate provider IDs must not attach a second tool's provenance to the first
+                // trace row. Only the host lifecycle ID changes; wire IDs stay verbatim.
+                var lifecycleId = call.id
+                while (!lifecycleIds.add(lifecycleId)) lifecycleId = java.util.UUID.randomUUID().toString()
                 context.onEvent?.invoke(
-                    com.cordiact.core.conversation.ModelEvent.ToolCallStarted(
-                        callId = call.id,
+                    ModelEvent.ToolCallStarted(
+                        callId = lifecycleId,
                         toolName = call.name,
-                        argumentsJson = call.argumentsJson,
+                        argumentsJson = if (registration?.hasSensitiveArguments == false) {
+                            call.argumentsJson.take(600)
+                        } else "",
                     )
                 )
                 val startMs = System.currentTimeMillis()
-                val result = dispatcher.dispatch(context, call)
+                val dispatched = dispatcher.dispatch(context.copy(onEvent = null, historyInvocation = invocation), call)
                 val duration = System.currentTimeMillis() - startMs
-                val isSuccess = result.toolSuccess ?:
-                    (!result.content.startsWith("Error:") && !result.content.startsWith("{\"error\""))
+                val isSuccess = dispatched.toolSuccess ?:
+                    (!dispatched.content.startsWith("Error:") && !dispatched.content.startsWith("{\"error\""))
+                val receipt = dispatched.toolHistoryReceipt
+                val provenance = receipt?.provenance?.takeIf {
+                    isSuccess && !dispatched.suppressToolHistorySummary && dispatched.toolCallId == call.id &&
+                        receipt.invocation === invocation && receipt.registration === registration
+                }
+                val suppressSummary = dispatched.suppressToolHistorySummary || registration?.hasSensitiveArguments == true
+                val result = if (receipt == null && !dispatched.suppressToolHistorySummary) dispatched else {
+                    dispatched.copy(toolHistoryReceipt = null, suppressToolHistorySummary = false)
+                }
                 context.onEvent?.invoke(
-                    com.cordiact.core.conversation.ModelEvent.ToolCallCompleted(
-                        callId = call.id,
+                    ModelEvent.ToolCallCompleted(
+                        callId = lifecycleId,
                         toolName = call.name,
                         success = isSuccess,
                         durationMillis = duration,
-                        summary = result.content.take(120),
+                        summary = if (suppressSummary) null else result.content.take(120),
+                        provenance = provenance,
                     )
                 )
                 result.metadataJson?.let { evidence += ToolEvidence(call.name, it) }

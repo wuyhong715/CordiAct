@@ -116,7 +116,7 @@ class BundledConversationPluginCatalogTest {
             },
         )
         assertEquals(
-            listOf("core.workspace-manager", "core.file-manager", "core.skill", "core.tool-manager", "core.search", "core.model-adapter", "core.session-manager", "model.providers", "core.interaction", "pkg.core-quick-notes"),
+            listOf("core.workspace-manager", "core.file-manager", "core.skill", "core.tool-manager", "core.search", "core.search.provider.tavily", "core.search.provider.brave", "core.model-adapter", "core.session-manager", "model.providers", "core.interaction", "pkg.core-quick-notes", "core.workbench-tabs", "core.tool-result-cards"),
             plugins.map { it.spec.id },
         )
 
@@ -126,6 +126,34 @@ class BundledConversationPluginCatalogTest {
             assertEquals(PluginState.ENABLED, manager.enable(plugin.spec.id).state)
             assertEquals(PluginOrigin.BUNDLED_SYSTEM, manager.get(plugin.spec.id)?.origin)
         }
+
+        val search = requireNotNull(catalog.searchRegistry)
+        val originalTavily = requireNotNull(search.searchProvider("tavily"))
+        val originalBrave = requireNotNull(search.searchProvider("brave"))
+        manager.disable("core.search.provider.tavily")
+        assertEquals(null, search.searchProvider("tavily"))
+        assertTrue(!originalTavily.ready(null))
+        assertTrue(search.searchProvider("brave") === originalBrave)
+        manager.enable("core.search.provider.tavily")
+        assertTrue(search.searchProvider("tavily") !== originalTavily)
+        assertTrue(!originalTavily.available())
+
+        val directory = catalog.workbenchTabs
+        val original = directory.snapshot.value.visible("workspace", "session")
+        assertEquals(listOf("cordiact.trace", "cordiact.artifacts", "cordiact.git-tree"), original.map { it.id })
+        manager.disable("core.workbench-tabs")
+        assertTrue(directory.snapshot.value.visible("workspace", "session").isEmpty())
+        manager.enable("core.workbench-tabs")
+        assertTrue(!directory.isCurrent(original.first(), "workspace", "session"))
+        assertEquals(original.map { it.id }, directory.snapshot.value.visible("workspace", "session").map { it.id })
+        val cards = catalog.toolResultCards
+        val keys = cards.snapshot.value.keys.toList()
+        assertEquals(setOf("extension.pkg.core-quick-notes.checklist", "core.subagent.list-children"), keys.map { it.toolId }.toSet())
+        manager.disable("core.tool-result-cards")
+        assertTrue(cards.snapshot.value.isEmpty())
+        assertTrue(keys.all { cards.resolve(it) == null })
+        manager.enable("core.tool-result-cards")
+        assertTrue(keys.all { cards.resolve(it) != null })
 
         plugins.forEach { plugin ->
             try {
@@ -138,7 +166,7 @@ class BundledConversationPluginCatalogTest {
     }
 
     @Test
-    fun installedWorkspacePackageDispatchesThroughAppRegistriesAndWithdrawsBothContributions() {
+    fun installedWorkspacePackageDispatchesThroughAppRegistriesAndWithdrawsAllContributions() {
         val catalog = BundledConversationPlugins.create(conversationStore, context.noBackupFilesDir)
         AndroidExtensionPackageStore(context).use { store ->
             val service = WorkspaceExtensionPackages(
@@ -168,16 +196,24 @@ class BundledConversationPluginCatalogTest {
             val page = service.openPage(workspace.id)
             service.resume(Any())
             val preview = page.preview("""
-                {"schemaVersion":1,"id":"checkpoint","version":"1.0.0","title":"Checkpoint","description":"Test fixture",
-                 "host":{"api":1,"minVersion":"0.1.0"},"capabilities":["tool.publish","command.publish"],
+                {"schemaVersion":2,"id":"checkpoint","version":"1.0.0","title":"Checkpoint","description":"Test fixture",
+                 "host":{"api":1,"minVersion":"0.1.0"},"capabilities":["tool.publish","command.publish","ui.settings.publish","ui.session-action.publish"],
                  "tools":[{"name":"message","description":"Read fixture","kind":"static_text","text":"fixture tool output"}],
-                 "commands":[{"name":"package-checkpoint","aliases":[],"description":"Show fixture","text":"fixture command output"}]}
+                 "commands":[{"name":"package-checkpoint","aliases":[],"description":"Show fixture","text":"fixture command output"}],
+                 "client":{"settingsPage":{"title":"Checkpoint guide","description":"Local fixture"},
+                           "sessionActions":[{"id":"insert","label":"Insert command","command":"package-checkpoint"}]}}
             """.trimIndent().byteInputStream())
             val installed = page.approveInstall(preview).commit() as ExtensionPackageChange.Applied
             assertFalse(installed.record.enableIntent)
             assertTrue(bindings(session.id, workspace.id).isEmpty())
             assertFalse("package-checkpoint" in commands(owner))
+            val client = catalog.workspaceClientContributions
+            assertTrue(client.snapshot.value.settingsPages(workspace.id).isEmpty())
             val enabled = page.approveEnable(installed.record, true).commit() as ExtensionPackageChange.Applied
+            assertEquals("Checkpoint guide", client.snapshot.value.settingsPages(workspace.id).single().description.title)
+            assertTrue(client.snapshot.value.settingsPages(other.id).isEmpty())
+            val offer = client.snapshot.value.sessionActions(owner).single()
+            assertEquals("/package-checkpoint", client.draftInsertion(offer, owner, "", false))
             val context = ToolInvocationContext(workspace.id, sessionId = session.id,
                 toolRegistrations = bindings(session.id, workspace.id),
                 securityContext = SecurityContext(workspace.id, session.id, "run", "turn", "call", listOf(Principal("main")), EffectiveSecurityProfile.fullAccess(workspace.id)))
@@ -190,6 +226,9 @@ class BundledConversationPluginCatalogTest {
             assertTrue(bindings(otherSession.id, other.id).isEmpty())
             assertFalse("package-checkpoint" in commands(InteractionContext(otherSession.id, other.id)))
             page.approveEnable(enabled.record, false).commit()
+            assertTrue(client.snapshot.value.settingsPages(workspace.id).isEmpty())
+            assertTrue(client.snapshot.value.sessionActions(owner).isEmpty())
+            assertEquals(null, client.draftInsertion(offer, owner, "", false))
             assertTrue(bindings(session.id, workspace.id).isEmpty())
             assertFalse("package-checkpoint" in commands(owner))
             assertThrows(ToolManagerException::class.java) { tools.invoke(context, toolId, ToolArguments()) }

@@ -1,0 +1,81 @@
+package com.cordiact.app.plugin
+
+import android.app.Application
+import com.cordiact.core.plugin.ExtensionPackageInstaller
+import com.cordiact.core.plugin.InMemoryExtensionPackageStore
+import com.cordiact.core.plugin.SignedCatalogDiagnosticState
+import com.cordiact.core.plugin.WorkspaceExtensionPackages
+import com.cordiact.core.security.EffectiveSecurityProfile
+import java.nio.file.Files
+import java.security.KeyPairGenerator
+import java.security.spec.ECGenParameterSpec
+import java.time.Instant
+import java.util.Base64
+import org.junit.Assert.*
+import org.junit.Rule
+import org.junit.Test
+import org.junit.rules.TemporaryFolder
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.RuntimeEnvironment
+import org.robolectric.annotation.Config
+
+@RunWith(RobolectricTestRunner::class)
+@Config(application = Application::class, sdk = [35])
+class AndroidSignedCatalogAccessTest {
+    @get:Rule val folder = TemporaryFolder()
+
+    @Test fun defaultApkHasNoTrustedSourceConfiguration() =
+        assertNull(AndroidSignedCatalogAccess.fromApk(RuntimeEnvironment.getApplication()))
+
+    @Test fun explicitPreparationOpensPrivateStateWithoutNetworkAndMissingStateIsNotRecreated() {
+        val root = folder.root.toPath()
+        val policy = policy()
+        val access = AndroidSignedCatalogAccess.forTest(policy, root) { Instant.ofEpochSecond(1_000) }
+        assertTrue(access.reserves("alpha-example"))
+        assertFalse(access.reserves("other-example"))
+        assertNull(access.catalog())
+        val directory = root.resolve("cordiact-signed-catalog")
+        assertFalse(Files.exists(directory))
+        assertEquals(SignedCatalogDiagnosticState.NOT_OPENED, access.diagnosticObservation().state)
+        assertFalse(Files.exists(directory))
+        val service = service(access)
+        val page = service.openPage("test")
+        assertThrows(IllegalStateException::class.java) { access.prepareTrust(page) } // Not foreground.
+        assertFalse(Files.exists(directory))
+        service.resume(Any())
+        access.prepareTrust(page).cancel() // Only prepare, never dispatch the GET.
+        assertNotNull(access.catalog())
+        assertEquals(SignedCatalogDiagnosticState.NOT_REFRESHED, access.diagnosticObservation().state)
+        assertTrue(Files.isRegularFile(directory.resolve("catalog.state")))
+        val state = directory.resolve("catalog.state")
+        Files.delete(state)
+        // Diagnosis does not re-open or even check the missing private file.
+        assertEquals(SignedCatalogDiagnosticState.NOT_REFRESHED, access.diagnosticObservation().state)
+        assertFalse(Files.exists(state))
+        val reopened = AndroidSignedCatalogAccess.forTest(policy, root) { Instant.ofEpochSecond(1_000) }
+        val fresh = service(reopened).also { it.resume(Any()) }
+        assertThrows(IllegalStateException::class.java) { reopened.prepareTrust(fresh.openPage("test")) }
+        assertFalse(Files.exists(state))
+    }
+
+    @Test fun policyRejectsInvalidUrlsUnknownTrustSourceAndUnboundedInput() {
+        val original = policyText()
+        for (bad in listOf(original.replace("https://", "http://"), original.replace("\nalpha\n", "\nmissing\n"),
+            original.replace("beta-", "alpha-more-"), original + "x".repeat(4097))) {
+            assertThrows(IllegalArgumentException::class.java) { CatalogBuildPolicy.read(bad.byteInputStream()) }
+        }
+    }
+
+    private fun service(access: AndroidSignedCatalogAccess): WorkspaceExtensionPackages = WorkspaceExtensionPackages(
+        ExtensionPackageInstaller(InMemoryExtensionPackageStore(), reservedSourceId = access::reserves,
+            signedCatalogProvider = access::catalog), { EffectiveSecurityProfile.fullAccess(it) },
+    )
+
+    private fun policy() = CatalogBuildPolicy.read(policyText().byteInputStream())
+    private fun policyText(): String {
+        val key = KeyPairGenerator.getInstance("EC").apply { initialize(ECGenParameterSpec("secp256r1")) }.generateKeyPair().public
+        return listOf("CordiAct catalog policy v1", Base64.getEncoder().encodeToString(key.encoded), "3", "0".repeat(64), "alpha",
+            "alpha https://alpha.example/plugins/ alpha-", "beta https://beta.example/ beta-").joinToString("\n")
+    }
+}

@@ -28,6 +28,7 @@ class DeclarativePackagePlugin(
     grantedCapabilities: Set<ExtensionPackageCapability>,
     workspaceId: String? = null,
     sessionId: String? = null,
+    private val clientContributions: WorkspaceClientContributions? = null,
     private val admitted: () -> Boolean = { true },
 ) : RuntimeAwarePlugin {
     override val spec: PluginSpec = extensionPackageSpec(manifest)
@@ -41,7 +42,13 @@ class DeclarativePackagePlugin(
                 "Package capabilities were not granted: ${missing.joinToString { it.wireName }}"
             }
             tools.registerDeclarativePackage(context, manifest, admitted)
-            manifest.commands.forEach { commands.registerDeclarativePackageCommand(context, commandDescriptor(it), admitted, it.text) }
+            val commandPublications = manifest.commands.associate { command ->
+                command.name to commands.registerDeclarativePackageCommand(context, commandDescriptor(command), admitted, command.text)
+            }
+            if (manifest.client != null) {
+                checkNotNull(clientContributions) { "Host does not provide declarative client slots" }
+                    .register(context, manifest, commandPublications, admitted)
+            }
         }
     }, instanceId)
 

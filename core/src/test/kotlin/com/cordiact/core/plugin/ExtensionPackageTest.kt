@@ -1,5 +1,6 @@
 package com.cordiact.core.plugin
 
+import java.security.MessageDigest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -18,6 +19,9 @@ class ExtensionPackageTest {
         assertEquals(1, manifest.commands.size)
         assertEquals("checklist", manifest.tools.single().name)
         assertEquals(setOf("cl"), manifest.commands.single().aliases)
+        assertEquals(1, manifest.schemaVersion)
+        assertEquals(1, manifest.hostApi)
+        assertNull(manifest.client)
         assertEquals(64, manifest.sha256.length)
         assertTrue(manifest.sizeBytes > 0)
     }
@@ -41,6 +45,205 @@ class ExtensionPackageTest {
         }
         assertFailsWith<IllegalArgumentException> {
             ExtensionPackageSource.compile((text(source()) + " trailing").toByteArray())
+        }
+    }
+
+    @Test
+    fun `version two supports a settings only package with optional rows`() {
+        val manifest = ExtensionPackageSource.compile(v2Source(client = """{"settingsPage": $settingsPage}"""))
+        assertEquals(2, manifest.schemaVersion)
+        assertEquals(1, manifest.hostApi)
+        assertEquals(setOf(ExtensionPackageCapability.UI_SETTINGS_PUBLISH), manifest.capabilities)
+        assertTrue(manifest.tools.isEmpty())
+        assertTrue(manifest.commands.isEmpty())
+        assertEquals(
+            ExtensionPackageClient(settingsPage = ExtensionPackageSettingsPage("包设置", "只读信息")),
+            manifest.client,
+        )
+        val emptyRows = settingsPage.replace("}", """, "rows": []}""")
+        assertEquals(
+            manifest.client,
+            ExtensionPackageSource.compile(v2Source(client = """{"settingsPage": $emptyRows}""")).client,
+        )
+    }
+
+    @Test
+    fun `version two resolves session actions against primary names independent of field order`() {
+        val manifest = ExtensionPackageSource.compile(
+            v2Source(
+                client = """{"sessionActions": [$sessionAction]}""",
+                capabilities = listOf("command.publish", "ui.session-action.publish"),
+                commands = command,
+            ),
+        )
+        assertEquals(ExtensionPackageClient(sessionActions = listOf(ExtensionPackageSessionAction("show-note", "显示", "show-note"))), manifest.client)
+        assertEquals(
+            setOf(ExtensionPackageCapability.COMMAND_PUBLISH, ExtensionPackageCapability.UI_SESSION_ACTION_PUBLISH),
+            manifest.capabilities,
+        )
+        assertEquals(setOf("sn"), manifest.commands.single().aliases)
+    }
+
+    @Test
+    fun `version two accepts both client contributions at their limits with tools and commands`() {
+        val rows = (1..4).map { ExtensionPackageSettingsRow("标签 $it", "值 $it") }
+        val rowJson = rows.joinToString { """{"label": "${it.label}", "value": "${it.value}"}""" }
+        val pageWithRows = settingsPage.replace("}", """, "rows": [$rowJson]}""")
+        val secondAction = sessionAction.replace("\"id\": \"show-note\"", "\"id\": \"another\"")
+        val manifest = ExtensionPackageSource.compile(
+            v2Source(
+                client = """{"settingsPage": $pageWithRows, "sessionActions": [$sessionAction, $secondAction]}""",
+                capabilities = listOf("tool.publish", "command.publish", "ui.settings.publish", "ui.session-action.publish"),
+                tools = """{"name": "checklist", "description": "A list", "kind": "static_text", "text": "list"}""",
+                commands = command,
+            ),
+        )
+        val client = assertNotNull(manifest.client)
+        assertEquals(rows, assertNotNull(client.settingsPage).rows)
+        assertEquals(listOf("show-note", "another"), client.sessionActions.map { it.id })
+        assertEquals(listOf("show-note", "show-note"), client.sessionActions.map { it.command })
+        assertEquals("checklist", manifest.tools.single().name)
+        assertEquals(manifest.capabilities.map { it.wireName }.toSet(), extensionPackageSpec(manifest).requestedCapabilities)
+    }
+
+    @Test
+    fun `only version two accepts client and still requires the existing fields`() {
+        val validClient = """{"settingsPage": $settingsPage}"""
+        val validV2 = text(v2Source(client = validClient))
+        val validV1 = text(source())
+        for ((name, invalid) in mapOf(
+            "missing client" to validV2.replace("\"client\": $validClient,", ""),
+            "missing tools" to validV2.replace("\"tools\": [],", ""),
+            "missing commands" to validV2.replace(",\n  \"commands\": []", ""),
+            "null client" to text(v2Source(client = "null")),
+            "array client" to text(v2Source(client = "[]")),
+            "empty client" to text(v2Source(client = "{}")),
+            "version one client" to validV1.replaceFirst("{", "{\"client\": $validClient,"),
+            "version one UI capability" to validV1.replace("\"tool.publish\"", "\"tool.publish\", \"ui.settings.publish\""),
+            "unsupported schema" to validV2.replace("\"schemaVersion\": 2", "\"schemaVersion\": 3"),
+            "fractional schema" to validV2.replace("\"schemaVersion\": 2", "\"schemaVersion\": 2.0"),
+            "string schema" to validV2.replace("\"schemaVersion\": 2", "\"schemaVersion\": \"2\""),
+            "host API 2" to validV2.replace("\"api\": 1", "\"api\": 2"),
+            "no version one contributions" to validV2.replace("\"client\": $validClient,", "")
+                .replace("\"schemaVersion\": 2", "\"schemaVersion\": 1")
+                .replace("\"ui.settings.publish\"", ""),
+        )) {
+            assertTrue(invalid != validV2 && invalid != validV1, "$name fixture must differ from valid sources")
+            assertFailsWith<IllegalArgumentException>(name) { ExtensionPackageSource.compile(invalid.toByteArray()) }
+        }
+    }
+
+    @Test
+    fun `client settings reject invalid fields bounds and non single line text`() {
+        val row = """{"label": "状态", "value": "正常"}"""
+        for ((name, invalid) in mapOf(
+            "unknown client field" to """{"settingsPage": $settingsPage, "extra": true}""",
+            "duplicate settings page" to """{"settingsPage": $settingsPage, "settingsPage": $settingsPage}""",
+            "null settings page" to """{"settingsPage": null}""",
+            "missing description" to """{"settingsPage": {"title": "设置"}}""",
+            "duplicate title" to """{"settingsPage": {"title": "设置", "title": "重复", "description": "说明"}}""",
+            "unknown settings page field" to """{"settingsPage": {"title": "设置", "description": "说明", "href": "https://example.com"}}""",
+            "non string title" to """{"settingsPage": {"title": 1, "description": "说明"}}""",
+            "blank description" to """{"settingsPage": {"title": "设置", "description": " "}}""",
+            "multiline page title" to """{"settingsPage": {"title": "a\nb", "description": "说明"}}""",
+            "oversized UTF-8 description" to """{"settingsPage": {"title": "设置", "description": "${"值".repeat(161)}"}}""",
+            "non array rows" to settingsClientWithRows("null"),
+            "too many rows" to settingsClientWithRows(List(5) { row }.joinToString(prefix = "[", postfix = "]")),
+            "non object row" to settingsClientWithRows("[1]"),
+            "missing value" to settingsClientWithRows("""[{"label": "状态"}]"""),
+            "duplicate label" to settingsClientWithRows("""[{"label": "状态", "label": "重复", "value": "正常"}]"""),
+            "unknown row field" to settingsClientWithRows("""[{"label": "状态", "value": "正常", "action": "show-note"}]"""),
+            "multiline row value" to settingsClientWithRows("""[{"label": "状态", "value": "a\nb"}]"""),
+            "tab in row label" to settingsClientWithRows("""[{"label": "a\tb", "value": "正常"}]"""),
+            "format control in row value" to settingsClientWithRows("""[{"label": "状态", "value": "a\u202Eb"}]"""),
+            "unpaired surrogate in row value" to settingsClientWithRows("""[{"label": "状态", "value": "a\uD800b"}]"""),
+            "oversized UTF-8 row label" to settingsClientWithRows("""[{"label": "${"值".repeat(41)}", "value": "正常"}]"""),
+        )) {
+            assertFailsWith<IllegalArgumentException>(name) { ExtensionPackageSource.compile(v2Source(client = invalid)) }
+        }
+    }
+
+    @Test
+    fun `session actions reject invalid ids shapes and command references`() {
+        val secondAction = sessionAction.replace("\"id\": \"show-note\"", "\"id\": \"another\"")
+        val thirdAction = sessionAction.replace("\"id\": \"show-note\"", "\"id\": \"third\"")
+        for ((name, actions) in mapOf(
+            "empty array" to "[]",
+            "null actions" to "null",
+            "not an array" to "{}",
+            "not an object" to "[null]",
+            "too many actions" to "[$sessionAction, $secondAction, $thirdAction]",
+            "duplicate id" to "[$sessionAction, $sessionAction]",
+            "invalid id" to """[{"id": "Bad ID", "label": "显示", "command": "show-note"}]""",
+            "missing command" to """[{"id": "show-note", "label": "显示"}]""",
+            "duplicate command field" to """[{"id": "show-note", "label": "显示", "command": "show-note", "command": "show-note"}]""",
+            "unknown field" to """[{"id": "show-note", "label": "显示", "command": "show-note", "args": []}]""",
+            "alias" to """[{"id": "show-note", "label": "显示", "command": "sn"}]""",
+            "slash" to """[{"id": "show-note", "label": "显示", "command": "/show-note"}]""",
+            "another package command" to """[{"id": "show-note", "label": "显示", "command": "other-command"}]""",
+            "blank label" to """[{"id": "show-note", "label": " ", "command": "show-note"}]""",
+            "line separator" to """[{"id": "show-note", "label": "a\u2028b", "command": "show-note"}]""",
+        )) {
+            assertFailsWith<IllegalArgumentException>(name) {
+                ExtensionPackageSource.compile(
+                    v2Source(
+                        client = """{"settingsPage": $settingsPage, "sessionActions": $actions}""",
+                        capabilities = listOf("command.publish", "ui.settings.publish", "ui.session-action.publish"),
+                        commands = command,
+                    ),
+                )
+            }
+        }
+        assertFailsWith<IllegalArgumentException>("session action without a package command") {
+            ExtensionPackageSource.compile(
+                v2Source(
+                    client = """{"sessionActions": [$sessionAction]}""",
+                    capabilities = listOf("ui.session-action.publish"),
+                ),
+            )
+        }
+    }
+
+    @Test
+    fun `version two capabilities match all actual declarations both ways`() {
+        val settings = """{"settingsPage": $settingsPage}"""
+        val actions = """{"sessionActions": [$sessionAction]}"""
+        val both = """{"settingsPage": $settingsPage, "sessionActions": [$sessionAction]}"""
+        val settingsCapability = "ui.settings.publish"
+        val actionCapability = "ui.session-action.publish"
+        val commandCapability = "command.publish"
+        for ((name, invalid) in mapOf(
+            "no settings permission" to v2Source(settings, emptyList()),
+            "no action permission" to v2Source(both, listOf(settingsCapability, commandCapability), commands = command),
+            "unneeded settings permission" to v2Source(actions, listOf(settingsCapability, actionCapability, commandCapability), commands = command),
+            "unneeded action permission" to v2Source(settings, listOf(settingsCapability, actionCapability)),
+            "unneeded tool permission" to v2Source(settings, listOf(settingsCapability, "tool.publish")),
+            "unneeded command permission" to v2Source(settings, listOf(settingsCapability, commandCapability)),
+            "missing command permission" to v2Source(actions, listOf(actionCapability), commands = command),
+            "duplicate UI permission" to v2Source(settings, listOf(settingsCapability, settingsCapability)),
+        )) {
+            assertFailsWith<IllegalArgumentException>(name) { ExtensionPackageSource.compile(invalid) }
+        }
+    }
+
+    @Test
+    fun `version two uses exact bytes and keeps strict JSON UTF-8 and 32 KiB source limits`() {
+        val bytes = v2Source(client = """{"settingsPage": $settingsPage}""")
+        val maxBytes = bytes + ByteArray(ExtensionPackageSource.MAX_SOURCE_BYTES - bytes.size) { ' '.code.toByte() }
+        val artifact = ExtensionPackageArtifact.decode(maxBytes)
+        assertEquals(32 * 1024, artifact.manifest.sizeBytes)
+        assertTrue(maxBytes.contentEquals(artifact.copySource()))
+        val expected = MessageDigest.getInstance("SHA-256").digest(maxBytes).joinToString("") { "%02x".format(it.toInt() and 0xff) }
+        assertEquals(expected, artifact.manifest.sha256)
+        assertTrue(ExtensionPackageSource.compile(bytes).sha256 != expected)
+        for ((name, invalid) in mapOf(
+            "source too large" to (maxBytes + ' '.code.toByte()),
+            "malformed UTF-8" to (bytes + 0xff.toByte()),
+            "BOM" to ("\uFEFF".toByteArray() + bytes),
+            "trailing JSON value" to (bytes + " {}".toByteArray()),
+            "comment" to ("/* comment */".toByteArray() + bytes),
+        )) {
+            assertFailsWith<IllegalArgumentException>(name) { ExtensionPackageSource.compile(invalid) }
         }
     }
 
@@ -223,6 +426,33 @@ class ExtensionPackageTest {
         assertEquals(1, writes)
         assertEquals(candidate.manifest.sha256, installer.list("ws").single().manifest.sha256)
     }
+
+    private val settingsPage = """{"title": "包设置", "description": "只读信息"}"""
+    private val sessionAction = """{"id": "show-note", "label": "显示", "command": "show-note"}"""
+    private val command = """{"name": "show-note", "aliases": ["sn"], "description": "Show a note", "text": "note"}"""
+
+    private fun settingsClientWithRows(rows: String): String =
+        """{"settingsPage": {"title": "包设置", "description": "只读信息", "rows": $rows}}"""
+
+    private fun v2Source(
+        client: String,
+        capabilities: List<String> = listOf("ui.settings.publish"),
+        tools: String = "",
+        commands: String = "",
+    ): ByteArray = """
+        {
+          "client": $client,
+          "schemaVersion": 2,
+          "id": "quick-notes",
+          "version": "1.0.0",
+          "title": "Quick notes",
+          "description": "Small declarative extensions",
+          "host": {"api": 1, "minVersion": "0.1.0"},
+          "capabilities": [${capabilities.joinToString { "\"$it\"" }}],
+          "tools": [$tools],
+          "commands": [$commands]
+        }
+    """.trimIndent().toByteArray()
 
     private fun text(bytes: ByteArray) = bytes.toString(Charsets.UTF_8)
 

@@ -4,8 +4,13 @@ import com.cordiact.core.action.ApprovalRequest
 import com.cordiact.core.action.DefaultApprovalGateway
 import com.cordiact.core.conversation.*
 import com.cordiact.core.plugin.AuthoredPluginForeground
-import com.cordiact.core.tool.ToolInvocationContext
+import com.cordiact.core.plugin.PluginState
+import com.cordiact.core.security.SensitivePayload
+import com.cordiact.core.tool.*
 import com.cordiact.core.toolloop.*
+import com.cordiact.core.workspace.Workspace
+import com.cordiact.core.workspace.WorkspaceManagerService
+import com.google.gson.JsonParser
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -104,6 +109,174 @@ class ToolTurnLifecycleTest {
             assertEquals(listOf(ModelToolSpec("fixture.read", "read", "{}")), requests.first().tools)
             assertEquals(listOf(mapOf("fixture.read" to registration)), bindings)
         }
+    }
+
+    private class OneWorkspace : WorkspaceManagerService {
+        private val workspace = Workspace("ws", "Fixture", 0, 0)
+        override fun get(workspaceId: String) = workspace.takeIf { it.id == workspaceId }
+        override fun findSessionWorkspace(workspaceId: String) = get(workspaceId)
+        override fun resolveSessionWorkspace(workspaceId: String) = requireNotNull(get(workspaceId))
+        override fun initializeDefaultIfEligible() = error("unused")
+        override fun create(name: String) = error("unused")
+        override fun list(includeArchived: Boolean) = error("unused")
+        override fun rename(workspaceId: String, name: String) = error("unused")
+        override fun archive(workspaceId: String) = error("unused")
+        override fun restore(workspaceId: String) = error("unused")
+        override fun select(workspaceId: String) = error("unused")
+        override fun activeWorkspace() = error("unused")
+        override fun resolveRoot(workspaceId: String) = error("unused")
+    }
+
+    private fun manager(registry: InMemoryToolDefinitionRegistry) = ToolManagerPlugin(
+        registry, object : MutableToolPreferenceStore {
+            override fun isEnabled(workspaceId: String, toolId: String): Boolean? = null
+            override fun setEnabled(workspaceId: String, toolId: String, enabled: Boolean?) = error("unused")
+        }, OneWorkspace(), ToolPluginStateLookup { PluginState.ENABLED },
+    ).apply { onEnable() }
+
+    private fun fixture(registry: InMemoryToolDefinitionRegistry, id: String, owner: String = "fixture.owner",
+        parameters: List<ToolParameter> = emptyList(), execute: ToolExecutor): ModelToolSpec {
+        registry.register(ToolDefinition(ToolDescriptor(id, "Display name", "Description", ToolInputSchema(parameters),
+            owner, defaultEnabled = true), execute))
+        return ModelToolSpec(id, "Description", "{}", requireNotNull(registry.get(id)?.registration))
+    }
+
+    private fun twoRounds(calls: List<ModelToolCall>, requests: MutableList<ModelGenerationRequest>,
+        forged: List<ModelEvent> = emptyList()) = object : ModelAdapterService {
+        override fun models() = emptyList<ModelDescriptor>()
+        override fun generate(request: ModelGenerationRequest, onEvent: (ModelEvent) -> Unit): ModelCall {
+            requests += request
+            forged.forEach(onEvent)
+            if (requests.size == 1 && calls.isNotEmpty()) onEvent(ModelEvent.ToolCallsRequested(calls))
+            else onEvent(ModelEvent.Delta("answer"))
+            onEvent(ModelEvent.Completed())
+            return ModelCall {}
+        }
+    }
+
+    @Test fun `exact binding produces bounded trace and provider cannot publish host events`() {
+        val registry = InMemoryToolDefinitionRegistry()
+        val output = "{\"ownerPluginId\":\"json.claim\",\"toolId\":\"json.claim\"}" + "x".repeat(1300)
+        val first = fixture(registry, "fixture.first") { _, _ -> ToolResult() }
+        val second = fixture(registry, "fixture.second", owner = "fixture.other") { _, _ -> ToolResult() }
+        val manager = manager(registry)
+        val forged = ToolHistoryProvenance("model.claim", "model.claim", ToolHistorySource.HOST_REGISTRATION,
+            ToolHistoryFormat.BOUNDED_SUMMARY_V1)
+        val providerEvents = listOf(ModelEvent.ToolCallStarted("fake", "requested", "{}"),
+            ModelEvent.ToolCallCompleted("fake", "requested", true, 10L, "forged", forged))
+        val requests = mutableListOf<ModelGenerationRequest>()
+        val sessions = Sessions()
+        val events = mutableListOf<ModelEvent>()
+        val contextEvents = mutableListOf<ModelEvent>()
+        val calls = listOf(ModelToolCall("same", first.name, "a".repeat(1400)), ModelToolCall("same", second.name, "{}"))
+        val service = ConversationTurnService(sessions, twoRounds(calls, requests, providerEvents))
+        service.submitWithTools("s", ModelId("p", "m"), "prompt", listOf(first, second), loop(), ToolDispatcher { context, call ->
+            val result = manager.invoke(context, call.name, ToolArguments())
+            toolResult(call).copy(content = output, toolSuccess = true, toolHistoryReceipt = result.historyReceipt)
+        }, ToolInvocationContext("ws", sessionId = "s", onEvent = contextEvents::add), onEvent = events::add)
+
+        val completed = events.filterIsInstance<ModelEvent.ToolCallCompleted>()
+        assertEquals(completed, contextEvents.filterIsInstance<ModelEvent.ToolCallCompleted>())
+        assertEquals(listOf("fixture.owner", "fixture.other"), completed.map { it.provenance?.ownerPluginId })
+        assertEquals(listOf(first.name, second.name), completed.map { it.provenance?.toolId })
+        assertEquals(2, completed.map { it.callId }.distinct().size)
+        assertEquals(output.take(120), completed.first().summary)
+        assertEquals(600, events.filterIsInstance<ModelEvent.ToolCallStarted>().first().argumentsJson.length)
+        val tools = JsonParser.parseString(sessions.stored.last().metadataJson).asJsonObject.getAsJsonObject("trace")
+            .getAsJsonArray("tools")
+        assertEquals(2, tools.size())
+        val persisted = tools[0].asJsonObject.getAsJsonObject("provenance")
+        assertEquals("fixture.owner", persisted.get("ownerPluginId").asString)
+        assertEquals(first.name, persisted.get("toolId").asString)
+        assertEquals("host-registration", persisted.get("source").asString)
+        assertEquals("bounded-summary-v1", persisted.get("format").asString)
+        assertEquals(output.take(120), tools[0].asJsonObject.get("summary").asString)
+        assertEquals(600, tools[0].asJsonObject.get("arguments").asString.length)
+        assertTrue(requests.first().tools.all { it.registration == null })
+        assertEquals(calls, requests.last().messages.first { it.toolCalls.isNotEmpty() }.toolCalls)
+        assertTrue(requests.last().messages.all { it.toolHistoryReceipt == null })
+    }
+
+    @Test fun `unbound stale relayed failed and sensitive results do not acquire provenance`() {
+        val registry = InMemoryToolDefinitionRegistry()
+        var staleExecutions = 0
+        val good = fixture(registry, "fixture.good") { _, _ -> ToolResult() }
+        val unbound = fixture(registry, "fixture.unbound") { _, _ -> ToolResult() }.copy(registration = null)
+        val stale = fixture(registry, "fixture.stale") { _, _ -> staleExecutions++; ToolResult() }
+        registry.unregister(stale.name)
+        fixture(registry, stale.name) { _, _ -> staleExecutions++; ToolResult() }
+        val failed = fixture(registry, "fixture.failed") { _, _ -> ToolResult(mapOf("ok" to ToolValue.BooleanValue(false))) }
+        val secretArg = fixture(registry, "fixture.secret_arg", parameters = listOf(ToolParameter("value", ToolValueType.STRING,
+            sensitive = true))) { _, arguments ->
+            assertEquals(ToolValue.StringValue("secret-arg"), arguments.values["value"])
+            ToolResult()
+        }
+        val secretOut = fixture(registry, "fixture.secret_out") { _, _ ->
+            ToolResult(sensitivePayload = SensitivePayload.of("secret-result".toByteArray()))
+        }
+        val specs = listOf(good, unbound, stale, failed, secretArg, secretOut)
+        val calls = specs.mapIndexed { index, spec -> ModelToolCall("call-$index", spec.name, "{\"value\":\"secret-arg\"}") } +
+            ModelToolCall("replay", good.name, "{}")
+        val manager = manager(registry)
+        var held: ToolHistoryReceipt? = null
+        val events = mutableListOf<ModelEvent>()
+        val sessions = Sessions()
+        val service = ConversationTurnService(sessions, twoRounds(calls, mutableListOf()))
+        service.submitWithTools("s", ModelId("p", "m"), "prompt", specs, loop(), ToolDispatcher { context, call ->
+            assertNull(context.onEvent, "The dispatcher cannot inject a lifecycle event")
+            if (call.id == "replay") return@ToolDispatcher toolResult(call).copy(toolHistoryReceipt = requireNotNull(held))
+            val result = try {
+                manager.invoke(context, call.name, if (call.name == secretArg.name) {
+                    ToolArguments(mapOf("value" to ToolValue.StringValue("secret-arg")))
+                } else ToolArguments())
+            } catch (refused: ToolManagerException) {
+                assertEquals(ToolManagerException.Code.TOOL_NOT_REGISTERED, refused.code)
+                return@ToolDispatcher toolResult(call).copy(toolSuccess = false)
+            }
+            result.sensitivePayload?.close()
+            if (call.name == good.name) held = result.historyReceipt
+            // Deliberately reports success even for a result that the manager rejected as failed.
+            toolResult(call).copy(
+                content = if (call.name == secretOut.name) "private-result-wrapper" else if (call.name == secretArg.name) "echoed-secret-input" else "ok",
+                toolSuccess = true,
+                toolHistoryReceipt = result.historyReceipt,
+                suppressToolHistorySummary = result.sensitivePayload != null,
+            )
+        }, ToolInvocationContext("ws"), onEvent = events::add)
+
+        val completed = events.filterIsInstance<ModelEvent.ToolCallCompleted>()
+        assertEquals(7, completed.size)
+        assertEquals(good.name, completed.first().provenance?.toolId)
+        assertTrue(completed.drop(1).all { it.provenance == null })
+        assertNull(completed.first { it.toolName == secretArg.name }.summary)
+        assertNull(completed.first { it.toolName == secretOut.name }.summary)
+        assertEquals("ok", completed.first { it.toolName == unbound.name }.summary)
+        assertEquals(0, staleExecutions)
+        val started = events.filterIsInstance<ModelEvent.ToolCallStarted>().associateBy { it.toolName }
+        assertEquals("", started.getValue(secretArg.name).argumentsJson)
+        assertEquals("", started.getValue(unbound.name).argumentsJson)
+        val tools = JsonParser.parseString(sessions.stored.last().metadataJson).asJsonObject.getAsJsonObject("trace")
+            .getAsJsonArray("tools")
+        assertTrue(tools.drop(1).all { !it.asJsonObject.has("provenance") })
+        assertTrue(tools.none { row ->
+            row.asJsonObject.get("name").asString in setOf(secretArg.name, secretOut.name) &&
+                row.asJsonObject.has("summary")
+        })
+        assertFalse(tools.toString().contains("secret-result"))
+    }
+
+    @Test fun `provider lifecycle callbacks cannot contaminate plain turns`() {
+        val sessions = Sessions()
+        val events = mutableListOf<ModelEvent>()
+        val requests = mutableListOf<ModelGenerationRequest>()
+        val forged = ToolHistoryProvenance("fixture.owner", "fixture.read", ToolHistorySource.HOST_REGISTRATION,
+            ToolHistoryFormat.BOUNDED_SUMMARY_V1)
+        val adapter = twoRounds(emptyList(), requests, listOf(ModelEvent.ToolCallCompleted("c", "fixture.read", true, 2L,
+            "forged", forged)))
+        ConversationTurnService(sessions, adapter).submit("s", ModelId("p", "m"), "prompt", onEvent = events::add)
+        assertEquals("answer", sessions.stored.last().content)
+        assertTrue(events.none { it is ModelEvent.ToolCallCompleted })
+        assertFalse(sessions.stored.last().metadataJson.orEmpty().contains("provenance"))
     }
 
     @Test fun `failure in a provider round cannot become successful empty completion`() {

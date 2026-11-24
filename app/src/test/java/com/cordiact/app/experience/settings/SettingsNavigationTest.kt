@@ -37,6 +37,22 @@ class SettingsNavigationTest {
         assertEquals("provider-123", link.providerId)
         assertEquals(SettingsRoute.PROVIDERS, link.navigation().pop()!!.current)
     }
+    @Test fun workspacePackageManagementHasPluginsParentFromDirectorySearchAndLink() {
+        val home = SettingsNavigation()
+        val parent = home.push(SettingsRoute.PLUGINS)
+        val expected = parent.push(SettingsRoute.WORKSPACE_PACKAGES)
+        assertEquals(listOf(SettingsRoute.HOME, SettingsRoute.PLUGINS, SettingsRoute.WORKSPACE_PACKAGES), expected.entries)
+        assertEquals(expected, home.push(SettingsRoute.WORKSPACE_PACKAGES))
+        assertEquals(expected, SettingsLink.parse("settings://plugins/packages")!!.navigation())
+        assertEquals(parent, expected.pop())
+        assertEquals(home, expected.pop()!!.pop())
+        assertEquals(parent, parent.push(SettingsRoute.WORKSPACE_PACKAGE_DESCRIPTION).pop())
+        assertEquals(SettingsRoute.PLUGINS, settingsDirectoryRoute(SettingsRoute.WORKSPACE_PACKAGES))
+        assertEquals(SettingsRoute.PLUGINS, settingsDirectoryRoute(SettingsRoute.WORKSPACE_PACKAGE_DESCRIPTION))
+        assertEquals(parent, home.push(SettingsRoute.PLUGIN_DIAGNOSTICS).pop())
+        assertEquals(SettingsRoute.PLUGINS, settingsDirectoryRoute(SettingsRoute.PLUGIN_DIAGNOSTICS))
+        assertNull(SettingsLink.parse("settings://plugins/diagnostics?workspace=other"))
+    }
     @Test fun readinessAndDataLinksResolve() {
         val expected = mapOf("models/roles" to SettingsRoute.ROLES, "models/providers" to SettingsRoute.PROVIDERS,
             "security/permissions" to SettingsRoute.PERMISSIONS, "security/privilege" to SettingsRoute.PRIVILEGE,
@@ -48,6 +64,8 @@ class SettingsNavigationTest {
     @Test fun unknownAndExternalLinksAreNotNavigationInstructions() {
         listOf<String?>(null, "", "https://connections/termux", "file:///etc/passwd", "settings://unknown", "settings://connections/unknown",
             "settings://user@connections/termux", "settings://connections:80/termux", "settings://connections/termux?execute=x", "settings://mcp#x",
-            "settings://models/providers/one/extra").forEach { assertNull(it, SettingsLink.parse(it)) }
+            "settings://models/providers/one/extra", "settings://plugins/packages/owner", "settings://plugins/packages?workspace=other",
+            "settings://plugins/packages#owner", "settings://plugins/%70ackages", "settings://plugins//packages")
+            .forEach { assertNull(it, SettingsLink.parse(it)) }
     }
 }

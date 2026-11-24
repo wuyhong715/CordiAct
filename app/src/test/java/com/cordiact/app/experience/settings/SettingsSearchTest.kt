@@ -43,6 +43,20 @@ class SettingsSearchTest {
     }
 
     @Test
+    fun workspacePackagesAreSearchableThroughTheirHostBranch() {
+        for (query in listOf("工作区插件包", "声明包", "导入 JSON", "workspace packages")) {
+            val hit = searchSettings(query).first()
+            assertEquals(SettingsRoute.WORKSPACE_PACKAGES, hit.entry.route)
+            assertEquals("工作区设置 › 插件与连接", hit.path)
+            assertEquals(SettingsRoute.PLUGINS, SettingsNavigation().push(hit.entry.route).pop()!!.current)
+        }
+        assertTrue(searchSettings("插件说明").none { it.entry.route == SettingsRoute.WORKSPACE_PACKAGE_DESCRIPTION })
+        val diagnostics = searchSettings("插件诊断").first()
+        assertEquals(SettingsRoute.PLUGIN_DIAGNOSTICS, diagnostics.entry.route)
+        assertEquals(SettingsRoute.PLUGINS, SettingsNavigation().push(diagnostics.entry.route).pop()!!.current)
+    }
+
+    @Test
     fun unmatchedTermReturnsNothing() {
         assertTrue(searchSettings("zzzz-no-such-setting").isEmpty())
     }

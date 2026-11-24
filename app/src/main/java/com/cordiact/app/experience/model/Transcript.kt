@@ -1,5 +1,7 @@
 package com.cordiact.app.experience.model
 
+import com.cordiact.core.conversation.ToolHistoryProvenance
+
 /** Immutable presentation data. No Android or provider dependency: reducers are JVM-testable. */
 data class TranscriptTurn(
     val id: String,
@@ -30,6 +32,7 @@ data class ToolActivity(
     val startedAt: Long,
     val finishedAt: Long? = null,
     val durationMillis: Long? = null,
+    val provenance: ToolHistoryProvenance? = null,
 )
 
 /** Observed order within a live turn. Tool completions update their original entry. */
@@ -42,7 +45,10 @@ sealed interface TranscriptEvent {
     data class Answer(val text: String) : TranscriptEvent
     data class Reasoning(val text: String) : TranscriptEvent
     data class ToolStarted(val id: String, val name: String, val arguments: String, val at: Long) : TranscriptEvent
-    data class ToolFinished(val id: String, val name: String, val success: Boolean, val summary: String?, val duration: Long, val at: Long) : TranscriptEvent
+    data class ToolFinished(
+        val id: String, val name: String, val success: Boolean, val summary: String?, val duration: Long, val at: Long,
+        val provenance: ToolHistoryProvenance? = null,
+    ) : TranscriptEvent
     data class Finished(val phase: RunPhase, val at: Long, val error: String? = null, val input: Long? = null, val output: Long? = null) : TranscriptEvent
 }
 
@@ -72,6 +78,7 @@ fun TranscriptTurn.reduce(event: TranscriptEvent): TranscriptTurn {
             val result = existing.copy(
                 phase = if (event.success) ToolPhase.SUCCEEDED else ToolPhase.FAILED,
                 summary = event.summary, finishedAt = event.at, durationMillis = event.duration.coerceAtLeast(0),
+                provenance = event.provenance.takeIf { event.success },
             )
             if (tools.any { it.id == event.id }) {
                 copy(tools = tools.map { if (it.id == event.id) result else it })

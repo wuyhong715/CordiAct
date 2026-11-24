@@ -1,5 +1,6 @@
 package com.cordiact.core.automation
 
+import com.google.gson.JsonParser
 import java.io.File
 import java.nio.file.Files
 import kotlin.test.Test
@@ -36,6 +37,165 @@ class AutomationServiceTest {
         val confirmed = reopened.runNow("w1", definition.id, setOf(recovered.id))
         assertTrue(confirmed.id != recovered.id)
         assertEquals(2, reopened.runs("w1", definition.id).size)
+    }
+
+    @Test fun recoveredUnknownConsumesMissedIntervalsWithoutQueuingOrBlockingOtherTasks() {
+        val file = tempFile()
+        val initial = 1_700_000_000_000L
+        val step = 15 * 60_000L
+        var clock = initial
+        val service = AutomationService(file) { clock }
+        val blocked = service.save(task(trigger = interval()))
+        clock += step
+        val first = service.enqueueDue().single()
+        assertNotNull(service.claim(first.id))
+        assertNotNull(service.beginTool(first.id))
+        val other = service.save(task(id = "t2", trigger = interval()))
+        val otherWorkspace = service.save(task(id = "t3", workspaceId = "w2", trigger = interval()))
+
+        clock += 3 * step + 1_000L
+        val recovered = AutomationService(file) { clock }
+        assertEquals(1, recovered.recoverInterrupted())
+        val overdue = assertNotNull(recovered.task("w1", blocked.id))
+        assertTrue(recovered.enqueueDue { false }.isEmpty())
+        assertEquals(overdue, recovered.task("w1", blocked.id), "disabled workspaces do not consume a due occurrence")
+
+        assertEquals(setOf(other.id, otherWorkspace.id), recovered.enqueueDue().map { it.taskId }.toSet())
+        val advanced = assertNotNull(recovered.task("w1", blocked.id))
+        assertTrue(advanced.enabled)
+        assertEquals(initial + 5 * step, advanced.nextFireAt)
+        assertEquals(overdue.revision + 1, advanced.revision)
+        assertEquals(advanced.nextFireAt, recovered.nextWakeAt())
+        assertTrue(recovered.enqueueDue().isEmpty())
+
+        val reopened = AutomationService(file) { clock }
+        assertEquals(advanced, reopened.task("w1", blocked.id))
+        assertTrue(reopened.enqueueDue().isEmpty())
+        clock = assertNotNull(advanced.nextFireAt)
+        assertTrue(reopened.enqueueDue().isEmpty())
+        assertEquals(initial + 6 * step, reopened.nextWakeAt())
+        val prior = reopened.runs("w1", blocked.id).single()
+        assertEquals(first.id, prior.id)
+        assertTrue(prior.externalResultUnknown)
+        assertNull(reopened.claim(first.id))
+        assertFailsWith<UnconfirmedAutomationResultException> { reopened.runNow("w1", blocked.id) }
+    }
+
+    @Test fun unknownConsumesOneTimeOccurrenceDurably() {
+        val file = tempFile()
+        var clock = 1_700_000_000_000L
+        val service = AutomationService(file) { clock }
+        val at = clock + 60_000L
+        val saved = service.save(task(trigger = TaskTrigger(TriggerKind.ONCE, atMillis = at)))
+        val manual = service.runNow("w1", saved.id)
+        assertNotNull(service.claim(manual.id))
+        assertNotNull(service.beginTool(manual.id))
+        assertTrue(assertNotNull(service.finish(manual.id, TaskRunState.FAILED)).externalResultUnknown)
+
+        clock = at
+        assertTrue(service.enqueueDue().isEmpty())
+        val reopened = AutomationService(file) { clock }
+        val spent = assertNotNull(reopened.task("w1", saved.id))
+        assertFalse(spent.enabled)
+        assertNull(spent.nextFireAt)
+        assertNull(reopened.nextWakeAt())
+        assertTrue(reopened.enqueueDue().isEmpty())
+        assertEquals(listOf(manual.id), reopened.runs("w1", saved.id).map { it.id })
+    }
+
+    @Test fun manualConfirmationPersistsOnlyTheNewRunNotPermissionForLaterRuns() {
+        val file = tempFile()
+        var clock = 1_700_000_000_000L
+        val service = AutomationService(file) { clock }
+        val saved = service.save(task(trigger = interval()))
+        val original = service.runNow("w1", saved.id)
+        assertNotNull(service.claim(original.id))
+        val token = assertNotNull(service.beginTool(original.id))
+        assertTrue(assertNotNull(service.cancel("w1", original.id)).externalResultUnknown)
+        assertFailsWith<UnconfirmedAutomationResultException> {
+            service.runNow("w1", saved.id, setOf("stale-id"))
+        }
+        val confirmed = service.runNow("w1", saved.id, setOf(original.id))
+        assertTrue(original.id != confirmed.id)
+
+        val reopened = AutomationService(file) { clock }
+        assertEquals(2, reopened.runs("w1", saved.id).size)
+        assertEquals(confirmed, reopened.runs("w1", saved.id).single { it.id == confirmed.id })
+        val prior = reopened.runs("w1", saved.id).single { it.id == original.id }
+        assertTrue(prior.externalResultUnknown)
+        assertEquals(token, prior.executionCheckpoint?.pendingToolToken)
+        assertNull(reopened.claim(original.id))
+        assertNotNull(reopened.claim(confirmed.id), "the explicitly queued new run remains legitimate after restart")
+        assertNotNull(reopened.finish(confirmed.id, TaskRunState.SUCCEEDED))
+
+        clock = assertNotNull(saved.nextFireAt)
+        val afterSuccess = AutomationService(file) { clock }
+        assertTrue(afterSuccess.enqueueDue().isEmpty(), "one manual confirmation and success cannot unblock automatic runs")
+        assertFailsWith<UnconfirmedAutomationResultException> { afterSuccess.runNow("w1", saved.id) }
+        assertEquals(2, afterSuccess.runs("w1", saved.id).size)
+    }
+
+    @Test fun lateToolReceiptCanRemoveBlockWithoutReplayingConsumedOccurrence() {
+        val file = tempFile()
+        var clock = 1_700_000_000_000L
+        val service = AutomationService(file) { clock }
+        val saved = service.save(task(trigger = interval()))
+        val original = service.runNow("w1", saved.id)
+        assertNotNull(service.claim(original.id))
+        val token = assertNotNull(service.beginTool(original.id))
+        assertTrue(assertNotNull(service.cancel("w1", original.id)).externalResultUnknown)
+
+        clock = assertNotNull(saved.nextFireAt)
+        assertTrue(service.enqueueDue().isEmpty())
+        val next = assertNotNull(service.nextWakeAt())
+        assertTrue(service.completeTool(original.id, token))
+        val reopened = AutomationService(file) { clock }
+        assertFalse(reopened.runs("w1", saved.id).single().externalResultUnknown)
+        assertTrue(reopened.enqueueDue().isEmpty())
+        clock = next
+        val scheduled = reopened.enqueueDue().single()
+        assertEquals(next, scheduled.scheduledAt)
+        assertTrue(scheduled.id != original.id)
+        assertNull(reopened.claim(original.id))
+    }
+
+    @Test fun historyRetentionCannotForgetUnknownAndUnblockTask() {
+        val file = tempFile()
+        var clock = 1_700_000_000_000L
+        val service = AutomationService(file) { clock }
+        val blocked = service.save(task(trigger = interval()))
+        val other = service.save(task(id = "t2", workspaceId = "w2", trigger = interval()).copy(enabled = false))
+        val original = service.runNow("w1", blocked.id)
+        assertNotNull(service.claim(original.id))
+        assertNotNull(service.beginTool(original.id))
+        assertTrue(assertNotNull(service.finish(original.id, TaskRunState.FAILED)).externalResultUnknown)
+        val ordinary = service.runNow("w2", other.id)
+        assertNotNull(service.claim(ordinary.id))
+        assertNotNull(service.finish(ordinary.id, TaskRunState.SUCCEEDED))
+
+        // Seed an over-limit v1 file without thousands of fsyncs. The oldest
+        // run (the unknown one) would be the first eviction under the old policy.
+        val root = JsonParser.parseString(file.readText()).asJsonObject
+        val history = root.getAsJsonArray("runs")
+        val template = history.single { it.asJsonObject.get("id").asString == ordinary.id }.asJsonObject
+        repeat(1000) { n ->
+            history.add(template.deepCopy().apply {
+                addProperty("id", "finished-$n")
+                addProperty("finishedAt", clock + 1L + n)
+            })
+        }
+        file.writeText(root.toString())
+
+        clock = assertNotNull(blocked.nextFireAt)
+        val reopened = AutomationService(file) { clock }
+        assertEquals(999, reopened.runs("w2", other.id).size, "ordinary history still obeys the retention limit")
+        assertTrue(reopened.enqueueDue().isEmpty())
+        // enqueueDue saved the consumed schedule and the trimmed history again.
+        val persisted = AutomationService(file) { clock }
+        assertEquals(original.id, persisted.runs("w1", blocked.id).single().id)
+        assertTrue(persisted.runs("w1", blocked.id).single().externalResultUnknown)
+        assertFailsWith<UnconfirmedAutomationResultException> { persisted.runNow("w1", blocked.id) }
+        assertEquals(999, persisted.runs("w2", other.id).size)
     }
 
     @Test fun completedDispatchClearsBoundaryButDoesNotReviveCancelledRun() {

@@ -26,18 +26,22 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.cordiact.app.CordiActApplication
 import com.cordiact.app.experience.AppGlyph
+import com.cordiact.app.experience.WorkspacePackageManagement
 import com.cordiact.app.experience.settings.components.SettingsGroup
 import com.cordiact.app.experience.settings.components.SettingsRow
 import com.cordiact.app.experience.GlyphName
 import com.cordiact.app.experience.settings.components.*
 import com.cordiact.core.conversation.ModelId
+import com.cordiact.interaction.WorkspaceClientContributions
 import com.cordiact.model.providers.ModelProtocol
 import java.util.UUID
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsHost(vm: SettingsViewModel, initialLink: String? = null, onBack: () -> Unit) {
+    val context = androidx.compose.ui.platform.LocalContext.current
     val state by vm.snapshot.collectAsStateWithLifecycle()
     val busy by vm.busy.collectAsStateWithLifecycle()
     val error by vm.error.collectAsStateWithLifecycle()
@@ -55,7 +59,35 @@ fun SettingsHost(vm: SettingsViewModel, initialLink: String? = null, onBack: () 
     var stackNames by rememberSaveable { mutableStateOf(startLink?.navigation()?.entries?.map { it.name } ?: listOf(SettingsRoute.HOME.name)) }
     val navigation = SettingsNavigation.restore(stackNames)
     val route = navigation.current
-    LaunchedEffect(stackNames) { if (SettingsNavigation.restore(stackNames) != navigation) stackNames = navigation.entries.map { it.name } }
+    val workspaceId = state.capabilityWorkspaceId
+    val workspace = state.workspaces.firstOrNull { it.id == workspaceId }
+    val packageApp = context.applicationContext as? CordiActApplication
+    var switchingPackageScope by remember { mutableStateOf(false) }
+    LaunchedEffect(busy, switchingPackageScope) { if (switchingPackageScope && !vm.busy.value) switchingPackageScope = false }
+    val packagePage = remember(route, packageApp, workspace?.id, switchingPackageScope) {
+        if (route == SettingsRoute.WORKSPACE_PACKAGES && workspace != null && !switchingPackageScope) packageApp?.workspaceExtensionPackages?.openPage(workspaceId)
+        else null
+    }
+    DisposableEffect(packagePage) { onDispose { packagePage?.close() } }
+    val packageBusy = remember(packagePage) { mutableStateOf(false) }
+    var exportWriting by rememberSaveable { mutableStateOf(false) }
+    var interruptedExport by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        if (exportWriting) {
+            interruptedExport = true
+            exportWriting = false
+        }
+    }
+    // The route is saved, but the live publication is not: recreation returns to the directory.
+    var descriptionWorkspace by remember { mutableStateOf<String?>(null) }
+    var descriptionPublication by remember { mutableStateOf<WorkspaceClientContributions.SettingsPage?>(null) }
+    val contributionFlow = if (route == SettingsRoute.PLUGINS || route == SettingsRoute.WORKSPACE_PACKAGE_DESCRIPTION) {
+        vm.facade.workspaceClientContributions
+    } else null
+    val workspacePages = contributionFlow?.collectAsStateWithLifecycle()?.value?.settingsPages(workspaceId).orEmpty()
+    val description = if (route == SettingsRoute.WORKSPACE_PACKAGE_DESCRIPTION && workspaceId == descriptionWorkspace) {
+        workspacePages.singleOrNull { it === descriptionPublication }
+    } else null
     var providerId by rememberSaveable { mutableStateOf(startLink?.providerId.orEmpty()) }
     var connectionId by rememberSaveable { mutableStateOf(startLink?.connectionId) }
     var dirty by remember { mutableStateOf(false) }
@@ -69,14 +101,33 @@ fun SettingsHost(vm: SettingsViewModel, initialLink: String? = null, onBack: () 
     fun applyNavigation(target: SettingsNavigation?) {
         dirty = false
         securityBusy = false
+        if (target?.current != SettingsRoute.WORKSPACE_PACKAGES) packagePage?.close()
+        if (target?.current != SettingsRoute.WORKSPACE_PACKAGE_DESCRIPTION) {
+            descriptionWorkspace = null
+            descriptionPublication = null
+        }
         if (target == null) onBack() else stackNames = target.entries.map { it.name }
     }
-    fun requestNavigation(target: SettingsNavigation?) {
-        if (busy || securityBusy || discardBusy) return
+    fun requestNavigation(target: SettingsNavigation?, leavingPackagePage: Boolean = false) {
+        if (busy || securityBusy || discardBusy || exportWriting || (packageBusy.value && !leavingPackagePage)) return
         if (dirty) { pendingNavigation = target; discard = true }
         else applyNavigation(target)
     }
     fun navigate(target: SettingsRoute) = requestNavigation(navigation.push(target))
+    fun openDescription(presented: WorkspaceClientContributions.SettingsPage) {
+        // A row from a withdrawn registration cannot open a replacement with the same owner.
+        if (vm.busy.value || securityBusy || dirty || discardBusy || vm.snapshot.value.capabilityWorkspaceId != workspaceId) return
+        if (contributionFlow?.value?.settingsPages(workspaceId)?.none { it === presented } != false) return
+        descriptionWorkspace = workspaceId
+        descriptionPublication = presented
+        navigate(SettingsRoute.WORKSPACE_PACKAGE_DESCRIPTION)
+    }
+    LaunchedEffect(route, description, workspaceId, busy) {
+        if (route == SettingsRoute.WORKSPACE_PACKAGE_DESCRIPTION && description == null && (workspaceId.isNotEmpty() || !busy)) {
+            // Withdrawal/scope changes are not subject to dirty or busy gating; no stale text is rendered.
+            applyNavigation(navigation.pop() ?: SettingsNavigation().push(SettingsRoute.PLUGINS))
+        }
+    }
     val directoryRoute = settingsDirectoryRoute(route)
     fun openDirectory(target: SettingsRoute) {
         if (route != target) requestNavigation(SettingsNavigation().push(target))
@@ -101,7 +152,20 @@ fun SettingsHost(vm: SettingsViewModel, initialLink: String? = null, onBack: () 
     }
     fun back() {
         if (route == SettingsRoute.HOME && searchActive) leaveSearch()
-        else requestNavigation(navigation.pop())
+        else requestNavigation(navigation.pop(), leavingPackagePage = route == SettingsRoute.WORKSPACE_PACKAGES)
+    }
+    var diagnosticScopeEpoch by remember { mutableIntStateOf(0) }
+    fun selectScope(id: String) {
+        if (packageBusy.value || vm.busy.value || dirty || securityBusy || discardBusy || id == workspaceId) return
+        diagnosticScopeEpoch++
+        if (route == SettingsRoute.WORKSPACE_PACKAGES) {
+            switchingPackageScope = true
+            packagePage?.close() // Refuse old approvals before the asynchronous settings selection begins.
+        }
+        if (route == SettingsRoute.WORKSPACE_PACKAGE_DESCRIPTION) {
+            applyNavigation(navigation.pop() ?: SettingsNavigation().push(SettingsRoute.PLUGINS))
+        }
+        vm.selectWorkspace(id)
     }
     fun openResult(hit: SettingsSearchHit) {
         if (busy || securityBusy || dirty || discardBusy) return
@@ -111,12 +175,11 @@ fun SettingsHost(vm: SettingsViewModel, initialLink: String? = null, onBack: () 
         sectionFromSearch = hit.section
         navigate(hit.entry.route)
     }
-    val context = androidx.compose.ui.platform.LocalContext.current
     val termuxPermission = androidx.activity.compose.rememberLauncherForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.RequestPermission()) { vm.reload() }
     fun openLink(raw: String?) {
         val link = SettingsLink.parse(raw) ?: return
-        if (busy || securityBusy || dirty || discardBusy) return
+        if (busy || securityBusy || dirty || discardBusy || packageBusy.value) return
         if (raw == "settings://connections/screen") {
             val component = android.content.ComponentName(context, com.cordiact.app.screen.CordiActAccessibilityService::class.java)
             val intent = android.content.Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS)
@@ -158,6 +221,7 @@ fun SettingsHost(vm: SettingsViewModel, initialLink: String? = null, onBack: () 
     val sections = settingsSections(route)
     val showSearch = route == SettingsRoute.HOME
     val showResults = showSearch && searchActive
+    val scopePickerDisabled = busy || dirty || securityBusy || discardBusy || packageBusy.value
     val homeScroll = rememberScrollState()
     val resultsScroll = androidx.compose.runtime.saveable.rememberSaveable(saver = androidx.compose.foundation.ScrollState.Saver) { androidx.compose.foundation.ScrollState(0) }
 
@@ -192,7 +256,7 @@ fun SettingsHost(vm: SettingsViewModel, initialLink: String? = null, onBack: () 
             if (wide) {
                 Column(Modifier.width(railWidth).fillMaxHeight().background(MaterialTheme.colorScheme.surfaceContainerLowest)
                     .verticalScroll(homeScroll).padding(start = 16.dp, end = 12.dp, top = toolbarDp + 13.dp, bottom = if (showSearch) sectionBottom + 24.dp else 24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    WorkspaceScopePicker(state, busy || dirty || securityBusy, vm::selectWorkspace)
+                    WorkspaceScopePicker(state, scopePickerDisabled, ::selectScope)
                     SettingsMenu(state, ::openDirectory, ::openLink, selectedRoute = directoryRoute, compact = true)
                 }
             }
@@ -200,10 +264,35 @@ fun SettingsHost(vm: SettingsViewModel, initialLink: String? = null, onBack: () 
             key(route, providerId, if (route == SettingsRoute.AGENT_PRESET_EDITOR) presetId else "") {
             Column(Modifier.widthIn(max = 640.dp).fillMaxWidth().fillMaxHeight().verticalScroll(when { showResults && settingsQuery.isNotBlank() -> resultsScroll; showSearch && (!wide || showResults) -> homeScroll; else -> sectionScroll }).padding(start = 16.dp, end = 16.dp, top = toolbarDp + 20.dp, bottom = sectionBottom + 24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
+                if (interruptedExport) {
+                    Text(com.cordiact.app.experience.PACKAGE_EXPORT_UNCONFIRMED, color = MaterialTheme.colorScheme.error)
+                    TextButton(onClick = { interruptedExport = false }) { Text("知道了") }
+                }
                 notice?.let { Text(it, color = MaterialTheme.colorScheme.secondary) }
                 error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                 when(route) {
-                    SettingsRoute.MODELS, SettingsRoute.PLUGINS, SettingsRoute.SECURITY, SettingsRoute.APP_PREFERENCES -> SettingsBranch(route, ::navigate)
+                    SettingsRoute.MODELS, SettingsRoute.SECURITY, SettingsRoute.APP_PREFERENCES -> SettingsBranch(route, ::navigate)
+                    SettingsRoute.PLUGINS -> {
+                        if (!wide) WorkspaceScopePicker(state, scopePickerDisabled, ::selectScope)
+                        WorkspacePackageSettingsEntries(workspacePages, !scopePickerDisabled,
+                            managePackages = { navigate(SettingsRoute.WORKSPACE_PACKAGES) }, openDescription = ::openDescription)
+                        SettingsBranch(route, ::navigate)
+                    }
+                    SettingsRoute.WORKSPACE_PACKAGES -> {
+                        if (!wide) WorkspaceScopePicker(state, scopePickerDisabled, ::selectScope)
+                        if (packageApp != null && packagePage != null) key(packagePage) {
+                            WorkspacePackageManagement(packageApp, packagePage, blocked = busy,
+                                onBusy = { packageBusy.value = it }, onExportWriting = { exportWriting = it })
+                        } else if (!busy) Text(if (workspace == null) "未选择工作区。" else "工作区插件包管理不可用。")
+                    }
+                    SettingsRoute.PLUGIN_DIAGNOSTICS -> {
+                        if (!wide) WorkspaceScopePicker(state, scopePickerDisabled, ::selectScope)
+                        key(diagnosticScopeEpoch) { PluginDiagnosticsPage(vm.facade, workspace, busy) }
+                    }
+                    SettingsRoute.WORKSPACE_PACKAGE_DESCRIPTION -> if (description != null) {
+                        if (!wide) WorkspaceScopePicker(state, scopePickerDisabled, ::selectScope)
+                        WorkspacePackageDescription(description.ownerPluginId, description.description)
+                    }
                     SettingsRoute.PROVIDER_DRAFTS, SettingsRoute.MCP_DRAFTS -> {
                         val provider = route == SettingsRoute.PROVIDER_DRAFTS
                         WorkspaceDeclarationsPage(state,
@@ -229,7 +318,7 @@ fun SettingsHost(vm: SettingsViewModel, initialLink: String? = null, onBack: () 
                         Text(state.workspaces.firstOrNull { it.id == state.capabilityWorkspaceId }?.name ?: "未选择工作区")
                         Text("从左侧选择工作区默认、模型与提供商、插件与连接或权限与安全。", color = MaterialTheme.colorScheme.onSurfaceVariant)
                     } else {
-                        WorkspaceScopePicker(state, busy || dirty || securityBusy, vm::selectWorkspace)
+                        WorkspaceScopePicker(state, scopePickerDisabled, ::selectScope)
                         SettingsMenu(state, ::navigate, ::openLink)
                     }
                     SettingsRoute.AGENT_PRESETS -> AgentPresetLibrary(agentPresets, state, wide) {

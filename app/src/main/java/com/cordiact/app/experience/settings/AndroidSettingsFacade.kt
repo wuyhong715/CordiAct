@@ -18,6 +18,7 @@ class AndroidSettingsFacade(private val app: CordiActApplication) : SettingsFaca
     override val mcpSettings: McpSettings by lazy { AndroidMcpSettings(app) }
     override val sshSettings: SshSettings by lazy { AndroidSshSettings(app) }
     override val credentialSettings = AndroidCredentialSettings(app)
+    override val workspaceClientContributions get() = app.conversationCatalog.workspaceClientContributions.snapshot
     @Volatile private var writeWarning: String? = null
     override fun takeWriteWarning(): String? = writeWarning.also { writeWarning = null }
     private fun <T> audited(target: String, revision: () -> Long, action: () -> T): T = synchronized(AUDIT_WRITE_LOCK) {
@@ -35,10 +36,24 @@ class AndroidSettingsFacade(private val app: CordiActApplication) : SettingsFaca
 
     private val capabilitySettings = com.cordiact.app.settings.CapabilitySettingsStore(app)
     private val automationReadiness by lazy { com.cordiact.app.settings.AutomationReadiness(app, app.automationRuntime) }
-    private var settingsWorkspace: String? = null
-    override suspend fun selectWorkspace(id: String) { require(app.workspaceManager.get(id) != null); settingsWorkspace = id }
+    private class Scope(val workspaceId: String?)
+    private val scopeLock = Any()
+    @Volatile private var selection = Scope(null)
+    // Diagnostic reads bind the published Settings scope by identity, even after an A → B → A switch.
+    @Volatile private var snapshotScope: Scope? = null
+    override suspend fun selectWorkspace(id: String) {
+        require(app.workspaceManager.findSessionWorkspace(id) != null)
+        synchronized(scopeLock) {
+            snapshotScope = null
+            selection = Scope(id)
+        }
+    }
+    override suspend fun pluginDiagnostics(workspaceId: String) = withContext(Dispatchers.IO) {
+        val selected = snapshotScope?.takeIf { it.workspaceId == workspaceId } ?: return@withContext null
+        app.readPluginDiagnostics(workspaceId) { snapshotScope === selected }
+    }
     override suspend fun testRoot() = withContext(Dispatchers.IO) {
-        val id = settingsWorkspace ?: app.workspaceManager.activeWorkspace().id
+        val id = selection.workspaceId ?: app.workspaceManager.activeWorkspace().id
         require(com.cordiact.app.security.SecurityProfileStore(app).profileFor(id).preset == com.cordiact.core.security.PermissionPreset.FULL_ACCESS) { "ROOT_REQUIRES_FULL_ACCESS" }
         require(app.automationRuntime.privilegeSettings.read().root) { "ROOT_DISABLED" }
         automationReadiness.testRoot()
@@ -97,14 +112,26 @@ class AndroidSettingsFacade(private val app: CordiActApplication) : SettingsFaca
                 add(SettingsReadiness("role:CONVERSATION", "对话默认模型", SettingsStatus.ERROR, "模型已删除或停用，请重新选择"))
 
         }
-        val workspaceId = settingsWorkspace?.takeIf { app.workspaceManager.get(it) != null } ?: app.workspaceManager.activeWorkspace().id
-        val capabilities = app.pluginManagerService().inventory(workspaceId).mapNotNull { entry ->
+        // An explicitly selected workspace that is later archived must not silently become another.
+        val requestedScope = selection
+        val workspaceId = requestedScope.workspaceId ?: app.workspaceManager.activeWorkspace().id
+        val workspaceAvailable = app.workspaceManager.findSessionWorkspace(workspaceId) != null
+        val capabilities = (if (workspaceAvailable) app.pluginManagerService().inventory(workspaceId) else emptyList()).mapNotNull { entry ->
             val id = entry.capabilityId ?: return@mapNotNull null
             val status = entry.readiness ?: return@mapNotNull null
             CapabilitySummary(id, status.title, entry.workspaceEnabled == true && app.hasPluginCapabilityConsent(workspaceId, id), status)
         }.distinctBy { it.id }
         val connectionReadiness = capabilities.map { c -> c.readiness.let { r -> SettingsReadiness(r.id, c.label, SettingsStatus.valueOf(r.state.name), r.summary, r.reasonCode, "settings://connections/${c.id}") } }
-        SettingsSnapshot(providers, available + app.workspaceConnections.models(workspaceId), readiness + connectionReadiness, providers.map { CredentialMeta("model", it.id, it.keyIsSet) }, roles, default, attachmentSettings.limits(), workspaceId, capabilities, app.workspaceManager.list().map { SecurityWorkspace(it.id, it.name) })
+        val workspaceModels = if (workspaceAvailable) app.workspaceConnections.models(workspaceId) else emptyList()
+        val snapshot = SettingsSnapshot(providers, available + workspaceModels,
+            readiness + connectionReadiness, providers.map { CredentialMeta("model", it.id, it.keyIsSet) }, roles, default,
+            attachmentSettings.limits(), workspaceId, capabilities, app.workspaceManager.list().map { SecurityWorkspace(it.id, it.name) })
+        synchronized(scopeLock) {
+            check(selection === requestedScope) { "SETTINGS_WORKSPACE_CHANGED" }
+            if (!workspaceAvailable || snapshot.workspaces.none { it.id == workspaceId }) snapshotScope = null
+            else if (snapshotScope?.workspaceId != workspaceId) snapshotScope = Scope(workspaceId)
+        }
+        snapshot
     }
     override suspend fun discover(draft: ProviderDraft, key: String) = withContext(Dispatchers.IO) {
         HttpModelDiscoveryService().discover(draft.connection(), key.trim())

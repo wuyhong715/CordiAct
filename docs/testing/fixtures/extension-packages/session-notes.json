@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 2,
+  "id": "session-notes",
+  "version": "1.0.0",
+  "title": "会话交接",
+  "description": "离线交接便笺",
+  "host": { "api": 1, "minVersion": "0.1.0" },
+  "capabilities": ["command.publish", "ui.settings.publish", "ui.session-action.publish"],
+  "tools": [],
+  "commands": [
+    { "name": "handoff-notes", "aliases": [], "description": "显示交接便笺", "text": "已完成：\n待验证：\n下一位负责人：" }
+  ],
+  "client": {
+    "settingsPage": {
+      "title": "会话交接说明",
+      "description": "本包只提供固定文本，不读取当前会话。",
+      "rows": [{ "label": "数据来源", "value": "本包自带文本" }]
+    },
+    "sessionActions": [
+      { "id": "insert", "label": "填入交接便笺命令", "command": "handoff-notes" }
+    ]
+  }
+}
