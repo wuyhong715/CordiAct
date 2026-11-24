@@ -124,7 +124,8 @@ export function createFollowService(bind) {
       opened = true
       polling = setInterval(refresh, POLL_MS)
       polling.unref()
-      return Object.freeze({ signal: cancellation.signal, next, close: () => end('disconnected') })
+      // A carrier must check the monotonic lease immediately before handing off bytes.
+      return Object.freeze({ signal: cancellation.signal, next, canDeliver: checkTime, close: () => end('disconnected') })
     }
 
     const expiration = setTimeout(() => end('access-lost'), ttlMs)

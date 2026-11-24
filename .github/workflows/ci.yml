@@ -26,8 +26,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
-      - name: Test read-only Host grant lifecycle
-        run: node --test deepseek-harness/host-follow/test/follow-service.test.mjs
+      - name: Test read-only Host grants and pipe carrier
+        run: |
+          node --test deepseek-harness/host-follow/test/follow-service.test.mjs \
+            deepseek-harness/host-follow/test/ipc-follow.test.mjs
 
   readonly-host-profile:
     runs-on: ubuntu-latest

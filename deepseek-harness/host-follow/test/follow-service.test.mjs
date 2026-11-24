@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { performance } from 'node:perf_hooks'
 import { setTimeout as delay } from 'node:timers/promises'
 import { createFollowService } from '../follow-service.mjs'
 
@@ -126,6 +127,19 @@ test('expiry aborts an idle stream and invalidates unopened grants', { timeout: 
   assert.equal(stream.signal.aborted, true)
   assert.deepEqual(result, lost)
   assert.equal(f.open(unopened.token), null)
+})
+
+test('the final delivery check rejects expiry before the timer callback has run', async t => {
+  const f = setup(t)
+  const stream = f.open(f.issue(500).token)
+  const result = stream.next()
+  // Advance the lease clock without advancing real event-loop timers.
+  const now = performance.now()
+  t.mock.method(performance, 'now', () => now + 500)
+  assert.deepEqual(await result, { done: false, value: idle })
+  assert.equal(stream.signal.aborted, false)
+  assert.equal(stream.canDeliver(), false)
+  assert.equal(stream.signal.aborted, true)
 })
 
 test('deadline admission, grant capacity and service disposal are finite', async t => {

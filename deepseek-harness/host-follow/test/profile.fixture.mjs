@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
 import { mkdir } from 'node:fs/promises'
+import { Socket } from 'node:net'
 import { resolve } from 'node:path'
+import { serveFollowPipe } from '../ipc-follow.mjs'
 
 export const name = 'cordiact-follow-profile-fixture'
 export const inject = ['agents', 'sessions', 'workspaceRegistry', 'appExit', 'appReady', 'loader']
@@ -86,6 +88,32 @@ async function verify(ctx) {
   const newStream = open(issue().token)
   oldStream.close()
   assert.deepEqual(await newStream.next(), { done: false, value: idle })
+  if (process.connected) {
+    const grant = issue()
+    const input = new Socket({ fd: 3, readable: true, writable: false })
+    const output = new Socket({ fd: 4, readable: false, writable: true })
+    const pipe = serveFollowPipe({ reader, input, output })
+    // Test commands and the synthetic grant use only the harness control channel.
+    const onControl = command => {
+      if (command === 'revoke') grant.revoke()
+      if (command === 'update') replacement.append('turn/start', { turn: 1 })
+    }
+    process.on('message', onControl)
+    process.once('disconnect', pipe.close)
+    process.send({ token: grant.token, workspace: wa.id, session: replacement.id })
+    try {
+      await pipe.completion
+    } finally {
+      grant.revoke()
+      process.off('message', onControl)
+      process.off('disconnect', pipe.close)
+      if (process.connected) process.disconnect()
+    }
+  }
+
+  if (process.send !== undefined) {
+    assert.deepEqual(await newStream.next(), { done: false, value: { ...idle, cursor: replacement.seq - 1 } })
+  }
   const unloadRead = newStream.next()
   const entry = [...ctx.loader.entries()].find(row => row.options.id === 'cordiact-readonly-follow')
   assert.ok(entry?.fiber)
