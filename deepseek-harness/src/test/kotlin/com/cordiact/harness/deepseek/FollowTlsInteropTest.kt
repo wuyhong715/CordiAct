@@ -1,0 +1,166 @@
+package com.cordiact.harness.deepseek
+
+import java.io.InputStream
+import java.net.ConnectException
+import java.net.InetAddress
+import java.net.InetSocketAddress
+import java.net.Socket
+import java.nio.file.Files
+import java.nio.file.Path
+import java.security.KeyStore
+import java.security.MessageDigest
+import java.util.concurrent.Callable
+import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledExecutorService
+import java.util.concurrent.TimeUnit
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertNotNull
+import kotlin.test.assertTrue
+
+/** Opt-in: real Node Host transport, short-lived synthetic grants, and only loopback traffic. */
+class FollowTlsInteropTest {
+    private val node = checkNotNull(System.getProperty("cordiact.follow.node"))
+    private val fixture = Path.of("host-follow", "test", "jvm-tls-interop.fixture.mjs").toAbsolutePath()
+    private val loopback = InetAddress.getByAddress(byteArrayOf(127, 0, 0, 1))
+    private val target = FollowTarget("host-a", "local-a", "session-a")
+    private val disconnected = FollowStatus.Ended(FollowEnd.DISCONNECTED)
+
+    @Test fun publishesBaselineAndUpdateThenHostRevocationDisconnects() = withHost { host, client ->
+        val handle = assertNotNull(host.follow(client, 0, target))
+        assertEquals(FollowStatus.Current(FollowSessionState(2, true, false)), awaitStatus(client, handle) { it is FollowStatus.Current })
+        host.command("update")
+        val updated = FollowStatus.Current(FollowSessionState(9, true, true))
+        assertEquals(updated, awaitStatus(client, handle) { it == updated })
+        host.command("revoke")
+        assertEquals(disconnected, awaitStatus(client, handle) { it is FollowStatus.Ended })
+    }
+
+    @Test fun onlyExactTargetCanReadAndListenerStopClearsEstablishedAndPendingPeers() = withHost { host, client ->
+        // Different authenticated TLS connection, same unused grant. Wrong scopes do not emit a baseline.
+        val wrongWorkspace = assertNotNull(host.follow(client, 1, target, "remote-b"))
+        assertEquals(disconnected, awaitStatus(client, wrongWorkspace, forbidCurrent = true) { it is FollowStatus.Ended })
+        val wrongSession = assertNotNull(host.follow(client, 1, target.copy(remoteSessionId = "session-b")))
+        assertEquals(disconnected, awaitStatus(client, wrongSession, forbidCurrent = true) { it is FollowStatus.Ended })
+        val live = assertNotNull(host.follow(client, 1, target))
+        assertTrue(awaitStatus(client, live) { it is FollowStatus.Current } is FollowStatus.Current)
+        Socket().use { pending ->
+            pending.connect(host.address, 1_000)
+            pending.soTimeout = 2_000
+            host.command("stop")
+            assertEquals(disconnected, awaitStatus(client, live) { it is FollowStatus.Ended })
+            assertEquals(-1, pending.getInputStream().read())
+            Socket().use { closed -> assertFailsWith<ConnectException> { closed.connect(host.address, 1_000) } }
+        }
+    }
+
+    @Test fun idleTcpPeerIsRetiredBeforeApplicationAdmission() = withHost { host, _ ->
+        Socket().use { pending ->
+            pending.connect(host.address, 1_000)
+            pending.soTimeout = 5_000
+            assertEquals(-1, pending.getInputStream().read())
+        }
+    }
+
+    private fun awaitStatus(
+        client: FollowPipeClient,
+        handle: FollowPipeLifecycle.Handle,
+        forbidCurrent: Boolean = false,
+        done: (FollowStatus?) -> Boolean,
+    ): FollowStatus? {
+        val until = System.nanoTime() + TimeUnit.SECONDS.toNanos(4)
+        while (true) {
+            val status = client.status(handle)
+            if (forbidCurrent) assertTrue(status !is FollowStatus.Current)
+            if (done(status)) return status
+            check(System.nanoTime() - until < 0) { "Timed out waiting for follow state: $status" }
+            Thread.sleep(5)
+        }
+    }
+
+    private class Host(
+        private val child: Process,
+        val address: InetSocketAddress,
+        private val grants: List<String>,
+        private val pin: ByteArray,
+        private val scheduler: ScheduledExecutorService,
+    ) {
+        fun follow(client: FollowPipeClient, index: Int, target: FollowTarget, remoteWorkspaceId: String = "remote-a"): FollowPipeLifecycle.Handle? {
+            val connector = PinnedFollowTlsConnector(target, remoteWorkspaceId, address, pin, scheduler)
+            val approved = checkNotNull(connector.connect(connector.grant(grants[index], 12_000))) { "Synthetic TLS handshake failed" }
+            return approved.use { client.begin(it) }
+        }
+
+        fun command(command: String) {
+            child.outputStream.write("$command\n".encodeToByteArray())
+            child.outputStream.flush()
+            assertEquals(command, line(child.inputStream, 32))
+        }
+    }
+
+    private fun withHost(test: (Host, FollowPipeClient) -> Unit) {
+        val directory = Files.createTempDirectory("cordiact-node-tls-")
+        val store = directory.resolve("fixture.p12")
+        val password = "synthetic-only"
+        val control = Executors.newSingleThreadExecutor { task -> Thread(task, "follow-tls-fixture").apply { isDaemon = true } }
+        val reads = Executors.newSingleThreadExecutor { task -> Thread(task, "follow-tls-reader").apply { isDaemon = true } }
+        val scheduler = Executors.newSingleThreadScheduledExecutor()
+        try {
+            val keytool = Path.of(System.getProperty("java.home"), "bin", "keytool").toString()
+            val keys = ProcessBuilder(keytool, "-genkeypair", "-alias", "host", "-keyalg", "EC",
+                "-groupname", "secp256r1", "-dname", "CN=Synthetic Node Follow", "-validity", "2", "-storetype", "PKCS12",
+                "-keystore", store.toString(), "-storepass", password).redirectErrorStream(true).start()
+            try {
+                check(keys.waitFor(10, TimeUnit.SECONDS) && keys.exitValue() == 0) { "Could not generate synthetic TLS identity" }
+            } finally {
+                if (keys.isAlive) keys.destroyForcibly()
+                keys.inputStream.close()
+                keys.outputStream.close()
+            }
+            val ks = KeyStore.getInstance("PKCS12")
+            Files.newInputStream(store).use { ks.load(it, password.toCharArray()) }
+            val pin = MessageDigest.getInstance("SHA-256").digest(ks.getCertificate("host").encoded)
+            val child = ProcessBuilder(node, fixture.toString(), store.toString()).apply { environment().clear() }.start()
+            try {
+                control.submit(Callable {
+                    val fields = line(child.inputStream, 256).split(' ')
+                    val port = fields.firstOrNull()?.toIntOrNull()
+                    val grants = fields.drop(1)
+                    check(port != null && port in 1..65535 && grants.size == 2 && grants.all { GRANT.matches(it) }) {
+                        "Invalid synthetic TLS control envelope"
+                    }
+                    FollowPipeClient(scheduler, reads).use { test(Host(child, InetSocketAddress(loopback, port), grants, pin, scheduler), it) }
+                    child.outputStream.close()
+                    check(child.waitFor(3, TimeUnit.SECONDS) && child.exitValue() == 0) { "Synthetic TLS Host did not exit cleanly" }
+                }).get(18, TimeUnit.SECONDS)
+            } finally {
+                if (child.isAlive) child.destroyForcibly()
+                child.waitFor(2, TimeUnit.SECONDS)
+                child.inputStream.close()
+                child.outputStream.close()
+                child.errorStream.close()
+            }
+        } finally {
+            control.shutdownNow()
+            reads.shutdownNow()
+            scheduler.shutdownNow()
+            Files.deleteIfExists(store)
+            Files.deleteIfExists(directory)
+        }
+    }
+
+    private companion object {
+        val GRANT = Regex("caf1_[A-Za-z0-9_-]{43}")
+        fun line(input: InputStream, limit: Int): String {
+            val line = StringBuilder()
+            repeat(limit) {
+                val byte = input.read()
+                if (byte == 10) return line.toString()
+                check(byte in 32..126) { "Incomplete synthetic TLS control envelope" }
+                line.append(byte.toChar())
+            }
+            error("Oversized synthetic TLS control envelope")
+        }
+    }
+}

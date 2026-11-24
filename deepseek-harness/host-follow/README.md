@@ -47,11 +47,13 @@ node deepseek-harness/host-follow/test/run-pinned-profile.mjs /absolute/path/to/
   -PfollowNode="$(command -v node)" --no-daemon
 ```
 
-## 端侧 TLS 原型
+## 回环 TLS 原型
 
 [客户端连接器](../src/main/kotlin/com/cordiact/harness/deepseek/PinnedFollowTlsConnector.kt)只连受信控制面交付的确定 IP 和端口，要求 TLS 1.3、精确叶证书 SHA-256 指纹、证书有效期及 `cordiact-follow/1` ALPN。指纹是该配置的 Host 身份，不使用系统 CA 或 DNS 名称替代，不发现、不从未核验的对端录入信任。绑定在一份连接器实例的凭据仅使用一次；握手最多 3 秒，或原授权剩余时间（取较短者）。握手完成才交付可发送凭据的载体，原授权时间不重算。失败关闭，无 owner 或明文回退。
 
-[回环测试](../src/test/kotlin/com/cordiact/harness/deepseek/PinnedFollowTlsConnectorTest.kt)使用临时合成证书和 JVM TLS 服务端，覆盖正确/错误指纹、缺失协议、握手超时与撤权关闭。此模块不注册监听器，不配置 Android，不是 Host TLS 服务端或可信配对实现；部署前仍需验证联合装配与连接世代管理。
+[Host 载体](tls-follow.mjs)须显式提供 PKCS#12 身份及投影读取服务才能启动，硬编码绑定 `127.0.0.1` 的临时端口。它不拿发证权限、不注册 Gateway 或控制路由；只接受 TLS 1.3 与精确 ALPN，预握手及已握手连接合计最多 16 条，3 秒握手截止，之后沿用管道请求、写入和授权边界。停止监听会关闭尚在握手的 TCP 连接和现有投影。此模块未装入默认 DSH profile。
+
+[JVM 测试](../src/test/kotlin/com/cordiact/harness/deepseek/PinnedFollowTlsConnectorTest.kt)验证指纹、协议、握手超时；[Node ↔ Kotlin 回环测试](../src/test/kotlin/com/cordiact/harness/deepseek/FollowTlsInteropTest.kt)使用同一专用传输和真实授权服务，验证首帧、更新、错域拒绝、Host 撤权、握手超时和关闭监听。夹具凭据仅通过隔离的进程控制通道交付。未实现真实配对、外网暴露、正式 profile 或 Android 装配。
 
 ## 用同一源码树的正式构建验证
 
@@ -63,4 +65,4 @@ node deepseek-harness/host-follow/test/run-pinned-profile.mjs /absolute/path/to/
 node deepseek-harness/host-follow/test/run-built-profile.mjs /absolute/path/to/built-deepseek-harness
 ```
 
-本地 Linux arm64 以 Node `24.19.0` / pnpm `11.28.5` 完成冻结安装（本地禁用包安装脚本）、官方 8 阶段工件构建及禁网合成 profile。上游锁 SHA-256 为 `f7c01c56b65e31e1924a82bf8061ee9b63122e6e769b4aaed4781b4d1d3c088a`，实测 CLI 入口 SHA-256 为 `b293de4609dfd0625b4e5c0a88363fb49efd7d162b41a9ac2e36a1f8e196d133`。此结果不是原样 npm 版通过，也不替代待运行的 Linux x64 工作流。继承管道已对合成进程实测认证、限字节解析、撤权、过期及输入关闭；受控 writable 验证单帧背压和写超时，未宣称填满内核缓冲。客户端 TLS 仅在合成回环端点验证，尚未验证真实 Host 的 TLS 装配、静默网络分区或 Android。继续接入前按[架构验收要求](../../docs/architecture/dsh-readonly-session-follow.md)执行。
+本地 Linux arm64 以 Node `24.19.0` / pnpm `11.28.5` 完成冻结安装（本地禁用包安装脚本）、官方 8 阶段工件构建及禁网合成 profile。上游锁 SHA-256 为 `f7c01c56b65e31e1924a82bf8061ee9b63122e6e769b4aaed4781b4d1d3c088a`，实测 CLI 入口 SHA-256 为 `b293de4609dfd0625b4e5c0a88363fb49efd7d162b41a9ac2e36a1f8e196d133`。此结果不是原样 npm 版通过，也不替代待运行的 Linux x64 工作流。继承管道已对合成进程实测认证、限字节解析、撤权、过期及输入关闭；受控 writable 验证单帧背压和写超时，未宣称填满内核缓冲。Node Host TLS 与 Kotlin 已在合成数据的回环端点互操作，尚未验证真实 Host 的 TLS 装配、静默网络分区或 Android。继续接入前按[架构验收要求](../../docs/architecture/dsh-readonly-session-follow.md)执行。

@@ -1,6 +1,6 @@
 # P2 · DSH 只读会话状态跟随
 
-**状态：本地归约器和进程内 Host 插件已实现；默认 DSH 不符合接入门槛，未接网、未装配 APK。** 本文核对的是 [DSH `dsh-v0.2.3-alpha.1`](https://github.com/deepseek-ai/deepseek-harness/tree/d98f5d68519215da48f3002da2cb9c9d2068d81d)，不是其他版本或正在运行的 Web GUI。
+**状态：本地归约器和进程内 Host 插件已实现，独立 TLS 载体只验证了回环；默认 DSH 不符合接入门槛，未开放外网或装配 APK。** 本文核对的是 [DSH `dsh-v0.2.3-alpha.1`](https://github.com/deepseek-ai/deepseek-harness/tree/d98f5d68519215da48f3002da2cb9c9d2068d81d)，不是其他版本或正在运行的 Web GUI。
 
 ## 兼容性结论
 
@@ -23,7 +23,7 @@
 
 ## 验证
 
-[本地回归](../../deepseek-harness/src/test/kotlin/com/cordiact/harness/deepseek/ReadOnlySessionFollowTest.kt)覆盖同游标状态替换、同目标重连、A→B→A、跨实例和错目标响应、重复／缺失／无效帧以及撤权后晚到数据。七模块 JVM 共 1,216 项通过，其中 8 项为归约器、6 项为管道接收器、7 项为载体生命周期、4 项为读循环、7 项为受信交付、3 项为回环 TLS 连接器回归。TLS 测试用即时生成的合成证书，覆盖精确指纹和协议、凭据只用一次、失败不发凭据、握手截止及端侧撤权关连接。另有 3 项显式互操作测试经真实子进程管道验证首帧、更新、EOF 清除、旧流隔离，以及 Host 保持静默时本地截止能主动关闭管道并解除阻塞读取。互操作使用合成数据、无网络，未生成 APK。
+[本地回归](../../deepseek-harness/src/test/kotlin/com/cordiact/harness/deepseek/ReadOnlySessionFollowTest.kt)覆盖同游标状态替换、同目标重连、A→B→A、跨实例和错目标响应、重复／缺失／无效帧以及撤权后晚到数据。七模块 JVM 共 1,216 项通过，其中 8 项为归约器、6 项为管道接收器、7 项为载体生命周期、4 项为读循环、7 项为受信交付、3 项为回环 TLS 连接器回归。TLS 测试用即时生成的合成证书，覆盖精确指纹和协议、凭据只用一次、失败不发凭据、握手截止及端侧撤权关连接。另有 3 项显式互操作测试经真实子进程管道验证首帧、更新、EOF 清除、旧流隔离，以及 Host 保持静默时本地截止能主动关闭管道并解除阻塞读取。另有 3 项 [Node ↔ Kotlin 回环 TLS 互操作](../../deepseek-harness/src/test/kotlin/com/cordiact/harness/deepseek/FollowTlsInteropTest.kt)直接走投影服务，覆盖更新、错工作区/会话拒绝、Host 撤权、预握手截止和监听关闭清退。所有互操作使用合成数据，不依赖外网，未生成 APK。
 
 ## Host 插件验证
 
@@ -35,4 +35,4 @@ Node 16 项核心与 IPC 测试通过；另有 1 项真实 Loader 测试从空�
 
 1. 提供固定版本 Host 装配和独立认证主体（**非 owner**），服务端默认拒绝。只允许对显式授权目标读取脱敏的状态投影；不接受默认 Web/控制凭据，不做低权限失败后回退。投影须在 Host 输出有界字段，不能先把完整队列传进手机再隐藏。
 2. 用无生产数据的 Host 集成/协议测试，证明合法目标能读，另一会话和另一工作区被拒绝；对 prompt、cancel、fork、activate、上传、附件、通用控制、互动回复及替代 RPC/HTTP 入口进行拒绝测试。若要求宿主不写盘，固定可审计存储配置并覆盖冷观察。
-3. 继承管道已验证撤权关闭和本地资源上限，客户端 TLS 已在合成回环端点验证；真实 Host 的专用 TLS 装配、受信配对、外部载体背压、静默断线和端侧清除仍待联合验证。断线、关闭或重连时，载体、目标和凭据的世代不能替换旧回调身份。未验证前不新增 Android 连接入口。
+3. 继承管道和独立 TLS 载体已验证撤权关闭，后者硬绑定 IPv4 回环临时端口且未装配到 DSH profile；真实 Host 的专用 TLS 装配、受信配对、外部载体背压、静默断线和端侧清除仍待联合验证。断线、关闭或重连时，载体、目标和凭据的世代不能替换旧回调身份。未验证前不新增 Android 连接入口。

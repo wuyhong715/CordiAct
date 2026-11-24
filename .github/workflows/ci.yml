@@ -35,7 +35,7 @@ jobs:
           distribution: temurin
           java-version: '17'
       - uses: gradle/actions/setup-gradle@v4
-      - name: Verify Kotlin decoding against the actual Node carrier
+      - name: Verify Kotlin against Node pipe and loopback TLS carriers
         run: |
           ./gradlew -p verification/jvm :deepseek-harness:test :deepseek-harness:followPipeInteropTest \
             -PfollowNode="$(command -v node)" --no-daemon
