@@ -54,7 +54,7 @@ class FollowPipeLifecycle internal constructor(
      * Supply a conservative remaining grant budget; the local cap may end earlier than the Host.
      */
     fun begin(pipe: FollowPipeOwnership, remainingMillis: Long): Handle? {
-        require(remainingMillis in 1..MAX_LEASE_MS)
+        require(remainingMillis in 1..MAX_FOLLOW_LEASE_MS)
         val cancel = pipe.take() ?: return null
         var retire: (() -> Unit)? = null
         var reject: (() -> Unit)? = null
@@ -175,6 +175,7 @@ class FollowPipeLifecycle internal constructor(
 
     private companion object {
         const val BASELINE_MS = 3_000L
-        const val MAX_LEASE_MS = 30_000L
     }
 }
+
+internal const val MAX_FOLLOW_LEASE_MS = 30_000L

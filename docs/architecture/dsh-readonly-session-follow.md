@@ -19,11 +19,11 @@
 
 - 目标组合独立绑定连接、CordiAct 本地工作区和远端会话。目标字段是本地路由身份，非服务端授权凭据；未来适配器必须从已经核验的请求捕获目标与世代，不能从响应猜测归属，也不能把旧响应重新盖章。
 - 每次选择或重连都创建新世代，即使所有 ID 相同；旧回调不能读、写、关闭新状态。必须先收到当前世代的完整基线。进程内归约器会忽略已处理编号；[管道适配器](../../deepseek-harness/src/main/kotlin/com/cordiact/harness/deepseek/FollowPipeReceiver.kt)则严格使用 Host 帧自带的交付序号，首个为 `0`，重复、跳跃、游标倒退、畸形内容均结束当前世代并清除内容，绝不在客户端重新编号。编号不是 Host 会话日志游标；后者允许相同或跳增。
-- 断线或收到撤权时立即清除当前投影，不把旧内容当成在线状态；离开页面可清除整个选择。[端侧生命周期](../../deepseek-harness/src/main/kotlin/com/cordiact/harness/deepseek/FollowPipeLifecycle.kt)一次接管一个已核验、独占的载体；终止时先清状态，再请求取消原载体。首帧最长等 3 秒，端侧投影最多保留 30 秒，或以调用方提供的更早授权期限为准。即使正常流保持空闲或继续有更新也不续租；读入和状态读取同步复核单调截止，不依赖后台定时回调先执行。不自动重连、重放、读历史或恢复授权。本地截止不证明网络分区，也不代替 Host 撤权。
+- 断线或收到撤权时立即清除当前投影，不把旧内容当成在线状态；离开页面可清除整个选择。[端侧生命周期](../../deepseek-harness/src/main/kotlin/com/cordiact/harness/deepseek/FollowPipeLifecycle.kt)一次接管一个已核验、独占的载体；终止时先清状态，再请求取消原载体。首帧最长等 3 秒，端侧投影最多保留 30 秒，或以调用方提供的更早授权期限为准。即使正常流保持空闲或继续有更新也不续租；读入和状态读取同步复核单调截止，不依赖后台定时回调先执行。不自动重连、重放、读历史或恢复授权。本地截止不证明网络分区，也不代替 Host 撤权。[单次读循环](../../deepseek-harness/src/main/kotlin/com/cordiact/harness/deepseek/FollowPipeClient.kt)接管其绑定的流，用独立执行器读取有界字节，不打开进程或认证；读取 EOF、错误、执行器拒绝或选中变化时，清退同一载体。截止时取消须能解除实际阻塞读取，不能只标记逻辑关闭。
 
 ## 验证
 
-[本地回归](../../deepseek-harness/src/test/kotlin/com/cordiact/harness/deepseek/ReadOnlySessionFollowTest.kt)覆盖同游标状态替换、同目标重连、A→B→A、跨实例和错目标响应、重复／缺失／无效帧以及撤权后晚到数据。七模块 JVM 共 1,202 项通过，其中 8 项为归约器、6 项为管道接收器、7 项为载体生命周期回归。另外 3 项显式互操作测试由 Kotlin 经真实子进程管道读取 Node Host 帧，验证首帧、更新、EOF 清除、旧流隔离，以及 Host 保持静默时本地截止主动关闭管道。互操作使用合成数据、无网络，未生成 APK。
+[本地回归](../../deepseek-harness/src/test/kotlin/com/cordiact/harness/deepseek/ReadOnlySessionFollowTest.kt)覆盖同游标状态替换、同目标重连、A→B→A、跨实例和错目标响应、重复／缺失／无效帧以及撤权后晚到数据。七模块 JVM 共 1,206 项通过，其中 8 项为归约器、6 项为管道接收器、7 项为载体生命周期、4 项为读循环回归。另有 3 项显式互操作测试经真实子进程管道验证首帧、更新、EOF 清除、旧流隔离，以及 Host 保持静默时本地截止能主动关闭管道并解除阻塞读取。互操作使用合成数据、无网络，未生成 APK。
 
 ## Host 插件验证
 

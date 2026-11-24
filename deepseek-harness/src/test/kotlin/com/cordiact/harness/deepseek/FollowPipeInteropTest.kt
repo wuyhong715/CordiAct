@@ -42,27 +42,36 @@ class FollowPipeInteropTest {
 
     @Test fun silentHostLosesItsProjectionAndClosesTheRealPipeAtLocalExpiry() = withHost("silent") { host, token ->
         val scheduler = Executors.newSingleThreadScheduledExecutor()
+        val reads = Executors.newSingleThreadExecutor()
         val cancelled = CountDownLatch(1)
         try {
-            FollowPipeLifecycle(scheduler).use { follow ->
-                val pipe = FollowPipeOwnership(target) {
+            FollowPipeClient(scheduler, reads).use { follow ->
+                host.open(token)
+                val pipe = RequestedFollowPipe(target, host.input) {
                     try {
+                        // Closing the request side makes the synthetic Host close its output.
                         host.disconnect()
                     } finally {
                         cancelled.countDown()
                     }
                 }
-                val handle = checkNotNull(follow.begin(pipe, 1_500))
-                host.open(token)
-                host.readFrame { bytes -> assertEquals(FollowPipeReceiver.Receive.ACCEPTED, follow.receive(handle, bytes)) }
-                assertEquals(FollowStatus.Current(FollowSessionState(-1, false, false)), follow.status(handle))
-                // No read or status call triggers expiry; cancelled is signalled by the local timer.
+                val handle = checkNotNull(follow.begin(pipe, 2_500))
+                val baselineDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
+                var status = follow.status(handle)
+                while (status == FollowStatus.AwaitingBaseline && System.nanoTime() - baselineDeadline < 0) {
+                    Thread.sleep(5)
+                    status = follow.status(handle)
+                }
+                assertEquals(FollowStatus.Current(FollowSessionState(-1, false, false)), status)
+                // The Host stays silent. No further status calls are needed to close and unblock the reader.
                 assertTrue(cancelled.await(4, TimeUnit.SECONDS))
+                reads.shutdown()
+                assertTrue(reads.awaitTermination(2, TimeUnit.SECONDS))
                 assertEquals(FollowStatus.Ended(FollowEnd.DISCONNECTED), follow.status(handle))
-                assertEquals(-1, host.input.read())
-                assertEquals(false, follow.eof(handle))
+                assertEquals(false, follow.revoke(handle))
             }
         } finally {
+            reads.shutdownNow()
             scheduler.shutdownNow()
         }
     }
@@ -76,20 +85,6 @@ class FollowPipeInteropTest {
         }
 
         fun disconnect() = output.close()
-
-        fun readFrame(accept: (ByteArray) -> Unit) {
-            val bytes = ByteArray(128)
-            for (i in bytes.indices) {
-                val next = input.read()
-                assertTrue(next >= 0, "EOF inside a follow frame")
-                bytes[i] = next.toByte()
-                if (next == 10) {
-                    accept(bytes.copyOf(i + 1))
-                    return
-                }
-            }
-            error("Follow frame exceeded its wire bound")
-        }
 
         fun readLineInto(handle: FollowPipeReceiver.Handle, result: FollowPipeReceiver.Receive = FollowPipeReceiver.Receive.ACCEPTED) {
             val byte = ByteArray(1)
