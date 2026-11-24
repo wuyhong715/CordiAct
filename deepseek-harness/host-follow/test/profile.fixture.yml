@@ -1,0 +1,25 @@
+- insert:
+    - id: session
+      name: '@deepseek-ai/dsh-session'
+    - id: session-projection
+      name: '@deepseek-ai/dsh-session-projection'
+    - id: agent
+      name: '@deepseek-ai/dsh-agent'
+    - id: storage
+      name: '@deepseek-ai/dsh-storage'
+    - id: storage-json
+      name: '@deepseek-ai/dsh-storage-json'
+      config:
+        root: !!js dshHomePath('storages')
+    - id: storage-domain
+      name: '@deepseek-ai/dsh-storage-domain'
+      config:
+        backend: json
+    - id: session-persistence
+      name: './persistence.fixture.mjs'
+    - id: workspace
+      name: '@deepseek-ai/dsh-workspace'
+    - id: cordiact-readonly-follow
+      name: '../index.mjs'
+    - id: fixture
+      name: './profile.fixture.mjs'

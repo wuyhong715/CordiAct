@@ -18,3 +18,13 @@ jobs:
           test -f README.md
           test -f LICENSE
           test -f docs/ARCHITECTURE.md
+
+  readonly-host-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Test read-only Host grant lifecycle
+        run: node --test deepseek-harness/host-follow/test/follow-service.test.mjs
