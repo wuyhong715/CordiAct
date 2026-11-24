@@ -100,11 +100,16 @@ class FollowPairing internal constructor(
     private fun expired(challenge: Challenge) = nowNanos() - challenge.start >= WINDOW_NANOS
 
     @Synchronized
-    override fun close() {
+    internal fun cancel() {
         pending = null
         active?.close()
         active = null
+    }
+
+    @Synchronized
+    override fun close() {
         closed = true
+        cancel()
     }
 
     class Approval internal constructor(

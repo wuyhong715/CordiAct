@@ -32,13 +32,22 @@ class FollowTlsInteropTest {
     private val disconnected = FollowStatus.Ended(FollowEnd.DISCONNECTED)
 
     @Test fun publishesBaselineAndUpdateThenHostRevocationDisconnects() = withHost { host, client ->
-        val handle = assertNotNull(host.followPaired(client, target))
-        assertEquals(FollowStatus.Current(FollowSessionState(2, true, false)), awaitStatus(client, handle) { it is FollowStatus.Current })
-        host.command("update")
-        val updated = FollowStatus.Current(FollowSessionState(9, true, true))
-        assertEquals(updated, awaitStatus(client, handle) { it == updated })
-        host.command("revoke")
-        assertEquals(disconnected, awaitStatus(client, handle) { it is FollowStatus.Ended })
+        host.controller(client).use { controller ->
+            val oldRoute = host.configure(controller, target)
+            val old = host.followPaired(controller, oldRoute)
+            assertEquals(FollowStatus.Current(FollowSessionState(2, true, false)), awaitStatus({ controller.status(old) }) { it is FollowStatus.Current })
+            val route = host.configure(controller, target)
+            assertEquals(null, controller.status(old))
+            assertEquals(null, controller.challenge(oldRoute))
+            assertEquals(false, controller.clear(oldRoute))
+            val attempt = host.followPaired(controller, route)
+            assertEquals(FollowStatus.Current(FollowSessionState(2, true, false)), awaitStatus({ controller.status(attempt) }) { it is FollowStatus.Current })
+            host.command("update")
+            val updated = FollowStatus.Current(FollowSessionState(9, true, true))
+            assertEquals(updated, awaitStatus({ controller.status(attempt) }) { it == updated })
+            host.command("revoke")
+            assertEquals(disconnected, awaitStatus({ controller.status(attempt) }) { it is FollowStatus.Ended })
+        }
     }
 
     @Test fun onlyExactTargetCanReadAndListenerStopClearsEstablishedAndPendingPeers() = withHost { host, client ->
@@ -72,10 +81,16 @@ class FollowTlsInteropTest {
         handle: FollowPipeLifecycle.Handle,
         forbidCurrent: Boolean = false,
         done: (FollowStatus?) -> Boolean,
+    ): FollowStatus? = awaitStatus({ client.status(handle) }, forbidCurrent, done)
+
+    private fun awaitStatus(
+        read: () -> FollowStatus?,
+        forbidCurrent: Boolean = false,
+        done: (FollowStatus?) -> Boolean,
     ): FollowStatus? {
         val until = System.nanoTime() + TimeUnit.SECONDS.toNanos(4)
         while (true) {
-            val status = client.status(handle)
+            val status = read()
             if (forbidCurrent) assertTrue(status !is FollowStatus.Current)
             if (done(status)) return status
             check(System.nanoTime() - until < 0) { "Timed out waiting for follow state: $status" }
@@ -97,21 +112,22 @@ class FollowTlsInteropTest {
             return approved.use { client.begin(it) }
         }
 
-        fun followPaired(client: FollowPipeClient, target: FollowTarget): FollowPipeLifecycle.Handle? {
-            FollowPairing(target, "remote-a", address, pin, enrollmentKey, scheduler).use { pairing ->
-                val challenge = checkNotNull(pairing.challenge())
-                child.outputStream.write("pair ${challenge.nonce}\n".encodeToByteArray())
-                child.outputStream.flush()
-                val fields = line(child.inputStream, 1_024).split(' ')
-                check(fields.size == 2) { "Invalid synthetic signed offer" }
-                val (offer, signature) = fields.map(Base64.getDecoder()::decode)
-                val approval = checkNotNull(pairing.approve(challenge, offer, signature)) { "Synthetic signed offer rejected" }
-                return approval.use { granted ->
-                    val approved = checkNotNull(granted.connect()) { "Synthetic paired TLS handshake failed" }
-                    check(granted.connect() == null)
-                    approved.use { client.begin(it) }
-                }
-            }
+        fun controller(client: FollowPipeClient) = FollowRouteController(scheduler, client, FollowPairing.Approval::connect)
+
+        fun configure(controller: FollowRouteController, target: FollowTarget) =
+            checkNotNull(controller.configure(target, "remote-a", address, pin, enrollmentKey))
+
+        fun followPaired(controller: FollowRouteController, route: FollowRouteController.Route): FollowRouteController.Attempt {
+            val challenge = checkNotNull(controller.challenge(route))
+            child.outputStream.write("pair ${challenge.nonce}\n".encodeToByteArray())
+            child.outputStream.flush()
+            val fields = line(child.inputStream, 1_024).split(' ')
+            check(fields.size == 2) { "Invalid synthetic signed offer" }
+            val (offer, signature) = fields.map(Base64.getDecoder()::decode)
+            val attempt = checkNotNull(controller.approve(route, challenge, offer, signature)) { "Synthetic signed offer rejected" }
+            check(controller.connect(attempt)) { "Synthetic paired TLS handshake failed" }
+            check(!controller.connect(attempt))
+            return attempt
         }
 
         fun command(command: String) {

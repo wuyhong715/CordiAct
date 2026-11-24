@@ -11,7 +11,6 @@ import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicReference
 import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLSocket
 import javax.net.ssl.X509TrustManager
@@ -55,9 +54,35 @@ class PinnedFollowTlsConnector(
         token: String,
         internal val deadline: Long,
     ) : AutoCloseable {
-        private val credential = AtomicReference<String?>(token)
-        internal fun take(): String? = credential.getAndSet(null)
-        override fun close() { credential.set(null) }
+        private var credential: String? = token
+        private var dialing: Socket? = null
+        private var closed = false
+
+        @Synchronized
+        internal fun take(): String? = credential.also { credential = null }
+
+        @Synchronized
+        internal fun track(socket: Socket): Boolean {
+            if (closed) return false
+            dialing = socket
+            return true
+        }
+
+        /** Releases only the tracked handshake; a handed-off carrier has separate ownership. */
+        @Synchronized
+        internal fun untrack(socket: Socket): Boolean {
+            if (dialing === socket) dialing = null
+            return !closed
+        }
+
+        override fun close() {
+            val socket = synchronized(this) {
+                closed = true
+                credential = null
+                dialing.also { dialing = null }
+            }
+            socket?.let(owner::closeRaw)
+        }
     }
 
     /** Bind a grant supplied by the trusted enrollment flow. No network is used here. */
@@ -82,6 +107,7 @@ class PinnedFollowTlsConnector(
         val connecting = AtomicBoolean(true)
         var handedOff = false
         try {
+            if (!grant.track(raw)) return null
             val timeout = scheduler.schedule({
                 if (connecting.compareAndSet(true, false)) closeRaw(raw)
             }, budget, TimeUnit.NANOSECONDS)
@@ -101,6 +127,10 @@ class PinnedFollowTlsConnector(
                 socket.soTimeout = 0
                 val pipe = ApprovedFollowPipe.until(target, remoteWorkspaceId, token, grant.deadline,
                     socket.inputStream, socket.outputStream) { closeRaw(raw) }
+                if (!grant.untrack(raw)) {
+                    pipe.close()
+                    return null
+                }
                 handedOff = true
                 return pipe
             } finally {
@@ -114,7 +144,10 @@ class PinnedFollowTlsConnector(
         } catch (_: RejectedExecutionException) {
             return null
         } finally {
-            if (!handedOff) closeRaw(raw)
+            if (!handedOff) {
+                grant.untrack(raw)
+                closeRaw(raw)
+            }
         }
     }
 

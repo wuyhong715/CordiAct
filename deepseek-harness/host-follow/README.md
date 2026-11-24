@@ -58,9 +58,9 @@ node deepseek-harness/host-follow/test/run-pinned-profile.mjs /absolute/path/to/
 
 ### 预置信任的配对原型
 
-[Node 签发器](pairing-offer.mjs)只在受信控制面使用。从双方已批准的精确路由出发，为客户端的 32 字节随机挑战签发一份新的 15 秒只读授权。签名覆盖 ASCII 单行 `cordiact-follow-pair/1 <连接> <本地工作区> <远端工作区> <远端会话> <IPv4> <端口> <叶证书 SHA-256> <挑战> <专用凭据>\n`，使用独立预置的 P-256 签名键和 SHA-256（DER 签名）。[Kotlin 验证器](../src/main/kotlin/com/cordiact/harness/deepseek/FollowPairing.kt)只认可预置公钥、精确路由与当前挑战，成功后只允许连接一次。客户端期限从创建挑战起计 15 秒，不因签发、批准或握手续期。作废挑战并不撤回已交给客户端的载体；调用方仍须按原世代清退载体，Host 独立执行撤权。
+[Node 签发器](pairing-offer.mjs)只在受信控制面使用。从双方已批准的精确路由出发，为客户端的 32 字节随机挑战签发一份新的 15 秒只读授权。签名覆盖 ASCII 单行 `cordiact-follow-pair/1 <连接> <本地工作区> <远端工作区> <远端会话> <IPv4> <端口> <叶证书 SHA-256> <挑战> <专用凭据>\n`，使用独立预置的 P-256 签名键和 SHA-256（DER 签名）。[Kotlin 验证器](../src/main/kotlin/com/cordiact/harness/deepseek/FollowPairing.kt)只认可预置公钥、精确路由与当前挑战，成功后只允许连接一次。客户端期限从创建挑战起计 15 秒，不因签发、批准或握手续期。[路由控制器](../src/main/kotlin/com/cordiact/harness/deepseek/FollowRouteController.kt)管理当前配对、握手和已打开的投影；重新配置（即使可见 ID 不变）、新挑战或清除时，先使旧引用失效，再取消旧握手、清退旧流。不把晚到的握手归给替代路由。该本地清退不撤销 Host 发证，Host 仍独立执行到期和撤权。
 
-签名保护完整性，不加密凭据，也不把 bearer 变成持有证明。生产仍须有保密且受信的配对交付渠道、明确的操作者批准、密钥配置与轮换；不可把测试控制信道照搬进服务端。TLS 监听器不接受配对命令，也不持有签名键或发证权限。
+签名保护完整性，不加密凭据，也不把 bearer 变成持有证明。生产仍须有保密且受信的配对交付渠道、明确的操作者批准、密钥配置和轮换流程；不可把测试控制信道照搬进服务端。TLS 监听器不接受配对命令，也不持有签名键或发证权限。
 
 ## 用同一源码树的正式构建验证
 
