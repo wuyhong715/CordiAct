@@ -27,4 +27,14 @@ node deepseek-harness/host-follow/test/run-pinned-profile.mjs /absolute/path/to/
 
 **工件限制：** 原样 npm 固定版仍不能启动：`@deepseek-ai/cordis-plugin-loader@1.1.0` 缺少 `dsh-app-boot` 静态导入的 `EntryValidationError`、`formatIssues`、`relocate` 和 `validateOptions`。同版 Include 包也与固定源码不同；它缺少 `parseEntryYaml` 和 `stringifyEntryYaml`，但这两个函数已内联到发布的 `dsh-app-boot`，不是这次静态链接失败的直接原因。上述命令使用 `0.2.3-alpha.1` npm 制品，但在测试子进程内以同一提交重建的 Cordis 系列模块替代相应发布包。它验证固定源码的 Host 装配，**不视为原样 npm 版通过，不是部署办法**。
 
-没有经过跨进程的认证、真正的传输背压、限字节解析、TLS 和断线时限验证，也没有 Android 连接界面。继续接入前按[架构验收要求](../../docs/architecture/dsh-readonly-session-follow.md)执行。
+## 用同一源码树的正式构建验证
+
+[手动 GitHub Actions 工作流](../../.github/workflows/dsh-built-profile.yml)在全新 Linux x64 checkout 用 Node `24.19.0` 和 pnpm `11.28.5` 安装上游冻结依赖，执行 `pnpm run build:artifacts --profile official`。随后在无网络命名空间内运行同树的 `apps/cli/lib/bin.js`，并保留正常 pnpm 工作区依赖解析。这里不替换 Cordis 或 Loader 模块；Node 套接字守卫只用于让意外的网络或 IPC 使用报错。
+
+若本地已有用上述步骤构建的独立 DSH checkout，也可直接运行下列验证。脚本拒绝不匹配的提交、脏工作树和缺失的 CLI，打印用到的版本、平台以及锁文件和 CLI 入口摘要；它不安装、不启动 Web、不证明旧的本地工件一定来自当前构建。CI 的干净检出和同作业构建才是完整来源证据。
+
+```sh
+node deepseek-harness/host-follow/test/run-built-profile.mjs /absolute/path/to/built-deepseek-harness
+```
+
+本地 Linux arm64 以 Node `24.19.0` / pnpm `11.28.5` 完成冻结安装（本地禁用包安装脚本）、官方 8 阶段工件构建及禁网合成 profile。上游锁 SHA-256 为 `f7c01c56b65e31e1924a82bf8061ee9b63122e6e769b4aaed4781b4d1d3c088a`，实测 CLI 入口 SHA-256 为 `b293de4609dfd0625b4e5c0a88363fb49efd7d162b41a9ac2e36a1f8e196d133`。此结果不是原样 npm 版通过，也不替代待运行的 Linux x64 工作流。没有经过跨进程的认证、真正的传输背压、限字节解析、TLS 和断线时限验证，也没有 Android 连接界面。继续接入前按[架构验收要求](../../docs/architecture/dsh-readonly-session-follow.md)执行。

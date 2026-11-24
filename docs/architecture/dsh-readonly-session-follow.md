@@ -29,7 +29,7 @@
 
 [进程内插件](../../deepseek-harness/host-follow/README.md)在独立验证 profile 使用真实 Loader 和 DSH 活态注册目录。可信控制面与读取服务分开；后者仅接受独立的一次性、单目标、短时授权。Host 不装 Gateway、Web、LLM 或通用命令，不查冷存储，也不注册监听器。撤权、过期、解绑/归档、会话换代及插件卸载可关闭现有进程内读流。测试的数据和目录均为合成，不访问生产会话。
 
-Node 7 项核心测试通过；另有 1 项真实 Loader 测试从空目录用锁定 npm 包和固定 Git 对象重建后通过，复现命令已纳入仓库 CI。原样 npm 固定包因 Loader 缺导出无法启动，混合验证工件不是可部署制品；未验证外部载体或 Android。
+Node 7 项核心测试通过；另有 1 项真实 Loader 测试从空目录用锁定 npm 包和固定 Git 对象重建后通过，复现命令已纳入仓库 CI。原样 npm 固定包因 Loader 缺导出无法启动，混合验证工件不是可部署制品。[同树正式构建验证](../../deepseek-harness/host-follow/README.md#用同一源码树的正式构建验证)单独执行，不在任何模式间自动回退。Linux arm64 的干净固定 checkout 经冻结安装后，官方工件构建 8 阶段通过，并在禁网命名空间直接运行已构建 CLI，通过同一个合成 profile；未验证外部载体或 Android。
 
 ## 接入前必须补的证据
 

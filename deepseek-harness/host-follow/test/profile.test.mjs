@@ -9,9 +9,13 @@ import test from 'node:test'
 const expected = '0.2.3-alpha.1'
 const profile = 'cordiact-follow-test'
 const stage = process.env.CORDIACT_PINNED_DSH_TEST_ROOT
+const built = process.env.CORDIACT_BUILT_DSH_TEST_ROOT
+assert.ok(!(stage && built), 'Choose exactly one Host artifact mode')
 
-test('the pinned DSH CLI loads the synthetic no-listener profile', { skip: !stage && 'Use run-pinned-profile.mjs' }, t => {
-  const bin = realpathSync(join(stage, 'node_modules/@deepseek-ai/dsh/lib/bin.js'))
+test('the pinned DSH CLI loads the synthetic no-listener profile', {
+  skip: !(stage || built) && 'Use run-pinned-profile.mjs or run-built-profile.mjs',
+}, t => {
+  const bin = built ? join(built, 'apps/cli/lib/bin.js') : realpathSync(join(stage, 'node_modules/@deepseek-ai/dsh/lib/bin.js'))
   const { name, version } = JSON.parse(readFileSync(join(dirname(bin), '../package.json'), 'utf8'))
   assert.equal(name, '@deepseek-ai/dsh')
   assert.equal(version, expected)
@@ -24,8 +28,10 @@ test('the pinned DSH CLI loads the synthetic no-listener profile', { skip: !stag
     name: 'cordiact-follow-test-profile', private: true, dsh: { profile: { bundles: [] } },
   }))
   const overlay = fileURLToPath(new URL('./profile.fixture.yml', import.meta.url))
-  const preload = realpathSync(join(stage, 'cordiact-vendor/register-vendor.mjs'))
-  const invoke = (...extra) => execFileSync(process.execPath, ['--import', preload, bin, '--profile', profile, '--patch', overlay, ...extra], {
+  const networkGuard = fileURLToPath(new URL('./deny-profile-sockets.mjs', import.meta.url))
+  const nodeArgs = ['--import', networkGuard]
+  if (!built) nodeArgs.push('--import', realpathSync(join(stage, 'cordiact-vendor/register-vendor.mjs')))
+  const invoke = (...extra) => execFileSync(process.execPath, [...nodeArgs, bin, '--profile', profile, '--patch', overlay, ...extra], {
     cwd: root, env: { PATH: dirname(process.execPath), HOME: root, DSH_HOME: home, DSH_TELEMETRY_DISABLED: '1' },
     timeout: 20_000, maxBuffer: 128 * 1024, encoding: 'utf8',
   })

@@ -1,0 +1,48 @@
+name: Fixed DSH built profile
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  readonly-host-built-profile:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check out the fixed DSH source
+        uses: actions/checkout@v4
+        with:
+          repository: deepseek-ai/deepseek-harness
+          ref: d98f5d68519215da48f3002da2cb9c9d2068d81d
+          path: .dsh-fixture-source
+          persist-credentials: false
+      - uses: pnpm/action-setup@v5.0.0
+        with:
+          version: '11.28.5'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.19.0'
+          cache: pnpm
+          cache-dependency-path: .dsh-fixture-source/pnpm-lock.yaml
+      - name: Build artifacts from the fixed commit
+        working-directory: .dsh-fixture-source
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+          DSH_GATE_CONCURRENCY: '2'
+          DSH_GATE_FAIL_FAST: '1'
+        run: |
+          test "$(pnpm --version)" = 11.28.5
+          test "$(git rev-parse HEAD)" = d98f5d68519215da48f3002da2cb9c9d2068d81d
+          test ! -e apps/cli/lib/bin.js
+          unset DSH_CLIENT_COMMIT_HASH
+          pnpm install --frozen-lockfile
+          pnpm run build:artifacts --profile official
+      - name: Boot the synthetic profile with the built CLI
+        run: |
+          sudo unshare --net -- setpriv --reuid="$(id -u)" --regid="$(id -g)" --init-groups -- \
+            "$(command -v node)" "$PWD/deepseek-harness/host-follow/test/run-built-profile.mjs" "$PWD/.dsh-fixture-source"
