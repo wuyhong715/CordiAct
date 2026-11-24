@@ -57,12 +57,15 @@ node deepseek-harness/host-follow/test/run-pinned-profile.mjs /absolute/path/to/
 
 ## 用同一源码树的正式构建验证
 
-[手动 GitHub Actions 工作流](../../.github/workflows/dsh-built-profile.yml)在全新 Linux x64 checkout 用 Node `24.19.0` 和 pnpm `11.28.5` 安装上游冻结依赖，执行 `pnpm run build:artifacts --profile official`。随后在无网络命名空间内运行同树的 `apps/cli/lib/bin.js`，并保留正常 pnpm 工作区依赖解析。这里不替换 Cordis 或 Loader 模块；Node 套接字守卫只用于让意外的网络或 IPC 使用报错。
+[手动 GitHub Actions 工作流](../../.github/workflows/dsh-built-profile.yml)在全新 Linux x64 checkout 用 Node `24.19.0` 和 pnpm `11.28.5` 安装上游冻结依赖，执行 `pnpm run build:artifacts --profile official`。随后使用同树的 `apps/cli/lib/bin.js` 分别验证无监听器 profile 和回环 TLS profile，保留正常 pnpm 工作区依赖解析，不替换 Cordis 或 Loader 模块。两次运行使用独立网络命名空间；仅 TLS 分支启用 `lo`。TLS 分支的 Node 守卫只允许一个回环 TLS 监听器，拒绝 CLI 主动连接和数据报。守卫不是沙箱，网络隔离由命名空间提供。
 
 若本地已有用上述步骤构建的独立 DSH checkout，也可直接运行下列验证。脚本拒绝不匹配的提交、脏工作树和缺失的 CLI，打印用到的版本、平台以及锁文件和 CLI 入口摘要；它不安装、不启动 Web、不证明旧的本地工件一定来自当前构建。CI 的干净检出和同作业构建才是完整来源证据。
 
 ```sh
 node deepseek-harness/host-follow/test/run-built-profile.mjs /absolute/path/to/built-deepseek-harness
+node deepseek-harness/host-follow/test/run-built-profile.mjs /absolute/path/to/built-deepseek-harness --loopback-tls
 ```
 
-本地 Linux arm64 以 Node `24.19.0` / pnpm `11.28.5` 完成冻结安装（本地禁用包安装脚本）、官方 8 阶段工件构建及禁网合成 profile。上游锁 SHA-256 为 `f7c01c56b65e31e1924a82bf8061ee9b63122e6e769b4aaed4781b4d1d3c088a`，实测 CLI 入口 SHA-256 为 `b293de4609dfd0625b4e5c0a88363fb49efd7d162b41a9ac2e36a1f8e196d133`。此结果不是原样 npm 版通过，也不替代待运行的 Linux x64 工作流。继承管道已对合成进程实测认证、限字节解析、撤权、过期及输入关闭；受控 writable 验证单帧背压和写超时，未宣称填满内核缓冲。Node Host TLS 与 Kotlin 已在合成数据的回环端点互操作，尚未验证真实 Host 的 TLS 装配、静默网络分区或 Android。继续接入前按[架构验收要求](../../docs/architecture/dsh-readonly-session-follow.md)执行。
+TLS 模式额外需要 OpenSSL 生成临时合成证书。它验证同一 Loader 中的首帧和更新、错工作区/会话与重复凭据拒绝、owner 形态的无效凭据与 HTTP 前缀拒绝，以及卸载后现有流关闭、未用凭据不能再打开。没有生产端点或凭据。
+
+本地 Linux arm64 以 Node `24.19.0` / pnpm `11.28.5` 完成冻结安装（本地禁用包安装脚本）、官方 8 阶段工件构建及禁网合成 profile。上游锁 SHA-256 为 `f7c01c56b65e31e1924a82bf8061ee9b63122e6e769b4aaed4781b4d1d3c088a`，实测 CLI 入口 SHA-256 为 `b293de4609dfd0625b4e5c0a88363fb49efd7d162b41a9ac2e36a1f8e196d133`。此结果不是原样 npm 版通过，也不替代待运行的 Linux x64 工作流。继承管道已对合成进程实测认证、限字节解析、撤权、过期及输入关闭；受控 writable 验证单帧背压和写超时，未宣称填满内核缓冲。同一构建也在本机 `127.0.0.1` 跑通真实 Loader 的合成 TLS profile，使用专用 Node 测试客户端；本地容器不能在新网络命名空间启用 `lo`，因此仅回环命名空间模式尚待远端 CI。独立载体另有 Kotlin 互操作回归。这些证据不涵盖生产配对、静默网络分区或 Android。继续接入前按[架构验收要求](../../docs/architecture/dsh-readonly-session-follow.md)执行。

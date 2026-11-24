@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
-import { mkdir } from 'node:fs/promises'
+import { once } from 'node:events'
+import { mkdir, readFile } from 'node:fs/promises'
 import { Socket } from 'node:net'
 import { resolve } from 'node:path'
 import { serveFollowPipe } from '../ipc-follow.mjs'
@@ -88,7 +89,46 @@ async function verify(ctx) {
   const newStream = open(issue().token)
   oldStream.close()
   assert.deepEqual(await newStream.next(), { done: false, value: idle })
-  if (process.connected) {
+  const tlsIdentity = process.env.CORDIACT_TEST_TLS_IDENTITY
+  const unload = async () => {
+    const entry = [...ctx.loader.entries()].find(row => row.options.id === 'cordiact-readonly-follow')
+    assert.ok(entry?.fiber)
+    await entry.update({ disabled: true })
+  }
+  if (tlsIdentity) {
+    assert.equal(process.connected, true)
+    const { listenFollowTls } = await import('../tls-follow.mjs')
+    const grant = authority.issue(wa.id, replacement.id, 7_000)
+    const unused = authority.issue(wa.id, replacement.id, 7_000)
+    let tlsListener
+    try {
+      tlsListener = await listenFollowTls({ reader, pfx: await readFile(tlsIdentity), passphrase: 'synthetic-only' })
+      const control = async (expected, action) => {
+        const [command] = await once(process, 'message')
+        assert.equal(command, expected)
+        await action()
+      }
+      const update = control('update', () => replacement.append('turn/start', { turn: 1 }))
+      process.send({ token: grant.token, workspace: wa.id, session: replacement.id, wrongWorkspace: wb.id,
+        wrongSession: two.id, port: tlsListener.port })
+      await update
+      await control('unload', async () => {
+        assert.deepEqual(await newStream.next(), { done: false, value: { ...idle, cursor: replacement.seq - 1 } })
+        const unloadRead = newStream.next()
+        await unload()
+        assert.deepEqual(await unloadRead, { done: true, reason: 'disconnected' })
+      })
+      // Keep listening after unloading so the parent can verify that the retained reader denies new opens.
+      const stop = control('stop', () => {})
+      process.send({ status: 'unloaded', unusedToken: unused.token })
+      await stop
+    } finally {
+      grant.revoke()
+      unused.revoke()
+      await tlsListener?.close()
+      if (process.connected) process.disconnect()
+    }
+  } else if (process.connected) {
     const grant = issue()
     const input = new Socket({ fd: 3, readable: true, writable: false })
     const output = new Socket({ fd: 4, readable: false, writable: true })
@@ -111,14 +151,14 @@ async function verify(ctx) {
     }
   }
 
-  if (process.send !== undefined) {
-    assert.deepEqual(await newStream.next(), { done: false, value: { ...idle, cursor: replacement.seq - 1 } })
+  if (!tlsIdentity) {
+    if (process.send !== undefined) {
+      assert.deepEqual(await newStream.next(), { done: false, value: { ...idle, cursor: replacement.seq - 1 } })
+    }
+    const unloadRead = newStream.next()
+    await unload()
+    assert.deepEqual(await unloadRead, { done: true, reason: 'disconnected' })
   }
-  const unloadRead = newStream.next()
-  const entry = [...ctx.loader.entries()].find(row => row.options.id === 'cordiact-readonly-follow')
-  assert.ok(entry?.fiber)
-  await entry.update({ disabled: true })
-  assert.deepEqual(await unloadRead, { done: true, reason: 'disconnected' })
   assert.equal(unchanged.signal.aborted, true)
   assert.equal(ctx.get('cordiactFollowAuthority'), undefined)
   assert.equal(ctx.get('cordiactFollowReader'), undefined)

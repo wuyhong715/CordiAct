@@ -98,7 +98,7 @@ CordiAct 不缺「插件」这个概念，也不缺插件内核。当前缺口�
 
 **P2 · DSH 只读跟随首切片。** [固定版兼容性与模型](dsh-readonly-session-follow.md)已核对到 `dsh-v0.2.3-alpha.1`。默认认证是 owner，不能充当只读主体；已实现不联网的最小状态投影，按连接、本地工作区、会话和打开世代隔离，断线或撤权清空，旧响应不可恢复。不开放清单、历史、远程写入或 Android 连接入口。
 
-**P2 · Host 插件切片。** [只读 Host 插件](../../deepseek-harness/host-follow/README.md)加入一次性、单目标、短时进程内授权，从已加载的真实 DSH 注册目录只采三个字段，撤权和卸载关闭现有流。核心与继承管道共 16 项 Node 回归通过；真实 Loader 既验证了固定提交重建 Cordis 的混合工件，也验证了同树正式构建。独立 Node TLS 载体只绑定回环临时端口，已与 Kotlin 互操作；未装入默认 DSH profile，没有外网入口或 APK 接线。
+**P2 · Host 插件切片。** [只读 Host 插件](../../deepseek-harness/host-follow/README.md)加入一次性、单目标、短时进程内授权，从已加载的真实 DSH 注册目录只采三个字段，撤权和卸载关闭现有流。核心与继承管道共 16 项 Node 回归通过；真实 Loader 既验证了固定提交重建 Cordis 的混合工件，也验证了同树正式构建。独立 Node TLS 载体只绑定回环临时端口，已与 Kotlin 互操作，并在同树正式 CLI 的合成 profile 内验证真实 Loader 的卸载撤回；未装入默认 DSH profile，没有外网入口或 APK 接线。
 
 **移动端参考。** [DSH Go v1.3.0 对照](../research/0014-dsh-go-mobile-plugin-reference.md)支持把载体与原生投影分开、按当前 Host 和协议决定显示能力，而不是把所有 DSH Web 插件入口搬进 Android。CordiAct 保留 Compose 宿主和独立只读授权；不接入 DSH Go 运行时、宽权限桥或网页岛。固定版正式构建与混合验证保持独立。
 

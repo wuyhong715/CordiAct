@@ -42,7 +42,14 @@ jobs:
           unset DSH_CLIENT_COMMIT_HASH
           pnpm install --frozen-lockfile
           pnpm run build:artifacts --profile official
-      - name: Boot the synthetic profile with the built CLI
+      - name: Verify the no-listener profile in an isolated network namespace
         run: |
           sudo unshare --net -- setpriv --reuid="$(id -u)" --regid="$(id -g)" --init-groups -- \
             "$(command -v node)" "$PWD/deepseek-harness/host-follow/test/run-built-profile.mjs" "$PWD/.dsh-fixture-source"
+      - name: Verify the dedicated TLS carrier with only loopback available
+        run: |
+          sudo unshare --net -- bash -euc '
+            ip link set dev lo up
+            exec setpriv --reuid="$1" --regid="$2" --init-groups -- "$3" "$4" "$5" --loopback-tls
+          ' _ "$(id -u)" "$(id -g)" "$(command -v node)" \
+            "$PWD/deepseek-harness/host-follow/test/run-built-profile.mjs" "$PWD/.dsh-fixture-source"

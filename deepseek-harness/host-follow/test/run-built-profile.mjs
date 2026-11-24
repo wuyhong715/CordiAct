@@ -8,8 +8,9 @@ import { fileURLToPath } from 'node:url'
 
 const revision = 'd98f5d68519215da48f3002da2cb9c9d2068d81d'
 const [checkout, ...extra] = process.argv.slice(2)
-if (!checkout || extra.length) {
-  console.error('Usage: node run-built-profile.mjs <fixed DSH checkout after build:artifacts>')
+const tls = extra.length === 1 && extra[0] === '--loopback-tls'
+if (!checkout || (extra.length && !tls)) {
+  console.error('Usage: node run-built-profile.mjs <fixed DSH checkout after build:artifacts> [--loopback-tls]')
   process.exit(2)
 }
 
@@ -38,7 +39,8 @@ const cliSha256 = sha256(bin)
 console.log(JSON.stringify({ mode: 'same-tree-built', revision, node: process.version, platform: process.platform,
   arch: process.arch, pnpmRequired: manifest.packageManager, lockSha256: sha256(join(root, 'pnpm-lock.yaml')), cliSha256 }))
 execFileSync(process.execPath, ['--test', fileURLToPath(new URL('./profile.test.mjs', import.meta.url))], {
-  cwd: root, env: { PATH: `${dirname(process.execPath)}:/usr/bin:/bin`, CORDIACT_BUILT_DSH_TEST_ROOT: root },
+  cwd: root, env: { PATH: `${dirname(process.execPath)}:/usr/bin:/bin`, CORDIACT_BUILT_DSH_TEST_ROOT: root,
+    ...(tls ? { CORDIACT_BUILT_DSH_TEST_TLS: '1' } : {}) },
   stdio: 'inherit', timeout: 65_000,
 })
 assert.equal(sha256(bin), cliSha256, 'The tested CLI entry changed during verification')
