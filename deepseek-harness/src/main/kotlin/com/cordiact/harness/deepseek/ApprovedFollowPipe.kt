@@ -13,16 +13,25 @@ import java.util.concurrent.atomic.AtomicReference
  * Close an unused handoff. A successfully constructed handoff owns both directions; on invalid
  * constructor arguments, the caller retains ownership. It never exposes the grant again.
  */
-class ApprovedFollowPipe internal constructor(
+class ApprovedFollowPipe private constructor(
+    internal val deadlineNanos: Long,
     target: FollowTarget,
     remoteWorkspaceId: String,
     token: String,
-    remainingMillis: Long,
     input: InputStream,
     output: OutputStream,
     cancel: () -> Unit,
-    nowNanos: () -> Long,
 ) : AutoCloseable {
+    internal constructor(
+        target: FollowTarget,
+        remoteWorkspaceId: String,
+        token: String,
+        remainingMillis: Long,
+        input: InputStream,
+        output: OutputStream,
+        cancel: () -> Unit,
+        nowNanos: () -> Long,
+    ) : this(followDeadline(nowNanos(), remainingMillis), target, remoteWorkspaceId, token, input, output, cancel)
     constructor(
         target: FollowTarget,
         remoteWorkspaceId: String,
@@ -32,8 +41,6 @@ class ApprovedFollowPipe internal constructor(
         output: OutputStream,
         cancel: () -> Unit,
     ) : this(target, remoteWorkspaceId, token, remainingMillis, input, output, cancel, System::nanoTime)
-
-    internal val deadlineNanos = followDeadline(nowNanos(), remainingMillis)
 
     private val request: AtomicReference<RequestedFollowPipe?>
 
@@ -67,8 +74,18 @@ class ApprovedFollowPipe internal constructor(
         take()?.take()?.cancel?.invoke()
     }
 
-    private companion object {
-        val ID = Regex("[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
-        val TOKEN = Regex("caf1_[A-Za-z0-9_-]{43}")
+    internal companion object {
+        fun until(
+            target: FollowTarget,
+            remoteWorkspaceId: String,
+            token: String,
+            deadlineNanos: Long,
+            input: InputStream,
+            output: OutputStream,
+            cancel: () -> Unit,
+        ): ApprovedFollowPipe = ApprovedFollowPipe(deadlineNanos, target, remoteWorkspaceId, token, input, output, cancel)
+
+        private val ID = Regex("[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
+        private val TOKEN = Regex("caf1_[A-Za-z0-9_-]{43}")
     }
 }

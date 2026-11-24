@@ -47,6 +47,12 @@ node deepseek-harness/host-follow/test/run-pinned-profile.mjs /absolute/path/to/
   -PfollowNode="$(command -v node)" --no-daemon
 ```
 
+## 端侧 TLS 原型
+
+[客户端连接器](../src/main/kotlin/com/cordiact/harness/deepseek/PinnedFollowTlsConnector.kt)只连受信控制面交付的确定 IP 和端口，要求 TLS 1.3、精确叶证书 SHA-256 指纹、证书有效期及 `cordiact-follow/1` ALPN。指纹是该配置的 Host 身份，不使用系统 CA 或 DNS 名称替代，不发现、不从未核验的对端录入信任。绑定在一份连接器实例的凭据仅使用一次；握手最多 3 秒，或原授权剩余时间（取较短者）。握手完成才交付可发送凭据的载体，原授权时间不重算。失败关闭，无 owner 或明文回退。
+
+[回环测试](../src/test/kotlin/com/cordiact/harness/deepseek/PinnedFollowTlsConnectorTest.kt)使用临时合成证书和 JVM TLS 服务端，覆盖正确/错误指纹、缺失协议、握手超时与撤权关闭。此模块不注册监听器，不配置 Android，不是 Host TLS 服务端或可信配对实现；部署前仍需验证联合装配与连接世代管理。
+
 ## 用同一源码树的正式构建验证
 
 [手动 GitHub Actions 工作流](../../.github/workflows/dsh-built-profile.yml)在全新 Linux x64 checkout 用 Node `24.19.0` 和 pnpm `11.28.5` 安装上游冻结依赖，执行 `pnpm run build:artifacts --profile official`。随后在无网络命名空间内运行同树的 `apps/cli/lib/bin.js`，并保留正常 pnpm 工作区依赖解析。这里不替换 Cordis 或 Loader 模块；Node 套接字守卫只用于让意外的网络或 IPC 使用报错。
@@ -57,4 +63,4 @@ node deepseek-harness/host-follow/test/run-pinned-profile.mjs /absolute/path/to/
 node deepseek-harness/host-follow/test/run-built-profile.mjs /absolute/path/to/built-deepseek-harness
 ```
 
-本地 Linux arm64 以 Node `24.19.0` / pnpm `11.28.5` 完成冻结安装（本地禁用包安装脚本）、官方 8 阶段工件构建及禁网合成 profile。上游锁 SHA-256 为 `f7c01c56b65e31e1924a82bf8061ee9b63122e6e769b4aaed4781b4d1d3c088a`，实测 CLI 入口 SHA-256 为 `b293de4609dfd0625b4e5c0a88363fb49efd7d162b41a9ac2e36a1f8e196d133`。此结果不是原样 npm 版通过，也不替代待运行的 Linux x64 工作流。继承管道已对合成进程实测认证、限字节解析、撤权、过期及输入关闭；受控 writable 验证单帧背压和写超时，未宣称填满内核缓冲。尚未验证远端网络载体、TLS、静默网络分区或 Android。继续接入前按[架构验收要求](../../docs/architecture/dsh-readonly-session-follow.md)执行。
+本地 Linux arm64 以 Node `24.19.0` / pnpm `11.28.5` 完成冻结安装（本地禁用包安装脚本）、官方 8 阶段工件构建及禁网合成 profile。上游锁 SHA-256 为 `f7c01c56b65e31e1924a82bf8061ee9b63122e6e769b4aaed4781b4d1d3c088a`，实测 CLI 入口 SHA-256 为 `b293de4609dfd0625b4e5c0a88363fb49efd7d162b41a9ac2e36a1f8e196d133`。此结果不是原样 npm 版通过，也不替代待运行的 Linux x64 工作流。继承管道已对合成进程实测认证、限字节解析、撤权、过期及输入关闭；受控 writable 验证单帧背压和写超时，未宣称填满内核缓冲。客户端 TLS 仅在合成回环端点验证，尚未验证真实 Host 的 TLS 装配、静默网络分区或 Android。继续接入前按[架构验收要求](../../docs/architecture/dsh-readonly-session-follow.md)执行。

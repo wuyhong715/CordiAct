@@ -17,13 +17,13 @@
 
 [状态归约器](../../deepseek-harness/src/main/kotlin/com/cordiact/harness/deepseek/ReadOnlySessionFollow.kt)只保留当前所选目标的一份内存状态：当前会话日志位置 `cursor`、是否附着 Agent、是否运行。`cursor` 不是落盘确认、恢复令牌或传输序号。没有 URL、凭据、网络、磁盘、命令、历史、工具输出或模型输入。现有写向抽象不是它的传输层，两者不衔接。
 
-- 目标组合独立绑定连接、CordiAct 本地工作区和远端会话。目标字段是本地路由身份，非服务端授权凭据；[受信交付](../../deepseek-harness/src/main/kotlin/com/cordiact/harness/deepseek/ApprovedFollowPipe.kt)绑定已核验的独占管道、远端工作区、会话和一次性凭据；不从响应猜测归属，也不把旧响应重新盖章。连接器仍须在交付前完成 Host 身份核验。绝对单调截止从交付对象构造起算，交接或排队后沿用，不重新发一段授权时间。
+- 目标组合独立绑定连接、CordiAct 本地工作区和远端会话。目标字段是本地路由身份，非服务端授权凭据；[受信交付](../../deepseek-harness/src/main/kotlin/com/cordiact/harness/deepseek/ApprovedFollowPipe.kt)绑定已核验的独占管道、远端工作区、会话和一次性凭据；不从响应猜测归属，也不把旧响应重新盖章。[固定证书 TLS 连接器](../../deepseek-harness/src/main/kotlin/com/cordiact/harness/deepseek/PinnedFollowTlsConnector.kt)在交付前验证已审批的证书与协议。证书指纹、端点和目标须经受信渠道预先绑定；不做自动发现、系统 CA 回退或信任首次连接。专用凭据创建时即固定绝对单调截止，连接、握手和排队不续期。
 - 每次选择或重连都创建新世代，即使所有 ID 相同；旧回调不能读、写、关闭新状态。必须先收到当前世代的完整基线。进程内归约器会忽略已处理编号；[管道适配器](../../deepseek-harness/src/main/kotlin/com/cordiact/harness/deepseek/FollowPipeReceiver.kt)则严格使用 Host 帧自带的交付序号，首个为 `0`，重复、跳跃、游标倒退、畸形内容均结束当前世代并清除内容，绝不在客户端重新编号。编号不是 Host 会话日志游标；后者允许相同或跳增。
 - 断线或收到撤权时立即清除当前投影，不把旧内容当成在线状态；离开页面可清除整个选择。[端侧生命周期](../../deepseek-harness/src/main/kotlin/com/cordiact/harness/deepseek/FollowPipeLifecycle.kt)一次接管一个已核验、独占的载体；终止时先清状态，再请求取消原载体。首帧最长等 3 秒，端侧投影最多保留 30 秒，或以调用方提供的更早授权期限为准。即使正常流保持空闲或继续有更新也不续租；读入和状态读取同步复核单调截止，不依赖后台定时回调先执行。不自动重连、重放、读历史或恢复授权。本地截止不证明网络分区，也不代替 Host 撤权。[单次读循环](../../deepseek-harness/src/main/kotlin/com/cordiact/harness/deepseek/FollowPipeClient.kt)接管其绑定的流，用独立执行器读取有界字节，不打开进程或认证；读取 EOF、错误、执行器拒绝或选中变化时，清退同一载体。截止时取消须能解除实际阻塞读取，不能只标记逻辑关闭。
 
 ## 验证
 
-[本地回归](../../deepseek-harness/src/test/kotlin/com/cordiact/harness/deepseek/ReadOnlySessionFollowTest.kt)覆盖同游标状态替换、同目标重连、A→B→A、跨实例和错目标响应、重复／缺失／无效帧以及撤权后晚到数据。七模块 JVM 共 1,213 项通过，其中 8 项为归约器、6 项为管道接收器、7 项为载体生命周期、4 项为读循环、7 项为受信交付回归。另有 3 项显式互操作测试经真实子进程管道验证首帧、更新、EOF 清除、旧流隔离，以及 Host 保持静默时本地截止能主动关闭管道并解除阻塞读取。互操作使用合成数据、无网络，未生成 APK。
+[本地回归](../../deepseek-harness/src/test/kotlin/com/cordiact/harness/deepseek/ReadOnlySessionFollowTest.kt)覆盖同游标状态替换、同目标重连、A→B→A、跨实例和错目标响应、重复／缺失／无效帧以及撤权后晚到数据。七模块 JVM 共 1,216 项通过，其中 8 项为归约器、6 项为管道接收器、7 项为载体生命周期、4 项为读循环、7 项为受信交付、3 项为回环 TLS 连接器回归。TLS 测试用即时生成的合成证书，覆盖精确指纹和协议、凭据只用一次、失败不发凭据、握手截止及端侧撤权关连接。另有 3 项显式互操作测试经真实子进程管道验证首帧、更新、EOF 清除、旧流隔离，以及 Host 保持静默时本地截止能主动关闭管道并解除阻塞读取。互操作使用合成数据、无网络，未生成 APK。
 
 ## Host 插件验证
 
@@ -35,4 +35,4 @@ Node 16 项核心与 IPC 测试通过；另有 1 项真实 Loader 测试从空�
 
 1. 提供固定版本 Host 装配和独立认证主体（**非 owner**），服务端默认拒绝。只允许对显式授权目标读取脱敏的状态投影；不接受默认 Web/控制凭据，不做低权限失败后回退。投影须在 Host 输出有界字段，不能先把完整队列传进手机再隐藏。
 2. 用无生产数据的 Host 集成/协议测试，证明合法目标能读，另一会话和另一工作区被拒绝；对 prompt、cancel、fork、activate、上传、附件、通用控制、互动回复及替代 RPC/HTTP 入口进行拒绝测试。若要求宿主不写盘，固定可审计存储配置并覆盖冷观察。
-3. 继承管道已验证撤权关闭和本地资源上限；外部载体仍须单独验证安全认证、背压、静默断线和端侧清除。断线、关闭或重连时，载体、目标和凭据的世代不能替换旧回调身份。未验证前不新增 Android 连接入口。
+3. 继承管道已验证撤权关闭和本地资源上限，客户端 TLS 已在合成回环端点验证；真实 Host 的专用 TLS 装配、受信配对、外部载体背压、静默断线和端侧清除仍待联合验证。断线、关闭或重连时，载体、目标和凭据的世代不能替换旧回调身份。未验证前不新增 Android 连接入口。
