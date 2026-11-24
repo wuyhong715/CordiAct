@@ -8,10 +8,10 @@ import test from 'node:test'
 
 const expected = '0.2.3-alpha.1'
 const profile = 'cordiact-follow-test'
-const cli = process.env.CORDIACT_PINNED_DSH_BIN
+const stage = process.env.CORDIACT_PINNED_DSH_TEST_ROOT
 
-test('the pinned DSH CLI loads the synthetic no-listener profile', { skip: !cli && 'Set CORDIACT_PINNED_DSH_BIN' }, t => {
-  const bin = realpathSync(cli)
+test('the pinned DSH CLI loads the synthetic no-listener profile', { skip: !stage && 'Use run-pinned-profile.mjs' }, t => {
+  const bin = realpathSync(join(stage, 'node_modules/@deepseek-ai/dsh/lib/bin.js'))
   const { name, version } = JSON.parse(readFileSync(join(dirname(bin), '../package.json'), 'utf8'))
   assert.equal(name, '@deepseek-ai/dsh')
   assert.equal(version, expected)
@@ -24,9 +24,8 @@ test('the pinned DSH CLI loads the synthetic no-listener profile', { skip: !cli 
     name: 'cordiact-follow-test-profile', private: true, dsh: { profile: { bundles: [] } },
   }))
   const overlay = fileURLToPath(new URL('./profile.fixture.yml', import.meta.url))
-  const preload = process.env.CORDIACT_DSH_VENDOR_PRELOAD
-  const nodeArgs = preload ? ['--import', realpathSync(preload)] : []
-  const invoke = (...extra) => execFileSync(process.execPath, [...nodeArgs, bin, '--profile', profile, '--patch', overlay, ...extra], {
+  const preload = realpathSync(join(stage, 'cordiact-vendor/register-vendor.mjs'))
+  const invoke = (...extra) => execFileSync(process.execPath, ['--import', preload, bin, '--profile', profile, '--patch', overlay, ...extra], {
     cwd: root, env: { PATH: dirname(process.execPath), HOME: root, DSH_HOME: home, DSH_TELEMETRY_DISABLED: '1' },
     timeout: 20_000, maxBuffer: 128 * 1024, encoding: 'utf8',
   })

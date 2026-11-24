@@ -17,31 +17,14 @@
 node --test deepseek-harness/host-follow/test/follow-service.test.mjs
 ```
 
-用已能启动的固定版 DSH 工件运行真实 Loader 测试。它用临时 `DSH_HOME` 和空 bundle 清单装配精确白名单，使用真实 Session、Agent 和 Workspace 注册目录及合成数据（没有模型或会话持久化后端），不打开监听器。
+真实 Loader 回归也可用[一条命令](test/run-pinned-profile.mjs)复现。它需要 Git、tar、Node 与 npm，以及包含[固定 DSH 提交](https://github.com/deepseek-ai/deepseek-harness/tree/d98f5d68519215da48f3002da2cb9c9d2068d81d)的源仓库。脚本从 Git 对象取源码，不读取 checkout 的未提交改动；在临时目录以 `npm ci --ignore-scripts` 安装 [SHA-512 锁定的依赖](test/pinned-dsh/package-lock.json)，然后用真实 CLI/Loader 启动不带监听器的合成 profile。测试只创建临时 Harness home，不访问用户配置、模型或生产会话。夹具禁用 Node 网络与 IPC 套接字，发现尝试监听、连接或发送数据报就报错。
 
 ```sh
-CORDIACT_PINNED_DSH_BIN=/absolute/path/to/dsh/lib/bin.js \
-  node --test deepseek-harness/host-follow/test/*.test.mjs
+node deepseek-harness/host-follow/test/run-pinned-profile.mjs /absolute/path/to/deepseek-harness
 ```
 
-**固定版工件限制：** 本轮的原样 npm 安装启动失败，声明的 `@deepseek-ai/cordis-plugin-loader@1.1.0` 缺少 `dsh-app-boot` 所需的 `EntryValidationError` 导出。真实 Loader 回归因此使用隔离的混合验证工件：DSH npm 固定包仍为 `0.2.3-alpha.1`，Cordis 系列运行模块则由同一 [DSH 提交](https://github.com/deepseek-ai/deepseek-harness/tree/d98f5d68519215da48f3002da2cb9c9d2068d81d) 的 `vendor/` 源码构建。只用于测试，**不视为原样 npm 版通过，也不应部署这个 preload**。
+已缓存所有锁定 npm 包时可加 `--offline`。普通 CI 分开执行核心回归和真实装配，不依赖 GitHub 密钥或已部署 Host。
 
-如需复现混合验证，可从 CordiAct 根目录向临时 npm 前缀安装制品（禁用安装脚本），并准备已校验的 DSH checkout 和 `esbuild` 0.27.7：
-
-```sh
-export DSH_SOURCE=/absolute/path/to/deepseek-harness
-export ESBUILD=/absolute/path/to/esbuild
-stage=$(mktemp -d)
-npm install --prefix "$stage" --ignore-scripts --no-audit --no-fund --save-exact @deepseek-ai/dsh@0.2.3-alpha.1
-mkdir "$stage/cordiact-vendor"
-for package in cordis cosmokit schemastery loader include group logger-console timer hmr; do
-  "$ESBUILD" "$DSH_SOURCE/vendor/$package/src/index.ts" --bundle --platform=node \
-    --target=node24 --format=esm --packages=external --outfile="$stage/cordiact-vendor/$package.mjs"
-done
-cp deepseek-harness/host-follow/test/register-vendor.mjs "$stage/cordiact-vendor/"
-CORDIACT_PINNED_DSH_BIN="$stage/node_modules/@deepseek-ai/dsh/lib/bin.js" \
-CORDIACT_DSH_VENDOR_PRELOAD="$stage/cordiact-vendor/register-vendor.mjs" \
-  node --test deepseek-harness/host-follow/test/*.test.mjs
-```
+**工件限制：** 原样 npm 固定版仍不能启动：`@deepseek-ai/cordis-plugin-loader@1.1.0` 缺少 `dsh-app-boot` 静态导入的 `EntryValidationError`、`formatIssues`、`relocate` 和 `validateOptions`。同版 Include 包也与固定源码不同；它缺少 `parseEntryYaml` 和 `stringifyEntryYaml`，但这两个函数已内联到发布的 `dsh-app-boot`，不是这次静态链接失败的直接原因。上述命令使用 `0.2.3-alpha.1` npm 制品，但在测试子进程内以同一提交重建的 Cordis 系列模块替代相应发布包。它验证固定源码的 Host 装配，**不视为原样 npm 版通过，不是部署办法**。
 
 没有经过跨进程的认证、真正的传输背压、限字节解析、TLS 和断线时限验证，也没有 Android 连接界面。继续接入前按[架构验收要求](../../docs/architecture/dsh-readonly-session-follow.md)执行。

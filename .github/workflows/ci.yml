@@ -28,3 +28,25 @@ jobs:
           node-version: '24'
       - name: Test read-only Host grant lifecycle
         run: node --test deepseek-harness/host-follow/test/follow-service.test.mjs
+
+  readonly-host-profile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: deepseek-harness/host-follow/test/pinned-dsh/package-lock.json
+      - name: Check out the fixed DSH source
+        uses: actions/checkout@v4
+        with:
+          repository: deepseek-ai/deepseek-harness
+          ref: d98f5d68519215da48f3002da2cb9c9d2068d81d
+          path: .dsh-fixture-source
+          persist-credentials: false
+      - name: Verify the fixed-version Host profile without a listener
+        run: node deepseek-harness/host-follow/test/run-pinned-profile.mjs .dsh-fixture-source

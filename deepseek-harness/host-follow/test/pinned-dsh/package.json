@@ -1,0 +1,10 @@
+{
+  "name": "cordiact-p2-dsh-verification",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Isolated dependencies for the CordiAct fixed-version Host profile test",
+  "dependencies": {
+    "@deepseek-ai/dsh": "0.2.3-alpha.1",
+    "esbuild": "0.27.7"
+  }
+}

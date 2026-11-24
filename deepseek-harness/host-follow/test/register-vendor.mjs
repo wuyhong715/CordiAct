@@ -1,4 +1,15 @@
+import { Socket as DatagramSocket } from 'node:dgram'
 import { registerHooks } from 'node:module'
+import { Server, Socket } from 'node:net'
+
+// Both CLI invocations are synthetic and offline. Fail if a fixture tries to
+// open a Node listener, connect a socket, or send a datagram.
+function offline() { throw new Error('Network and IPC sockets are disabled in the Host profile fixture') }
+Server.prototype.listen = offline
+Socket.prototype.connect = offline
+DatagramSocket.prototype.bind = offline
+DatagramSocket.prototype.connect = offline
+DatagramSocket.prototype.send = offline
 
 // Test-only shim for reconstructing the pinned composition against the source of its
 // Cordis dependencies. Keep this beside the generated modules under an isolated npm prefix.
