@@ -61,9 +61,12 @@ class PinnedFollowTlsConnector(
     }
 
     /** Bind a grant supplied by the trusted enrollment flow. No network is used here. */
-    fun grant(token: String, remainingMillis: Long): Grant {
+    fun grant(token: String, remainingMillis: Long): Grant =
+        grantUntil(token, followDeadline(System.nanoTime(), remainingMillis))
+
+    internal fun grantUntil(token: String, deadline: Long): Grant {
         require(TOKEN.matches(token)) { "Invalid follow grant" }
-        return Grant(this, token, followDeadline(System.nanoTime(), remainingMillis))
+        return Grant(this, token, deadline)
     }
 
     /** Authenticate before releasing the pair. No application bytes are written by this method. */

@@ -23,7 +23,8 @@
 
 ```sh
 node --test deepseek-harness/host-follow/test/follow-service.test.mjs \
-  deepseek-harness/host-follow/test/ipc-follow.test.mjs
+  deepseek-harness/host-follow/test/ipc-follow.test.mjs \
+  deepseek-harness/host-follow/test/pairing-offer.test.mjs
 ```
 
 真实 Loader 回归也可用[一条命令](test/run-pinned-profile.mjs)复现。它需要 Git、tar、Node 与 npm，以及包含[固定 DSH 提交](https://github.com/deepseek-ai/deepseek-harness/tree/d98f5d68519215da48f3002da2cb9c9d2068d81d)的源仓库。脚本从 Git 对象取源码，不读取 checkout 的未提交改动；在临时目录以 `npm ci --ignore-scripts` 安装 [SHA-512 锁定的依赖](test/pinned-dsh/package-lock.json)，然后用真实 CLI/Loader 启动不带监听器的合成 profile。测试只创建临时 Harness home，不访问用户配置、模型或生产会话。夹具禁用 Node 网络与 IPC 套接字，发现尝试监听、连接或发送数据报就报错。
@@ -53,7 +54,13 @@ node deepseek-harness/host-follow/test/run-pinned-profile.mjs /absolute/path/to/
 
 [Host 载体](tls-follow.mjs)须显式提供 PKCS#12 身份及投影读取服务才能启动，硬编码绑定 `127.0.0.1` 的临时端口。它不拿发证权限、不注册 Gateway 或控制路由；只接受 TLS 1.3 与精确 ALPN，预握手及已握手连接合计最多 16 条，3 秒握手截止，之后沿用管道请求、写入和授权边界。停止监听会关闭尚在握手的 TCP 连接和现有投影。此模块未装入默认 DSH profile。
 
-[JVM 测试](../src/test/kotlin/com/cordiact/harness/deepseek/PinnedFollowTlsConnectorTest.kt)验证指纹、协议、握手超时；[Node ↔ Kotlin 回环测试](../src/test/kotlin/com/cordiact/harness/deepseek/FollowTlsInteropTest.kt)使用同一专用传输和真实授权服务，验证首帧、更新、错域拒绝、Host 撤权、握手超时和关闭监听。夹具凭据仅通过隔离的进程控制通道交付。未实现真实配对、外网暴露、正式 profile 或 Android 装配。
+[JVM 测试](../src/test/kotlin/com/cordiact/harness/deepseek/PinnedFollowTlsConnectorTest.kt)验证指纹、协议、握手超时；[Node ↔ Kotlin 回环测试](../src/test/kotlin/com/cordiact/harness/deepseek/FollowTlsInteropTest.kt)使用同一专用传输和真实授权服务，验证首帧、更新、错域拒绝、Host 撤权、握手超时和关闭监听。其中一项测试从下面的签名配对开始；夹具凭据仅通过隔离的进程控制通道交付。未开放外网，也未接入正式 profile 或 Android。
+
+### 预置信任的配对原型
+
+[Node 签发器](pairing-offer.mjs)只在受信控制面使用。从双方已批准的精确路由出发，为客户端的 32 字节随机挑战签发一份新的 15 秒只读授权。签名覆盖 ASCII 单行 `cordiact-follow-pair/1 <连接> <本地工作区> <远端工作区> <远端会话> <IPv4> <端口> <叶证书 SHA-256> <挑战> <专用凭据>\n`，使用独立预置的 P-256 签名键和 SHA-256（DER 签名）。[Kotlin 验证器](../src/main/kotlin/com/cordiact/harness/deepseek/FollowPairing.kt)只认可预置公钥、精确路由与当前挑战，成功后只允许连接一次。客户端期限从创建挑战起计 15 秒，不因签发、批准或握手续期。作废挑战并不撤回已交给客户端的载体；调用方仍须按原世代清退载体，Host 独立执行撤权。
+
+签名保护完整性，不加密凭据，也不把 bearer 变成持有证明。生产仍须有保密且受信的配对交付渠道、明确的操作者批准、密钥配置与轮换；不可把测试控制信道照搬进服务端。TLS 监听器不接受配对命令，也不持有签名键或发证权限。
 
 ## 用同一源码树的正式构建验证
 
