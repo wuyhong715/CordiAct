@@ -77,6 +77,21 @@ class FollowTlsInteropTest {
         }
     }
 
+    @Test fun locallyExpiresWhenRelayHidesHostRevocationAndEof() = withHost("silent-relay", timeoutSeconds = 24) { host, client ->
+        host.controller(client).use { controller ->
+            val route = host.configure(controller, target)
+            val beforeChallenge = System.nanoTime()
+            val attempt = host.followPaired(controller, route)
+            val baseline = FollowStatus.Current(FollowSessionState(2, true, false))
+            assertEquals(baseline, awaitStatus({ controller.status(attempt) }) { it == baseline })
+            host.command("freeze") // Acknowledged only once the upstream stream closes and the front remains open.
+            assertEquals(baseline, controller.status(attempt))
+            host.command("client-closed") // No status polling: the timer must actually close the transport.
+            assertTrue(System.nanoTime() - beforeChallenge >= TimeUnit.SECONDS.toNanos(15))
+            assertEquals(disconnected, controller.status(attempt))
+        }
+    }
+
     private fun awaitStatus(
         client: FollowPipeClient,
         handle: FollowPipeLifecycle.Handle,
@@ -140,7 +155,7 @@ class FollowTlsInteropTest {
         }
     }
 
-    private fun withHost(test: (Host, FollowPipeClient) -> Unit) {
+    private fun withHost(mode: String = "direct", timeoutSeconds: Long = 18, test: (Host, FollowPipeClient) -> Unit) {
         val directory = Files.createTempDirectory("cordiact-node-tls-")
         val store = directory.resolve("fixture.p12")
         val signer = directory.resolve("pairing-key.der")
@@ -171,7 +186,7 @@ class FollowTlsInteropTest {
             val signingKey = KeyPairGenerator.getInstance("EC").apply { initialize(ECGenParameterSpec("secp256r1")) }.generateKeyPair()
             Files.write(signer, signingKey.private.encoded)
             Files.write(delivery, deliveryKey)
-            val child = ProcessBuilder(node, fixture.toString(), store.toString(), signer.toString(), cert.toString(), delivery.toString())
+            val child = ProcessBuilder(node, fixture.toString(), store.toString(), signer.toString(), cert.toString(), delivery.toString(), mode)
                 .apply { environment().clear() }.start()
             try {
                 control.submit(Callable {
@@ -186,7 +201,7 @@ class FollowTlsInteropTest {
                     }
                     child.outputStream.close()
                     check(child.waitFor(3, TimeUnit.SECONDS) && child.exitValue() == 0) { "Synthetic TLS Host did not exit cleanly" }
-                }).get(18, TimeUnit.SECONDS)
+                }).get(timeoutSeconds, TimeUnit.SECONDS)
             } finally {
                 if (child.isAlive) child.destroyForcibly()
                 child.waitFor(2, TimeUnit.SECONDS)

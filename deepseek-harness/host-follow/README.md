@@ -54,7 +54,7 @@ node deepseek-harness/host-follow/test/run-pinned-profile.mjs /absolute/path/to/
 
 [Host 载体](tls-follow.mjs)须显式提供 PKCS#12 身份及投影读取服务才能启动，硬编码绑定 `127.0.0.1` 的临时端口。它不拿发证权限、不注册 Gateway 或控制路由；只接受 TLS 1.3 与精确 ALPN，预握手及已握手连接合计最多 16 条，3 秒握手截止，之后沿用管道请求、写入和授权边界。停止监听会关闭尚在握手的 TCP 连接和现有投影。此模块未装入默认 DSH profile。
 
-[JVM 测试](../src/test/kotlin/com/cordiact/harness/deepseek/PinnedFollowTlsConnectorTest.kt)验证指纹、协议、握手超时；[Node ↔ Kotlin 回环测试](../src/test/kotlin/com/cordiact/harness/deepseek/FollowTlsInteropTest.kt)使用同一专用传输和真实授权服务，验证首帧、更新、错域拒绝、Host 撤权、握手超时和关闭监听。其中一项测试从下面的签名配对开始；夹具凭据仅通过隔离的进程控制通道交付。未开放外网，也未接入正式 profile 或 Android。
+[JVM 测试](../src/test/kotlin/com/cordiact/harness/deepseek/PinnedFollowTlsConnectorTest.kt)验证指纹、协议、握手超时；[Node ↔ Kotlin 回环测试](../src/test/kotlin/com/cordiact/harness/deepseek/FollowTlsInteropTest.kt)使用同一专用传输和真实授权服务，验证首帧、更新、错域拒绝、Host 撤权、握手超时和关闭监听。签名配对用例涵盖正常撤权和模拟静默断线：后者在不终止 TLS 的单连接回环中继吞掉 Host 后续报文及断开信号，验证客户端在本地期限到达时主动关闭并清除状态。夹具凭据仅通过隔离的进程控制通道交付；这不是跨设备网络分区测试。未开放外网，也未接入正式 profile 或 Android。
 
 ### 预置信任的配对原型
 
