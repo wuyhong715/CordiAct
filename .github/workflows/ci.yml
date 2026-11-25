@@ -34,7 +34,8 @@ jobs:
             deepseek-harness/host-follow/test/operator-tty.test.mjs
       - name: Verify loopback Host lifecycle and TLS backpressure
         run: |
-          node --test deepseek-harness/host-follow/test/loopback-host.test.mjs \
+          node --test deepseek-harness/host-follow/test/local-identity.test.mjs \
+            deepseek-harness/host-follow/test/loopback-host.test.mjs \
             deepseek-harness/host-follow/test/tls-backpressure.test.mjs
       - uses: actions/setup-java@v5
         with:

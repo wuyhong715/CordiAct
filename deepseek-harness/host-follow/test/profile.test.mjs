@@ -5,8 +5,8 @@ import { once } from 'node:events'
 import { connect } from 'node:tls'
 import { finished } from 'node:stream/promises'
 import { createInterface } from 'node:readline'
-import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { homedir, tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import test from 'node:test'
@@ -54,26 +54,29 @@ test(`the pinned DSH CLI loads the synthetic ${loopbackTls ? 'loopback TLS' : 'n
   ])
   let credentials
   if (loopbackTls) {
-    const key = join(root, 'fixture-key.pem')
-    const crt = join(root, 'fixture-cert.pem')
+    const identityDirectory = mkdtempSync(join(realpathSync(homedir()), '.cordiact-profile-identity-'))
+    t.after(() => rmSync(identityDirectory, { recursive: true, force: true }))
+    const key = join(identityDirectory, 'tls-key.pem')
+    const crt = join(identityDirectory, 'tls-cert.pem')
     const openssl = (...args) => execFileSync('openssl', args, { cwd: root, timeout: 8_000, stdio: 'pipe' })
     openssl('req', '-new', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:prime256v1', '-nodes',
       '-days', '1', '-subj', '/CN=Synthetic Follow Host', '-keyout', key, '-out', crt)
+    chmodSync(crt, 0o600)
+    chmodSync(key, 0o600)
     const cert = readFileSync(crt)
     const pin = createHash('sha256').update(new X509Certificate(cert).raw).digest('hex')
     const { privateKey, publicKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' })
     const delivery = randomBytes(32)
     const spare = randomBytes(32)
-    const provision = (name, bytes) => {
-      const path = join(root, name)
+    const provision = (name, bytes, directory = identityDirectory) => {
+      const path = join(directory, name)
       writeFileSync(path, bytes, { mode: 0o600, flag: 'wx' })
       return path
     }
-    env.CORDIACT_TEST_TLS_IDENTITY = crt
-    env.CORDIACT_TEST_TLS_KEY = key
-    env.CORDIACT_TEST_PAIR_SIGNER = provision('fixture-pair.pem', privateKey.export({ type: 'pkcs8', format: 'pem' }))
-    env.CORDIACT_TEST_PAIR_DELIVERY = provision('fixture-delivery.bin', delivery)
-    env.CORDIACT_TEST_PAIR_SPARE = provision('fixture-spare.bin', spare)
+    env.CORDIACT_TEST_IDENTITY_DIR = identityDirectory
+    env.CORDIACT_TEST_PAIR_SIGNER = provision('pairing-key.pem', privateKey.export({ type: 'pkcs8', format: 'pem' }))
+    provision('delivery-key.bin', delivery)
+    env.CORDIACT_TEST_PAIR_SPARE = provision('fixture-spare.bin', spare, root)
     credentials = { cert, pin, publicKey, delivery, spare }
     t.after(() => { delivery.fill(0); spare.fill(0) })
   }

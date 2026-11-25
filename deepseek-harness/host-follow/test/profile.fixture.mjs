@@ -90,7 +90,7 @@ async function verify(ctx) {
   const newStream = open(issue().token)
   oldStream.close()
   assert.deepEqual(await newStream.next(), { done: false, value: idle })
-  const tlsIdentity = process.env.CORDIACT_TEST_TLS_IDENTITY
+  const tlsIdentity = process.env.CORDIACT_TEST_IDENTITY_DIR
   const unload = async () => {
     const entry = [...ctx.loader.entries()].find(row => row.options.id === 'cordiact-readonly-follow')
     assert.ok(entry?.fiber)
@@ -99,7 +99,7 @@ async function verify(ctx) {
   if (tlsIdentity) {
     assert.equal(process.connected, true)
     const assembly = ctx.get('cordiactFollowLoopback')
-    assert.deepEqual(Object.keys(assembly), ['start'])
+    assert.deepEqual(Object.keys(assembly), ['start', 'startFromDirectory'])
     const { createFollowPairingController } = await import('../pairing-offer.mjs')
     const { approveFollowOnTerminal } = await import('../operator-tty.mjs')
     let host
@@ -108,15 +108,11 @@ async function verify(ctx) {
       const signingKey = createPrivateKey(await readFile(process.env.CORDIACT_TEST_PAIR_SIGNER))
       const scope = { connectionId: 'fixture-host', localWorkspaceId: 'fixture-local', remoteWorkspaceId: wa.id,
         remoteSessionId: replacement.id }
-      const deliveryKey = await readFile(process.env.CORDIACT_TEST_PAIR_DELIVERY)
-      try {
-        const settings = { signingKey, scope, deliveryKey,
-          identity: { certificate: await readFile(tlsIdentity), privateKey: await readFile(process.env.CORDIACT_TEST_TLS_KEY) } }
-        const pendingHost = assembly.start(settings)
-        assert.equal(await assembly.start(settings), null)
-        host = await pendingHost
-        assert.ok(host)
-      } finally { deliveryKey.fill(0) }
+      const pendingHost = assembly.startFromDirectory(tlsIdentity, scope)
+      assert.equal(await assembly.start(), null)
+      assert.equal(await assembly.startFromDirectory(tlsIdentity, scope), null)
+      host = await pendingHost
+      assert.ok(host)
       const route = { ...scope, ...host.endpoint }
       const makePairing = async keyPath => {
         const deliveryKey = await readFile(keyPath)

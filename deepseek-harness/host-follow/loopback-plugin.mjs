@@ -1,4 +1,5 @@
 import { startLoopbackFollowHost } from './loopback-host.mjs'
+import { withLocalFollowIdentity } from './local-identity.mjs'
 
 export const name = 'cordiact-follow-loopback'
 export const inject = ['cordiactFollowReader', 'cordiactFollowAuthority']
@@ -16,16 +17,28 @@ export function apply(ctx) {
       const host = await started?.catch(() => null)
       await host?.close()
     }
+    const available = () => !lifetime.signal.aborted && ctx.get('cordiactFollowReader') === reader &&
+      ctx.get('cordiactFollowAuthority') === authority
+    function onceStart(start) {
+      // Both entry points share one start per plugin generation, including on failure.
+      if (started || !available()) return Promise.resolve(null)
+      const result = Promise.withResolvers()
+      started = result.promise
+      try { result.resolve(start()) }
+      catch (error) { result.reject(error) }
+      return started
+    }
+    const launch = ({ identity, signingKey, deliveryKey }, scope) => {
+      if (!available()) return null
+      return startLoopbackFollowHost({ reader, authority, identity, signingKey, deliveryKey, scope, signal: lifetime.signal })
+    }
     yield ctx.provide('cordiactFollowLoopback', Object.freeze({
-      start(options) {
-        // A failed or closed start is not replayed. Reconfigure via a fresh plugin instance.
-        if (lifetime.signal.aborted || started || ctx.get('cordiactFollowReader') !== reader ||
-          ctx.get('cordiactFollowAuthority') !== authority) return Promise.resolve(null)
-        const { identity, signingKey, deliveryKey, scope } = options ?? {}
-        started = startLoopbackFollowHost({ reader, authority, identity, signingKey, deliveryKey, scope,
-          signal: lifetime.signal })
-        return started
-      },
+      start: options => onceStart(() => launch(options ?? {}, options?.scope)),
+      startFromDirectory: (directory, scope) => onceStart(() => {
+        const { connectionId, localWorkspaceId, remoteWorkspaceId, remoteSessionId } = scope ?? {}
+        const fixed = { connectionId, localWorkspaceId, remoteWorkspaceId, remoteSessionId }
+        return withLocalFollowIdentity(directory, lifetime.signal, material => launch(material, fixed))
+      }),
     }))
   }, 'cordiact-follow-loopback:lifecycle')
 }
