@@ -47,4 +47,17 @@ compile=("$JAVA_HOME/bin/java" -cp "$compiler_cp" org.jetbrains.kotlin.cli.jvm.K
     -d "$work/verification.jar" "$test_src"/*.kt "$device"/*.kt
 "$JAVA17_HOME/bin/java" -cp "$work/verification.jar:$work/adapter.jar:$sdk:$harness:$lib_cp" org.junit.runner.JUnitCore \
     com.cordiact.app.deepseek.AndroidFollowRuntimeTest com.cordiact.app.deepseek.ForegroundFollowScopeTest
+# Exercise the exact device TLS fixture on the host JVM as well (not an Android provider result).
+cat > "$work/HostTlsProof.java" <<'EOF'
+import com.cordiact.app.deepseek.FollowLoopbackTlsFixture;
+class HostTlsProof {
+    public static void main(String[] args) {
+        var fixture = FollowLoopbackTlsFixture.INSTANCE;
+        fixture.acceptExactPinAndAlpn();
+        fixture.rejectWrongPinAndMissingAlpn();
+        System.out.println("Host JVM loopback TLS fixture passed");
+    }
+}
+EOF
+"$JAVA17_HOME/bin/java" -cp "$work/verification.jar:$harness:$lib_cp" "$work/HostTlsProof.java"
 printf 'Instrumentation source compiled; device tests not run.\n'
