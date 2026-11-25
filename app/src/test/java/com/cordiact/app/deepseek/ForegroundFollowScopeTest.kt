@@ -1,0 +1,99 @@
+package com.cordiact.app.deepseek
+
+import com.cordiact.harness.deepseek.FollowPairingHandoff
+import com.cordiact.harness.deepseek.FollowRouteDescriptor
+import com.cordiact.harness.deepseek.FollowTarget
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
+import java.io.InputStream
+import java.security.KeyPairGenerator
+import java.security.spec.ECGenParameterSpec
+import java.util.concurrent.Callable
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executor
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotSame
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class ForegroundFollowScopeTest {
+    private val target = FollowTarget("host", "local", "session")
+    private val signer = KeyPairGenerator.getInstance("EC").apply { initialize(ECGenParameterSpec("secp256r1")) }.generateKeyPair()
+    private val descriptor = checkNotNull(FollowRouteDescriptor.parse(
+        "cordiact-follow-route/1 host local remote session 127.0.0.1 12345 ${"ab".repeat(32)} ${signer.public.encoded.toHexString()}\n",
+    ))
+
+    @Test fun backgroundAndDestructionDoNotAdmitNewWork() = withScope { scope ->
+        assertFalse(configure(scope))
+        assertNull(scope.begin())
+        scope.resume()
+        assertTrue(configure(scope))
+        val old = checkNotNull(scope.begin())
+        scope.pause()
+        val output = ByteArrayOutputStream()
+        val releases = AtomicInteger()
+        assertNull(scope.exchange(old, FollowPairingHandoff(ByteArrayInputStream(byteArrayOf()), output) { releases.incrementAndGet() }))
+        assertEquals(0, output.size())
+        assertEquals(1, releases.get())
+        scope.resume()
+        val current = checkNotNull(scope.begin()) // Same trust, explicitly started fresh attempt.
+        assertNotSame(old, current)
+        assertFalse(scope.cancel(old))
+        assertTrue(scope.cancel(current))
+        scope.close()
+        scope.resume()
+        assertFalse(configure(scope))
+        assertNull(scope.begin())
+    }
+
+    @Test fun pauseUnblocksInFlightHandoffAndLateCompletionCannotTouchNewAttempt() = withScope { scope ->
+        val worker = Executors.newSingleThreadExecutor()
+        val reading = CountDownLatch(1)
+        val released = CountDownLatch(1)
+        val cancellations = AtomicInteger()
+        try {
+            scope.resume()
+            assertTrue(configure(scope))
+            val old = checkNotNull(scope.begin())
+            val input = object : InputStream() {
+                override fun read(): Int {
+                    reading.countDown()
+                    check(released.await(3, TimeUnit.SECONDS))
+                    return -1
+                }
+            }
+            val handoff = FollowPairingHandoff(input, ByteArrayOutputStream()) {
+                cancellations.incrementAndGet()
+                released.countDown()
+            }
+            val result = worker.submit(Callable { scope.exchange(old, handoff) })
+            assertTrue(reading.await(2, TimeUnit.SECONDS))
+            scope.pause()
+            scope.resume()
+            val current = checkNotNull(scope.begin())
+            assertNull(result.get(2, TimeUnit.SECONDS))
+            assertEquals(1, cancellations.get())
+            assertFalse(scope.cancel(old))
+            assertTrue(scope.cancel(current))
+        } finally {
+            released.countDown()
+            worker.shutdownNow()
+        }
+    }
+
+    private fun configure(scope: ForegroundFollowScope) = scope.configure(target, "remote", descriptor, ByteArray(32) { 1 })
+
+    private fun withScope(test: (ForegroundFollowScope) -> Unit) {
+        val scheduler = Executors.newSingleThreadScheduledExecutor()
+        try {
+            val controller = checkNotNull(AndroidFollowRuntime.createForPlatform(29, System::nanoTime, scheduler,
+                Executor { error("These tests never start projection I/O") }))
+            ForegroundFollowScope(controller).use(test)
+        } finally { scheduler.shutdownNow() }
+    }
+}
