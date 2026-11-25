@@ -8,6 +8,9 @@
             android:exported="true"
             android:label="Web Probe" />
 
+        <!-- Only the instrumentation suite opens this unexported lifecycle fixture. -->
+        <activity android:name=".deepseek.FollowLifecycleProbeActivity" android:exported="false" />
+
         <!-- Debug-only harness entry point. Never merged into release builds. -->
         <receiver
             android:name=".probe.AutomationProbeReceiver"
