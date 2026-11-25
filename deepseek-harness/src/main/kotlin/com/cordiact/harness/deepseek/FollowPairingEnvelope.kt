@@ -13,7 +13,7 @@ internal class FollowPairingEnvelope(key: ByteArray) : AutoCloseable {
     override fun close() { bytes.fill(0) }
 
     fun approve(pairing: FollowPairing, challenge: FollowPairing.Challenge, envelope: ByteArray): FollowPairing.Approval? {
-        if (envelope.size !in 38..MAX_ENVELOPE) return null
+        if (!pairing.isPending(challenge) || envelope.size !in 38..MAX_ENVELOPE) return null
         val plain = try {
             Cipher.getInstance("AES/GCM/NoPadding").run {
                 init(Cipher.DECRYPT_MODE, SecretKeySpec(bytes, "AES"), GCMParameterSpec(128, envelope, 0, IV_SIZE))

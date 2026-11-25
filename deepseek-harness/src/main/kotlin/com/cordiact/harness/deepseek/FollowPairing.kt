@@ -74,7 +74,7 @@ class FollowPairing internal constructor(
     @Synchronized
     fun approve(challenge: Challenge, offer: ByteArray, signature: ByteArray): Approval? {
         try {
-            if (pending !== challenge || closed || expired(challenge) || signature.size !in 8..80) return null
+            if (!isPending(challenge) || signature.size !in 8..80) return null
             val prefix = "cordiact-follow-pair/1 $scope ${challenge.nonce} ".encodeToByteArray()
             if (offer.size != prefix.size + 49 || offer.last() != 10.toByte()) return null
             if (!prefix.indices.all { offer[it] == prefix[it] }) return null
@@ -89,7 +89,7 @@ class FollowPairing internal constructor(
             } catch (_: GeneralSecurityException) {
                 false
             }
-            if (!valid || expired(challenge)) return null
+            if (!isPending(challenge) || !valid) return null
             pending = null
             return Approval(connector, connector.grantUntil(token, challenge.start + WINDOW_NANOS)).also { active = it }
         } finally {
@@ -97,7 +97,19 @@ class FollowPairing internal constructor(
         }
     }
 
-    private fun expired(challenge: Challenge) = nowNanos() - challenge.start >= WINDOW_NANOS
+    /** Check exact identity and drop an expired challenge before attempting to decrypt a reply. */
+    @Synchronized
+    internal fun isPending(challenge: Challenge): Boolean {
+        if (closed || pending !== challenge) return false
+        if (nowNanos() - challenge.start < WINDOW_NANOS) return true
+        pending = null
+        return false
+    }
+
+    @Synchronized
+    internal fun discardExpiredChallenge() {
+        pending?.let(::isPending)
+    }
 
     @Synchronized
     internal fun cancel() {

@@ -145,6 +145,60 @@ class FollowRouteControllerTest {
         }
     }
 
+    @Test fun foregroundRecheckDiscardsAnExpiredChallengeAndKeepsItsReplacementUsable() {
+        val scheduler = Executors.newSingleThreadScheduledExecutor()
+        var now = Long.MAX_VALUE - TimeUnit.SECONDS.toNanos(10)
+        var samples = 0
+        try {
+            val address = InetSocketAddress(ip, 12345)
+            FollowRouteController(scheduler, Executor { error("No reader") }, { samples++; now }).use { controller ->
+                val route = configure(controller, address)
+                val expired = assertNotNull(controller.challenge(route))
+                val oldOffer = frame(expired, address)
+                val oldEnvelope = seal(expired, oldOffer, sign(oldOffer))
+                now += TimeUnit.SECONDS.toNanos(15) - 1
+                assertTrue(controller.recheck(route))
+                now++
+                assertTrue(controller.recheck(route))
+                val samplesAfterRecheck = samples
+                assertNull(controller.approve(route, expired, oldEnvelope))
+                // The old object is no longer pending; the late offer doesn't even consult the clock.
+                assertEquals(samplesAfterRecheck, samples)
+                val replacement = assertNotNull(controller.challenge(route))
+                assertNull(controller.approve(route, expired, oldEnvelope))
+                val offer = frame(replacement, address)
+                assertNotNull(controller.approve(route, replacement, seal(replacement, offer, sign(offer))))
+            }
+        } finally { scheduler.shutdownNow() }
+    }
+
+    @Test fun lateApprovalDoesNotExtendItsChallengeDeadlineOrStartDialing() {
+        val scheduler = Executors.newSingleThreadScheduledExecutor()
+        var now = 0L
+        try {
+            val address = InetSocketAddress(ip, 12345)
+            val client = FollowPipeClient(scheduler, Executor { error("No reader") })
+            FollowRouteController(scheduler, client, { error("Expired approval must not dial") }, { now }).use { controller ->
+                val route = configure(controller, address)
+                val challenge = assertNotNull(controller.challenge(route))
+                val offer = frame(challenge, address)
+                now += TimeUnit.SECONDS.toNanos(15) - 1
+                val attempt = assertNotNull(controller.approve(route, challenge, seal(challenge, offer, sign(offer))))
+                assertTrue(controller.recheck(route))
+                now++
+                assertTrue(controller.recheck(route))
+                assertFalse(controller.connect(attempt))
+                assertNull(controller.status(attempt))
+
+                val queued = approve(controller, route, address)
+                now += TimeUnit.SECONDS.toNanos(15)
+                // Dispatch independently checks expiry even if no foreground callback ran.
+                assertFalse(controller.connect(queued))
+                assertNull(controller.status(queued))
+            }
+        } finally { scheduler.shutdownNow() }
+    }
+
     @Test fun newChallengeOrClearInvalidatesUnusedApprovalsAndLateEnvelopes() {
         val scheduler = Executors.newSingleThreadScheduledExecutor()
         try {

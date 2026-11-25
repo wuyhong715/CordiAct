@@ -120,11 +120,13 @@ class FollowRouteController internal constructor(
     /** Recheck a route on foreground return without renewing the lease or selecting a new route. */
     fun recheck(route: Route): Boolean = synchronized(lock) {
         val selected = matching(route) ?: return false
-        selected.ready?.takeIf { it.approval.deadlineNanos - nowNanos() <= 0 }?.let {
+        selected.pairing.discardExpiredChallenge()
+        val now = nowNanos()
+        selected.ready?.takeIf { it.approval.deadlineNanos - now <= 0 }?.let {
             selected.ready = null
             it.approval.close()
         }
-        selected.connecting?.takeIf { it.approval.expired(nowNanos()) }?.let {
+        selected.connecting?.takeIf { it.approval.expired(now) }?.let {
             selected.connecting = null
             it.approval.close()
         }
