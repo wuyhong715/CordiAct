@@ -1,0 +1,3 @@
+- insert:
+    - id: cordiact-follow-loopback
+      name: '../loopback-plugin.mjs'

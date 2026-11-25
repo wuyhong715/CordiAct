@@ -9,6 +9,7 @@ import { join } from 'node:path'
 import { connect } from 'node:tls'
 import test from 'node:test'
 import { startLoopbackFollowHost } from '../loopback-host.mjs'
+import { apply as mountLoopback } from '../loopback-plugin.mjs'
 
 function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), 'cordiact-loopback-host-'))
@@ -74,4 +75,40 @@ test('the advertised pin matches the peer and stopping clears active and pending
   t.after(() => closedPeer.destroy())
   const [error] = await once(closedPeer, 'error')
   assert.equal(error.code, 'ECONNREFUSED')
+})
+
+// Drive the adapter's own effect cleanup deterministically; the built profile separately uses real Cordis.
+function mount(options) {
+  const services = new Map([['cordiactFollowReader', options.reader], ['cordiactFollowAuthority', options.authority]])
+  const disposers = []
+  mountLoopback({
+    get: key => services.get(key),
+    provide(key, value) {
+      services.set(key, value)
+      return () => services.delete(key)
+    },
+    effect(fn) { for (const dispose of fn()) disposers.push(dispose) },
+  })
+  return { service: services.get('cordiactFollowLoopback'), services,
+    async dispose() { for (const dispose of disposers.reverse()) await dispose() } }
+}
+
+test('adapter disposal racing an unopened start rejects the handoff and retires stale service references', { timeout: 10_000 }, async t => {
+  const options = fixture(t)
+  const adapter = mount(options)
+  const started = adapter.service.start(options)
+  const rejected = assert.rejects(started, /stopped/)
+  const disposing = adapter.dispose()
+  await Promise.all([disposing, rejected])
+  assert.equal(adapter.services.has('cordiactFollowLoopback'), false)
+  assert.equal(await adapter.service.start(options), null)
+})
+
+test('a replaced dependency cannot be used through a captured start service', { timeout: 10_000 }, async t => {
+  const options = fixture(t)
+  const adapter = mount(options)
+  adapter.services.set('cordiactFollowReader', { open: () => assert.fail('stale adapter cannot read') })
+  try {
+    assert.equal(await adapter.service.start(options), null)
+  } finally { await adapter.dispose() }
 })

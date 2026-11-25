@@ -41,6 +41,7 @@ test(`the pinned DSH CLI loads the synthetic ${loopbackTls ? 'loopback TLS' : 'n
   const nodeArgs = ['--import', networkGuard]
   if (!built) nodeArgs.push('--import', realpathSync(join(stage, 'cordiact-vendor/register-vendor.mjs')))
   const args = [...nodeArgs, bin, '--profile', profile, '--patch', overlay]
+  if (loopbackTls) args.push('--patch', fileURLToPath(new URL('./profile-loopback.fixture.yml', import.meta.url)))
   const env = { PATH: dirname(process.execPath), HOME: root, DSH_HOME: home, DSH_TELEMETRY_DISABLED: '1' }
   const composed = execFileSync(process.execPath, [...args, '--dump-config'], {
     cwd: root, env, timeout: 20_000, maxBuffer: 128 * 1024, encoding: 'utf8',
@@ -48,6 +49,7 @@ test(`the pinned DSH CLI loads the synthetic ${loopbackTls ? 'loopback TLS' : 'n
   assert.deepEqual([...composed.matchAll(/^- id: ([\w-]+)$/gm)].map(match => match[1]), [
     'session', 'session-projection', 'agent', 'storage', 'storage-json', 'storage-domain',
     'session-persistence', 'workspace', 'cordiact-readonly-follow', 'fixture',
+    ...(loopbackTls ? ['cordiact-follow-loopback'] : []),
   ])
   let credentials
   if (loopbackTls) {
@@ -102,7 +104,7 @@ test(`the pinned DSH CLI loads the synthetic ${loopbackTls ? 'loopback TLS' : 'n
       const row = promptTail.slice(0, lf)
       promptTail = promptTail.slice(lf + 1)
       const code = /3 秒内输入 approve ([0-9a-f]{8}) 并回车/.exec(row)?.[1]
-      if (!code || replies.length >= 4) continue
+      if (!code || replies.length >= 3) continue
       replies.push(code)
       child.stdin.write(`${replies.length === 1 ? 'deny' : `approve ${code}`}\n`)
     }
@@ -120,7 +122,7 @@ test(`the pinned DSH CLI loads the synthetic ${loopbackTls ? 'loopback TLS' : 'n
     }
     assert.deepEqual(await closed, [0, null], stderr)
     assert.match(stdout, /^CORDIACT_FOLLOW_PROFILE_OK\r?$/m)
-    assert.equal(replies.length, 4)
+    assert.equal(replies.length, 3)
     assert.ok(stdout.includes(`证书 SHA-256：${credentials.pin}`))
     assert.ok(stdout.includes(`Host：127.0.0.1:${grant.port}`))
     assert.ok(stdout.includes(`远端工作区：${grant.workspace}`))
@@ -219,6 +221,7 @@ async function verifyTls(t, child, closed, credentials, scoped) {
   await completion
   const { status } = await exchange({ afterUnload: nonce() })
   assert.equal(status, 'unloaded')
-  await deny(request(workspace, session, unusedToken))
+  // Losing the reader dependency tears down the adapter as well as revoking the dormant grant.
+  await assert.rejects(open(request(workspace, session, unusedToken)), { code: 'ECONNREFUSED' })
   child.send('stop')
 }

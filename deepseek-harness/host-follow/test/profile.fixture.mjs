@@ -98,21 +98,24 @@ async function verify(ctx) {
   }
   if (tlsIdentity) {
     assert.equal(process.connected, true)
-    const { startLoopbackFollowHost } = await import('../loopback-host.mjs')
+    const assembly = ctx.get('cordiactFollowLoopback')
+    assert.deepEqual(Object.keys(assembly), ['start'])
     const { createFollowPairingController } = await import('../pairing-offer.mjs')
     const { approveFollowOnTerminal } = await import('../operator-tty.mjs')
     let host
     let spare
-    let confirmations = 0
     try {
       const signingKey = createPrivateKey(await readFile(process.env.CORDIACT_TEST_PAIR_SIGNER))
       const scope = { connectionId: 'fixture-host', localWorkspaceId: 'fixture-local', remoteWorkspaceId: wa.id,
         remoteSessionId: replacement.id }
-      const measuredAuthority = { issue(...args) { confirmations++; return authority.issue(...args) } }
       const deliveryKey = await readFile(process.env.CORDIACT_TEST_PAIR_DELIVERY)
       try {
-        host = await startLoopbackFollowHost({ reader, authority: measuredAuthority, signingKey, scope, deliveryKey,
-          identity: { certificate: await readFile(tlsIdentity), privateKey: await readFile(process.env.CORDIACT_TEST_TLS_KEY) } })
+        const settings = { signingKey, scope, deliveryKey,
+          identity: { certificate: await readFile(tlsIdentity), privateKey: await readFile(process.env.CORDIACT_TEST_TLS_KEY) } }
+        const pendingHost = assembly.start(settings)
+        assert.equal(await assembly.start(settings), null)
+        host = await pendingHost
+        assert.ok(host)
       } finally { deliveryKey.fill(0) }
       const route = { ...scope, ...host.endpoint }
       const makePairing = async keyPath => {
@@ -134,12 +137,10 @@ async function verify(ctx) {
       for (const nonce of [denied, primary, unused]) assert.match(nonce, /^[0-9a-f]{64}$/u)
       assert.equal(new Set([denied, primary, unused]).size, 3)
       assert.equal(await host.approve(denied), null)
-      assert.equal(confirmations, 0)
       const envelope = await host.approve(primary)
       const unusedEnvelope = await approveFollowOnTerminal({ controller: spare, nonce: unused })
       assert.ok(envelope && unusedEnvelope, 'Both reviews must be approved on the PTY')
       assert.equal(await host.approve(primary), null)
-      assert.equal(confirmations, 1)
       const update = control('update', () => replacement.append('turn/start', { turn: 1 }))
       process.send({ envelope: envelope.toString('base64'), unusedEnvelope: unusedEnvelope.toString('base64') })
       await update
@@ -149,15 +150,21 @@ async function verify(ctx) {
         await unload()
         assert.deepEqual(await unloadRead, { done: true, reason: 'disconnected' })
       })
-      // The retained reader must deny a still-unused grant; a fresh challenge must not issue one.
+      // Losing the injected services retires the assembly, not just the projection.
       const [{ afterUnload }] = await once(process, 'message')
       assert.notEqual(afterUnload, primary)
       assert.notEqual(afterUnload, unused)
       assert.throws(() => authority.issue(wa.id, replacement.id, 15_000))
       assert.match(afterUnload, /^[0-9a-f]{64}$/u)
+      assert.equal(ctx.get('cordiactFollowLoopback'), undefined)
       assert.equal(await host.approve(afterUnload), null)
-      assert.equal(confirmations, 2)
-      const stop = control('stop', () => {})
+      const stop = control('stop', async () => {
+        const adapter = [...ctx.loader.entries()].find(row => row.options.id === 'cordiact-follow-loopback')
+        await adapter.update({ disabled: true })
+        assert.equal(ctx.get('cordiactFollowLoopback'), undefined)
+        assert.equal(await assembly.start(), null)
+        assert.equal(await host.approve(afterUnload), null)
+      })
       process.send({ status: 'unloaded' })
       await stop
     } finally {
