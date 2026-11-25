@@ -9,13 +9,22 @@ import com.cordiact.harness.deepseek.FollowRouteDescriptor
 import com.cordiact.harness.deepseek.FollowTarget
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
+import java.net.InetAddress
+import java.net.InetSocketAddress
+import java.net.ServerSocket
 import java.security.KeyPairGenerator
+import java.security.SecureRandom
+import java.security.Signature
 import java.security.spec.ECGenParameterSpec
+import java.util.Base64
 import java.util.concurrent.Callable
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import javax.crypto.Cipher
+import javax.crypto.spec.GCMParameterSpec
+import javax.crypto.spec.SecretKeySpec
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotSame
@@ -28,6 +37,65 @@ import org.junit.runner.RunWith
 /** Exercises actual framework transitions, not direct calls to the binding's callbacks. */
 @RunWith(AndroidJUnit4::class)
 class ActivityFollowBindingInstrumentationTest {
+    @Test fun pauseClosesRealLoopbackSocketDuringTlsHandshake() {
+        assumeTrue("requires Android 10 TLS and ALPN", Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
+        val signer = KeyPairGenerator.getInstance("EC").apply { initialize(ECGenParameterSpec("secp256r1")) }.generateKeyPair()
+        val key = ByteArray(32).also(SecureRandom()::nextBytes)
+        val pin = "ab".repeat(32)
+        val target = FollowTarget("host", "local", "session")
+        val loopback = InetAddress.getByAddress(byteArrayOf(127, 0, 0, 1))
+        val worker = Executors.newSingleThreadExecutor()
+        try {
+            ServerSocket().use { server ->
+                server.bind(InetSocketAddress(loopback, 0))
+                server.soTimeout = 2_000
+                val port = server.localPort
+                val descriptor = checkNotNull(FollowRouteDescriptor.parse(
+                    "cordiact-follow-route/1 host local remote session 127.0.0.1 $port $pin ${signer.public.encoded.toHexString()}\n",
+                ))
+                ActivityScenario.launch(FollowLifecycleProbeActivity::class.java).use { scenario ->
+                    lateinit var scope: ForegroundFollowScope
+                    scenario.onActivity { scope = checkNotNull(it.binding).scope }
+                    assertTrue(scope.configure(target, "remote", descriptor, key))
+                    val challenge = checkNotNull(scope.begin())
+                    val offer = ("cordiact-follow-pair/1 host local remote session 127.0.0.1 $port $pin " +
+                        "${challenge.nonce} caf1_${"A".repeat(43)}\n").encodeToByteArray()
+                    val sig = Signature.getInstance("SHA256withECDSA").run {
+                        initSign(signer.private)
+                        update(offer)
+                        sign()
+                    }
+                    val iv = ByteArray(12) { 2 } // Unique within this synthetic, per-test key use.
+                    val sealed = Cipher.getInstance("AES/GCM/NoPadding").run {
+                        init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(128, iv))
+                        updateAAD("cordiact-follow-seal/1 ${challenge.nonce}\n".encodeToByteArray())
+                        iv + doFinal(byteArrayOf(sig.size.toByte()) + sig + offer)
+                    }
+                    val reply = "cordiact-follow-envelope/1 ${Base64.getEncoder().encodeToString(sealed)}\n".encodeToByteArray()
+                    val attempt = worker.submit(Callable {
+                        val input = reply.inputStream()
+                        val output = ByteArrayOutputStream()
+                        checkNotNull(scope.exchange(challenge, FollowPairingHandoff(input, output) { input.close(); output.close() }))
+                    }).get(3, TimeUnit.SECONDS)
+                    val connect = worker.submit(Callable { scope.connect(attempt) })
+                    server.accept().use { peer ->
+                        peer.soTimeout = 2_000
+                        val stream = peer.getInputStream()
+                        assertEquals(22, stream.read()) // Real Android TLS ClientHello; no server reply.
+                        scenario.moveToState(Lifecycle.State.STARTED)
+                        assertFalse(connect.get(2, TimeUnit.SECONDS))
+                        assertNull(scope.status(attempt))
+                        var bytes = 1
+                        while (stream.read() != -1) check(++bytes <= 65_536)
+                    }
+                }
+            }
+        } finally {
+            key.fill(0)
+            worker.shutdownNow()
+        }
+    }
+
     @Test fun pauseCancelsBlockedHandoffAndRecreationDoesNotInheritTrust() {
         assumeTrue("requires Android 10 lifecycle callbacks", Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
         val signer = KeyPairGenerator.getInstance("EC").apply { initialize(ECGenParameterSpec("secp256r1")) }.generateKeyPair()
