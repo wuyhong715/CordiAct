@@ -30,7 +30,8 @@ jobs:
         run: |
           node --test deepseek-harness/host-follow/test/follow-service.test.mjs \
             deepseek-harness/host-follow/test/ipc-follow.test.mjs \
-            deepseek-harness/host-follow/test/pairing-offer.test.mjs
+            deepseek-harness/host-follow/test/pairing-offer.test.mjs \
+            deepseek-harness/host-follow/test/operator-tty.test.mjs
       - name: Verify backpressure against a paused loopback TLS peer
         run: node --test deepseek-harness/host-follow/test/tls-backpressure.test.mjs
       - uses: actions/setup-java@v5
