@@ -1,11 +1,13 @@
 import { isIPv4 } from 'node:net'
 import { createCipheriv, randomBytes, sign } from 'node:crypto'
+import { performance } from 'node:perf_hooks'
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}(?![\s\S])/u
 const HEX_256 = /^[0-9a-f]{64}(?![\s\S])/u
 const TOKEN = /^caf1_[A-Za-z0-9_-]{43}(?![\s\S])/u
 const GRANT_MS = 15_000
 const MAX_CHALLENGES = 256
+const APPROVAL_MS = 3_000
 
 const validNonce = nonce => typeof nonce === 'string' && HEX_256.test(nonce)
 const validDeliveryKey = key => Buffer.isBuffer(key) && key.length === 32
@@ -68,17 +70,19 @@ export function issueSealedFollowPairingOffer({ authority, signingKey, route, no
 }
 
 /**
- * In-process operator control for one already approved route. Call only after explicit operator
- * authorization; this is not an endpoint and does not authenticate whoever submitted a nonce.
+ * In-process operator control for one approved route. Give capture/redeem only to the trusted
+ * operator adapter; these methods are not endpoints and do not authenticate an operator.
  * One issuance per challenge for this controller's lifetime, with a hard cap and no eviction.
  * Create a replacement with newly provisioned trust material and close the old one on rotation.
  */
-export function createFollowPairingController({ authority, signingKey, route, deliveryKey }) {
+export function createFollowPairingController({ authority, signingKey, route, deliveryKey }, now = () => performance.now()) {
   const { fields } = validatedRoute(route, signingKey)
+  Object.freeze(fields)
   if (!validDeliveryKey(deliveryKey)) throw new TypeError('Invalid pairing delivery key')
   const key = Buffer.from(deliveryKey)
   const seen = new Set()
   let active = null
+  let pending = null
   let closed = false
   let issuing = false
   let cancelled = false
@@ -88,6 +92,7 @@ export function createFollowPairingController({ authority, signingKey, route, de
     const wasIssuing = issuing
     issuing = true
     cancelled = true
+    pending = null
     try {
       retireActive()
     } finally {
@@ -101,9 +106,22 @@ export function createFollowPairingController({ authority, signingKey, route, de
     retire?.()
   }
 
-  function issue(nonce) {
-    if (closed || issuing || !validNonce(nonce) || seen.has(nonce) || seen.size >= MAX_CHALLENGES) return null
-    // A failed/ambiguous issuance is consumed too. In particular, do not restore an old grant.
+  // Capture the exact challenge and immutable route for review. No authority call is made here.
+  function capture(nonce) {
+    if (closed || issuing || !validNonce(nonce) || seen.has(nonce) || seen.size >= MAX_CHALLENGES || pending?.ticket.nonce === nonce) return null
+    const ticket = Object.freeze({ nonce, route: fields })
+    pending = { ticket, deadline: now() + APPROVAL_MS }
+    return ticket
+  }
+
+  // Only the trusted adapter may redeem the exact reviewed object after affirmative consent.
+  function redeem(ticket) {
+    if (closed || issuing || pending === null || pending.ticket !== ticket) return null
+    const { deadline } = pending
+    pending = null
+    const { nonce } = ticket
+    // Capture is bounded and side-effect free; only an attempted redemption consumes the challenge.
+    if (now() >= deadline) return null
     seen.add(nonce)
     issuing = true
     cancelled = false
@@ -132,5 +150,11 @@ export function createFollowPairingController({ authority, signingKey, route, de
     revoke()
   }
 
-  return Object.freeze({ issue, revoke, close })
+  function dismiss(ticket) {
+    if (pending === null || pending.ticket !== ticket) return false
+    pending = null
+    return true
+  }
+
+  return Object.freeze({ capture, redeem, dismiss, revoke, close })
 }

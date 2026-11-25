@@ -126,10 +126,16 @@ async function verify(ctx) {
       process.send({ workspace: wa.id, session: replacement.id, wrongWorkspace: wb.id,
         wrongSession: two.id, port: tlsListener.port })
       const [{ primary, unused }] = await requestPairing
-      const envelope = pairing.issue(primary)
-      const unusedEnvelope = spare.issue(unused)
+      // This isolated fixture simulates explicit operator consent. It is not a production adapter.
+      const reviewed = pairing.capture(primary)
+      const spareReview = spare.capture(unused)
+      assert.equal(reviewed?.route.remoteWorkspaceId, wa.id)
+      assert.equal(reviewed?.route.remoteSessionId, replacement.id)
+      const envelope = pairing.redeem(reviewed)
+      const unusedEnvelope = spare.redeem(spareReview)
       assert.ok(envelope && unusedEnvelope, 'Fixture scoped grants must issue')
-      assert.equal(pairing.issue(primary), null)
+      assert.equal(pairing.capture(primary), null)
+      assert.equal(pairing.redeem(reviewed), null)
       const update = control('update', () => replacement.append('turn/start', { turn: 1 }))
       process.send({ envelope: envelope.toString('base64'), unusedEnvelope: unusedEnvelope.toString('base64') })
       await update
@@ -145,7 +151,9 @@ async function verify(ctx) {
       assert.notEqual(afterUnload, unused)
       assert.throws(() => authority.issue(wa.id, replacement.id, 15_000))
       assert.match(afterUnload, /^[0-9a-f]{64}$/u)
-      assert.equal(pairing.issue(afterUnload), null)
+      const lateReview = pairing.capture(afterUnload)
+      assert.ok(lateReview)
+      assert.equal(pairing.redeem(lateReview), null)
       const stop = control('stop', () => {})
       process.send({ status: 'unloaded' })
       await stop

@@ -40,7 +40,9 @@ try {
       if (command.startsWith('pair ')) {
         const [, nonce, ...extra] = command.split(' ')
         if (extra.length) throw new Error('unexpected fixture pairing arguments')
-        const envelope = pairing.issue(nonce)
+        // Test-only simulated consent; the data socket cannot perform either operation.
+        const review = pairing.capture(nonce)
+        const envelope = pairing.redeem(review)
         process.stdout.write(`${envelope === null ? 'denied' : envelope.toString('base64')}\n`)
         continue
       }
