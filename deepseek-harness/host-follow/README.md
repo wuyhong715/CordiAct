@@ -56,6 +56,8 @@ node deepseek-harness/host-follow/test/run-pinned-profile.mjs /absolute/path/to/
 
 [JVM 测试](../src/test/kotlin/com/cordiact/harness/deepseek/PinnedFollowTlsConnectorTest.kt)验证指纹、协议、握手超时；[Node ↔ Kotlin 回环测试](../src/test/kotlin/com/cordiact/harness/deepseek/FollowTlsInteropTest.kt)使用同一专用传输和真实授权服务，验证首帧、更新、错域拒绝、Host 撤权、握手超时和关闭监听。签名配对用例涵盖正常撤权和模拟静默断线：后者在不终止 TLS 的单连接回环中继吞掉 Host 后续报文及断开信号，验证客户端在本地期限到达时主动关闭并清除状态。夹具凭据仅通过隔离的进程控制通道交付；这不是跨设备网络分区测试。未开放外网，也未接入正式 profile 或 Android。
 
+[慢读 TLS 回归](test/tls-backpressure.test.mjs)使用 OpenSSL 生成临时证书，连接真实 Node TLS 回环载体后暂停客户端读取。测试用有限个合成小帧让实际写回调停滞，验证约 3 秒写截止后关闭，且不再向数据源取下一帧。这个夹具故意去掉生产服务 100 ms 合并采样的限速；不把测试帧数当成内存上限，也不声称已经写入 TCP 的字节可撤回。复现：`node --test deepseek-harness/host-follow/test/tls-backpressure.test.mjs`。
+
 ### 预置信任的配对原型
 
 [Node 签发器](pairing-offer.mjs)只在受信控制面使用。从双方已批准的精确路由出发，为客户端的 32 字节随机挑战签发一份新的 15 秒只读授权。签名覆盖 ASCII 单行 `cordiact-follow-pair/1 <连接> <本地工作区> <远端工作区> <远端会话> <IPv4> <端口> <叶证书 SHA-256> <挑战> <专用凭据>\n`，使用独立预置的 P-256 签名键和 SHA-256（DER 签名）。[Kotlin 验证器](../src/main/kotlin/com/cordiact/harness/deepseek/FollowPairing.kt)只认可预置公钥、精确路由与当前挑战，成功后只允许连接一次。客户端期限从创建挑战起计 15 秒，不因签发、批准或握手续期。[路由控制器](../src/main/kotlin/com/cordiact/harness/deepseek/FollowRouteController.kt)管理当前配对、握手和已打开的投影；重新配置（即使可见 ID 不变）、新挑战或清除时，先使旧引用失效，再取消旧握手、清退旧流。不把晚到的握手归给替代路由。该本地清退不撤销 Host 发证，Host 仍独立执行到期和撤权。
@@ -79,4 +81,4 @@ node deepseek-harness/host-follow/test/run-built-profile.mjs /absolute/path/to/b
 
 TLS 模式额外需要 OpenSSL 生成临时合成证书。固定 CLI 的真实 Loader 提供授权服务，Host 配对控制器仅经测试 IPC 交付密封回复；独立 Node 客户端用预置密钥认证解密，复核签名与完整路由后才打开 TLS 投影。验证首帧和更新、错工作区/会话、重复挑战与凭据、非专用凭据与 HTTP 前缀拒绝，以及卸载后现有流关闭、仍未使用的凭据不能打开、新挑战不能签发。没有生产端点或凭据。
 
-本地 Linux arm64 以 Node `24.19.0` / pnpm `11.28.5` 完成冻结安装（本地禁用包安装脚本）、官方 8 阶段工件构建及禁网合成 profile。上游锁 SHA-256 为 `f7c01c56b65e31e1924a82bf8061ee9b63122e6e769b4aaed4781b4d1d3c088a`，实测 CLI 入口 SHA-256 为 `b293de4609dfd0625b4e5c0a88363fb49efd7d162b41a9ac2e36a1f8e196d133`。此结果不是原样 npm 版通过，也不替代待运行的 Linux x64 工作流。继承管道已对合成进程实测认证、限字节解析、撤权、过期及输入关闭；受控 writable 验证单帧背压和写超时，未宣称填满内核缓冲。同一构建也在本机 `127.0.0.1` 跑通真实 Loader 的合成 TLS profile，使用专用 Node 测试客户端；本地容器不能在新网络命名空间启用 `lo`，因此仅回环命名空间模式尚待远端 CI。独立载体另有 Kotlin 互操作回归。这些证据不涵盖生产配对、静默网络分区或 Android。继续接入前按[架构验收要求](../../docs/architecture/dsh-readonly-session-follow.md)执行。
+本地 Linux arm64 以 Node `24.19.0` / pnpm `11.28.5` 完成冻结安装（本地禁用包安装脚本）、官方 8 阶段工件构建及禁网合成 profile。上游锁 SHA-256 为 `f7c01c56b65e31e1924a82bf8061ee9b63122e6e769b4aaed4781b4d1d3c088a`，实测 CLI 入口 SHA-256 为 `b293de4609dfd0625b4e5c0a88363fb49efd7d162b41a9ac2e36a1f8e196d133`。此结果不是原样 npm 版通过，也不替代待运行的 Linux x64 工作流。继承管道已对合成进程实测认证、限字节解析、撤权、过期及输入关闭；受控 writable 验证单帧背压和写超时；回环慢读则验证真实 TLS 写停滞后关闭，未测量各层缓冲占用。同一构建也在本机 `127.0.0.1` 跑通真实 Loader 的合成 TLS profile，使用专用 Node 测试客户端；本地容器不能在新网络命名空间启用 `lo`，因此仅回环命名空间模式尚待远端 CI。独立载体另有 Kotlin 互操作回归。这些证据不涵盖生产配对、静默网络分区或 Android。继续接入前按[架构验收要求](../../docs/architecture/dsh-readonly-session-follow.md)执行。
