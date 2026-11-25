@@ -131,7 +131,7 @@ async function verify(ctx) {
       }
       const requestPairing = once(process, 'message')
       process.send({ workspace: wa.id, session: replacement.id, wrongWorkspace: wb.id,
-        wrongSession: two.id, port: host.endpoint.port })
+        wrongSession: two.id, port: host.endpoint.port, descriptor: host.descriptor })
       const [{ denied, primary, unused, deniedProof, primaryProof, spareProof }] = await requestPairing
       for (const nonce of [denied, primary, unused]) assert.match(nonce, /^[0-9a-f]{64}$/u)
       assert.equal(new Set([denied, primary, unused]).size, 3)
@@ -168,7 +168,7 @@ async function verify(ctx) {
       process.send({ status: 'retired' })
       await rotate
       const nextRequest = once(process, 'message')
-      process.send({ rotatedPort: rotatedHost.endpoint.port })
+      process.send({ rotatedPort: rotatedHost.endpoint.port, descriptor: rotatedHost.descriptor })
       const [{ nextNonce, staleProof }] = await nextRequest
       assert.notEqual(nextNonce, primary)
       assert.equal(await rotatedHost.approve(nextNonce, staleProof), null)

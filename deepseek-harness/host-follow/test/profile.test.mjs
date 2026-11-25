@@ -175,8 +175,18 @@ async function verifyTls(t, child, closed, credentials, scoped) {
     child.send(message)
     return answer.then(([reply]) => reply)
   }
-  const route = { connectionId: 'fixture-host', localWorkspaceId: 'fixture-local', remoteWorkspaceId: workspace,
-    remoteSessionId: session, ip: '127.0.0.1', port, certificateSha256: pin }
+  // The descriptor is public metadata, not bootstrap trust. Reconstruct its exact expected bytes
+  // from an independent scope selection, leaf fingerprint and provisioned signer for each generation.
+  function checkDescriptor(descriptor, selectedPort, selectedPin, signer) {
+    assert.ok(typeof descriptor === 'string' && Buffer.byteLength(descriptor) <= 804)
+    const route = { connectionId: 'fixture-host', localWorkspaceId: 'fixture-local', remoteWorkspaceId: workspace,
+      remoteSessionId: session, ip: '127.0.0.1', port: selectedPort, certificateSha256: selectedPin }
+    const spki = signer.export({ type: 'spki', format: 'der' }).toString('hex')
+    const expected = `cordiact-follow-route/1 ${Object.values(route).join(' ')} ${spki}\n`
+    assert.equal(descriptor === expected, true, 'Descriptor must contain only the independently expected public route')
+    return route
+  }
+  const route = checkDescriptor(scoped.descriptor, port, pin, publicKey)
   const { envelope, unusedEnvelope } = await exchange({ denied, primary, unused,
     deniedProof: makeProof(delivery, route, denied), primaryProof: makeProof(delivery, route, primary),
     spareProof: makeProof(spare, route, unused) })
@@ -239,9 +249,10 @@ async function verifyTls(t, child, closed, credentials, scoped) {
   assert.deepEqual(await retired, { status: 'retired' })
   await assert.rejects(open(request(workspace, session, unusedToken)), { code: 'ECONNREFUSED' })
 
-  const { rotatedPort } = await exchange('rotate')
+  const { rotatedPort, descriptor } = await exchange('rotate')
   assert.ok(Number.isInteger(rotatedPort) && rotatedPort > 0 && rotatedPort <= 65535)
-  const nextRoute = { ...route, port: rotatedPort, certificateSha256: rotated.pin }
+  const nextRoute = checkDescriptor(descriptor, rotatedPort, rotated.pin, rotated.publicKey)
+  assert.notEqual(descriptor, scoped.descriptor)
   const nextNonce = nonce()
   assert.deepEqual(await exchange({ nextNonce, staleProof: makeProof(delivery, nextRoute, nextNonce) }), { status: 'handoff-ready' })
   const reply = createInterface({ input: child.stdio[4] })[Symbol.asyncIterator]()
