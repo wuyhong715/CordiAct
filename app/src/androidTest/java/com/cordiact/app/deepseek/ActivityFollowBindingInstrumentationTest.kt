@@ -56,8 +56,8 @@ class ActivityFollowBindingInstrumentationTest {
                 ActivityScenario.launch(FollowLifecycleProbeActivity::class.java).use { scenario ->
                     lateinit var scope: ForegroundFollowScope
                     scenario.onActivity { scope = checkNotNull(it.binding).scope }
-                    assertTrue(scope.configure(target, "remote", descriptor, key))
-                    val challenge = checkNotNull(scope.begin())
+                    val route = checkNotNull(scope.configure(target, "remote", descriptor, key))
+                    val challenge = checkNotNull(scope.begin(route))
                     val offer = ("cordiact-follow-pair/1 host local remote session 127.0.0.1 $port $pin " +
                         "${challenge.nonce} caf1_${"A".repeat(43)}\n").encodeToByteArray()
                     val sig = Signature.getInstance("SHA256withECDSA").run {
@@ -111,8 +111,8 @@ class ActivityFollowBindingInstrumentationTest {
             ActivityScenario.launch(FollowLifecycleProbeActivity::class.java).use { scenario ->
                 lateinit var original: ForegroundFollowScope
                 scenario.onActivity { activity -> original = checkNotNull(activity.binding).scope }
-                assertTrue(original.configure(target, "remote", descriptor, ByteArray(32) { 1 }))
-                val challenge = checkNotNull(original.begin())
+                val route = checkNotNull(original.configure(target, "remote", descriptor, ByteArray(32) { 1 }))
+                val challenge = checkNotNull(original.begin(route))
                 val input = object : InputStream() {
                     override fun read(): Int {
                         reading.countDown()
@@ -130,10 +130,10 @@ class ActivityFollowBindingInstrumentationTest {
                     scenario.moveToState(Lifecycle.State.STARTED)
                     assertNull(exchange.get(2, TimeUnit.SECONDS))
                     assertEquals(1, cancellations.get())
-                    assertNull(original.begin())
+                    assertNull(original.begin(route))
                     assertFalse(original.cancel(challenge))
                     scenario.moveToState(Lifecycle.State.RESUMED)
-                    val fresh = checkNotNull(original.begin())
+                    val fresh = checkNotNull(original.begin(route))
                     assertNotSame(challenge, fresh)
                     assertFalse(original.cancel(challenge))
                     scenario.recreate()
@@ -142,11 +142,12 @@ class ActivityFollowBindingInstrumentationTest {
                     assertNotSame(original, replacement)
                     // Even a delayed resume cannot reopen the destroyed scope.
                     original.resume()
-                    assertFalse(original.configure(target, "remote", descriptor, ByteArray(32) { 1 }))
-                    assertNull(original.begin())
-                    assertNull(replacement.begin())
-                    assertTrue(replacement.configure(target, "remote", descriptor, ByteArray(32) { 2 }))
-                    checkNotNull(replacement.begin())
+                    assertNull(original.configure(target, "remote", descriptor, ByteArray(32) { 1 }))
+                    assertNull(original.begin(route))
+                    assertNull(replacement.begin(route))
+                    assertFalse(replacement.clear(route))
+                    val next = checkNotNull(replacement.configure(target, "remote", descriptor, ByteArray(32) { 2 }))
+                    checkNotNull(replacement.begin(next))
                 } finally { released.countDown() }
             }
         } finally { worker.shutdownNow() }

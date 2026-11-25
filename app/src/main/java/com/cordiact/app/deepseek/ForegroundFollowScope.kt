@@ -23,21 +23,35 @@ internal class ForegroundFollowScope(private val controller: FollowRouteControll
         retire()
     }
 
-    /** The caller authenticates the descriptor and independently provisions the key. */
-    fun configure(target: FollowTarget, remoteWorkspace: String, descriptor: FollowRouteDescriptor, key: ByteArray): Boolean = synchronized(lock) {
-        if (!foreground || closed) return false
-        val next = controller.configure(target, remoteWorkspace, descriptor, key) ?: return false
+    /** The trusted owner authenticates the descriptor and separately provisions the key. */
+    fun configure(
+        target: FollowTarget,
+        remoteWorkspace: String,
+        descriptor: FollowRouteDescriptor,
+        key: ByteArray,
+    ): FollowRouteController.Route? = synchronized(lock) {
+        if (!foreground || closed) return null
+        val next = controller.configure(target, remoteWorkspace, descriptor, key) ?: return null
         route = next
         challenge = null
         attempt = null
-        true
+        next
     }
 
-    fun begin(): FollowPairing.Challenge? = synchronized(lock) {
-        val selected = route ?: return null
-        if (!foreground || closed) return null
+    /** A delayed action cannot begin a challenge using a replacement page's trust. */
+    fun begin(exact: FollowRouteController.Route): FollowPairing.Challenge? = synchronized(lock) {
+        if (!foreground || closed || route !== exact) return null
         attempt = null
-        controller.challenge(selected).also { challenge = it }
+        controller.challenge(exact).also { challenge = it }
+    }
+
+    /** Release the page's exact selection, even when it exits while the Activity is paused. */
+    fun clear(exact: FollowRouteController.Route): Boolean = synchronized(lock) {
+        if (route !== exact) return false
+        route = null
+        challenge = null
+        attempt = null
+        controller.clear(exact)
     }
 
     /** Off-thread; always consumes the exclusive carrier, even if the scope has gone away. */

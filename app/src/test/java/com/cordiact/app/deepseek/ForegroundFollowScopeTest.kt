@@ -1,6 +1,7 @@
 package com.cordiact.app.deepseek
 
 import com.cordiact.harness.deepseek.FollowPairingHandoff
+import com.cordiact.harness.deepseek.FollowRouteController
 import com.cordiact.harness.deepseek.FollowRouteDescriptor
 import com.cordiact.harness.deepseek.FollowTarget
 import java.io.ByteArrayInputStream
@@ -29,11 +30,10 @@ class ForegroundFollowScopeTest {
     ))
 
     @Test fun backgroundAndDestructionDoNotAdmitNewWork() = withScope { scope ->
-        assertFalse(configure(scope))
-        assertNull(scope.begin())
+        assertNull(configure(scope))
         scope.resume()
-        assertTrue(configure(scope))
-        val old = checkNotNull(scope.begin())
+        val route = checkNotNull(configure(scope))
+        val old = checkNotNull(scope.begin(route))
         scope.pause()
         val output = ByteArrayOutputStream()
         val releases = AtomicInteger()
@@ -41,25 +41,62 @@ class ForegroundFollowScopeTest {
         assertEquals(0, output.size())
         assertEquals(1, releases.get())
         scope.resume()
-        val current = checkNotNull(scope.begin()) // Same trust, explicitly started fresh attempt.
+        val current = checkNotNull(scope.begin(route)) // Same trust, explicitly started fresh attempt.
         assertNotSame(old, current)
         assertFalse(scope.cancel(old))
         assertTrue(scope.cancel(current))
         scope.close()
         scope.resume()
-        assertFalse(configure(scope))
-        assertNull(scope.begin())
+        assertNull(configure(scope))
+        assertNull(scope.begin(route))
+        assertFalse(scope.clear(route))
     }
 
-    @Test fun pauseUnblocksInFlightHandoffAndLateCompletionCannotTouchNewAttempt() = withScope { scope ->
+    @Test fun pauseUnblocksInFlightHandoffAndLateCompletionCannotTouchNewAttempt() =
+        blockedHandoff { scope, route ->
+            scope.pause()
+            assertNull(scope.begin(route))
+            scope.resume()
+            route
+        }
+
+    @Test fun closingPageUnblocksItsHandoffAndOldCallbacksCannotUseReplacementTrust() =
+        blockedHandoff { scope, route ->
+            assertTrue(scope.clear(route))
+            assertFalse(scope.clear(route))
+            assertNull(scope.begin(route))
+            val replacement = checkNotNull(configure(scope)) // Same visible IDs, independent lifetime.
+            assertNotSame(route, replacement)
+            assertFalse(scope.clear(route))
+            assertNull(scope.begin(route))
+            replacement
+        }
+
+    @Test fun pageMayReleaseTrustWhilePausedWithoutAffectingAnotherActivity() = withScope { scope ->
+        scope.resume()
+        val route = checkNotNull(configure(scope))
+        withScope { other ->
+            other.resume()
+            val foreign = checkNotNull(configure(other))
+            assertFalse(scope.clear(foreign))
+            assertNull(scope.begin(foreign))
+            scope.pause()
+            assertTrue(scope.clear(route))
+            scope.resume()
+            assertNull(scope.begin(route))
+            checkNotNull(other.begin(foreign))
+        }
+    }
+
+    private fun blockedHandoff(retire: (ForegroundFollowScope, FollowRouteController.Route) -> FollowRouteController.Route) = withScope { scope ->
         val worker = Executors.newSingleThreadExecutor()
         val reading = CountDownLatch(1)
         val released = CountDownLatch(1)
         val cancellations = AtomicInteger()
         try {
             scope.resume()
-            assertTrue(configure(scope))
-            val old = checkNotNull(scope.begin())
+            val route = checkNotNull(configure(scope))
+            val old = checkNotNull(scope.begin(route))
             val input = object : InputStream() {
                 override fun read(): Int {
                     reading.countDown()
@@ -73,9 +110,8 @@ class ForegroundFollowScopeTest {
             }
             val result = worker.submit(Callable { scope.exchange(old, handoff) })
             assertTrue(reading.await(2, TimeUnit.SECONDS))
-            scope.pause()
-            scope.resume()
-            val current = checkNotNull(scope.begin())
+            val next = retire(scope, route)
+            val current = checkNotNull(scope.begin(next))
             assertNull(result.get(2, TimeUnit.SECONDS))
             assertEquals(1, cancellations.get())
             assertFalse(scope.cancel(old))
