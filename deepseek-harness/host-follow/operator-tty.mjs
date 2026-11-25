@@ -10,8 +10,8 @@ let busy = false
  * terminal access is not operator authentication (a PTY holder can answer). No secrets are printed.
  * Never expose this operation on a remotely driven data socket or reuse automation stdin.
  */
-export async function approveFollowOnTerminal({ controller, nonce, proof, signal }) {
-  if (busy || signal?.aborted || !isatty(0) || !isatty(2)) return null
+export async function approveFollowOnTerminal({ controller, nonce, proof, signal, canApprove = () => true }) {
+  if (busy || signal?.aborted || !isatty(0) || !isatty(2) || !canApprove()) return null
   const input = process.stdin
   const output = process.stderr
   if (input.isRaw || input.readableFlowing === true || input.readableLength !== 0 || input.listenerCount('data') ||
@@ -20,14 +20,14 @@ export async function approveFollowOnTerminal({ controller, nonce, proof, signal
   let review
   try {
     review = controller.capture(nonce, proof)
-    if (!review || signal?.aborted) return null
+    if (!review || signal?.aborted || !canApprove()) return null
     const code = randomBytes(4).toString('hex')
     const route = review.route
     const prompt = `\nCordiAct 只读跟随：${route.connectionId}\n` +
       `本地工作区：${route.localWorkspaceId}\nHost：${route.ip}:${route.port}\n证书 SHA-256：${route.certificateSha256}\n` +
       `远端工作区：${route.remoteWorkspaceId}\n远端会话：${route.remoteSessionId}\n挑战：${review.nonce}\n` +
       `允许读取短时状态；会替换此前授权。3 秒内输入 approve ${code} 并回车；其他输入拒绝。\n`
-    if (!await answer(input, output, prompt, `approve ${code}`, signal) || signal?.aborted) return null
+    if (!await answer(input, output, prompt, `approve ${code}`, signal) || signal?.aborted || !canApprove()) return null
     return controller.redeem(review)
   } finally {
     try { if (review) controller.dismiss(review) }

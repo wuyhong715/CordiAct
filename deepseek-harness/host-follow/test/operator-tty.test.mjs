@@ -21,7 +21,7 @@ test('non-interactive input cannot even render a review', { timeout: 5_000 }, as
   assert.equal(stderr, '')
 })
 
-for (const mode of ['approve', 'wrong', 'timeout', 'abort']) {
+for (const mode of ['approve', 'wrong', 'timeout', 'abort', 'expired-at-submit']) {
   test(`PTY ${mode} issues only after the exact displayed response`, { timeout: 7_000 }, async t => {
     const command = `${shellQuote(process.execPath)} ${shellQuote(fixture)} ${shellQuote(mode)}`
     const child = spawn('script', ['-qefc', command, '/dev/null'], { stdio: ['pipe', 'pipe', 'pipe'] })
@@ -32,9 +32,9 @@ for (const mode of ['approve', 'wrong', 'timeout', 'abort']) {
     child.stdout.setEncoding('utf8').on('data', data => {
       output += data
       const code = /approve ([0-9a-f]{8})/.exec(output)?.[1]
-      if (!sent && code && (mode === 'approve' || mode === 'wrong')) {
+      if (!sent && code && (mode === 'approve' || mode === 'wrong' || mode === 'expired-at-submit')) {
         sent = true
-        child.stdin.write(`${mode === 'approve' ? `approve ${code}` : 'yes'}\n`)
+        child.stdin.write(`${mode === 'wrong' ? 'yes' : `approve ${code}`}\n`)
       }
     })
     let stderr = ''

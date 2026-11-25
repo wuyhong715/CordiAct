@@ -93,7 +93,7 @@ test(`the pinned DSH CLI loads the synthetic ${loopbackTls ? 'loopback TLS' : 'n
   const command = ['exec', ...[process.execPath, ...args].map(shellQuote)].join(' ')
   const child = loopbackTls
     ? spawn('/usr/bin/script', ['-qefc', command, '/dev/null'], {
-      cwd: root, env: { ...env, SHELL: '/bin/sh' }, stdio: ['pipe', 'pipe', 'pipe', 'ignore', 'ignore', 'ipc'],
+      cwd: root, env: { ...env, SHELL: '/bin/sh' }, stdio: ['pipe', 'pipe', 'pipe', 'pipe', 'pipe', 'ipc'],
     })
     : spawn(process.execPath, args, { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe', dataPipe, dataPipe, 'ipc'] })
   const closed = once(child, 'close')
@@ -243,8 +243,13 @@ async function verifyTls(t, child, closed, credentials, scoped) {
   assert.ok(Number.isInteger(rotatedPort) && rotatedPort > 0 && rotatedPort <= 65535)
   const nextRoute = { ...route, port: rotatedPort, certificateSha256: rotated.pin }
   const nextNonce = nonce()
-  const { rotatedEnvelope } = await exchange({ nextNonce,
-    staleProof: makeProof(delivery, nextRoute, nextNonce), nextProof: makeProof(rotated.delivery, nextRoute, nextNonce) })
+  assert.deepEqual(await exchange({ nextNonce, staleProof: makeProof(delivery, nextRoute, nextNonce) }), { status: 'handoff-ready' })
+  const reply = createInterface({ input: child.stdio[4] })[Symbol.asyncIterator]()
+  child.stdio[3].end(`cordiact-follow-review/1 ${nextNonce} ${makeProof(rotated.delivery, nextRoute, nextNonce)}\n`)
+  const response = /^cordiact-follow-envelope\/1 ([A-Za-z0-9+/=]{52,1152})$/u.exec((await reply.next()).value)
+  assert.ok(response, 'Expected one sealed reply on the handoff pipe')
+  assert.equal((await reply.next()).done, true)
+  const rotatedEnvelope = response[1]
   assert.throws(() => checkOffer(rotatedEnvelope, delivery, nextNonce, nextRoute, rotated.publicKey))
   assert.throws(() => checkOffer(rotatedEnvelope, rotated.delivery, nextNonce, nextRoute, publicKey))
   const nextToken = checkOffer(rotatedEnvelope, rotated.delivery, nextNonce, nextRoute, rotated.publicKey)

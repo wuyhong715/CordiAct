@@ -169,18 +169,21 @@ async function verify(ctx) {
       await rotate
       const nextRequest = once(process, 'message')
       process.send({ rotatedPort: rotatedHost.endpoint.port })
-      const [{ nextNonce, staleProof, nextProof }] = await nextRequest
+      const [{ nextNonce, staleProof }] = await nextRequest
       assert.notEqual(nextNonce, primary)
       assert.equal(await rotatedHost.approve(nextNonce, staleProof), null)
-      const rotatedEnvelope = await rotatedHost.approve(nextNonce, nextProof)
-      assert.ok(rotatedEnvelope)
+      const input = new Socket({ fd: 3, readable: true, writable: false })
+      const output = new Socket({ fd: 4, readable: false, writable: true })
+      const handoff = rotatedHost.handoff(input, output)
+      assert.ok(handoff)
       const unloaded = control('unload', async () => {
         assert.deepEqual(await newStream.next(), { done: false, value: { ...idle, cursor: replacement.seq - 1 } })
         const unloadRead = newStream.next()
         await unload()
         assert.deepEqual(await unloadRead, { done: true, reason: 'disconnected' })
       })
-      process.send({ rotatedEnvelope: rotatedEnvelope.toString('base64') })
+      process.send({ status: 'handoff-ready' })
+      await handoff.completion
       await unloaded
       // Losing the injected services retires the assembly, not just the projection.
       const [{ afterUnload, lateProof }] = await once(process, 'message')

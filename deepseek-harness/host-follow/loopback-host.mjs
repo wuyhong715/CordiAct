@@ -1,6 +1,7 @@
 import { listenFollowTls } from './tls-follow.mjs'
 import { createFollowPairingController, describeLoopbackFollowRoute } from './pairing-offer.mjs'
 import { approveFollowOnTerminal } from './operator-tty.mjs'
+import { serveFollowPairingHandoff } from './pairing-handoff.mjs'
 
 /**
  * Explicit in-process assembly for a single pre-enrolled route. Owns the listener and this
@@ -34,9 +35,19 @@ export async function startLoopbackFollowHost({ reader, authority, identity, sig
     if (signal?.aborted) throw new Error('Follow Host stopped')
     signal?.addEventListener('abort', abort, { once: true })
     void listener.closed.then(abort)
+    const approve = (nonce, proof, signal = cancelled.signal, canApprove) =>
+      approveFollowOnTerminal({ controller: pairing, nonce, proof, signal, canApprove })
+    let handoff
     return Object.freeze({ endpoint, descriptor, close,
-      approve: (nonce, proof) => approveFollowOnTerminal({ controller: pairing, nonce, proof, signal: cancelled.signal }),
-      revoke: () => pairing.revoke(),
+      approve: (nonce, proof) => approve(nonce, proof),
+      handoff(input, output) {
+        if (cancelled.signal.aborted || handoff) return null // Caller retains both streams on refusal.
+        const current = serveFollowPairingHandoff({ input, output, approve, signal: cancelled.signal })
+        handoff = current
+        void current.completion.then(() => { if (handoff === current) handoff = null })
+        return current
+      },
+      revoke: () => { handoff?.close(); pairing.revoke() },
     })
   } catch (error) {
     await close()

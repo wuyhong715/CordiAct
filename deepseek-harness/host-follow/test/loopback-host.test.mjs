@@ -6,6 +6,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { connect as dial } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { PassThrough } from 'node:stream'
 import { connect } from 'node:tls'
 import test from 'node:test'
 import { startLoopbackFollowHost } from '../loopback-host.mjs'
@@ -77,6 +78,27 @@ test('the advertised pin matches the peer and stopping clears active and pending
   t.after(() => closedPeer.destroy())
   const [error] = await once(closedPeer, 'error')
   assert.equal(error.code, 'ECONNREFUSED')
+})
+
+test('Host owns exactly one explicit handoff and closes it on revocation or teardown', async t => {
+  const host = await startLoopbackFollowHost(fixture(t))
+  t.after(() => host.close())
+  const first = [new PassThrough(), new PassThrough()]
+  const second = [new PassThrough(), new PassThrough()]
+  t.after(() => { for (const stream of [...first, ...second]) stream.destroy() })
+  const active = host.handoff(...first)
+  assert.ok(active)
+  assert.equal(host.handoff(...second), null)
+  assert.ok(second.every(stream => !stream.destroyed))
+  host.revoke()
+  await active.completion
+  assert.ok(first.every(stream => stream.destroyed))
+  const following = host.handoff(...second)
+  assert.ok(following)
+  await host.close()
+  await following.completion
+  assert.ok(second.every(stream => stream.destroyed))
+  assert.equal(host.handoff(...first), null)
 })
 
 // Drive the adapter's own effect cleanup deterministically; the built profile separately uses real Cordis.
