@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { createPrivateKey } from 'node:crypto'
 import { once } from 'node:events'
 import { mkdir, readFile } from 'node:fs/promises'
 import { Socket } from 'node:net'
@@ -98,19 +99,39 @@ async function verify(ctx) {
   if (tlsIdentity) {
     assert.equal(process.connected, true)
     const { listenFollowTls } = await import('../tls-follow.mjs')
-    const grant = authority.issue(wa.id, replacement.id, 7_000)
-    const unused = authority.issue(wa.id, replacement.id, 7_000)
+    const { createFollowPairingController } = await import('../pairing-offer.mjs')
     let tlsListener
+    let pairing
+    let spare
     try {
+      const signingKey = createPrivateKey(await readFile(process.env.CORDIACT_TEST_PAIR_SIGNER))
       tlsListener = await listenFollowTls({ reader, pfx: await readFile(tlsIdentity), passphrase: 'synthetic-only' })
+      const route = { connectionId: 'fixture-host', localWorkspaceId: 'fixture-local', remoteWorkspaceId: wa.id,
+        remoteSessionId: replacement.id, ip: '127.0.0.1', port: tlsListener.port,
+        certificateSha256: process.env.CORDIACT_TEST_PAIR_PIN }
+      const makePairing = async keyPath => {
+        const deliveryKey = await readFile(keyPath)
+        try { return createFollowPairingController({ authority, signingKey, route, deliveryKey }) }
+        finally { deliveryKey.fill(0) }
+      }
+      pairing = await makePairing(process.env.CORDIACT_TEST_PAIR_DELIVERY)
+      // The spare is an independent enrolled client; issuing it must not retire the first stream.
+      spare = await makePairing(process.env.CORDIACT_TEST_PAIR_SPARE)
       const control = async (expected, action) => {
         const [command] = await once(process, 'message')
         assert.equal(command, expected)
         await action()
       }
-      const update = control('update', () => replacement.append('turn/start', { turn: 1 }))
-      process.send({ token: grant.token, workspace: wa.id, session: replacement.id, wrongWorkspace: wb.id,
+      const requestPairing = once(process, 'message')
+      process.send({ workspace: wa.id, session: replacement.id, wrongWorkspace: wb.id,
         wrongSession: two.id, port: tlsListener.port })
+      const [{ primary, unused }] = await requestPairing
+      const envelope = pairing.issue(primary)
+      const unusedEnvelope = spare.issue(unused)
+      assert.ok(envelope && unusedEnvelope, 'Fixture scoped grants must issue')
+      assert.equal(pairing.issue(primary), null)
+      const update = control('update', () => replacement.append('turn/start', { turn: 1 }))
+      process.send({ envelope: envelope.toString('base64'), unusedEnvelope: unusedEnvelope.toString('base64') })
       await update
       await control('unload', async () => {
         assert.deepEqual(await newStream.next(), { done: false, value: { ...idle, cursor: replacement.seq - 1 } })
@@ -118,13 +139,19 @@ async function verify(ctx) {
         await unload()
         assert.deepEqual(await unloadRead, { done: true, reason: 'disconnected' })
       })
-      // Keep listening after unloading so the parent can verify that the retained reader denies new opens.
+      // The retained reader must deny a still-unused grant; a fresh challenge must not issue one.
+      const [{ afterUnload }] = await once(process, 'message')
+      assert.notEqual(afterUnload, primary)
+      assert.notEqual(afterUnload, unused)
+      assert.throws(() => authority.issue(wa.id, replacement.id, 15_000))
+      assert.match(afterUnload, /^[0-9a-f]{64}$/u)
+      assert.equal(pairing.issue(afterUnload), null)
       const stop = control('stop', () => {})
-      process.send({ status: 'unloaded', unusedToken: unused.token })
+      process.send({ status: 'unloaded' })
       await stop
     } finally {
-      grant.revoke()
-      unused.revoke()
+      pairing?.close()
+      spare?.close()
       await tlsListener?.close()
       if (process.connected) process.disconnect()
     }
