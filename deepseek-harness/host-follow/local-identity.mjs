@@ -9,6 +9,50 @@ const denied = () => new Error('Invalid private Follow identity directory')
 const stopped = () => new Error('Follow Host stopped')
 const anchored = (handle, name) => `/proc/self/fd/${handle.fd}/${name}`
 
+function privateFile(info, uid, min, max) {
+  return info.isFile() && info.uid === BigInt(uid) && info.nlink === 1n &&
+    [0o400n, 0o600n].includes(info.mode & 0o7777n) && info.size >= BigInt(min) && info.size <= BigInt(max)
+}
+
+// Internal helper for an already opened, no-follow descriptor; the caller owns its close.
+export async function readPrivateFollowFile(file, uid, min, max, signal) {
+  const before = await file.stat({ bigint: true })
+  if (!privateFile(before, uid, min, max)) throw denied()
+  const size = Number(before.size)
+  const first = Buffer.alloc(size + 1)
+  const second = Buffer.alloc(size + 1)
+  let accepted = false
+  const read = async data => {
+    let count = 0
+    while (count < data.length) {
+      if (signal?.aborted) throw stopped()
+      const { bytesRead } = await file.read(data, count, data.length - count, count)
+      if (!bytesRead) break
+      count += bytesRead
+    }
+    return count
+  }
+  const check = async () => {
+    const info = await file.stat({ bigint: true })
+    if (!privateFile(info, uid, min, max) || info.dev !== before.dev || info.ino !== before.ino ||
+        info.size !== before.size || info.mtimeNs !== before.mtimeNs) throw denied()
+  }
+  try {
+    if (await read(first) !== size) throw denied()
+    await check()
+    // Metadata-only changes (including 0400 ↔ 0600) are harmless if all checks still pass.
+    // Re-read bounded contents to detect observable edits even when timestamps are unchanged.
+    if (await read(second) !== size || !first.equals(second)) throw denied()
+    await check()
+    if (signal?.aborted) throw stopped()
+    accepted = true
+    return first.subarray(0, size)
+  } finally {
+    second.fill(0)
+    if (!accepted) first.fill(0)
+  }
+}
+
 /** Linux only. The trusted caller selects the directory; neither paths nor secrets come from a peer. */
 export async function withLocalFollowIdentity(directory, signal, use) {
   if (signal?.aborted) throw stopped()
@@ -39,22 +83,9 @@ export async function withLocalFollowIdentity(directory, signal, use) {
         if (signal?.aborted) throw stopped()
         const file = await open(anchored(parent, name), FILE_FLAGS)
         try {
-          const info = await file.stat()
-          if (!info.isFile() || info.uid !== uid || info.nlink !== 1 ||
-              ![0o400, 0o600].includes(info.mode & 0o7777) || info.size < min || info.size > max) throw denied()
-          const data = Buffer.alloc(info.size + 1)
+          const data = await readPrivateFollowFile(file, uid, min, max, signal)
           retained.push(data)
-          let count = 0
-          while (count < data.length) {
-            if (signal?.aborted) throw stopped()
-            const { bytesRead } = await file.read(data, count, data.length - count, count)
-            if (!bytesRead) break
-            count += bytesRead
-          }
-          const after = await file.stat()
-          if (count !== info.size || after.size !== info.size || after.mtimeMs !== info.mtimeMs ||
-              after.ctimeMs !== info.ctimeMs || after.nlink !== 1) throw denied()
-          return data.subarray(0, count)
+          return data
         } finally { await file.close() }
       }
       const certificate = await read('tls-cert.pem', 1, 16_384)

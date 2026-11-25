@@ -5,7 +5,7 @@ import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, realpathSync, 
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import { withLocalFollowIdentity } from '../local-identity.mjs'
+import { readPrivateFollowFile, withLocalFollowIdentity } from '../local-identity.mjs'
 
 function fixture(t) {
   const root = mkdtempSync(join(realpathSync(homedir()), '.cordiact-identity-test-'))
@@ -88,6 +88,57 @@ test('rejects exposed, oversized, linked and non-regular secret files without bl
     renameSync(fifo, key)
     await reject(dir)
   } else t.diagnostic('FIFO creation is not implemented by this filesystem; tested a directory instead')
+})
+
+test('read snapshots tolerate private metadata drift but reject observable changes', async () => {
+  const uid = process.geteuid()
+  const initial = { isFile: () => true, uid: BigInt(uid), nlink: 1n, mode: 0o100600n,
+    size: 32n, dev: 10n, ino: 7n, mtimeNs: 100n, ctimeNs: 200n }
+  for (const scenario of [
+    { name: 'ctime and private mode changed', attributes: { mode: 0o100400n, ctimeNs: 300n }, accepted: true },
+    { name: 'permissions widened', attributes: { mode: 0o100640n }, afterLast: true },
+    { name: 'new link', attributes: { nlink: 2n } },
+    { name: 'changed owner', attributes: { uid: BigInt(uid) + 1n } },
+    { name: 'changed inode', attributes: { ino: 8n } },
+    { name: 'changed content time', attributes: { mtimeNs: 101n } },
+    { name: 'same-size changed bytes with identical timestamps', changed: true },
+    { name: 'trailing bytes', grown: true },
+    { name: 'cancelled during read', cancelled: true },
+  ]) {
+    const buffers = new Set()
+    const controller = new AbortController()
+    let stats = 0
+    let reads = 0
+    const file = {
+      async stat(options) {
+        assert.deepEqual(options, { bigint: true })
+        const index = stats++
+        return { ...initial, ...(index >= (scenario.afterLast ? 2 : 1) ? scenario.attributes : {}) }
+      },
+      async read(buffer, offset, length, position) {
+        buffers.add(buffer)
+        if (position !== 0) return { bytesRead: 0 }
+        const pass = reads++
+        const count = scenario.grown ? 33 : 32
+        assert.ok(count <= length)
+        buffer.fill(scenario.changed && pass > 0 ? 2 : 1, offset, offset + count)
+        if (scenario.cancelled) controller.abort()
+        return { bytesRead: count }
+      },
+    }
+    if (scenario.accepted) {
+      const bytes = await readPrivateFollowFile(file, uid, 32, 32, controller.signal)
+      assert.deepEqual(bytes, Buffer.alloc(32, 1), scenario.name)
+      assert.equal(stats, 3)
+      assert.equal(reads, 2)
+      bytes.fill(0)
+    } else {
+      await assert.rejects(readPrivateFollowFile(file, uid, 32, 32, controller.signal),
+        scenario.cancelled ? /stopped/ : /Invalid private Follow identity directory/, scenario.name)
+    }
+    assert.ok(buffers.size > 0)
+    assert.ok([...buffers].every(buffer => buffer.every(byte => byte === 0)), scenario.name)
+  }
 })
 
 test('an aborted load does not hand off credentials', async t => {
