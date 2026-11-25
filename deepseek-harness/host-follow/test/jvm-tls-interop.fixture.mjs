@@ -1,6 +1,6 @@
 import { createHash, createPrivateKey } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
-import { issueSealedFollowPairingOffer } from '../pairing-offer.mjs'
+import { createFollowPairingController } from '../pairing-offer.mjs'
 import { createFollowService } from '../follow-service.mjs'
 import { listenFollowTls } from '../tls-follow.mjs'
 
@@ -16,7 +16,10 @@ const listener = await listenFollowTls({ reader: service.reader, pfx: await read
 const signingKey = createPrivateKey({ key: await readFile(process.argv[3]), format: 'der', type: 'pkcs8' })
 const certificateSha256 = createHash('sha256').update(await readFile(process.argv[4])).digest('hex')
 const deliveryKey = await readFile(process.argv[5])
-let pairing
+const pairing = createFollowPairingController({ authority: service, signingKey, deliveryKey,
+  route: { connectionId: 'host-a', localWorkspaceId: 'local-a', remoteWorkspaceId: 'remote-a',
+    remoteSessionId: 'session-a', ip: '127.0.0.1', port: listener.port, certificateSha256 } })
+deliveryKey.fill(0)
 try {
   // Synthetic control channel. No grant or operator command is accepted by the TLS listener itself.
   process.stdout.write(`${listener.port} ${grants.map(grant => grant.token).join(' ')}\n`)
@@ -32,22 +35,19 @@ try {
       if (command.startsWith('pair ')) {
         const [, nonce, ...extra] = command.split(' ')
         if (extra.length) throw new Error('unexpected fixture pairing arguments')
-        pairing?.revoke()
-        pairing = issueSealedFollowPairingOffer({ authority: service, signingKey, nonce, deliveryKey,
-          route: { connectionId: 'host-a', localWorkspaceId: 'local-a', remoteWorkspaceId: 'remote-a',
-            remoteSessionId: 'session-a', ip: '127.0.0.1', port: listener.port, certificateSha256 } })
-        process.stdout.write(`${pairing.envelope.toString('base64')}\n`)
+        const envelope = pairing.issue(nonce)
+        process.stdout.write(`${envelope === null ? 'denied' : envelope.toString('base64')}\n`)
         continue
       }
       if (command === 'update') state = { cursor: 9, active: true, running: true }
-      else if (command === 'revoke') { grants[0].revoke(); pairing?.revoke() }
-      else if (command === 'stop') stop.abort()
+      else if (command === 'revoke') { grants[0].revoke(); pairing.revoke() }
+      else if (command === 'stop') { pairing.close(); stop.abort() }
       else throw new Error('unexpected fixture command')
       process.stdout.write(`${command}\n`)
     }
   }
 } finally {
-  deliveryKey.fill(0)
+  pairing.close()
   await listener.close()
   service.dispose()
 }

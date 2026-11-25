@@ -1,13 +1,22 @@
 import assert from 'node:assert/strict'
 import { createDecipheriv, generateKeyPairSync, randomBytes, verify } from 'node:crypto'
 import test from 'node:test'
-import { issueFollowPairingOffer, issueSealedFollowPairingOffer } from '../pairing-offer.mjs'
+import { createFollowService } from '../follow-service.mjs'
+import { createFollowPairingController, issueFollowPairingOffer, issueSealedFollowPairingOffer } from '../pairing-offer.mjs'
 
 const { privateKey, publicKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' })
 const route = Object.freeze({ connectionId: 'host-a', localWorkspaceId: 'local-a', remoteWorkspaceId: 'remote-a',
   remoteSessionId: 'session-a', ip: '127.0.0.1', port: 12345, certificateSha256: '00'.repeat(32) })
 const nonce = '01'.repeat(32)
 const token = `caf1_${'A'.repeat(43)}`
+const challenge = ordinal => ordinal.toString(16).padStart(64, '0')
+
+function unseal(envelope, key, nonce) {
+  const decipher = createDecipheriv('aes-256-gcm', key, envelope.subarray(0, 12))
+  decipher.setAAD(Buffer.from(`cordiact-follow-seal/1 ${nonce}\n`, 'ascii'))
+  decipher.setAuthTag(envelope.subarray(-16))
+  return Buffer.concat([decipher.update(envelope.subarray(12, -16)), decipher.final()])
+}
 
 test('signs the exact approved tuple and only requests a short scoped grant', () => {
   let revoked = 0
@@ -35,14 +44,8 @@ test('delivery seals the signed grant and authenticates the challenge', () => {
   assert.deepEqual(Object.keys(result).sort(), ['envelope', 'revoke'])
   assert.equal(envelope.includes(token), false)
   assert.notDeepEqual(envelope.subarray(0, 12), issueSealedFollowPairingOffer(options).envelope.subarray(0, 12))
-  const open = challenge => {
-    const decipher = createDecipheriv('aes-256-gcm', deliveryKey, envelope.subarray(0, 12))
-    decipher.setAAD(Buffer.from(`cordiact-follow-seal/1 ${challenge}\n`, 'ascii'))
-    decipher.setAuthTag(envelope.subarray(-16))
-    return Buffer.concat([decipher.update(envelope.subarray(12, -16)), decipher.final()])
-  }
-  assert.throws(() => open('02'.repeat(32)))
-  const plain = open(nonce)
+  assert.throws(() => unseal(envelope, deliveryKey, '02'.repeat(32)))
+  const plain = unseal(envelope, deliveryKey, nonce)
   const split = plain[0] + 1
   assert.equal(verify('sha256', plain.subarray(split), publicKey, plain.subarray(1, split)), true)
   assert.equal(plain.subarray(split).toString('ascii').endsWith(` ${token}\n`), true)
@@ -67,4 +70,86 @@ test('invalid route, challenge, or key cannot reach issuance; malformed grants a
   assert.throws(() => issueFollowPairingOffer(base), /Invalid follow grant/)
   assert.equal(issued, 1)
   assert.equal(revoked, 1)
+})
+
+test('controller binds one route and key, rejects duplicate challenges and retires replaced grants', async () => {
+  const service = createFollowService((work, session) => work === 'remote-a' && session === 'session-a'
+    ? { identity: {}, read: () => ({ cursor: -1, active: false, running: false }) } : null)
+  const inputRoute = { ...route }
+  const inputKey = randomBytes(32)
+  const originalKey = Buffer.from(inputKey)
+  const controller = createFollowPairingController({ authority: service, signingKey: privateKey, route: inputRoute, deliveryKey: inputKey })
+  function readGrant(envelope, nonce) {
+    const plain = unseal(envelope, originalKey, nonce)
+    const fields = plain.subarray(plain[0] + 1).toString('ascii').trimEnd().split(' ')
+    assert.equal(fields[3], 'remote-a')
+    return fields.at(-1)
+  }
+  const open = token => service.reader.open({ version: 1, workspaceId: 'remote-a', sessionId: 'session-a', token })
+  try {
+    inputRoute.remoteWorkspaceId = 'wrong'
+    inputKey.fill(0)
+    const firstToken = readGrant(controller.issue(challenge(1)), challenge(1))
+    const stream = open(firstToken)
+    assert.equal((await stream.next()).done, false)
+    assert.equal(controller.issue(challenge(1)), null)
+    assert.equal(controller.issue('bad'), null)
+    assert.equal(stream.signal.aborted, false)
+    const pendingRead = stream.next()
+    const nextToken = readGrant(controller.issue(challenge(2)), challenge(2))
+    assert.deepEqual(await pendingRead, { done: true, reason: 'access-lost' })
+    assert.equal(open(firstToken), null)
+    controller.close()
+    assert.equal(open(nextToken), null)
+    assert.equal(controller.issue(challenge(3)), null)
+  } finally {
+    controller.close()
+    service.dispose()
+  }
+})
+
+test('failed issuance consumes the challenge and the bounded log never evicts it', () => {
+  let attempts = 0
+  const authority = { issue() { attempts++; throw new Error('source unavailable') } }
+  const controller = createFollowPairingController({ authority, signingKey: privateKey, route, deliveryKey: randomBytes(32) })
+  try {
+    for (let i = 0; i < 256; i++) assert.equal(controller.issue(challenge(i)), null)
+    assert.equal(controller.issue(challenge(0)), null)
+    assert.equal(controller.issue(challenge(256)), null)
+    assert.equal(attempts, 256)
+  } finally { controller.close() }
+})
+
+test('failed replacement does not restore the previous grant', () => {
+  let attempts = 0
+  let revoked = 0
+  const authority = { issue() {
+    if (++attempts > 1) throw new Error('source unavailable')
+    return { token, revoke: () => { revoked++ } }
+  } }
+  const controller = createFollowPairingController({ authority, signingKey: privateKey, route, deliveryKey: randomBytes(32) })
+  try {
+    assert.ok(Buffer.isBuffer(controller.issue(challenge(1))))
+    assert.equal(controller.issue(challenge(2)), null)
+    assert.equal(revoked, 1)
+    assert.equal(controller.issue(challenge(2)), null)
+    controller.revoke()
+    assert.equal(attempts, 2)
+    assert.equal(revoked, 1)
+  } finally { controller.close() }
+})
+
+test('revoking during issuance cannot publish an offer or re-enter issuance', () => {
+  let revoked = 0
+  const authority = { issue() {
+    assert.equal(controller.issue(challenge(2)), null)
+    controller.revoke()
+    return { token, revoke: () => { revoked++ } }
+  } }
+  const controller = createFollowPairingController({ authority, signingKey: privateKey, route, deliveryKey: randomBytes(32) })
+  try {
+    assert.equal(controller.issue(challenge(1)), null)
+    assert.equal(controller.issue(challenge(1)), null)
+    assert.equal(revoked, 1)
+  } finally { controller.close() }
 })

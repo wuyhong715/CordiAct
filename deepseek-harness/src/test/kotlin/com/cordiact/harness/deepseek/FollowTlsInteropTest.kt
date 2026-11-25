@@ -124,6 +124,9 @@ class FollowTlsInteropTest {
             child.outputStream.write("pair ${challenge.nonce}\n".encodeToByteArray())
             child.outputStream.flush()
             val envelope = Base64.getDecoder().decode(line(child.inputStream, 1_160))
+            child.outputStream.write("pair ${challenge.nonce}\n".encodeToByteArray())
+            child.outputStream.flush()
+            assertEquals("denied", line(child.inputStream, 32))
             val attempt = checkNotNull(controller.approve(route, challenge, envelope)) { "Synthetic sealed offer rejected" }
             check(controller.connect(attempt)) { "Synthetic paired TLS handshake failed" }
             check(!controller.connect(attempt))
