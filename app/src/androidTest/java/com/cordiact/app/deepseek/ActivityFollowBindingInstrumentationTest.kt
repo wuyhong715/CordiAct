@@ -65,7 +65,7 @@ class ActivityFollowBindingInstrumentationTest {
                         update(offer)
                         sign()
                     }
-                    val iv = ByteArray(12) { 2 } // Unique within this synthetic, per-test key use.
+                    val iv = ByteArray(12).also(SecureRandom()::nextBytes)
                     val sealed = Cipher.getInstance("AES/GCM/NoPadding").run {
                         init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(128, iv))
                         updateAAD("cordiact-follow-seal/1 ${challenge.nonce}\n".encodeToByteArray())

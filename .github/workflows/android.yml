@@ -59,25 +59,16 @@ jobs:
         run: ./gradlew :app:assembleDebugAndroidTest --no-daemon
       - name: Assemble release and verify debug probes are absent
         run: |
+          python3 -B .github/scripts/test_release_no_debug_probes.py
           ./gradlew :app:assembleRelease --no-daemon
-          MANIFEST=$(find app/build/intermediates/merged_manifests/release -name AndroidManifest.xml | head -1)
+          MANIFEST=$(find app/build/intermediates/merged_manifests/release -name AndroidManifest.xml -print -quit)
           test -n "$MANIFEST"
-          APK=$(find app/build/outputs/apk/release -name '*.apk' | head -1)
-          test -n "$APK"
-          probes='AutomationProbeReceiver|FollowLifecycleProbeActivity'
-          if grep -Eq "$probes" "$MANIFEST"; then
-            echo "release merged manifest contains a debug-only probe" >&2
-            exit 1
-          fi
-          # Avoid grep -q on these pipes: under pipefail an early exit can mask a match.
-          if unzip -p "$APK" AndroidManifest.xml | strings | grep -E "$probes" >/dev/null; then
-            echo "release APK manifest contains a debug-only probe" >&2
-            exit 1
-          fi
-          if unzip -p "$APK" 'classes*.dex' | strings | grep -E "$probes" >/dev/null; then
-            echo "release APK dex contains a debug-only probe" >&2
-            exit 1
-          fi
+          shopt -s nullglob
+          apks=(app/build/outputs/apk/release/*.apk)
+          test "${#apks[@]}" -gt 0
+          for apk in "${apks[@]}"; do
+            python3 .github/scripts/check-release-no-debug-probes.py "$MANIFEST" "$apk"
+          done
       - name: Upload verification reports
         if: always()
         uses: actions/upload-artifact@v4
