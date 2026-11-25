@@ -14,9 +14,18 @@ class FollowRouteController internal constructor(
     private val scheduler: ScheduledExecutorService,
     private val client: FollowPipeClient,
     private val dial: (FollowPairing.Approval) -> ApprovedFollowPipe?,
+    private val nowNanos: () -> Long,
 ) : AutoCloseable {
-    constructor(scheduler: ScheduledExecutorService, reads: Executor) :
-        this(scheduler, FollowPipeClient(scheduler, reads), FollowPairing.Approval::connect)
+    internal constructor(scheduler: ScheduledExecutorService, client: FollowPipeClient,
+                         dial: (FollowPairing.Approval) -> ApprovedFollowPipe?) :
+        this(scheduler, client, dial, System::nanoTime)
+
+    constructor(scheduler: ScheduledExecutorService, reads: Executor) : this(scheduler, reads, System::nanoTime)
+
+    /** Use a monotonic elapsed clock including suspend on mobile, not wall time or uptime. */
+    constructor(scheduler: ScheduledExecutorService, reads: Executor, nowNanos: () -> Long) :
+        this(scheduler, FollowPipeClient(FollowPipeLifecycle(scheduler, nowNanos), reads),
+            FollowPairing.Approval::connect, nowNanos)
 
     class Route internal constructor()
     class Attempt internal constructor()
@@ -45,7 +54,7 @@ class FollowRouteController internal constructor(
     ): Route? {
         return synchronized(lock) {
             if (closed) return null
-            val pairing = FollowPairing(target, remoteWorkspaceId, address, certificateSha256, enrollmentKey, scheduler)
+            val pairing = FollowPairing(target, remoteWorkspaceId, address, certificateSha256, enrollmentKey, scheduler, nowNanos)
             val delivery = FollowPairingEnvelope(deliveryKey)
             selection?.let(::discard)
             Route().also { selection = Selection(it, pairing, delivery) }
@@ -72,6 +81,10 @@ class FollowRouteController internal constructor(
             val selected = selection ?: return false
             val exact = selected.ready?.takeIf { it.attempt === attempt } ?: return false
             selected.ready = null
+            if (exact.approval.deadlineNanos - nowNanos() <= 0) {
+                exact.approval.close()
+                return false
+            }
             selected.connecting = exact
             exact
         }
@@ -102,6 +115,21 @@ class FollowRouteController internal constructor(
     /** Resolve fresh at render time. Stale attempts cannot read the replacement. */
     fun status(attempt: Attempt): FollowStatus? = synchronized(lock) {
         selection?.current?.takeIf { it.attempt === attempt }?.let { client.status(it.handle) }
+    }
+
+    /** Recheck a route on foreground return without renewing the lease or selecting a new route. */
+    fun recheck(route: Route): Boolean = synchronized(lock) {
+        val selected = matching(route) ?: return false
+        selected.ready?.takeIf { it.approval.deadlineNanos - nowNanos() <= 0 }?.let {
+            selected.ready = null
+            it.approval.close()
+        }
+        selected.connecting?.takeIf { it.approval.expired(nowNanos()) }?.let {
+            selected.connecting = null
+            it.approval.close()
+        }
+        selected.current?.let { client.status(it.handle) }
+        true
     }
 
     /** A stale route cannot be removed by a delayed settings or lifecycle callback. */

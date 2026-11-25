@@ -21,9 +21,11 @@
 - [路由控制器](../../deepseek-harness/src/main/kotlin/com/cordiact/harness/deepseek/FollowRouteController.kt)按已配置路由、审批和载体分别核验原对象。重新配置或显式开启新挑战时立即清除旧状态，关闭旧握手与原投影；每次选择或重连都创建新世代，即使所有 ID 相同。晚到的响应或配置回调不能发布、读取或关闭新状态。必须先收到当前世代的完整基线。进程内归约器会忽略已处理编号；[管道适配器](../../deepseek-harness/src/main/kotlin/com/cordiact/harness/deepseek/FollowPipeReceiver.kt)则严格使用 Host 帧自带的交付序号，首个为 `0`，重复、跳跃、游标倒退、畸形内容均结束当前世代并清除内容，绝不在客户端重新编号。编号不是 Host 会话日志游标；后者允许相同或跳增。
 - 断线或收到撤权时立即清除当前投影，不把旧内容当成在线状态；离开页面可清除整个选择。[端侧生命周期](../../deepseek-harness/src/main/kotlin/com/cordiact/harness/deepseek/FollowPipeLifecycle.kt)一次接管一个已核验、独占的载体；终止时先清状态，再请求取消原载体。首帧最长等 3 秒，端侧投影最多保留 30 秒，或以调用方提供的更早授权期限为准。即使正常流保持空闲或继续有更新也不续租；读入和状态读取同步复核单调截止，不依赖后台定时回调先执行。不自动重连、重放、读历史或恢复授权。本地截止不证明网络分区，也不代替 Host 撤权。[单次读循环](../../deepseek-harness/src/main/kotlin/com/cordiact/harness/deepseek/FollowPipeClient.kt)接管其绑定的流，用独立执行器读取有界字节，不打开进程或认证；读取 EOF、错误、执行器拒绝或选中变化时，清退同一载体。截止时取消须能解除实际阻塞读取，不能只标记逻辑关闭。
 
+Android 接入时应给路由控制器传入包含休眠时间的单调 `SystemClock.elapsedRealtimeNanos`，不可使用墙钟或仅统计唤醒时间的时钟。同一时钟贯穿配对、TLS 握手和投影。前台恢复时，以原路由调用 `recheck`，不等待调度器重启即可清退已过期的审批、握手和投影；随后重新读取状态再渲染。该检查不唤醒设备、不续租、不重新连接，当前未接 Android 生命周期。
+
 ## 验证
 
-[本地回归](../../deepseek-harness/src/test/kotlin/com/cordiact/harness/deepseek/ReadOnlySessionFollowTest.kt)覆盖同游标状态替换、同目标重连、A→B→A、跨实例和错目标响应、重复／缺失／无效帧以及撤权后晚到数据。七模块 JVM 共 1,227 项通过，含路由换代和密封配对回归：晚到握手不能发布，阻塞握手主动关闭，旧审批失效，轮换公钥后拒绝旧签名，且明文、错误交付密钥、错误挑战、篡改或重放不能获批。TLS 测试用即时生成的合成证书，覆盖精确指纹和协议、凭据只用一次、失败不发凭据、握手截止及端侧撤权关连接。另有 3 项显式互操作测试经真实子进程管道验证首帧、更新、EOF 清除、旧流隔离，以及 Host 保持静默时本地截止能主动关闭管道并解除阻塞读取。另有 4 项 [Node ↔ Kotlin 回环 TLS 互操作](../../deepseek-harness/src/test/kotlin/com/cordiact/harness/deepseek/FollowTlsInteropTest.kt)：除更新、错域、撤权、预握手和监听关闭外，新增仅转发加密字节的回环故障夹具。夹具隔离 Host 侧流关闭与客户端 EOF，实测客户端仍按配对的本地 15 秒截止关闭连接并清除投影，无须界面轮询。所有互操作使用合成数据，不依赖外网，未生成 APK。
+[本地回归](../../deepseek-harness/src/test/kotlin/com/cordiact/harness/deepseek/ReadOnlySessionFollowTest.kt)覆盖同游标状态替换、同目标重连、A→B→A、跨实例和错目标响应、重复／缺失／无效帧以及撤权后晚到数据。七模块 JVM 共 1,228 项通过，含路由换代和密封配对回归：晚到握手不能发布，阻塞握手主动关闭，旧审批失效，轮换公钥后拒绝旧签名，且明文、错误交付密钥、错误挑战、篡改或重放不能获批。TLS 测试用即时生成的合成证书，覆盖精确指纹和协议、凭据只用一次、失败不发凭据、握手截止及端侧撤权关连接。另有 3 项显式互操作测试经真实子进程管道验证首帧、更新、EOF 清除、旧流隔离，以及 Host 保持静默时本地截止能主动关闭管道并解除阻塞读取。另有 5 项 [Node ↔ Kotlin 回环 TLS 互操作](../../deepseek-harness/src/test/kotlin/com/cordiact/harness/deepseek/FollowTlsInteropTest.kt)：除更新、错域、撤权、预握手和监听关闭外，新增仅转发加密字节的回环故障夹具。夹具隔离 Host 侧流关闭与客户端 EOF，实测客户端仍按配对的本地 15 秒截止关闭连接并清除投影，无须界面轮询。另用不同时间原点的可控时钟和阻塞定时器模拟休眠：前台复核能在 3 秒握手截止清退握手，也能在 15 秒授权截止清退已连接的投影。这不是 Android 实机休眠验证。所有互操作使用合成数据，不依赖外网，未生成 APK。
 
 ## Host 插件验证
 

@@ -25,7 +25,9 @@ class FollowPipeLifecycle internal constructor(
     private val nowNanos: () -> Long,
     private val schedule: (delayNanos: Long, action: () -> Unit) -> (() -> Unit),
 ) : AutoCloseable {
-    constructor(scheduler: ScheduledExecutorService) : this(System::nanoTime, { delay, action ->
+    constructor(scheduler: ScheduledExecutorService) : this(scheduler, System::nanoTime)
+
+    internal constructor(scheduler: ScheduledExecutorService, nowNanos: () -> Long) : this(nowNanos, { delay, action ->
         val future = scheduler.schedule({ action() }, delay, TimeUnit.NANOSECONDS)
         val cancel: () -> Unit = { future.cancel(false) }
         cancel
@@ -54,8 +56,10 @@ class FollowPipeLifecycle internal constructor(
      * Supply a conservative remaining grant budget; the local cap may end earlier than the Host.
      */
     fun begin(pipe: FollowPipeOwnership, remainingMillis: Long): Handle? {
-        return beginUntil(pipe, followDeadline(nowNanos(), remainingMillis))
+        return beginUntil(pipe, deadlineFrom(remainingMillis))
     }
+
+    internal fun deadlineFrom(remainingMillis: Long): Long = followDeadline(nowNanos(), remainingMillis)
 
     /** Preserve the existing local deadline across request dispatch and carrier handoff. */
     internal fun beginUntil(pipe: FollowPipeOwnership, deadlineNanos: Long): Handle? {

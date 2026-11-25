@@ -21,13 +21,18 @@ import javax.net.ssl.X509TrustManager
  * discovery, system-CA fallback, HTTP, proxy configuration, redirect, or automatic retry.
  * Call [connect] off-thread with a live deadline scheduler independent of the connecting thread.
  */
-class PinnedFollowTlsConnector(
+class PinnedFollowTlsConnector internal constructor(
     private val target: FollowTarget,
     private val remoteWorkspaceId: String,
     private val address: InetSocketAddress,
     certificateSha256: ByteArray,
     private val scheduler: ScheduledExecutorService,
+    private val nowNanos: () -> Long,
 ) {
+    constructor(target: FollowTarget, remoteWorkspaceId: String, address: InetSocketAddress,
+                certificateSha256: ByteArray, scheduler: ScheduledExecutorService) :
+        this(target, remoteWorkspaceId, address, certificateSha256, scheduler, System::nanoTime)
+
     private val pin = certificateSha256.copyOf()
 
     init {
@@ -56,15 +61,17 @@ class PinnedFollowTlsConnector(
     ) : AutoCloseable {
         private var credential: String? = token
         private var dialing: Socket? = null
+        private var dialDeadline = 0L
         private var closed = false
 
         @Synchronized
         internal fun take(): String? = credential.also { credential = null }
 
         @Synchronized
-        internal fun track(socket: Socket): Boolean {
+        internal fun track(socket: Socket, deadline: Long): Boolean {
             if (closed) return false
             dialing = socket
+            dialDeadline = deadline
             return true
         }
 
@@ -74,6 +81,10 @@ class PinnedFollowTlsConnector(
             if (dialing === socket) dialing = null
             return !closed
         }
+
+        @Synchronized
+        internal fun expired(nowNanos: Long): Boolean =
+            deadline - nowNanos <= 0 || (dialing != null && dialDeadline - nowNanos <= 0)
 
         override fun close() {
             val socket = synchronized(this) {
@@ -87,7 +98,7 @@ class PinnedFollowTlsConnector(
 
     /** Bind a grant supplied by the trusted enrollment flow. No network is used here. */
     fun grant(token: String, remainingMillis: Long): Grant =
-        grantUntil(token, followDeadline(System.nanoTime(), remainingMillis))
+        grantUntil(token, followDeadline(nowNanos(), remainingMillis))
 
     internal fun grantUntil(token: String, deadline: Long): Grant {
         require(TOKEN.matches(token)) { "Invalid follow grant" }
@@ -98,7 +109,7 @@ class PinnedFollowTlsConnector(
     fun connect(grant: Grant): ApprovedFollowPipe? {
         if (grant.owner !== this) return null
         val token = grant.take() ?: return null
-        val start = System.nanoTime()
+        val start = nowNanos()
         val remaining = grant.deadline - start
         if (remaining <= 0) return null
         val budget = minOf(remaining, TimeUnit.MILLISECONDS.toNanos(CONNECT_MS))
@@ -107,7 +118,7 @@ class PinnedFollowTlsConnector(
         val connecting = AtomicBoolean(true)
         var handedOff = false
         try {
-            if (!grant.track(raw)) return null
+            if (!grant.track(raw, deadline)) return null
             val timeout = scheduler.schedule({
                 if (connecting.compareAndSet(true, false)) closeRaw(raw)
             }, budget, TimeUnit.NANOSECONDS)
@@ -121,8 +132,8 @@ class PinnedFollowTlsConnector(
                 socket.startHandshake()
                 // Check the session leaf as well; do not rely on trust callbacks firing for resumption.
                 verifyLeaf(socket.session.peerCertificates.firstOrNull() as? X509Certificate)
-                if (socket.applicationProtocol != PROTOCOL || deadline - System.nanoTime() <= 0 ||
-                    grant.deadline - System.nanoTime() <= 0 || !connecting.compareAndSet(true, false)) return null
+                if (socket.applicationProtocol != PROTOCOL || deadline - nowNanos() <= 0 ||
+                    grant.deadline - nowNanos() <= 0 || !connecting.compareAndSet(true, false)) return null
                 raw.soTimeout = 0
                 socket.soTimeout = 0
                 val pipe = ApprovedFollowPipe.until(target, remoteWorkspaceId, token, grant.deadline,

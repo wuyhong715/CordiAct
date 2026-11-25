@@ -15,9 +15,11 @@ import java.security.interfaces.ECPublicKey
 import java.security.spec.ECGenParameterSpec
 import java.util.Base64
 import java.util.concurrent.Callable
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -92,6 +94,32 @@ class FollowTlsInteropTest {
         }
     }
 
+    @Test fun foregroundRecheckUsesOneElapsedClockAcrossPairingTlsAndProjection() = withHost("silent-relay") { host, _ ->
+        // A different epoch catches accidental comparisons against System.nanoTime in any layer.
+        val elapsed = AtomicLong(Long.MIN_VALUE + TimeUnit.SECONDS.toNanos(30))
+        val reader = Executors.newSingleThreadExecutor()
+        try {
+            FollowRouteController(host.scheduler, reader, elapsed::get).use { controller ->
+                val oldRoute = host.configure(controller, target)
+                val route = host.configure(controller, target)
+                val attempt = host.followPaired(controller, route)
+                val baseline = FollowStatus.Current(FollowSessionState(2, true, false))
+                assertEquals(baseline, awaitStatus({ controller.status(attempt) }) { it == baseline })
+                host.command("freeze")
+                assertEquals(baseline, controller.status(attempt))
+                val unblockTimer = CountDownLatch(1)
+                host.scheduler.execute { unblockTimer.await() }
+                try {
+                    elapsed.addAndGet(TimeUnit.SECONDS.toNanos(15))
+                    assertEquals(false, controller.recheck(oldRoute))
+                    assertTrue(controller.recheck(route))
+                    host.command("client-closed") // No timer or subsequent status read may perform the close.
+                    assertEquals(disconnected, controller.status(attempt))
+                } finally { unblockTimer.countDown() }
+            }
+        } finally { reader.shutdownNow() }
+    }
+
     private fun awaitStatus(
         client: FollowPipeClient,
         handle: FollowPipeLifecycle.Handle,
@@ -121,7 +149,7 @@ class FollowTlsInteropTest {
         private val pin: ByteArray,
         private val enrollmentKey: ECPublicKey,
         private val deliveryKey: ByteArray,
-        private val scheduler: ScheduledExecutorService,
+        val scheduler: ScheduledExecutorService,
     ) {
         fun follow(client: FollowPipeClient, index: Int, target: FollowTarget, remoteWorkspaceId: String = "remote-a"): FollowPipeLifecycle.Handle? {
             val connector = PinnedFollowTlsConnector(target, remoteWorkspaceId, address, pin, scheduler)

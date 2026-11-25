@@ -47,7 +47,7 @@ class FollowPairing internal constructor(
     }
 
     private val pin = certificateSha256.copyOf()
-    private val connector = PinnedFollowTlsConnector(target, remoteWorkspaceId, address, pin, scheduler)
+    private val connector = PinnedFollowTlsConnector(target, remoteWorkspaceId, address, pin, scheduler, nowNanos)
     private val scope = listOf(target.connectionId, target.localWorkspaceId, remoteWorkspaceId, target.remoteSessionId,
         address.address.hostAddress, address.port.toString(), hex(pin)).joinToString(" ")
     private var pending: Challenge? = null
@@ -118,6 +118,7 @@ class FollowPairing internal constructor(
     ) : AutoCloseable {
         private val retired = AtomicBoolean()
         internal val deadlineNanos: Long get() = grant.deadline
+        internal fun expired(nowNanos: Long): Boolean = grant.expired(nowNanos)
 
         /** Off-thread; always uses the original approved endpoint and scope. */
         fun connect(): ApprovedFollowPipe? {

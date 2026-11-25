@@ -19,6 +19,7 @@ import java.util.concurrent.Executor
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -103,6 +104,41 @@ class FollowRouteControllerTest {
                     }
                 }
             }
+        } finally {
+            worker.shutdownNow()
+            scheduler.shutdownNow()
+        }
+    }
+
+    @Test fun foregroundRecheckClosesAHandshakeAtItsOwnDeadlineBeforeGrantExpiry() {
+        val scheduler = Executors.newSingleThreadScheduledExecutor()
+        val worker = Executors.newSingleThreadExecutor()
+        val elapsed = AtomicLong(1_000)
+        try {
+            // Hold timer delivery to model a scheduler that does not advance during suspend.
+            val unblockTimer = CountDownLatch(1)
+            scheduler.execute { unblockTimer.await() }
+            try {
+                ServerSocket().use { server ->
+                    server.bind(InetSocketAddress(ip, 0))
+                    server.soTimeout = 2_000
+                    val address = server.localSocketAddress as InetSocketAddress
+                    FollowRouteController(scheduler, Executor { error("No reader before TLS") }, elapsed::get).use { controller ->
+                        val route = configure(controller, address)
+                        val attempt = approve(controller, route, address)
+                        val dial = worker.submit(Callable { controller.connect(attempt) })
+                        server.accept().use { socket ->
+                            socket.soTimeout = 1_500
+                            assertEquals(22, socket.getInputStream().read())
+                            elapsed.addAndGet(TimeUnit.SECONDS.toNanos(3))
+                            assertTrue(controller.recheck(route))
+                            assertFalse(dial.get(1, TimeUnit.SECONDS))
+                            assertFalse(controller.connect(attempt))
+                            assertNull(controller.status(attempt))
+                        }
+                    }
+                }
+            } finally { unblockTimer.countDown() }
         } finally {
             worker.shutdownNow()
             scheduler.shutdownNow()

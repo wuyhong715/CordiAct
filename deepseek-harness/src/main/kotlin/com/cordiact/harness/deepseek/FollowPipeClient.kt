@@ -38,7 +38,7 @@ class FollowPipeClient internal constructor(
 
     /** Internal path for an already requested pipe. */
     internal fun begin(pipe: RequestedFollowPipe, remainingMillis: Long): FollowPipeLifecycle.Handle? =
-        beginUntil(pipe, followDeadline(System.nanoTime(), remainingMillis))
+        beginUntil(pipe, lifecycle.deadlineFrom(remainingMillis))
 
     private fun beginUntil(pipe: RequestedFollowPipe, deadlineNanos: Long): FollowPipeLifecycle.Handle? {
         val port = pipe.take() ?: return null
