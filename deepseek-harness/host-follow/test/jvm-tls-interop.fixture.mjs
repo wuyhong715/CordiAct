@@ -2,7 +2,7 @@ import { createHash, createPrivateKey } from 'node:crypto'
 import { once } from 'node:events'
 import { readFile } from 'node:fs/promises'
 import { connect, createServer } from 'node:net'
-import { createFollowPairingController } from '../pairing-offer.mjs'
+import { createFollowPairingController, describeLoopbackFollowRoute } from '../pairing-offer.mjs'
 import { createFollowService } from '../follow-service.mjs'
 import { listenFollowTls } from '../tls-follow.mjs'
 
@@ -21,13 +21,14 @@ const relay = process.argv[6] === 'silent-relay' ? await listenRelay(listener.po
 const signingKey = createPrivateKey({ key: await readFile(process.argv[3]), format: 'der', type: 'pkcs8' })
 const certificateSha256 = createHash('sha256').update(await readFile(process.argv[4])).digest('hex')
 const deliveryKey = await readFile(process.argv[5])
-const pairing = createFollowPairingController({ authority: service, signingKey, deliveryKey,
-  route: { connectionId: 'host-a', localWorkspaceId: 'local-a', remoteWorkspaceId: 'remote-a',
-    remoteSessionId: 'session-a', ip: '127.0.0.1', port: relay?.port ?? listener.port, certificateSha256 } })
+const route = { connectionId: 'host-a', localWorkspaceId: 'local-a', remoteWorkspaceId: 'remote-a',
+  remoteSessionId: 'session-a', ip: '127.0.0.1', port: relay?.port ?? listener.port, certificateSha256 }
+const pairing = createFollowPairingController({ authority: service, signingKey, deliveryKey, route })
 deliveryKey.fill(0)
 try {
   // Synthetic control channel. No grant or operator command is accepted by the TLS listener itself.
   process.stdout.write(`${relay?.port ?? listener.port} ${grants.map(grant => grant.token).join(' ')}\n`)
+  process.stdout.write(describeLoopbackFollowRoute(route, signingKey))
   process.stdin.setEncoding('ascii')
   let pending = ''
   for await (const chunk of process.stdin) {

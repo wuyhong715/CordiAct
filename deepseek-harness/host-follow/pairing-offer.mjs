@@ -1,5 +1,5 @@
 import { isIPv4 } from 'node:net'
-import { createCipheriv, createHmac, randomBytes, sign, timingSafeEqual } from 'node:crypto'
+import { createCipheriv, createHmac, createPublicKey, randomBytes, sign, timingSafeEqual } from 'node:crypto'
 import { performance } from 'node:perf_hooks'
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}(?![\s\S])/u
@@ -30,6 +30,17 @@ function validatedRoute({ connectionId, localWorkspaceId, remoteWorkspaceId, rem
     throw new TypeError('Invalid approved pairing route or signing key')
   }
   return { ids, fields: { connectionId, localWorkspaceId, remoteWorkspaceId, remoteSessionId, ip, port, certificateSha256 } }
+}
+
+/** Public metadata for explicit provisioning, not a trust assertion or a network advertisement. */
+export function describeLoopbackFollowRoute(route, signingKey) {
+  const { ids, fields } = validatedRoute(route, signingKey)
+  if (fields.ip !== '127.0.0.1') throw new TypeError('A loopback Follow route is required')
+  const signer = createPublicKey(signingKey).export({ type: 'spki', format: 'der' }).toString('hex')
+  if (!/^3059301306072a8648ce3d020106082a8648ce3d03010703420004[0-9a-f]{128}$/u.test(signer)) {
+    throw new TypeError('A canonical P-256 signing key is required')
+  }
+  return `cordiact-follow-route/1 ${ids.join(' ')} ${fields.ip} ${fields.port} ${fields.certificateSha256} ${signer}\n`
 }
 
 /**

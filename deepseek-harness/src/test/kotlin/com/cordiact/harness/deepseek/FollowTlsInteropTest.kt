@@ -11,7 +11,6 @@ import java.security.KeyPairGenerator
 import java.security.KeyStore
 import java.security.MessageDigest
 import java.security.SecureRandom
-import java.security.interfaces.ECPublicKey
 import java.security.spec.ECGenParameterSpec
 import java.util.Base64
 import java.util.concurrent.Callable
@@ -147,7 +146,7 @@ class FollowTlsInteropTest {
         val address: InetSocketAddress,
         private val grants: List<String>,
         private val pin: ByteArray,
-        private val enrollmentKey: ECPublicKey,
+        private val descriptor: FollowRouteDescriptor,
         private val deliveryKey: ByteArray,
         val scheduler: ScheduledExecutorService,
     ) {
@@ -160,7 +159,7 @@ class FollowTlsInteropTest {
         fun controller(client: FollowPipeClient) = FollowRouteController(scheduler, client, FollowPairing.Approval::connect)
 
         fun configure(controller: FollowRouteController, target: FollowTarget) =
-            checkNotNull(controller.configure(target, "remote-a", address, pin, enrollmentKey, deliveryKey))
+            checkNotNull(controller.configure(target, "remote-a", descriptor, deliveryKey))
 
         fun followPaired(controller: FollowRouteController, route: FollowRouteController.Route): FollowRouteController.Attempt {
             val challenge = checkNotNull(controller.challenge(route))
@@ -231,8 +230,13 @@ class FollowTlsInteropTest {
                     check(port != null && port in 1..65535 && grants.size == 2 && grants.all { GRANT.matches(it) }) {
                         "Invalid synthetic TLS control envelope"
                     }
+                    val descriptor = checkNotNull(FollowRouteDescriptor.parse(line(child.inputStream, FollowRouteDescriptor.MAX_LINE) + "\n"))
+                    val address = InetSocketAddress(loopback, port)
+                    assertEquals(address, descriptor.address)
+                    assertTrue(descriptor.certificateSha256().contentEquals(pin))
+                    assertTrue(descriptor.enrollmentKey.encoded.contentEquals(signingKey.public.encoded))
                     FollowPipeClient(scheduler, reads).use {
-                        test(Host(child, InetSocketAddress(loopback, port), grants, pin, signingKey.public as ECPublicKey, deliveryKey, scheduler), it)
+                        test(Host(child, address, grants, pin, descriptor, deliveryKey, scheduler), it)
                     }
                     child.outputStream.close()
                     check(child.waitFor(3, TimeUnit.SECONDS) && child.exitValue() == 0) { "Synthetic TLS Host did not exit cleanly" }

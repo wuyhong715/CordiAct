@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { createHash, generateKeyPairSync, randomBytes, X509Certificate } from 'node:crypto'
+import { createHash, createPublicKey, generateKeyPairSync, randomBytes, X509Certificate } from 'node:crypto'
 import { once } from 'node:events'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { connect as dial } from 'node:net'
@@ -52,6 +52,8 @@ test('the advertised pin matches the peer and stopping clears active and pending
   t.after(() => host.close())
   const { ip, port, certificateSha256 } = host.endpoint
   assert.equal(ip, '127.0.0.1')
+  const spki = createPublicKey(options.signingKey).export({ type: 'spki', format: 'der' })
+  assert.equal(host.descriptor, `cordiact-follow-route/1 host local work session ${ip} ${port} ${certificateSha256} ${spki.toString('hex')}\n`)
   const socket = connect({ host: ip, port, ca: options.identity.certificate, ALPNProtocols: ['cordiact-follow/1'], minVersion: 'TLSv1.3' })
   t.after(() => socket.destroy())
   const socketClosed = once(socket, 'close')

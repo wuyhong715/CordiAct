@@ -61,6 +61,21 @@ class FollowRouteController internal constructor(
         }
     }
 
+    /**
+     * Import only an independently authenticated descriptor and a separately provisioned key.
+     * Check the host-selected scope before replacing the current route; parsing is not trust enrollment.
+     */
+    fun configure(
+        expectedTarget: FollowTarget,
+        expectedRemoteWorkspaceId: String,
+        descriptor: FollowRouteDescriptor,
+        deliveryKey: ByteArray,
+    ): Route? {
+        if (descriptor.target != expectedTarget || descriptor.remoteWorkspaceId != expectedRemoteWorkspaceId) return null
+        return configure(expectedTarget, expectedRemoteWorkspaceId, descriptor.address, descriptor.certificateSha256(),
+            descriptor.enrollmentKey, deliveryKey)
+    }
+
     /** Starting an explicit new attempt clears any previous data and cancels the prior dial. */
     fun challenge(route: Route): FollowPairing.Challenge? = synchronized(lock) {
         val selected = matching(route) ?: return null
