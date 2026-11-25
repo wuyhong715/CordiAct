@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import test from 'node:test'
+import { makeProof } from './challenge-proof.fixture.mjs'
 
 const expected = '0.2.3-alpha.1'
 const profile = 'cordiact-follow-test'
@@ -162,7 +163,11 @@ async function verifyTls(t, child, closed, credentials, scoped) {
     child.send(message)
     return answer.then(([reply]) => reply)
   }
-  const { envelope, unusedEnvelope } = await exchange({ denied, primary, unused })
+  const route = { connectionId: 'fixture-host', localWorkspaceId: 'fixture-local', remoteWorkspaceId: workspace,
+    remoteSessionId: session, ip: '127.0.0.1', port, certificateSha256: pin }
+  const { envelope, unusedEnvelope } = await exchange({ denied, primary, unused,
+    deniedProof: makeProof(delivery, route, denied), primaryProof: makeProof(delivery, route, primary),
+    spareProof: makeProof(spare, route, unused) })
   function checkOffer(encoded, key, challenge) {
     const sealed = Buffer.from(encoded, 'base64')
     const decipher = createDecipheriv('aes-256-gcm', key, sealed.subarray(0, 12))
@@ -219,7 +224,8 @@ async function verifyTls(t, child, closed, credentials, scoped) {
   child.send('unload')
   assert.equal((await frames.next()).done, true)
   await completion
-  const { status } = await exchange({ afterUnload: nonce() })
+  const afterUnload = nonce()
+  const { status } = await exchange({ afterUnload, lateProof: makeProof(delivery, route, afterUnload) })
   assert.equal(status, 'unloaded')
   // Losing the reader dependency tears down the adapter as well as revoking the dormant grant.
   await assert.rejects(open(request(workspace, session, unusedToken)), { code: 'ECONNREFUSED' })

@@ -38,10 +38,10 @@ try {
       const command = pending.slice(0, lf)
       pending = pending.slice(lf + 1)
       if (command.startsWith('pair ')) {
-        const [, nonce, ...extra] = command.split(' ')
+        const [, nonce, proof, ...extra] = command.split(' ')
         if (extra.length) throw new Error('unexpected fixture pairing arguments')
         // Test-only simulated consent; the data socket cannot perform either operation.
-        const review = pairing.capture(nonce)
+        const review = pairing.capture(nonce, proof)
         const envelope = pairing.redeem(review)
         process.stdout.write(`${envelope === null ? 'denied' : envelope.toString('base64')}\n`)
         continue

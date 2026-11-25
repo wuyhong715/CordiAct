@@ -1,5 +1,5 @@
 import { isIPv4 } from 'node:net'
-import { createCipheriv, randomBytes, sign } from 'node:crypto'
+import { createCipheriv, createHmac, randomBytes, sign, timingSafeEqual } from 'node:crypto'
 import { performance } from 'node:perf_hooks'
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}(?![\s\S])/u
@@ -11,6 +11,14 @@ const APPROVAL_MS = 3_000
 
 const validNonce = nonce => typeof nonce === 'string' && HEX_256.test(nonce)
 const validDeliveryKey = key => Buffer.isBuffer(key) && key.length === 32
+const proofKey = deliveryKey => createHmac('sha256', deliveryKey).update('cordiact-follow-proof-key/1\n', 'ascii').digest()
+
+function challengeProof(key, route, nonce) {
+  const { connectionId, localWorkspaceId, remoteWorkspaceId, remoteSessionId, ip, port, certificateSha256 } = route
+  return createHmac('sha256', key).update(
+    `cordiact-follow-proof/1 ${connectionId} ${localWorkspaceId} ${remoteWorkspaceId} ${remoteSessionId} ${ip} ${port} ${certificateSha256} ${nonce}\n`, 'ascii',
+  ).digest()
+}
 
 function validatedRoute({ connectionId, localWorkspaceId, remoteWorkspaceId, remoteSessionId, ip, port, certificateSha256 }, signingKey) {
   const ids = [connectionId, localWorkspaceId, remoteWorkspaceId, remoteSessionId]
@@ -72,7 +80,7 @@ export function issueSealedFollowPairingOffer({ authority, signingKey, route, no
 /**
  * In-process operator control for one approved route. Give capture/redeem only to the trusted
  * operator adapter; these methods are not endpoints and do not authenticate an operator.
- * One issuance per challenge for this controller's lifetime, with a hard cap and no eviction.
+ * One review per authenticated challenge for this controller's lifetime, with no eviction.
  * Create a replacement with newly provisioned trust material and close the old one on rotation.
  */
 export function createFollowPairingController({ authority, signingKey, route, deliveryKey }, now = () => performance.now()) {
@@ -80,6 +88,7 @@ export function createFollowPairingController({ authority, signingKey, route, de
   Object.freeze(fields)
   if (!validDeliveryKey(deliveryKey)) throw new TypeError('Invalid pairing delivery key')
   const key = Buffer.from(deliveryKey)
+  const challengeKey = proofKey(key)
   const seen = new Set()
   let active = null
   let pending = null
@@ -107,8 +116,14 @@ export function createFollowPairingController({ authority, signingKey, route, de
   }
 
   // Capture the exact challenge and immutable route for review. No authority call is made here.
-  function capture(nonce) {
-    if (closed || issuing || !validNonce(nonce) || seen.has(nonce) || seen.size >= MAX_CHALLENGES || pending?.ticket.nonce === nonce) return null
+  function capture(nonce, proof) {
+    if (closed || issuing || !validNonce(nonce) || !validNonce(proof) || seen.has(nonce) || seen.size >= MAX_CHALLENGES) return null
+    const expected = challengeProof(challengeKey, fields, nonce)
+    try {
+      if (!timingSafeEqual(expected, Buffer.from(proof, 'hex'))) return null
+    } finally { expected.fill(0) }
+    // A verified request is single-use even when the operator denies or the review expires.
+    seen.add(nonce)
     const ticket = Object.freeze({ nonce, route: fields })
     pending = { ticket, deadline: now() + APPROVAL_MS }
     return ticket
@@ -120,9 +135,7 @@ export function createFollowPairingController({ authority, signingKey, route, de
     const { deadline } = pending
     pending = null
     const { nonce } = ticket
-    // Capture is bounded and side-effect free; only an attempted redemption consumes the challenge.
     if (now() >= deadline) return null
-    seen.add(nonce)
     issuing = true
     cancelled = false
     try {
@@ -146,6 +159,7 @@ export function createFollowPairingController({ authority, signingKey, route, de
     if (closed) return
     closed = true
     key.fill(0)
+    challengeKey.fill(0)
     seen.clear()
     revoke()
   }

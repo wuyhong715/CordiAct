@@ -4,13 +4,17 @@ import test from 'node:test'
 import { createFollowService } from '../follow-service.mjs'
 import { createFollowPairingController, issueFollowPairingOffer, issueSealedFollowPairingOffer } from '../pairing-offer.mjs'
 
+import { makeProof } from './challenge-proof.fixture.mjs'
+
 const { privateKey, publicKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' })
 const route = Object.freeze({ connectionId: 'host-a', localWorkspaceId: 'local-a', remoteWorkspaceId: 'remote-a',
   remoteSessionId: 'session-a', ip: '127.0.0.1', port: 12345, certificateSha256: '00'.repeat(32) })
 const nonce = '01'.repeat(32)
 const token = `caf1_${'A'.repeat(43)}`
 const challenge = ordinal => ordinal.toString(16).padStart(64, '0')
-const consent = (controller, nonce) => controller.redeem(controller.capture(nonce))
+const testKey = randomBytes(32)
+const capture = (controller, nonce, key = testKey) => controller.capture(nonce, makeProof(key, route, nonce))
+const consent = (controller, nonce, key) => controller.redeem(capture(controller, nonce, key))
 
 function unseal(envelope, key, nonce) {
   const decipher = createDecipheriv('aes-256-gcm', key, envelope.subarray(0, 12))
@@ -90,19 +94,19 @@ test('controller binds one route and key, rejects duplicate challenges and retir
   try {
     inputRoute.remoteWorkspaceId = 'wrong'
     inputKey.fill(0)
-    const firstToken = readGrant(consent(controller, challenge(1)), challenge(1))
+    const firstToken = readGrant(consent(controller, challenge(1), originalKey), challenge(1))
     const stream = open(firstToken)
     assert.equal((await stream.next()).done, false)
-    assert.equal(consent(controller, challenge(1)), null)
-    assert.equal(consent(controller, 'bad'), null)
+    assert.equal(consent(controller, challenge(1), originalKey), null)
+    assert.equal(consent(controller, 'bad', originalKey), null)
     assert.equal(stream.signal.aborted, false)
     const pendingRead = stream.next()
-    const nextToken = readGrant(consent(controller, challenge(2)), challenge(2))
+    const nextToken = readGrant(consent(controller, challenge(2), originalKey), challenge(2))
     assert.deepEqual(await pendingRead, { done: true, reason: 'access-lost' })
     assert.equal(open(firstToken), null)
     controller.close()
     assert.equal(open(nextToken), null)
-    assert.equal(consent(controller, challenge(3)), null)
+    assert.equal(consent(controller, challenge(3), originalKey), null)
   } finally {
     controller.close()
     service.dispose()
@@ -112,40 +116,65 @@ test('controller binds one route and key, rejects duplicate challenges and retir
 test('capture is passive and redeem requires the exact live review from this controller', () => {
   let attempts = 0
   const authority = { issue() { attempts++; return { token, revoke() {} } } }
-  const cfg = { authority, signingKey: privateKey, route, deliveryKey: randomBytes(32) }
+  const cfg = { authority, signingKey: privateKey, route, deliveryKey: testKey }
   let now = 0
   const controller = createFollowPairingController(cfg, () => now)
   const other = createFollowPairingController(cfg, () => now)
   try {
-    const original = controller.capture(challenge(1))
+    const original = capture(controller, challenge(1))
     assert.equal(attempts, 0)
     assert.deepEqual(original.route, route)
     assert.ok(Object.isFrozen(original) && Object.isFrozen(original.route))
     assert.equal(other.redeem(original), null)
     assert.equal(controller.redeem({ ...original }), null)
-    const current = controller.capture(challenge(2))
+    const current = capture(controller, challenge(2))
     assert.equal(controller.redeem(original), null)
     assert.equal(controller.dismiss(original), false)
     assert.equal(controller.dismiss(current), true)
     assert.equal(controller.redeem(current), null)
-    const expired = controller.capture(challenge(3))
+    const expired = capture(controller, challenge(3))
     now = 3_000
     assert.equal(controller.redeem(expired), null)
-    const withdrawn = controller.capture(challenge(4))
+    const withdrawn = capture(controller, challenge(4))
     controller.revoke()
     assert.equal(controller.redeem(withdrawn), null)
     assert.equal(attempts, 0)
-    const reviewed = controller.capture(challenge(5))
+    const reviewed = capture(controller, challenge(5))
     assert.ok(Buffer.isBuffer(controller.redeem(reviewed)))
     assert.equal(controller.redeem(reviewed), null)
     assert.equal(attempts, 1)
   } finally { controller.close(); other.close() }
 })
 
+test('only an exact proof reaches review; denial consumes it without issuing a grant', () => {
+  let issued = 0
+  const authority = { issue() { issued++; return { token, revoke() {} } } }
+  const controller = createFollowPairingController({ authority, signingKey: privateKey, route, deliveryKey: testKey })
+  try {
+    const existing = capture(controller, challenge(1))
+    assert.ok(existing)
+    const next = challenge(2)
+    const exact = makeProof(testKey, route, next)
+    for (const proof of [undefined, exact.toUpperCase(), `${exact}\n`, makeProof(randomBytes(32), route, next),
+      makeProof(testKey, route, challenge(3)), ...Object.entries({ connectionId: 'other-host', localWorkspaceId: 'other-local',
+        remoteWorkspaceId: 'other-work', remoteSessionId: 'other-session', ip: '127.0.0.2', port: 12346,
+        certificateSha256: '01'.repeat(32) }).map(([field, value]) => makeProof(testKey, { ...route, [field]: value }, next))]) {
+      assert.equal(controller.capture(next, proof), null)
+    }
+    assert.equal(issued, 0)
+    assert.ok(controller.redeem(existing))
+    const denied = controller.capture(next, exact)
+    assert.ok(denied)
+    assert.equal(controller.dismiss(denied), true)
+    assert.equal(controller.capture(next, exact), null)
+    assert.equal(issued, 1)
+  } finally { controller.close() }
+})
+
 test('failed issuance consumes the challenge and the bounded log never evicts it', () => {
   let attempts = 0
   const authority = { issue() { attempts++; throw new Error('source unavailable') } }
-  const controller = createFollowPairingController({ authority, signingKey: privateKey, route, deliveryKey: randomBytes(32) })
+  const controller = createFollowPairingController({ authority, signingKey: privateKey, route, deliveryKey: testKey })
   try {
     for (let i = 0; i < 256; i++) assert.equal(consent(controller, challenge(i)), null)
     assert.equal(consent(controller, challenge(0)), null)
@@ -161,7 +190,7 @@ test('failed replacement does not restore the previous grant', () => {
     if (++attempts > 1) throw new Error('source unavailable')
     return { token, revoke: () => { revoked++ } }
   } }
-  const controller = createFollowPairingController({ authority, signingKey: privateKey, route, deliveryKey: randomBytes(32) })
+  const controller = createFollowPairingController({ authority, signingKey: privateKey, route, deliveryKey: testKey })
   try {
     assert.ok(Buffer.isBuffer(consent(controller, challenge(1))))
     assert.equal(consent(controller, challenge(2)), null)
@@ -180,7 +209,7 @@ test('revoking during issuance cannot publish an offer or re-enter issuance', ()
     controller.revoke()
     return { token, revoke: () => { revoked++ } }
   } }
-  const controller = createFollowPairingController({ authority, signingKey: privateKey, route, deliveryKey: randomBytes(32) })
+  const controller = createFollowPairingController({ authority, signingKey: privateKey, route, deliveryKey: testKey })
   try {
     assert.equal(consent(controller, challenge(1)), null)
     assert.equal(consent(controller, challenge(1)), null)

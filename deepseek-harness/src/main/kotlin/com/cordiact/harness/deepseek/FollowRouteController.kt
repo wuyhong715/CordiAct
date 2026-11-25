@@ -68,6 +68,12 @@ class FollowRouteController internal constructor(
         selected.pairing.challenge()
     }
 
+    /** Produce an out-of-band proof only for this route's exact live challenge. Do not log it. */
+    fun proof(route: Route, challenge: FollowPairing.Challenge): String? = synchronized(lock) {
+        val selected = matching(route) ?: return null
+        selected.delivery.proof(selected.pairing, challenge)
+    }
+
     /** Accept only the sealed response for the current challenge; there is no plaintext fallback. */
     fun approve(route: Route, challenge: FollowPairing.Challenge, envelope: ByteArray): Attempt? = synchronized(lock) {
         val selected = matching(route) ?: return null

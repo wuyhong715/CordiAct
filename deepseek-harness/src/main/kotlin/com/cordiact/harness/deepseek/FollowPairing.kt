@@ -107,6 +107,10 @@ class FollowPairing internal constructor(
     }
 
     @Synchronized
+    internal fun proofMessage(challenge: Challenge): ByteArray? =
+        if (isPending(challenge)) "cordiact-follow-proof/1 $scope ${challenge.nonce}\n".encodeToByteArray() else null
+
+    @Synchronized
     internal fun discardExpiredChallenge() {
         pending?.let(::isPending)
     }

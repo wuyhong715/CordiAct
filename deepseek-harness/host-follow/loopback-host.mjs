@@ -34,7 +34,7 @@ export async function startLoopbackFollowHost({ reader, authority, identity, sig
     signal?.addEventListener('abort', abort, { once: true })
     void listener.closed.then(abort)
     return Object.freeze({ endpoint, close,
-      approve: nonce => approveFollowOnTerminal({ controller: pairing, nonce, signal: cancelled.signal }),
+      approve: (nonce, proof) => approveFollowOnTerminal({ controller: pairing, nonce, proof, signal: cancelled.signal }),
       revoke: () => pairing.revoke(),
     })
   } catch (error) {

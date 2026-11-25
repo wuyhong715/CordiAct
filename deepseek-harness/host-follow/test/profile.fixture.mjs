@@ -133,14 +133,17 @@ async function verify(ctx) {
       const requestPairing = once(process, 'message')
       process.send({ workspace: wa.id, session: replacement.id, wrongWorkspace: wb.id,
         wrongSession: two.id, port: host.endpoint.port })
-      const [{ denied, primary, unused }] = await requestPairing
+      const [{ denied, primary, unused, deniedProof, primaryProof, spareProof }] = await requestPairing
       for (const nonce of [denied, primary, unused]) assert.match(nonce, /^[0-9a-f]{64}$/u)
       assert.equal(new Set([denied, primary, unused]).size, 3)
-      assert.equal(await host.approve(denied), null)
-      const envelope = await host.approve(primary)
-      const unusedEnvelope = await approveFollowOnTerminal({ controller: spare, nonce: unused })
-      assert.ok(envelope && unusedEnvelope, 'Both reviews must be approved on the PTY')
       assert.equal(await host.approve(primary), null)
+      assert.equal(await host.approve(primary, spareProof), null)
+      assert.equal(await host.approve(denied, deniedProof), null)
+      assert.equal(await host.approve(denied, deniedProof), null) // No second prompt after denial.
+      const envelope = await host.approve(primary, primaryProof)
+      const unusedEnvelope = await approveFollowOnTerminal({ controller: spare, nonce: unused, proof: spareProof })
+      assert.ok(envelope && unusedEnvelope, 'Both reviews must be approved on the PTY')
+      assert.equal(await host.approve(primary, primaryProof), null)
       const update = control('update', () => replacement.append('turn/start', { turn: 1 }))
       process.send({ envelope: envelope.toString('base64'), unusedEnvelope: unusedEnvelope.toString('base64') })
       await update
@@ -151,19 +154,19 @@ async function verify(ctx) {
         assert.deepEqual(await unloadRead, { done: true, reason: 'disconnected' })
       })
       // Losing the injected services retires the assembly, not just the projection.
-      const [{ afterUnload }] = await once(process, 'message')
+      const [{ afterUnload, lateProof }] = await once(process, 'message')
       assert.notEqual(afterUnload, primary)
       assert.notEqual(afterUnload, unused)
       assert.throws(() => authority.issue(wa.id, replacement.id, 15_000))
       assert.match(afterUnload, /^[0-9a-f]{64}$/u)
       assert.equal(ctx.get('cordiactFollowLoopback'), undefined)
-      assert.equal(await host.approve(afterUnload), null)
+      assert.equal(await host.approve(afterUnload, lateProof), null)
       const stop = control('stop', async () => {
         const adapter = [...ctx.loader.entries()].find(row => row.options.id === 'cordiact-follow-loopback')
         await adapter.update({ disabled: true })
         assert.equal(ctx.get('cordiactFollowLoopback'), undefined)
         assert.equal(await assembly.start(), null)
-        assert.equal(await host.approve(afterUnload), null)
+        assert.equal(await host.approve(afterUnload, lateProof), null)
       })
       process.send({ status: 'unloaded' })
       await stop

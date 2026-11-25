@@ -10,7 +10,7 @@ let busy = false
  * terminal access is not operator authentication (a PTY holder can answer). No secrets are printed.
  * Never expose this operation on a remotely driven data socket or reuse automation stdin.
  */
-export async function approveFollowOnTerminal({ controller, nonce, signal }) {
+export async function approveFollowOnTerminal({ controller, nonce, proof, signal }) {
   if (busy || signal?.aborted || !isatty(0) || !isatty(2)) return null
   const input = process.stdin
   const output = process.stderr
@@ -19,7 +19,7 @@ export async function approveFollowOnTerminal({ controller, nonce, signal }) {
   busy = true
   let review
   try {
-    review = controller.capture(nonce)
+    review = controller.capture(nonce, proof)
     if (!review || signal?.aborted) return null
     const code = randomBytes(4).toString('hex')
     const route = review.route

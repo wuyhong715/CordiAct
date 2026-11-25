@@ -2,6 +2,7 @@ package com.cordiact.harness.deepseek
 
 import java.security.GeneralSecurityException
 import javax.crypto.Cipher
+import javax.crypto.Mac
 import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
@@ -11,6 +12,20 @@ internal class FollowPairingEnvelope(key: ByteArray) : AutoCloseable {
 
     // Serialized with route changes by the owner. Provider-internal key copies are not controllable.
     override fun close() { bytes.fill(0) }
+
+    fun proof(pairing: FollowPairing, challenge: FollowPairing.Challenge): String? {
+        val message = pairing.proofMessage(challenge) ?: return null
+        val key = mac(bytes, "cordiact-follow-proof-key/1\n".encodeToByteArray())
+        val tag = try { mac(key, message) } finally { key.fill(0) }
+        return try {
+            tag.toHexString().takeIf { pairing.isPending(challenge) }
+        } finally { tag.fill(0) }
+    }
+
+    private fun mac(key: ByteArray, message: ByteArray): ByteArray = Mac.getInstance("HmacSHA256").run {
+        init(SecretKeySpec(key, "HmacSHA256"))
+        doFinal(message)
+    }
 
     fun approve(pairing: FollowPairing, challenge: FollowPairing.Challenge, envelope: ByteArray): FollowPairing.Approval? {
         if (!pairing.isPending(challenge) || envelope.size !in 38..MAX_ENVELOPE) return null
