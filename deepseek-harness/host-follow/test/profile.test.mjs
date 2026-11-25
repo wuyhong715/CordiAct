@@ -16,6 +16,7 @@ const profile = 'cordiact-follow-test'
 const stage = process.env.CORDIACT_PINNED_DSH_TEST_ROOT
 const built = process.env.CORDIACT_BUILT_DSH_TEST_ROOT
 const loopbackTls = process.env.CORDIACT_BUILT_DSH_TEST_TLS === '1'
+const shellQuote = value => `'${value.replaceAll("'", "'\\''")}'`
 assert.ok(!(stage && built), 'Choose exactly one Host artifact mode')
 assert.ok(!loopbackTls || built, 'Loopback TLS requires the built artifact mode')
 
@@ -76,15 +77,38 @@ test(`the pinned DSH CLI loads the synthetic ${loopbackTls ? 'loopback TLS' : 'n
     t.after(() => { delivery.fill(0); spare.fill(0) })
   }
   const dataPipe = loopbackTls ? 'ignore' : 'pipe'
-  const child = spawn(process.execPath, args, { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe', dataPipe, dataPipe, 'ipc'] })
+  // script provides tty stdin/stderr while the subprocess keeps its separate inherited IPC.
+  const command = ['exec', ...[process.execPath, ...args].map(shellQuote)].join(' ')
+  const child = loopbackTls
+    ? spawn('/usr/bin/script', ['-qefc', command, '/dev/null'], {
+      cwd: root, env: { ...env, SHELL: '/bin/sh' }, stdio: ['pipe', 'pipe', 'pipe', 'ignore', 'ignore', 'ipc'],
+    })
+    : spawn(process.execPath, args, { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe', dataPipe, dataPipe, 'ipc'] })
   const closed = once(child, 'close')
   t.after(async () => {
-    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
+    if (child.exitCode === null && child.signalCode === null) child.kill(loopbackTls ? 'SIGTERM' : 'SIGKILL')
     await closed
   })
   let stdout = ''
   let stderr = ''
-  child.stdout.setEncoding('utf8').on('data', chunk => { stdout += chunk })
+  const replies = []
+  let promptTail = ''
+  child.stdout.setEncoding('utf8').on('data', chunk => {
+    stdout += chunk
+    if (!loopbackTls) return
+    promptTail += chunk
+    // Respond once per complete prompt, on the PTY only. Test IPC never confirms consent.
+    for (;;) {
+      const lf = promptTail.indexOf('\n')
+      if (lf < 0) break
+      const row = promptTail.slice(0, lf)
+      promptTail = promptTail.slice(lf + 1)
+      const code = /3 秒内输入 approve ([0-9a-f]{8}) 并回车/.exec(row)?.[1]
+      if (!code || replies.length >= 3) continue
+      replies.push(code)
+      child.stdin.write(`${replies.length === 1 ? 'deny' : `approve ${code}`}\n`)
+    }
+  })
   child.stderr.setEncoding('utf8').on('data', chunk => { stderr += chunk })
   const [grant] = await Promise.race([
     once(child, 'message'), closed.then(() => assert.fail(`Follow profile exited before grant: ${stderr}`)),
@@ -97,7 +121,13 @@ test(`the pinned DSH CLI loads the synthetic ${loopbackTls ? 'loopback TLS' : 'n
       throw error
     }
     assert.deepEqual(await closed, [0, null], stderr)
-    assert.match(stdout, /^CORDIACT_FOLLOW_PROFILE_OK$/m)
+    assert.match(stdout, /^CORDIACT_FOLLOW_PROFILE_OK\r?$/m)
+    assert.equal(replies.length, 3)
+    assert.ok(stdout.includes(`证书 SHA-256：${credentials.pin}`))
+    assert.ok(stdout.includes(`Host：127.0.0.1:${grant.port}`))
+    assert.ok(stdout.includes(`远端工作区：${grant.workspace}`))
+    assert.ok(stdout.includes(`远端会话：${grant.session}`))
+    assert.ok(!/caf1_[A-Za-z0-9_-]{43}/u.test(stdout), 'TTY must not print a bearer')
     return
   }
   const { token, workspace, session } = grant
@@ -121,6 +151,7 @@ async function verifyTls(t, child, closed, credentials, scoped) {
   const { port, workspace, session, wrongWorkspace, wrongSession } = scoped
   assert.ok(Number.isInteger(port) && port > 0 && port <= 65535)
   const nonce = () => randomBytes(32).toString('hex')
+  const denied = nonce()
   const primary = nonce()
   const unused = nonce()
   function exchange(message) {
@@ -131,7 +162,7 @@ async function verifyTls(t, child, closed, credentials, scoped) {
     child.send(message)
     return answer.then(([reply]) => reply)
   }
-  const { envelope, unusedEnvelope } = await exchange({ primary, unused })
+  const { envelope, unusedEnvelope } = await exchange({ denied, primary, unused })
   function checkOffer(encoded, key, challenge) {
     const sealed = Buffer.from(encoded, 'base64')
     const decipher = createDecipheriv('aes-256-gcm', key, sealed.subarray(0, 12))

@@ -100,6 +100,7 @@ async function verify(ctx) {
     assert.equal(process.connected, true)
     const { listenFollowTls } = await import('../tls-follow.mjs')
     const { createFollowPairingController } = await import('../pairing-offer.mjs')
+    const { approveFollowOnTerminal } = await import('../operator-tty.mjs')
     let tlsListener
     let pairing
     let spare
@@ -125,17 +126,21 @@ async function verify(ctx) {
       const requestPairing = once(process, 'message')
       process.send({ workspace: wa.id, session: replacement.id, wrongWorkspace: wb.id,
         wrongSession: two.id, port: tlsListener.port })
-      const [{ primary, unused }] = await requestPairing
-      // This isolated fixture simulates explicit operator consent. It is not a production adapter.
-      const reviewed = pairing.capture(primary)
-      const spareReview = spare.capture(unused)
-      assert.equal(reviewed?.route.remoteWorkspaceId, wa.id)
-      assert.equal(reviewed?.route.remoteSessionId, replacement.id)
-      const envelope = pairing.redeem(reviewed)
-      const unusedEnvelope = spare.redeem(spareReview)
-      assert.ok(envelope && unusedEnvelope, 'Fixture scoped grants must issue')
+      const [{ denied, primary, unused }] = await requestPairing
+      for (const nonce of [denied, primary, unused]) assert.match(nonce, /^[0-9a-f]{64}$/u)
+      assert.equal(new Set([denied, primary, unused]).size, 3)
+      let confirmations = 0
+      const measuredAuthority = { issue(...args) { confirmations++; return authority.issue(...args) } }
+      const refused = createFollowPairingController({ authority: measuredAuthority, signingKey, route,
+        deliveryKey: Buffer.alloc(32) })
+      try {
+        assert.equal(await approveFollowOnTerminal({ controller: refused, nonce: denied }), null)
+        assert.equal(confirmations, 0)
+      } finally { refused.close() }
+      const envelope = await approveFollowOnTerminal({ controller: pairing, nonce: primary })
+      const unusedEnvelope = await approveFollowOnTerminal({ controller: spare, nonce: unused })
+      assert.ok(envelope && unusedEnvelope, 'Both reviews must be approved on the PTY')
       assert.equal(pairing.capture(primary), null)
-      assert.equal(pairing.redeem(reviewed), null)
       const update = control('update', () => replacement.append('turn/start', { turn: 1 }))
       process.send({ envelope: envelope.toString('base64'), unusedEnvelope: unusedEnvelope.toString('base64') })
       await update

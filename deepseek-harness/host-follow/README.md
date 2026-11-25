@@ -81,6 +81,6 @@ node deepseek-harness/host-follow/test/run-built-profile.mjs /absolute/path/to/b
 node deepseek-harness/host-follow/test/run-built-profile.mjs /absolute/path/to/built-deepseek-harness --loopback-tls
 ```
 
-TLS 模式额外需要 OpenSSL 生成临时合成证书。固定 CLI 的真实 Loader 提供授权服务，Host 配对控制器仅经测试 IPC 交付密封回复；独立 Node 客户端用预置密钥认证解密，复核签名与完整路由后才打开 TLS 投影。验证首帧和更新、错工作区/会话、重复挑战与凭据、非专用凭据与 HTTP 前缀拒绝，以及卸载后现有流关闭、仍未使用的凭据不能打开、新挑战不能签发。没有生产端点或凭据。
+TLS 模式额外需要 OpenSSL 生成临时合成证书，以及 util-linux `script` 提供伪终端。真实 Loader 提供授权服务；固定 CLI 用本地终端适配器读取测试拒绝与随机确认码。测试 IPC 不确认同意，只交付挑战及密封回复；独立 Node 客户端用预置密钥认证解密，复核签名与完整路由后才打开 TLS 投影。回归核对终端上显示的真实端口、指纹与目标，拒绝时不触发签发，且不显示专用凭据。验证首帧和更新、错工作区/会话、重复挑战与凭据、非专用凭据与 HTTP 前缀拒绝，以及卸载后现有流关闭、仍未使用的凭据不能打开、新挑战不能签发。没有生产端点或凭据。
 
 本地 Linux arm64 以 Node `24.19.0` / pnpm `11.28.5` 完成冻结安装（本地禁用包安装脚本）、官方 8 阶段工件构建及禁网合成 profile。上游锁 SHA-256 为 `f7c01c56b65e31e1924a82bf8061ee9b63122e6e769b4aaed4781b4d1d3c088a`，实测 CLI 入口 SHA-256 为 `b293de4609dfd0625b4e5c0a88363fb49efd7d162b41a9ac2e36a1f8e196d133`。此结果不是原样 npm 版通过，也不替代待运行的 Linux x64 工作流。继承管道已对合成进程实测认证、限字节解析、撤权、过期及输入关闭；受控 writable 验证单帧背压和写超时；回环慢读则验证真实 TLS 写停滞后关闭，未测量各层缓冲占用。同一构建也在本机 `127.0.0.1` 跑通真实 Loader 的合成 TLS profile，使用专用 Node 测试客户端；本地容器不能在新网络命名空间启用 `lo`，因此仅回环命名空间模式尚待远端 CI。独立载体另有 Kotlin 互操作回归。这些证据不涵盖生产配对、静默网络分区或 Android。继续接入前按[架构验收要求](../../docs/architecture/dsh-readonly-session-follow.md)执行。
