@@ -113,8 +113,10 @@ class FollowPairing internal constructor(
         if (isPending(challenge)) "cordiact-follow-proof/1 $scope ${challenge.nonce}\n".encodeToByteArray() else null
 
     @Synchronized
-    internal fun discardChallenge(challenge: Challenge) {
-        if (pending === challenge) pending = null
+    internal fun discardChallenge(challenge: Challenge): Boolean {
+        if (!isPending(challenge)) return false
+        pending = null
+        return true
     }
 
     @Synchronized

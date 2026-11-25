@@ -111,6 +111,40 @@ class FollowRouteControllerTest {
         }
     }
 
+    @Test fun explicitCancellationClosesAnInFlightTlsHandshake() {
+        val scheduler = Executors.newSingleThreadScheduledExecutor()
+        val worker = Executors.newSingleThreadExecutor()
+        try {
+            ServerSocket().use { server ->
+                server.bind(InetSocketAddress(ip, 0))
+                server.soTimeout = 2_000
+                val address = server.localSocketAddress as InetSocketAddress
+                FollowRouteController(scheduler, Executor { error("No reader before TLS handshake") }).use { controller ->
+                    val route = configure(controller, address)
+                    val challenge = assertNotNull(controller.challenge(route))
+                    val offer = frame(challenge, address)
+                    val attempt = assertNotNull(controller.approve(route, challenge, seal(challenge, offer, sign(offer))))
+                    val dial = worker.submit(Callable { controller.connect(attempt) })
+                    server.accept().use { socket ->
+                        socket.soTimeout = 1_500
+                        assertEquals(22, socket.getInputStream().read())
+                        assertTrue(controller.cancel(route, challenge))
+                        assertFalse(dial.get(1, TimeUnit.SECONDS))
+                        assertNull(controller.status(attempt))
+                        var bytes = 1
+                        while (socket.getInputStream().read() != -1) check(++bytes <= 65_536)
+                    }
+                    val fresh = assertNotNull(controller.challenge(route))
+                    assertFalse(controller.cancel(route, challenge))
+                    assertNotNull(controller.proof(route, fresh))
+                }
+            }
+        } finally {
+            worker.shutdownNow()
+            scheduler.shutdownNow()
+        }
+    }
+
     @Test fun foregroundRecheckClosesAHandshakeAtItsOwnDeadlineBeforeGrantExpiry() {
         val scheduler = Executors.newSingleThreadScheduledExecutor()
         val worker = Executors.newSingleThreadExecutor()
@@ -274,7 +308,7 @@ class FollowRouteControllerTest {
         }
     }
 
-    @Test fun foregroundAndRouteReplacementCancelOnlyTheirOwnBlockedHandoff() {
+    @Test fun foregroundReplacementAndExplicitCancelRetireOnlyTheirOwnBlockedHandoff() {
         val scheduler = Executors.newSingleThreadScheduledExecutor()
         val worker = Executors.newSingleThreadExecutor()
         val elapsed = AtomicLong(0)
@@ -282,7 +316,7 @@ class FollowRouteControllerTest {
             val address = InetSocketAddress(ip, 12345)
             FollowRouteController(scheduler, Executor { error("No reader") }, elapsed::get).use { controller ->
                 var current = configure(controller, address)
-                for (replace in listOf(false, true)) {
+                for (action in listOf("cancel", "replace", "expire")) {
                     val route = current
                     val challenge = assertNotNull(controller.challenge(route))
                     val reading = CountDownLatch(1)
@@ -303,14 +337,18 @@ class FollowRouteControllerTest {
                     try {
                         assertTrue(reading.await(2, TimeUnit.SECONDS))
                         assertNull(controller.proof(route, challenge))
-                        if (replace) current = configure(controller, address)
-                        else {
-                            elapsed.addAndGet(TimeUnit.SECONDS.toNanos(7))
-                            assertTrue(controller.recheck(route))
+                        when (action) {
+                            "cancel" -> assertTrue(controller.cancel(route, challenge))
+                            "replace" -> current = configure(controller, address)
+                            "expire" -> {
+                                elapsed.addAndGet(TimeUnit.SECONDS.toNanos(7))
+                                assertTrue(controller.recheck(route))
+                            }
                         }
                         assertNull(attempt.get(1, TimeUnit.SECONDS))
                         assertEquals(1, cancellations.get())
                         assertNull(controller.proof(route, challenge))
+                        assertFalse(controller.cancel(route, challenge))
                         assertTrue(controller.recheck(current))
                         assertNull(controller.exchange(route, challenge, handoff))
                     } finally { stop.countDown() }
@@ -320,6 +358,43 @@ class FollowRouteControllerTest {
             worker.shutdownNow()
             scheduler.shutdownNow()
         }
+    }
+
+    @Test fun cancellationRetiresTheExactPendingQueuedOrLiveAttemptWithoutRemovingTrust() {
+        val scheduler = Executors.newSingleThreadScheduledExecutor()
+        val cancellations = AtomicInteger()
+        try {
+            val address = InetSocketAddress(ip, 12345)
+            val client = FollowPipeClient(scheduler, Executor { /* Hold reader dispatch. */ })
+            FollowRouteController(scheduler, client) {
+                pipe(ByteArrayOutputStream()) { cancellations.incrementAndGet() }
+            }.use { controller ->
+                val route = configure(controller, address)
+                fun reply(challenge: FollowPairing.Challenge): ByteArray {
+                    val offer = frame(challenge, address)
+                    return seal(challenge, offer, sign(offer))
+                }
+                val pending = assertNotNull(controller.challenge(route))
+                assertTrue(controller.cancel(route, pending))
+                assertNull(controller.approve(route, pending, reply(pending)))
+                assertFalse(controller.cancel(route, pending))
+
+                val queued = assertNotNull(controller.challenge(route))
+                val old = assertNotNull(controller.approve(route, queued, reply(queued)))
+                assertTrue(controller.cancel(route, queued))
+                assertFalse(controller.connect(old))
+
+                val current = assertNotNull(controller.challenge(route))
+                val live = assertNotNull(controller.approve(route, current, reply(current)))
+                assertTrue(controller.connect(live))
+                assertFalse(controller.cancel(route, queued))
+                assertEquals(FollowStatus.AwaitingBaseline, controller.status(live))
+                assertTrue(controller.cancel(route, current))
+                assertNull(controller.status(live))
+                assertEquals(1, cancellations.get())
+                assertNotNull(controller.challenge(route))
+            }
+        } finally { scheduler.shutdownNow() }
     }
 
     private fun seal(challenge: FollowPairing.Challenge, offer: ByteArray, signature: ByteArray, key: ByteArray = delivery): ByteArray {

@@ -46,8 +46,8 @@ class FollowRouteController internal constructor(
         val deadline: Long,
     )
 
-    private class Pending(val attempt: Attempt, val approval: FollowPairing.Approval)
-    private class Live(val attempt: Attempt, val handle: FollowPipeLifecycle.Handle)
+    private class Pending(val challenge: FollowPairing.Challenge, val attempt: Attempt, val approval: FollowPairing.Approval)
+    private class Live(val challenge: FollowPairing.Challenge, val attempt: Attempt, val handle: FollowPipeLifecycle.Handle)
 
     private val lock = Any()
     private var selection: Selection? = null
@@ -156,7 +156,7 @@ class FollowRouteController internal constructor(
 
     private fun accept(selected: Selection, challenge: FollowPairing.Challenge, envelope: ByteArray): Attempt? {
         val approval = selected.delivery.approve(selected.pairing, challenge, envelope) ?: return null
-        return Attempt().also { selected.ready = Pending(it, approval) }
+        return Attempt().also { selected.ready = Pending(challenge, it, approval) }
     }
 
     private fun endExchange(selected: Selection, exchange: Exchange) {
@@ -194,7 +194,7 @@ class FollowRouteController internal constructor(
                 val selected = selection?.takeIf { it.connecting === pending } ?: return false
                 selected.connecting = null
                 val handle = pipe?.let(client::begin) ?: return false
-                selected.current = Live(attempt, handle)
+                selected.current = Live(pending.challenge, attempt, handle)
                 true
             }
         } finally {
@@ -224,6 +224,34 @@ class FollowRouteController internal constructor(
         }
         selected.current?.let { client.status(it.handle) }
         true
+    }
+
+    /**
+     * Cancel exactly one local pairing attempt without discarding the configured trust.
+     * This does not revoke a grant on the Host or recall bytes already sent there.
+     */
+    fun cancel(route: Route, challenge: FollowPairing.Challenge): Boolean = synchronized(lock) {
+        val selected = matching(route) ?: return false
+        selected.exchange?.takeIf { it.challenge === challenge }?.let {
+            endExchange(selected, it)
+            return true
+        }
+        selected.ready?.takeIf { it.challenge === challenge }?.let {
+            selected.ready = null
+            it.approval.close()
+            return true
+        }
+        selected.connecting?.takeIf { it.challenge === challenge }?.let {
+            selected.connecting = null
+            it.approval.close()
+            return true
+        }
+        selected.current?.takeIf { it.challenge === challenge }?.let {
+            selected.current = null
+            client.clear(it.handle)
+            return true
+        }
+        selected.pairing.discardChallenge(challenge)
     }
 
     /** A stale route cannot be removed by a delayed settings or lifecycle callback. */
