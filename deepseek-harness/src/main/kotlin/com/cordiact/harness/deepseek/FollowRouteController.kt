@@ -1,9 +1,12 @@
 package com.cordiact.harness.deepseek
 
+import java.io.IOException
 import java.net.InetSocketAddress
 import java.security.interfaces.ECPublicKey
 import java.util.concurrent.Executor
+import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ScheduledExecutorService
+import java.util.concurrent.TimeUnit
 
 /**
  * Host-owned lifecycle for one configured route. Changing scope or trust retires the old route
@@ -31,10 +34,17 @@ class FollowRouteController internal constructor(
     class Attempt internal constructor()
 
     private class Selection(val route: Route, val pairing: FollowPairing, val delivery: FollowPairingEnvelope) {
+        var exchange: Exchange? = null
         var ready: Pending? = null
         var connecting: Pending? = null
         var current: Live? = null
     }
+
+    private class Exchange(
+        val challenge: FollowPairing.Challenge,
+        val channel: FollowPairingHandoff.Channel,
+        val deadline: Long,
+    )
 
     private class Pending(val attempt: Attempt, val approval: FollowPairing.Approval)
     private class Live(val attempt: Attempt, val handle: FollowPipeLifecycle.Handle)
@@ -86,14 +96,74 @@ class FollowRouteController internal constructor(
     /** Produce an out-of-band proof only for this route's exact live challenge. Do not log it. */
     fun proof(route: Route, challenge: FollowPairing.Challenge): String? = synchronized(lock) {
         val selected = matching(route) ?: return null
+        if (selected.exchange != null) return null
         selected.delivery.proof(selected.pairing, challenge)
     }
 
     /** Accept only the sealed response for the current challenge; there is no plaintext fallback. */
     fun approve(route: Route, challenge: FollowPairing.Challenge, envelope: ByteArray): Attempt? = synchronized(lock) {
         val selected = matching(route) ?: return null
+        if (selected.exchange != null) return null
+        accept(selected, challenge, envelope)
+    }
+
+    /**
+     * Call off-thread with an exclusive carrier. Always consumes that carrier; a dispatched
+     * challenge is not retried. No dial occurs until the caller separately connects the attempt.
+     */
+    fun exchange(route: Route, challenge: FollowPairing.Challenge, handoff: FollowPairingHandoff): Attempt? {
+        val channel = handoff.take() ?: return null
+        val start = nowNanos()
+        val deadline = start + minOf(challenge.deadline - start, TimeUnit.SECONDS.toNanos(7))
+        val exchange = Exchange(challenge, channel, deadline)
+        var registered = false
+        fun stillLive() = synchronized(lock) {
+            matching(route)?.exchange === exchange && exchange.deadline - nowNanos() > 0
+        }
+        try {
+            val proof = synchronized(lock) {
+                val selected = matching(route) ?: return null
+                if (selected.exchange != null) return null
+                val exact = selected.delivery.proof(selected.pairing, challenge) ?: return null
+                selected.exchange = exchange
+                registered = true
+                exact
+            }
+            val remaining = exchange.deadline - nowNanos()
+            if (remaining <= 0) return null
+            val timeout = scheduler.schedule({
+                synchronized(lock) { matching(route)?.let { endExchange(it, exchange) } }
+            }, remaining, TimeUnit.NANOSECONDS)
+            try {
+                val sealed = exchangeFollowPairing(channel, challenge.nonce, proof, ::stillLive) ?: return null
+                try {
+                    return synchronized(lock) {
+                        val selected = matching(route)?.takeIf { it.exchange === exchange } ?: return null
+                        if (exchange.deadline - nowNanos() <= 0) return null
+                        accept(selected, challenge, sealed)
+                    }
+                } finally { sealed.fill(0) }
+            } finally { timeout.cancel(false) }
+        } catch (_: IOException) {
+            return null
+        } catch (_: RejectedExecutionException) {
+            return null
+        } finally {
+            if (!registered) cancelHandoff(channel)
+            else synchronized(lock) { matching(route)?.let { endExchange(it, exchange) } }
+        }
+    }
+
+    private fun accept(selected: Selection, challenge: FollowPairing.Challenge, envelope: ByteArray): Attempt? {
         val approval = selected.delivery.approve(selected.pairing, challenge, envelope) ?: return null
-        Attempt().also { selected.ready = Pending(it, approval) }
+        return Attempt().also { selected.ready = Pending(it, approval) }
+    }
+
+    private fun endExchange(selected: Selection, exchange: Exchange) {
+        if (selected.exchange !== exchange) return
+        selected.exchange = null
+        selected.pairing.discardChallenge(exchange.challenge)
+        cancelHandoff(exchange.channel)
     }
 
     /** Call off-thread. A late handshake cannot publish data or close a replacement selection. */
@@ -143,6 +213,7 @@ class FollowRouteController internal constructor(
         val selected = matching(route) ?: return false
         selected.pairing.discardExpiredChallenge()
         val now = nowNanos()
+        selected.exchange?.takeIf { it.deadline - now <= 0 }?.let { endExchange(selected, it) }
         selected.ready?.takeIf { it.approval.deadlineNanos - now <= 0 }?.let {
             selected.ready = null
             it.approval.close()
@@ -179,6 +250,7 @@ class FollowRouteController internal constructor(
     }
 
     private fun retire(selected: Selection) {
+        selected.exchange?.let { endExchange(selected, it) }
         val live = selected.current
         selected.current = null
         selected.connecting = null

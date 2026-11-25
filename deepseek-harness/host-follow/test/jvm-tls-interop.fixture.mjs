@@ -1,10 +1,12 @@
 import { createHash, createPrivateKey } from 'node:crypto'
 import { once } from 'node:events'
+import { createWriteStream } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { connect, createServer } from 'node:net'
 import { createFollowPairingController, describeLoopbackFollowRoute } from '../pairing-offer.mjs'
 import { createFollowService } from '../follow-service.mjs'
 import { listenFollowTls } from '../tls-follow.mjs'
+import { serveFollowPairingHandoff } from '../pairing-handoff.mjs'
 
 const stop = new AbortController()
 const identity = {}
@@ -13,7 +15,14 @@ const service = createFollowService((workspace, session) => workspace === 'remot
   ? { identity, read: () => state }
   : null)
 const grants = Array.from({ length: 2 }, () => service.issue('remote-a', 'session-a', 20_000))
-const listener = await listenFollowTls({ reader: service.reader, pfx: await readFile(process.argv[2]),
+const handoffMode = process.argv[6] === 'handoff'
+const projectionClosed = Promise.withResolvers()
+const reader = handoffMode ? { open(request) {
+  const lease = service.reader.open(request)
+  if (!lease) return null
+  return { ...lease, close() { lease.close(); projectionClosed.resolve() } }
+} } : service.reader
+const listener = await listenFollowTls({ reader, pfx: await readFile(process.argv[2]),
   passphrase: 'synthetic-only', signal: stop.signal })
 // Single-peer test relay: forwards encrypted bytes until a test freezes the Host direction.
 // It never terminates TLS and can only reach this fixture's own loopback listener.
@@ -29,6 +38,29 @@ try {
   // Synthetic control channel. No grant or operator command is accepted by the TLS listener itself.
   process.stdout.write(`${relay?.port ?? listener.port} ${grants.map(grant => grant.token).join(' ')}\n`)
   process.stdout.write(describeLoopbackFollowRoute(route, signingKey))
+  if (handoffMode) {
+    // Drain metadata before using the owned fd wrapper; process.stdout doesn't close fd 1 at end.
+    await new Promise(resolve => process.stdout.write('', resolve))
+    const output = createWriteStream('', { fd: 1, autoClose: true })
+    const handoff = serveFollowPairingHandoff({ input: process.stdin, output,
+      approve(nonce, proof, signal, canApprove) {
+        const review = pairing.capture(nonce, proof)
+        // Test-only: the fixed Loader suite separately exercises actual TTY consent.
+        return !signal.aborted && canApprove() ? pairing.redeem(review) : null
+      } })
+    await handoff.completion
+    // Kotlin closes its TLS stream after verifying the baseline; do not poll or keep a second control pipe.
+    const timer = setTimeout(() => projectionClosed.reject(new Error('No synthetic projection opened and closed')), 7_000)
+    try { await projectionClosed.promise } finally { clearTimeout(timer) }
+  } else await serveCommands()
+} finally {
+  pairing.close()
+  await relay?.close()
+  await listener.close()
+  service.dispose()
+}
+
+async function serveCommands() {
   process.stdin.setEncoding('ascii')
   let pending = ''
   for await (const chunk of process.stdin) {
@@ -56,11 +88,6 @@ try {
       process.stdout.write(`${command}\n`)
     }
   }
-} finally {
-  pairing.close()
-  await relay?.close()
-  await listener.close()
-  service.dispose()
 }
 
 async function listenRelay(port) {

@@ -84,6 +84,8 @@ Linux [私有身份目录读取器](local-identity.mjs)只接受受信调用方�
 
 从接管起最多 7 秒（终端审核仍最多 3 秒），Host 撤权或关闭也会终止交接。写入最多尝试一次；已交给操作系统的字节无法撤回，未知结果不重放。交接只接收启动方已确认的带外载体，不监听端口、不认证管道对端、不替代信任或密钥配送。TLS 数据面仍不接收配对命令。固定 Loader 验证在轮换后的实例用独立继承管道收发，并由独立伪终端完成审批，仍不接生产启动方或 Android。
 
+[Kotlin 交接客户端](../src/main/kotlin/com/cordiact/harness/deepseek/FollowPairingHandoff.kt)由受信方注入独占流和能解除阻塞的取消函数。`controller.exchange` 在后台发送一次请求并关闭写端，严格验证单条 Base64 回复和 EOF，再用同一挑战验密封与签名。端侧交接不超过 7 秒，也不能延长原配对截止；切换路由、取消或到期会关掉旧流，失败不重发。返回值只是待连接审批，仍须显式 `connect` 才进入独立 TLS 数据面。
+
 ## 用同一源码树的正式构建验证
 
 [手动 GitHub Actions 工作流](../../.github/workflows/dsh-built-profile.yml)在全新 Linux x64 checkout 用 Node `24.19.0` 和 pnpm `11.28.5` 安装上游冻结依赖，执行 `pnpm run build:artifacts --profile official`。随后使用同树的 `apps/cli/lib/bin.js` 分别验证无监听器 profile 和回环 TLS profile，保留正常 pnpm 工作区依赖解析，不替换 Cordis 或 Loader 模块。两次运行使用独立网络命名空间；仅 TLS 分支启用 `lo`。TLS 分支的 Node 守卫最多允许启动两个回环 TLS 监听器，且第一个已关闭才允许启动第二个；拒绝 CLI 主动连接和数据报。守卫不是沙箱，网络隔离由命名空间提供。

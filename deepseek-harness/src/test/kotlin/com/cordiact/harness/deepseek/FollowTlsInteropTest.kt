@@ -119,6 +119,19 @@ class FollowTlsInteropTest {
         } finally { reader.shutdownNow() }
     }
 
+    @Test fun exclusiveHandoffClosesItsPipesBeforeTheSeparateTlsConnect() = withHost("handoff") { host, client ->
+        host.controller(client).use { controller ->
+            val route = host.configure(controller, target)
+            val challenge = assertNotNull(controller.challenge(route))
+            val attempt = assertNotNull(controller.exchange(route, challenge, host.handoff()))
+            assertEquals(null, controller.status(attempt))
+            assertEquals(null, controller.proof(route, challenge))
+            assertTrue(controller.connect(attempt))
+            val baseline = FollowStatus.Current(FollowSessionState(2, true, false))
+            assertEquals(baseline, awaitStatus({ controller.status(attempt) }) { it == baseline })
+        }
+    }
+
     private fun awaitStatus(
         client: FollowPipeClient,
         handle: FollowPipeLifecycle.Handle,
@@ -180,6 +193,11 @@ class FollowTlsInteropTest {
             check(controller.connect(attempt)) { "Synthetic paired TLS handshake failed" }
             check(!controller.connect(attempt))
             return attempt
+        }
+
+        fun handoff() = FollowPairingHandoff(child.inputStream, child.outputStream) {
+            child.inputStream.close()
+            child.outputStream.close()
         }
 
         fun command(command: String) {

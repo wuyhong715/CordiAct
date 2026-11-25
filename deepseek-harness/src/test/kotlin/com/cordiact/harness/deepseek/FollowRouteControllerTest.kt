@@ -2,6 +2,7 @@ package com.cordiact.harness.deepseek
 
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
+import java.io.InputStream
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ServerSocket
@@ -269,6 +270,54 @@ class FollowRouteControllerTest {
                 assertNull(controller.approve(route, current, exact))
             }
         } finally {
+            scheduler.shutdownNow()
+        }
+    }
+
+    @Test fun foregroundAndRouteReplacementCancelOnlyTheirOwnBlockedHandoff() {
+        val scheduler = Executors.newSingleThreadScheduledExecutor()
+        val worker = Executors.newSingleThreadExecutor()
+        val elapsed = AtomicLong(0)
+        try {
+            val address = InetSocketAddress(ip, 12345)
+            FollowRouteController(scheduler, Executor { error("No reader") }, elapsed::get).use { controller ->
+                var current = configure(controller, address)
+                for (replace in listOf(false, true)) {
+                    val route = current
+                    val challenge = assertNotNull(controller.challenge(route))
+                    val reading = CountDownLatch(1)
+                    val stop = CountDownLatch(1)
+                    val cancellations = AtomicInteger()
+                    val wire = object : InputStream() {
+                        override fun read(): Int {
+                            reading.countDown()
+                            check(stop.await(4, TimeUnit.SECONDS))
+                            return -1
+                        }
+                    }
+                    val handoff = FollowPairingHandoff(wire, ByteArrayOutputStream()) {
+                        cancellations.incrementAndGet()
+                        stop.countDown()
+                    }
+                    val attempt = worker.submit(Callable { controller.exchange(route, challenge, handoff) })
+                    try {
+                        assertTrue(reading.await(2, TimeUnit.SECONDS))
+                        assertNull(controller.proof(route, challenge))
+                        if (replace) current = configure(controller, address)
+                        else {
+                            elapsed.addAndGet(TimeUnit.SECONDS.toNanos(7))
+                            assertTrue(controller.recheck(route))
+                        }
+                        assertNull(attempt.get(1, TimeUnit.SECONDS))
+                        assertEquals(1, cancellations.get())
+                        assertNull(controller.proof(route, challenge))
+                        assertTrue(controller.recheck(current))
+                        assertNull(controller.exchange(route, challenge, handoff))
+                    } finally { stop.countDown() }
+                }
+            }
+        } finally {
+            worker.shutdownNow()
             scheduler.shutdownNow()
         }
     }

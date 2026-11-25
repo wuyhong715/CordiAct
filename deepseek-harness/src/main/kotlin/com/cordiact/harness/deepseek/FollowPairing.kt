@@ -54,7 +54,9 @@ class FollowPairing internal constructor(
     private var active: Approval? = null
     private var closed = false
 
-    class Challenge internal constructor(val nonce: String, internal val start: Long)
+    class Challenge internal constructor(val nonce: String, internal val start: Long) {
+        internal val deadline: Long get() = start + WINDOW_NANOS
+    }
 
     /** A fresh challenge supersedes the previous pending approval, even for the same route. */
     @Synchronized
@@ -91,7 +93,7 @@ class FollowPairing internal constructor(
             }
             if (!isPending(challenge) || !valid) return null
             pending = null
-            return Approval(connector, connector.grantUntil(token, challenge.start + WINDOW_NANOS)).also { active = it }
+            return Approval(connector, connector.grantUntil(token, challenge.deadline)).also { active = it }
         } finally {
             offer.fill(0)
         }
@@ -109,6 +111,11 @@ class FollowPairing internal constructor(
     @Synchronized
     internal fun proofMessage(challenge: Challenge): ByteArray? =
         if (isPending(challenge)) "cordiact-follow-proof/1 $scope ${challenge.nonce}\n".encodeToByteArray() else null
+
+    @Synchronized
+    internal fun discardChallenge(challenge: Challenge) {
+        if (pending === challenge) pending = null
+    }
 
     @Synchronized
     internal fun discardExpiredChallenge() {
