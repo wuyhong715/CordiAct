@@ -76,6 +76,8 @@ dependencies {
     implementation(project(":search-providers"))
     implementation(project(":mcp-client"))
     implementation(project(":subagent"))
+    // Unregistered read-only follow factory; no startup or UI integration.
+    implementation(project(":deepseek-harness"))
     implementation("androidx.activity:activity-compose:1.10.0")
     implementation("androidx.compose.ui:ui:1.7.6")
     // Background sampling + progressive blur (not foreground Modifier.blur).
