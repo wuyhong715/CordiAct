@@ -53,11 +53,9 @@ test(`the pinned DSH CLI loads the synthetic ${loopbackTls ? 'loopback TLS' : 'n
   if (loopbackTls) {
     const key = join(root, 'fixture-key.pem')
     const crt = join(root, 'fixture-cert.pem')
-    const pfx = join(root, 'fixture.p12')
     const openssl = (...args) => execFileSync('openssl', args, { cwd: root, timeout: 8_000, stdio: 'pipe' })
     openssl('req', '-new', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:prime256v1', '-nodes',
       '-days', '1', '-subj', '/CN=Synthetic Follow Host', '-keyout', key, '-out', crt)
-    openssl('pkcs12', '-export', '-inkey', key, '-in', crt, '-out', pfx, '-passout', 'pass:synthetic-only')
     const cert = readFileSync(crt)
     const pin = createHash('sha256').update(new X509Certificate(cert).raw).digest('hex')
     const { privateKey, publicKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' })
@@ -68,11 +66,11 @@ test(`the pinned DSH CLI loads the synthetic ${loopbackTls ? 'loopback TLS' : 'n
       writeFileSync(path, bytes, { mode: 0o600, flag: 'wx' })
       return path
     }
-    env.CORDIACT_TEST_TLS_IDENTITY = pfx
+    env.CORDIACT_TEST_TLS_IDENTITY = crt
+    env.CORDIACT_TEST_TLS_KEY = key
     env.CORDIACT_TEST_PAIR_SIGNER = provision('fixture-pair.pem', privateKey.export({ type: 'pkcs8', format: 'pem' }))
     env.CORDIACT_TEST_PAIR_DELIVERY = provision('fixture-delivery.bin', delivery)
     env.CORDIACT_TEST_PAIR_SPARE = provision('fixture-spare.bin', spare)
-    env.CORDIACT_TEST_PAIR_PIN = pin
     credentials = { cert, pin, publicKey, delivery, spare }
     t.after(() => { delivery.fill(0); spare.fill(0) })
   }
@@ -104,7 +102,7 @@ test(`the pinned DSH CLI loads the synthetic ${loopbackTls ? 'loopback TLS' : 'n
       const row = promptTail.slice(0, lf)
       promptTail = promptTail.slice(lf + 1)
       const code = /3 秒内输入 approve ([0-9a-f]{8}) 并回车/.exec(row)?.[1]
-      if (!code || replies.length >= 3) continue
+      if (!code || replies.length >= 4) continue
       replies.push(code)
       child.stdin.write(`${replies.length === 1 ? 'deny' : `approve ${code}`}\n`)
     }
@@ -122,7 +120,7 @@ test(`the pinned DSH CLI loads the synthetic ${loopbackTls ? 'loopback TLS' : 'n
     }
     assert.deepEqual(await closed, [0, null], stderr)
     assert.match(stdout, /^CORDIACT_FOLLOW_PROFILE_OK\r?$/m)
-    assert.equal(replies.length, 3)
+    assert.equal(replies.length, 4)
     assert.ok(stdout.includes(`证书 SHA-256：${credentials.pin}`))
     assert.ok(stdout.includes(`Host：127.0.0.1:${grant.port}`))
     assert.ok(stdout.includes(`远端工作区：${grant.workspace}`))

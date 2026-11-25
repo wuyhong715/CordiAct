@@ -1,6 +1,7 @@
 import { Buffer } from 'node:buffer'
 import { performance } from 'node:perf_hooks'
 import { createServer } from 'node:tls'
+import { createHash, createPrivateKey, X509Certificate } from 'node:crypto'
 import { serveFollowPipe } from './ipc-follow.mjs'
 
 const PROTOCOL = 'cordiact-follow/1'
@@ -13,18 +14,37 @@ const HANDSHAKE_MS = 3_000
  * not the authority or any DSH router. The caller owns the identity and grant distribution.
  * A supplied abort signal retires the listener and all admitted connections.
  */
-export async function listenFollowTls({ reader, pfx, passphrase, signal }) {
+export async function listenFollowTls({ reader, pfx, passphrase, identity, signal }) {
   if (signal?.aborted) throw new Error('Follow listener stopped')
-  if (!Buffer.isBuffer(pfx) || pfx.length === 0 || typeof passphrase !== 'string' || passphrase.length === 0) {
-    throw new TypeError('An explicit Follow TLS identity is required')
+  let credentials
+  let pin
+  if (identity !== undefined) {
+    if (pfx !== undefined || passphrase !== undefined) throw new TypeError('Choose a single Follow TLS identity')
+    const leaf = new X509Certificate(identity.certificate)
+    const privateKey = identity.privateKey?.type === 'private' ? identity.privateKey : createPrivateKey(identity.privateKey)
+    const now = Date.now()
+    if (!leaf.checkPrivateKey(privateKey) || !(now >= Date.parse(leaf.validFrom) && now < Date.parse(leaf.validTo))) {
+      throw new TypeError('Follow TLS identity does not match or is not current')
+    }
+    pin = createHash('sha256').update(leaf.raw).digest('hex')
+    // Use exactly the certificate whose raw bytes were hashed, not a caller-supplied pin or bundle.
+    const key = privateKey.export({ type: 'pkcs8', format: 'pem' })
+    credentials = { key, cert: leaf.toString() }
+  } else {
+    if (!Buffer.isBuffer(pfx) || pfx.length === 0 || typeof passphrase !== 'string' || passphrase.length === 0) {
+      throw new TypeError('An explicit Follow TLS identity is required')
+    }
+    credentials = { pfx, passphrase }
   }
   const sockets = new Set()
   const channels = new Set()
   const pending = new Map()
   let stopped = false
   let stopping
+  let finishClose
+  const closed = new Promise(resolve => { finishClose = resolve })
   const server = createServer({
-    pfx, passphrase,
+    ...credentials,
     minVersion: 'TLSv1.3', maxVersion: 'TLSv1.3',
     ALPNProtocols: [PROTOCOL], handshakeTimeout: HANDSHAKE_MS,
   }, socket => {
@@ -60,7 +80,8 @@ export async function listenFollowTls({ reader, pfx, passphrase, signal }) {
     if (stopping) return stopping
     stopped = true
     signal?.removeEventListener('abort', abort)
-    stopping = new Promise(resolve => server.close(() => resolve()))
+    stopping = closed
+    server.close(() => finishClose())
     for (const pipe of channels) pipe.close()
     for (const socket of sockets) socket.destroy()
     return stopping
@@ -79,7 +100,7 @@ export async function listenFollowTls({ reader, pfx, passphrase, signal }) {
     if (signal?.aborted) throw new Error('Follow listener stopped')
     signal?.addEventListener('abort', abort, { once: true })
     const { port } = server.address()
-    return Object.freeze({ port, close })
+    return Object.freeze({ port, close, closed, ...(pin ? { certificateSha256: pin } : {}) })
   } catch (error) {
     await close()
     throw error

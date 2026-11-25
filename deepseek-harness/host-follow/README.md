@@ -52,7 +52,7 @@ node deepseek-harness/host-follow/test/run-pinned-profile.mjs /absolute/path/to/
 
 [客户端连接器](../src/main/kotlin/com/cordiact/harness/deepseek/PinnedFollowTlsConnector.kt)只连受信控制面交付的确定 IP 和端口，要求 TLS 1.3、精确叶证书 SHA-256 指纹、证书有效期及 `cordiact-follow/1` ALPN。指纹是该配置的 Host 身份，不使用系统 CA 或 DNS 名称替代，不发现、不从未核验的对端录入信任。绑定在一份连接器实例的凭据仅使用一次；握手最多 3 秒，或原授权剩余时间（取较短者）。握手完成才交付可发送凭据的载体，原授权时间不重算。失败关闭，无 owner 或明文回退。
 
-[Host 载体](tls-follow.mjs)须显式提供 PKCS#12 身份及投影读取服务才能启动，硬编码绑定 `127.0.0.1` 的临时端口。它不拿发证权限、不注册 Gateway 或控制路由；只接受 TLS 1.3 与精确 ALPN，预握手及已握手连接合计最多 16 条，3 秒握手截止，之后沿用管道请求、写入和授权边界。停止监听会关闭尚在握手的 TCP 连接和现有投影。此模块未装入默认 DSH profile。
+[Host 载体](tls-follow.mjs)须显式提供 PKCS#12 或叶证书与匹配私钥，以及投影读取服务，才能启动，硬编码绑定 `127.0.0.1` 的临时端口。它不拿发证权限、不注册 Gateway 或控制路由；只接受 TLS 1.3 与精确 ALPN，预握手及已握手连接合计最多 16 条，3 秒握手截止，之后沿用管道请求、写入和授权边界。停止监听会关闭尚在握手的 TCP 连接和现有投影。此模块未装入默认 DSH profile。
 
 [JVM 测试](../src/test/kotlin/com/cordiact/harness/deepseek/PinnedFollowTlsConnectorTest.kt)验证指纹、协议、握手超时；[Node ↔ Kotlin 回环测试](../src/test/kotlin/com/cordiact/harness/deepseek/FollowTlsInteropTest.kt)使用同一专用传输和真实授权服务，验证首帧、更新、错域拒绝、Host 撤权、握手超时和关闭监听。签名配对用例涵盖正常撤权和模拟静默断线：后者在不终止 TLS 的单连接回环中继吞掉 Host 后续报文及断开信号，验证客户端在本地期限到达时主动关闭并清除状态。夹具凭据仅通过隔离的进程控制通道交付；这不是跨设备网络分区测试。未开放外网，也未接入正式 profile 或 Android。
 
@@ -67,6 +67,8 @@ node deepseek-harness/host-follow/test/run-pinned-profile.mjs /absolute/path/to/
 Host 的 `createFollowPairingController` 固定一份已批准的路由和交付密钥，只返回密封回复。受信的操作者适配器先用 `capture` 获取包含固定路由和挑战的不可变审核对象；这一步不签发、不撤权。只有明确同意后才调用 `redeem` 提交原对象，最多等待 3 秒。复制、跨实例、换代、关闭或取消后的对象均无效。提交有效审核才撤回旧凭据和已打开的流；失败不会恢复旧授权。测试适配器模拟同意，不认证真人。同一实例最多记录 256 个挑战（含失败签发），不淘汰旧记录、不重试；满额时须通过受信控制面重新配置。关闭时撤回当前授权并清零本实例的交付密钥副本。重放去重仅覆盖此内存实例，不跨进程，也不认证挑战提交者。
 
 可选的[本地终端适配器](operator-tty.mjs)只在拥有专用 stdin/stderr 的受信进程中调用；非 TTY、已占用输入和取消都默认拒绝。它显示实际待批准的 Host 指纹、工作区和会话，并要求在原期限内输入本次随机确认码；它返回密封回复，不将凭据打印到终端。拥有终端或 PTY 就能回答，**这不是操作者身份认证**。适配器未注册命令、未加入默认 profile，也没有远程转发入口。
+
+[显式回环 Host 装配](loopback-host.mjs)组合专用监听器、一个固定路由和终端审批。调用方提供匹配且在有效期内的叶证书与私钥；装配从实际送入 TLS 的同一证书计算指纹，用实际绑定的端口形成签名路由，不接受单独指定的指纹或端口。它返回端点和本地审批、撤权、关闭函数；停止时取消审核、撤回本路由授权并关闭监听器，不销毁共享 DSH 服务。Host 调用方负责把关闭绑定到自己的生命周期。未提供配置存储、远程挑战提交入口或非回环监听。
 
 密封不解决信任启动，也不把 bearer 变成持有证明。生产仍需保密地预置与轮换交付密钥、批准操作者和签发范围，不能把测试控制信道照搬进服务端。TLS 监听器不接受配对命令，也不持有签名键、交付密钥或发证权限。
 

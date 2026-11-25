@@ -98,24 +98,28 @@ async function verify(ctx) {
   }
   if (tlsIdentity) {
     assert.equal(process.connected, true)
-    const { listenFollowTls } = await import('../tls-follow.mjs')
+    const { startLoopbackFollowHost } = await import('../loopback-host.mjs')
     const { createFollowPairingController } = await import('../pairing-offer.mjs')
     const { approveFollowOnTerminal } = await import('../operator-tty.mjs')
-    let tlsListener
-    let pairing
+    let host
     let spare
+    let confirmations = 0
     try {
       const signingKey = createPrivateKey(await readFile(process.env.CORDIACT_TEST_PAIR_SIGNER))
-      tlsListener = await listenFollowTls({ reader, pfx: await readFile(tlsIdentity), passphrase: 'synthetic-only' })
-      const route = { connectionId: 'fixture-host', localWorkspaceId: 'fixture-local', remoteWorkspaceId: wa.id,
-        remoteSessionId: replacement.id, ip: '127.0.0.1', port: tlsListener.port,
-        certificateSha256: process.env.CORDIACT_TEST_PAIR_PIN }
+      const scope = { connectionId: 'fixture-host', localWorkspaceId: 'fixture-local', remoteWorkspaceId: wa.id,
+        remoteSessionId: replacement.id }
+      const measuredAuthority = { issue(...args) { confirmations++; return authority.issue(...args) } }
+      const deliveryKey = await readFile(process.env.CORDIACT_TEST_PAIR_DELIVERY)
+      try {
+        host = await startLoopbackFollowHost({ reader, authority: measuredAuthority, signingKey, scope, deliveryKey,
+          identity: { certificate: await readFile(tlsIdentity), privateKey: await readFile(process.env.CORDIACT_TEST_TLS_KEY) } })
+      } finally { deliveryKey.fill(0) }
+      const route = { ...scope, ...host.endpoint }
       const makePairing = async keyPath => {
         const deliveryKey = await readFile(keyPath)
         try { return createFollowPairingController({ authority, signingKey, route, deliveryKey }) }
         finally { deliveryKey.fill(0) }
       }
-      pairing = await makePairing(process.env.CORDIACT_TEST_PAIR_DELIVERY)
       // The spare is an independent enrolled client; issuing it must not retire the first stream.
       spare = await makePairing(process.env.CORDIACT_TEST_PAIR_SPARE)
       const control = async (expected, action) => {
@@ -125,22 +129,17 @@ async function verify(ctx) {
       }
       const requestPairing = once(process, 'message')
       process.send({ workspace: wa.id, session: replacement.id, wrongWorkspace: wb.id,
-        wrongSession: two.id, port: tlsListener.port })
+        wrongSession: two.id, port: host.endpoint.port })
       const [{ denied, primary, unused }] = await requestPairing
       for (const nonce of [denied, primary, unused]) assert.match(nonce, /^[0-9a-f]{64}$/u)
       assert.equal(new Set([denied, primary, unused]).size, 3)
-      let confirmations = 0
-      const measuredAuthority = { issue(...args) { confirmations++; return authority.issue(...args) } }
-      const refused = createFollowPairingController({ authority: measuredAuthority, signingKey, route,
-        deliveryKey: Buffer.alloc(32) })
-      try {
-        assert.equal(await approveFollowOnTerminal({ controller: refused, nonce: denied }), null)
-        assert.equal(confirmations, 0)
-      } finally { refused.close() }
-      const envelope = await approveFollowOnTerminal({ controller: pairing, nonce: primary })
+      assert.equal(await host.approve(denied), null)
+      assert.equal(confirmations, 0)
+      const envelope = await host.approve(primary)
       const unusedEnvelope = await approveFollowOnTerminal({ controller: spare, nonce: unused })
       assert.ok(envelope && unusedEnvelope, 'Both reviews must be approved on the PTY')
-      assert.equal(pairing.capture(primary), null)
+      assert.equal(await host.approve(primary), null)
+      assert.equal(confirmations, 1)
       const update = control('update', () => replacement.append('turn/start', { turn: 1 }))
       process.send({ envelope: envelope.toString('base64'), unusedEnvelope: unusedEnvelope.toString('base64') })
       await update
@@ -156,16 +155,14 @@ async function verify(ctx) {
       assert.notEqual(afterUnload, unused)
       assert.throws(() => authority.issue(wa.id, replacement.id, 15_000))
       assert.match(afterUnload, /^[0-9a-f]{64}$/u)
-      const lateReview = pairing.capture(afterUnload)
-      assert.ok(lateReview)
-      assert.equal(pairing.redeem(lateReview), null)
+      assert.equal(await host.approve(afterUnload), null)
+      assert.equal(confirmations, 2)
       const stop = control('stop', () => {})
       process.send({ status: 'unloaded' })
       await stop
     } finally {
-      pairing?.close()
       spare?.close()
-      await tlsListener?.close()
+      await host?.close()
       if (process.connected) process.disconnect()
     }
   } else if (process.connected) {
