@@ -72,13 +72,13 @@ Host 的 `createFollowPairingController` 用预置路由验证 `capture(nonce, p
 
 [显式回环 Host 装配](loopback-host.mjs)组合专用监听器、一个固定路由和终端审批。调用方提供匹配且在有效期内的叶证书与私钥；装配从实际送入 TLS 的同一证书计算指纹，用实际绑定的端口形成签名路由，不接受单独指定的指纹或端口。它返回端点和本地审批、撤权、关闭函数；停止时取消审核、撤回本路由授权并关闭监听器，不销毁共享 DSH 服务。[可选 Cordis 插件](loopback-plugin.mjs)将关闭绑定到 Loader 生命周期：加载只注册受信进程内 `cordiactFollowLoopback`，显式 `start(options)` 或 `startFromDirectory(path, scope)` 才启动，两者共享每代一次的启动机会（失败也不自动重试）。卸载或读服务依赖消失时撤销注册、取消在途启动并关闭端口。不自动导入密钥、不注册命令，也没有远程挑战提交入口或非回环监听。
 
-Linux [私有身份目录读取器](local-identity.mjs)只接受受信调用方选定的规范绝对路径（依赖 `/proc/self/fd`）。沿目录描述符逐段打开，不跟随符号链接；父目录须由运行用户或 root 所有，且不能被其他用户写入（允许 root 所有的 sticky 中转目录）。末级目录须由进程有效 UID 所有、权限为 `0700`。固定文件 `tls-cert.pem`、`tls-key.pem`、`pairing-key.pem`、`delivery-key.bin` 必须为同 UID、单链接的普通文件，权限 `0400` 或 `0600`；限制读取长度，交付密钥必须恰为 32 字节。读取缓冲在交付完成或失败后清零，不承诺抹除 TLS/加密库副本。目录由管理员预先配置；不支持热修改。轮换应先关闭旧实例，再用新密钥目录启动新实例，并经受信信道更新客户端配置。此入口不解决两端安全配送，也不提供在线轮换。
+Linux [私有身份目录读取器](local-identity.mjs)只接受受信调用方选定的规范绝对路径（依赖 `/proc/self/fd`）。沿目录描述符逐段打开，不跟随符号链接；父目录须由运行用户或 root 所有，且不能被其他用户写入（允许 root 所有的 sticky 中转目录）。末级目录须由进程有效 UID 所有、权限为 `0700`。固定文件 `tls-cert.pem`、`tls-key.pem`、`pairing-key.pem`、`delivery-key.bin` 必须为同 UID、单链接的普通文件，权限 `0400` 或 `0600`；限制读取长度，交付密钥必须恰为 32 字节。读取缓冲在交付完成或失败后清零，不承诺抹除 TLS/加密库副本。目录由管理员预先配置；不支持热修改。轮换应先关闭旧实例，再用新密钥目录启动新实例，并经受信信道更新客户端配置。此入口不解决两端安全配送，也不提供在线轮换。固定 Loader 夹具验证了停旧启新：先禁用装配插件，等待旧流和端口关闭；共享只读服务保持可用。再启用装配插件并显式读取新目录，客户端用已独立预置的新指纹、签名公钥和交付密钥重新配对。旧证明、旧指纹、旧签名公钥、旧交付密钥及未消费的旧凭据均不能用于新实例。
 
 挑战证明只表明请求曾由该路由密钥的持有者生成，不认证当前传递者或操作者。捕获的未使用证明仍可转交；去重仅覆盖当前 Host 实例。密封不解决信任启动，数据面 bearer 也不是持钥证明。生产仍需通过保密且认证的信道预置及轮换密钥、批准操作者和签发范围，不能把测试控制信道照搬进服务端。TLS 监听器不接受配对命令，也不持有签名键、交付密钥或发证权限。
 
 ## 用同一源码树的正式构建验证
 
-[手动 GitHub Actions 工作流](../../.github/workflows/dsh-built-profile.yml)在全新 Linux x64 checkout 用 Node `24.19.0` 和 pnpm `11.28.5` 安装上游冻结依赖，执行 `pnpm run build:artifacts --profile official`。随后使用同树的 `apps/cli/lib/bin.js` 分别验证无监听器 profile 和回环 TLS profile，保留正常 pnpm 工作区依赖解析，不替换 Cordis 或 Loader 模块。两次运行使用独立网络命名空间；仅 TLS 分支启用 `lo`。TLS 分支的 Node 守卫只允许一个回环 TLS 监听器，拒绝 CLI 主动连接和数据报。守卫不是沙箱，网络隔离由命名空间提供。
+[手动 GitHub Actions 工作流](../../.github/workflows/dsh-built-profile.yml)在全新 Linux x64 checkout 用 Node `24.19.0` 和 pnpm `11.28.5` 安装上游冻结依赖，执行 `pnpm run build:artifacts --profile official`。随后使用同树的 `apps/cli/lib/bin.js` 分别验证无监听器 profile 和回环 TLS profile，保留正常 pnpm 工作区依赖解析，不替换 Cordis 或 Loader 模块。两次运行使用独立网络命名空间；仅 TLS 分支启用 `lo`。TLS 分支的 Node 守卫最多允许启动两个回环 TLS 监听器，且第一个已关闭才允许启动第二个；拒绝 CLI 主动连接和数据报。守卫不是沙箱，网络隔离由命名空间提供。
 
 若本地已有用上述步骤构建的独立 DSH checkout，也可直接运行下列验证。脚本拒绝不匹配的提交、脏工作树和缺失的 CLI，打印用到的版本、平台以及锁文件和 CLI 入口摘要；它不安装、不启动 Web、不证明旧的本地工件一定来自当前构建。CI 的干净检出和同作业构建才是完整来源证据。
 

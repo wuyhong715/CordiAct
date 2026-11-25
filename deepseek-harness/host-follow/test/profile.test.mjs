@@ -54,31 +54,39 @@ test(`the pinned DSH CLI loads the synthetic ${loopbackTls ? 'loopback TLS' : 'n
   ])
   let credentials
   if (loopbackTls) {
-    const identityDirectory = mkdtempSync(join(realpathSync(homedir()), '.cordiact-profile-identity-'))
-    t.after(() => rmSync(identityDirectory, { recursive: true, force: true }))
-    const key = join(identityDirectory, 'tls-key.pem')
-    const crt = join(identityDirectory, 'tls-cert.pem')
     const openssl = (...args) => execFileSync('openssl', args, { cwd: root, timeout: 8_000, stdio: 'pipe' })
-    openssl('req', '-new', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:prime256v1', '-nodes',
-      '-days', '1', '-subj', '/CN=Synthetic Follow Host', '-keyout', key, '-out', crt)
-    chmodSync(crt, 0o600)
-    chmodSync(key, 0o600)
-    const cert = readFileSync(crt)
-    const pin = createHash('sha256').update(new X509Certificate(cert).raw).digest('hex')
-    const { privateKey, publicKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' })
-    const delivery = randomBytes(32)
-    const spare = randomBytes(32)
-    const provision = (name, bytes, directory = identityDirectory) => {
+    const provision = (directory, name, bytes) => {
       const path = join(directory, name)
       writeFileSync(path, bytes, { mode: 0o600, flag: 'wx' })
       return path
     }
-    env.CORDIACT_TEST_IDENTITY_DIR = identityDirectory
-    env.CORDIACT_TEST_PAIR_SIGNER = provision('pairing-key.pem', privateKey.export({ type: 'pkcs8', format: 'pem' }))
-    provision('delivery-key.bin', delivery)
-    env.CORDIACT_TEST_PAIR_SPARE = provision('fixture-spare.bin', spare, root)
-    credentials = { cert, pin, publicKey, delivery, spare }
-    t.after(() => { delivery.fill(0); spare.fill(0) })
+    const identity = () => {
+      const directory = mkdtempSync(join(realpathSync(homedir()), '.cordiact-profile-identity-'))
+      t.after(() => rmSync(directory, { recursive: true, force: true }))
+      const key = join(directory, 'tls-key.pem')
+      const crt = join(directory, 'tls-cert.pem')
+      openssl('req', '-new', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:prime256v1', '-nodes',
+        '-days', '1', '-subj', '/CN=Synthetic Follow Host', '-keyout', key, '-out', crt)
+      chmodSync(crt, 0o600)
+      chmodSync(key, 0o600)
+      const cert = readFileSync(crt)
+      const pin = createHash('sha256').update(new X509Certificate(cert).raw).digest('hex')
+      const { privateKey, publicKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' })
+      const delivery = randomBytes(32)
+      t.after(() => delivery.fill(0))
+      const signer = provision(directory, 'pairing-key.pem', privateKey.export({ type: 'pkcs8', format: 'pem' }))
+      provision(directory, 'delivery-key.bin', delivery)
+      return { directory, signer, cert, pin, publicKey, delivery }
+    }
+    const first = identity()
+    const rotated = identity()
+    const spare = randomBytes(32)
+    env.CORDIACT_TEST_IDENTITY_DIR = first.directory
+    env.CORDIACT_TEST_ROTATED_IDENTITY_DIR = rotated.directory
+    env.CORDIACT_TEST_PAIR_SIGNER = first.signer
+    env.CORDIACT_TEST_PAIR_SPARE = provision(root, 'fixture-spare.bin', spare)
+    credentials = { ...first, rotated, spare }
+    t.after(() => spare.fill(0))
   }
   const dataPipe = loopbackTls ? 'ignore' : 'pipe'
   // script provides tty stdin/stderr while the subprocess keeps its separate inherited IPC.
@@ -108,7 +116,7 @@ test(`the pinned DSH CLI loads the synthetic ${loopbackTls ? 'loopback TLS' : 'n
       const row = promptTail.slice(0, lf)
       promptTail = promptTail.slice(lf + 1)
       const code = /3 秒内输入 approve ([0-9a-f]{8}) 并回车/.exec(row)?.[1]
-      if (!code || replies.length >= 3) continue
+      if (!code || replies.length >= 4) continue
       replies.push(code)
       child.stdin.write(`${replies.length === 1 ? 'deny' : `approve ${code}`}\n`)
     }
@@ -126,7 +134,8 @@ test(`the pinned DSH CLI loads the synthetic ${loopbackTls ? 'loopback TLS' : 'n
     }
     assert.deepEqual(await closed, [0, null], stderr)
     assert.match(stdout, /^CORDIACT_FOLLOW_PROFILE_OK\r?$/m)
-    assert.equal(replies.length, 3)
+    assert.equal(replies.length, 4)
+    assert.ok(stdout.includes(`证书 SHA-256：${credentials.rotated.pin}`))
     assert.ok(stdout.includes(`证书 SHA-256：${credentials.pin}`))
     assert.ok(stdout.includes(`Host：127.0.0.1:${grant.port}`))
     assert.ok(stdout.includes(`远端工作区：${grant.workspace}`))
@@ -151,7 +160,7 @@ test(`the pinned DSH CLI loads the synthetic ${loopbackTls ? 'loopback TLS' : 'n
 })
 
 async function verifyTls(t, child, closed, credentials, scoped) {
-  const { cert, pin, publicKey, delivery, spare } = credentials
+  const { cert, pin, publicKey, delivery, spare, rotated } = credentials
   const { port, workspace, session, wrongWorkspace, wrongSession } = scoped
   assert.ok(Number.isInteger(port) && port > 0 && port <= 65535)
   const nonce = () => randomBytes(32).toString('hex')
@@ -171,7 +180,7 @@ async function verifyTls(t, child, closed, credentials, scoped) {
   const { envelope, unusedEnvelope } = await exchange({ denied, primary, unused,
     deniedProof: makeProof(delivery, route, denied), primaryProof: makeProof(delivery, route, primary),
     spareProof: makeProof(spare, route, unused) })
-  function checkOffer(encoded, key, challenge) {
+  function checkOffer(encoded, key, challenge, approvedRoute = route, signer = publicKey) {
     const sealed = Buffer.from(encoded, 'base64')
     const decipher = createDecipheriv('aes-256-gcm', key, sealed.subarray(0, 12))
     decipher.setAAD(Buffer.from(`cordiact-follow-seal/1 ${challenge}\n`, 'ascii'))
@@ -180,8 +189,8 @@ async function verifyTls(t, child, closed, credentials, scoped) {
     try {
       const split = plaintext[0] + 1
       const offer = plaintext.subarray(split)
-      assert.equal(verify('sha256', offer, publicKey, plaintext.subarray(1, split)), true)
-      const prefix = `cordiact-follow-pair/1 fixture-host fixture-local ${workspace} ${session} 127.0.0.1 ${port} ${pin} ${challenge} `
+      assert.equal(verify('sha256', offer, signer, plaintext.subarray(1, split)), true)
+      const prefix = `cordiact-follow-pair/1 fixture-host fixture-local ${workspace} ${session} 127.0.0.1 ${approvedRoute.port} ${approvedRoute.certificateSha256} ${challenge} `
       assert.equal(offer.subarray(0, prefix.length).equals(Buffer.from(prefix, 'ascii')), true)
       const data = offer.subarray(prefix.length)
       assert.equal(data.length, 49)
@@ -192,10 +201,10 @@ async function verifyTls(t, child, closed, credentials, scoped) {
   assert.throws(() => checkOffer(envelope, spare, primary))
   const token = checkOffer(envelope, delivery, primary)
   const unusedToken = checkOffer(unusedEnvelope, spare, unused)
-  async function open(line) {
-    const socket = connect({ host: '127.0.0.1', port, ca: cert,
+  async function open(line, endpoint = port, trust = { cert, pin }) {
+    const socket = connect({ host: '127.0.0.1', port: endpoint, ca: trust.cert,
       minVersion: 'TLSv1.3', maxVersion: 'TLSv1.3', ALPNProtocols: ['cordiact-follow/1'],
-      checkServerIdentity: (_host, leaf) => createHash('sha256').update(leaf.raw).digest('hex') === pin
+      checkServerIdentity: (_host, leaf) => createHash('sha256').update(leaf.raw).digest('hex') === trust.pin
         ? undefined : new Error('Unexpected synthetic Host certificate'),
     })
     t.after(() => socket.destroy())
@@ -224,13 +233,35 @@ async function verifyTls(t, child, closed, credentials, scoped) {
   await deny(request(workspace, session, token))
   child.send('update')
   assert.deepEqual(JSON.parse((await frames.next()).value), { delivery: 1, cursor: 0, active: false, running: false })
-  child.send('unload')
+  const retired = exchange('retire')
   assert.equal((await frames.next()).done, true)
   await completion
-  const afterUnload = nonce()
-  const { status } = await exchange({ afterUnload, lateProof: makeProof(delivery, route, afterUnload) })
-  assert.equal(status, 'unloaded')
-  // Losing the reader dependency tears down the adapter as well as revoking the dormant grant.
+  assert.deepEqual(await retired, { status: 'retired' })
   await assert.rejects(open(request(workspace, session, unusedToken)), { code: 'ECONNREFUSED' })
+
+  const { rotatedPort } = await exchange('rotate')
+  assert.ok(Number.isInteger(rotatedPort) && rotatedPort > 0 && rotatedPort <= 65535)
+  const nextRoute = { ...route, port: rotatedPort, certificateSha256: rotated.pin }
+  const nextNonce = nonce()
+  const { rotatedEnvelope } = await exchange({ nextNonce,
+    staleProof: makeProof(delivery, nextRoute, nextNonce), nextProof: makeProof(rotated.delivery, nextRoute, nextNonce) })
+  assert.throws(() => checkOffer(rotatedEnvelope, delivery, nextNonce, nextRoute, rotated.publicKey))
+  assert.throws(() => checkOffer(rotatedEnvelope, rotated.delivery, nextNonce, nextRoute, publicKey))
+  const nextToken = checkOffer(rotatedEnvelope, rotated.delivery, nextNonce, nextRoute, rotated.publicKey)
+  // The new endpoint presents the new leaf, even when the caller still pins the old leaf.
+  await assert.rejects(open(request(workspace, session, nextToken), rotatedPort, { cert: rotated.cert, pin }),
+    /Unexpected synthetic Host certificate/)
+  const stale = await open(request(workspace, session, unusedToken), rotatedPort, rotated)
+  assert.equal((await stale.frames.next()).done, true)
+  await stale.completion
+  const current = await open(request(workspace, session, nextToken), rotatedPort, rotated)
+  assert.deepEqual(JSON.parse((await current.frames.next()).value), { delivery: 0, cursor: 0, active: false, running: false })
+  child.send('unload')
+  assert.equal((await current.frames.next()).done, true)
+  await current.completion
+  const afterUnload = nonce()
+  const { status } = await exchange({ afterUnload, lateProof: makeProof(rotated.delivery, nextRoute, afterUnload) })
+  assert.equal(status, 'unloaded')
+  await assert.rejects(open(request(workspace, session, nextToken), rotatedPort, rotated), { code: 'ECONNREFUSED' })
   child.send('stop')
 }

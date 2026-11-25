@@ -103,7 +103,10 @@ async function verify(ctx) {
     const { createFollowPairingController } = await import('../pairing-offer.mjs')
     const { approveFollowOnTerminal } = await import('../operator-tty.mjs')
     let host
+    let rotatedHost
     let spare
+    const adapterEntry = [...ctx.loader.entries()].find(row => row.options.id === 'cordiact-follow-loopback')
+    assert.ok(adapterEntry?.fiber)
     try {
       const signingKey = createPrivateKey(await readFile(process.env.CORDIACT_TEST_PAIR_SIGNER))
       const scope = { connectionId: 'fixture-host', localWorkspaceId: 'fixture-local', remoteWorkspaceId: wa.id,
@@ -143,31 +146,59 @@ async function verify(ctx) {
       const update = control('update', () => replacement.append('turn/start', { turn: 1 }))
       process.send({ envelope: envelope.toString('base64'), unusedEnvelope: unusedEnvelope.toString('base64') })
       await update
-      await control('unload', async () => {
+      await control('retire', async () => {
+        await adapterEntry.update({ disabled: true })
+        spare.close() // This fixture owns a second controller outside the adapter.
+        assert.equal(ctx.get('cordiactFollowLoopback'), undefined)
+        assert.equal(await assembly.startFromDirectory(tlsIdentity, scope), null)
+        assert.equal(await host.approve(primary, primaryProof), null)
+        const shared = open(issue().token)
+        try {
+          assert.deepEqual(await shared.next(), { done: false, value: { ...idle, cursor: replacement.seq - 1 } })
+        } finally { shared.close() }
+      })
+      const rotate = control('rotate', async () => {
+        await adapterEntry.update({ disabled: false })
+        const nextAssembly = ctx.get('cordiactFollowLoopback')
+        assert.ok(nextAssembly && nextAssembly !== assembly)
+        rotatedHost = await nextAssembly.startFromDirectory(process.env.CORDIACT_TEST_ROTATED_IDENTITY_DIR, scope)
+        assert.ok(rotatedHost)
+        assert.notEqual(rotatedHost.endpoint.certificateSha256, host.endpoint.certificateSha256)
+      })
+      process.send({ status: 'retired' })
+      await rotate
+      const nextRequest = once(process, 'message')
+      process.send({ rotatedPort: rotatedHost.endpoint.port })
+      const [{ nextNonce, staleProof, nextProof }] = await nextRequest
+      assert.notEqual(nextNonce, primary)
+      assert.equal(await rotatedHost.approve(nextNonce, staleProof), null)
+      const rotatedEnvelope = await rotatedHost.approve(nextNonce, nextProof)
+      assert.ok(rotatedEnvelope)
+      const unloaded = control('unload', async () => {
         assert.deepEqual(await newStream.next(), { done: false, value: { ...idle, cursor: replacement.seq - 1 } })
         const unloadRead = newStream.next()
         await unload()
         assert.deepEqual(await unloadRead, { done: true, reason: 'disconnected' })
       })
+      process.send({ rotatedEnvelope: rotatedEnvelope.toString('base64') })
+      await unloaded
       // Losing the injected services retires the assembly, not just the projection.
       const [{ afterUnload, lateProof }] = await once(process, 'message')
-      assert.notEqual(afterUnload, primary)
-      assert.notEqual(afterUnload, unused)
+      assert.notEqual(afterUnload, nextNonce)
       assert.throws(() => authority.issue(wa.id, replacement.id, 15_000))
       assert.match(afterUnload, /^[0-9a-f]{64}$/u)
       assert.equal(ctx.get('cordiactFollowLoopback'), undefined)
-      assert.equal(await host.approve(afterUnload, lateProof), null)
+      assert.equal(await rotatedHost.approve(afterUnload, lateProof), null)
       const stop = control('stop', async () => {
-        const adapter = [...ctx.loader.entries()].find(row => row.options.id === 'cordiact-follow-loopback')
-        await adapter.update({ disabled: true })
+        await adapterEntry.update({ disabled: true })
         assert.equal(ctx.get('cordiactFollowLoopback'), undefined)
         assert.equal(await assembly.start(), null)
-        assert.equal(await host.approve(afterUnload, lateProof), null)
       })
       process.send({ status: 'unloaded' })
       await stop
     } finally {
       spare?.close()
+      await rotatedHost?.close()
       await host?.close()
       if (process.connected) process.disconnect()
     }
