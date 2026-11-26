@@ -8,7 +8,8 @@ val MODEL_SETTINGS_AUDIT_TARGETS: Set<String> = setOf(
     "model.provider.add", "model.provider.refresh", "model.provider.update", "model.provider.remove",
     "model.provider.enabled", "model.provider.defaults", "model.provider.key",
     "model.role.conversation", "model.role.summary", "model.role.extraction",
-    "mcp.install", "mcp.remove", "mcp.enabled", "mcp.reconnect", "search.policy", "search.provider",
+    "mcp.install", "mcp.remove", "mcp.enabled", "mcp.reconnect", MCP_AUTHENTICATION_AUDIT_TARGET,
+    "search.policy", "search.provider",
     "ssh.host.save", "ssh.host.pin", "ssh.host.delete", "attachments.policy",
 )
 data class SettingsOperationReceipt<T>(val value: T, val completionRecorded: Boolean)

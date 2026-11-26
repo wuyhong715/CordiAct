@@ -6,6 +6,8 @@ import com.cordiact.app.security.AndroidSystemCredentials
 import com.cordiact.core.mcp.*
 import com.cordiact.core.plugin.PluginChangeResult
 import com.cordiact.core.plugin.PluginState
+import com.cordiact.core.settings.MCP_AUTHENTICATION_AUDIT_TARGET
+import com.cordiact.core.settings.applyMcpAuthenticationUpdate
 import com.cordiact.mcp.client.HttpMcpClientFactory
 import com.cordiact.mcp.client.probeTools
 import kotlinx.coroutines.Dispatchers
@@ -15,15 +17,26 @@ class AndroidMcpSettings(private val app: CordiActApplication) : McpSettings {
     private val service get() = app.pluginManagerService()
     private val credentials = McpCredentialStore(app)
     private val prefs = app.getSharedPreferences("mcp_settings_revision_v1", 0)
-    private fun <T> write(target: String, action: () -> T): T {
+    private fun <T> write(target: String, action: () -> T): T = synchronized(WRITE_LOCK) {
         val receipt = com.cordiact.core.settings.SettingsOperationAudit(app.credentialVaultRuntime.database).run(target, { prefs.getLong("revision", 0) }) {
-            val value = action()
-            check(prefs.edit().putLong("revision", prefs.getLong("revision", 0) + 1).commit()) { "MCP_REVISION_WRITE_FAILED" }
-            value
+            try {
+                val value = action()
+                check(prefs.edit().putLong("revision", prefs.getLong("revision", 0) + 1).commit()) { "MCP_REVISION_WRITE_FAILED" }
+                value
+            } finally {
+                // A failed mutation may have changed the vault without advancing the durable revision.
+                writeGeneration = Any()
+            }
         }
         check(receipt.completionRecorded) { "MCP_SAVED_AUDIT_INCOMPLETE_REFRESH_BEFORE_RETRY" }
-        return receipt.value
+        receipt.value
     }
+
+    private companion object {
+        val WRITE_LOCK = Any()
+        var writeGeneration = Any() // Guarded by WRITE_LOCK.
+    }
+
     override suspend fun list(): List<McpSummary> = withContext(Dispatchers.IO) {
         service.inventory().filter { it.spec.id.startsWith("$MCP_PLUGIN_ID.") }.map { entry ->
             val config = McpServerConfigCodec.decode(entry.spec.config)
@@ -80,25 +93,33 @@ class AndroidMcpSettings(private val app: CordiActApplication) : McpSettings {
     }
     override suspend fun updateAuthentication(name: String, header: String?, secret: String?): List<com.cordiact.core.mcp.McpToolDescriptor> = withContext(Dispatchers.IO) {
         val id = "$MCP_PLUGIN_ID.$name"
-        val entry = service.inventory().find { it.spec.id == id } ?: error("MCP_NOT_FOUND")
+        val (entry, generation) = synchronized(WRITE_LOCK) {
+            val entry = service.inventory().find { it.spec.id == id } ?: error("MCP_NOT_FOUND")
+            entry to writeGeneration
+        }
         val server = McpServerConfigCodec.decode(entry.spec.config)
         val replacement = credential(header, secret)
         // Validate the replacement before touching either the vault or the active transport.
         val tools = HttpMcpClientFactory.probeTools(server, replacement)
-        val previous = credentials.readForExecution(name)
-        val wasEnabled = entry.state == PluginState.ENABLED
-        write("mcp.authentication") {
-            if (wasEnabled) check(service.setEnabled(id, false).application == PluginChangeResult.Application.APPLIED) { "MCP_DISABLE_FAILED" }
-            try {
-                credentials.set(name, replacement)
-                if (wasEnabled) check(service.setEnabled(id, true).application == PluginChangeResult.Application.APPLIED) { "MCP_RECONNECT_FAILED" }
-            } catch (failure: Exception) {
-                // On failure restore the old vault value and best-effort old connection. Do not report success.
-                runCatching { credentials.set(name, previous) }
-                if (wasEnabled) runCatching { service.setEnabled(id, true) }
-                if (failure is kotlinx.coroutines.CancellationException) throw failure
-                throw IllegalStateException("MCP_AUTH_UPDATE_FAILED")
+        write(MCP_AUTHENTICATION_AUDIT_TARGET) {
+            val manager = service
+            val current = manager.inventory().find { it.spec.id == id }
+            check(writeGeneration === generation && current != null &&
+                current.spec == entry.spec && current.state == entry.state &&
+                current.state in setOf(PluginState.ENABLED, PluginState.DISABLED, PluginState.REGISTERED)) {
+                "MCP_AUTH_TARGET_CHANGED_OR_UNAVAILABLE"
             }
+            applyMcpAuthenticationUpdate(
+                previous = credentials.readForExecution(server.serverName),
+                replacement = replacement,
+                enabled = current.state == PluginState.ENABLED,
+                writeCredential = { credentials.set(server.serverName, it) },
+                setEnabled = { enabled ->
+                    check(manager.setEnabled(id, enabled).application == PluginChangeResult.Application.APPLIED) {
+                        "MCP_AUTH_LIFECYCLE_CHANGE_FAILED"
+                    }
+                },
+            )
         }
         tools
     }

@@ -7,6 +7,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.cordiact.core.mcp.McpToolDescriptor
+import com.cordiact.core.settings.SettingsMutationUncertain
 import com.cordiact.app.experience.settings.components.SecretField
 import com.cordiact.app.experience.settings.components.DangerConfirmDialog
 import kotlinx.coroutines.CancellationException
@@ -42,7 +43,10 @@ internal fun McpSettingsPage(facade: McpSettings?, dirty: (Boolean) -> Unit, onB
         scope.launch {
             try { action(); items = facade.list() }
             catch (cancelled: CancellationException) { throw cancelled }
-            catch (_: Exception) { message = "MCP 操作未确认成功：检查地址、鉴权及连通性后重试；输入已保留。" }
+            catch (_: SettingsMutationUncertain) {
+                message = "MCP 设置结果未确认。请退出表单并刷新状态，核对鉴权与启用状态后再操作。"
+            }
+            catch (_: Exception) { message = "MCP 操作未确认成功：请先刷新状态并检查地址、鉴权及连通性；输入已保留。" }
             finally { busy = false }
         }
     }
@@ -69,7 +73,7 @@ internal fun McpSettingsPage(facade: McpSettings?, dirty: (Boolean) -> Unit, onB
         authItem != null -> {
             Text("更新 ${authItem.name} 的鉴权", style = MaterialTheme.typography.titleMedium)
             Text("${authItem.url}\n${if (authItem.keySet) "凭据已设置，不回显" else "尚未设置凭据"}")
-            Text("保存前将使用新鉴权测试连接。失败时保留原凭据；已关闭的服务器保持关闭。", style = MaterialTheme.typography.bodySmall)
+            Text("保存前将使用新鉴权测试连接，未通过不会更改原凭据。已关闭的服务器保持关闭；保存结果未确认时，请先刷新核对状态。", style = MaterialTheme.typography.bodySmall)
             Row { Checkbox(removeAuth, { removeAuth = it; authSecret = ""; dirty(true) }, enabled = !busy); Text("改为无鉴权") }
             if (!removeAuth) {
                 OutlinedTextField(authHeader, { authHeader = it; dirty(true) }, enabled = !busy, label = { Text("Header 名称") }, modifier = Modifier.fillMaxWidth())
