@@ -140,10 +140,12 @@ data class McpToolCallResult(
 /**
  * A live connection to one server.
  *
- * Implementations own transports and must make [close] idempotent; the bridge disposes a
- * connection generation during a failed swap.
+ * Implementations own transports and must make [close] idempotent. The owner closes the
+ * transport; a tool bridge only withdraws its publication.
  */
 interface McpConnection {
+    /** Passive check for irreversible retirement, not a probe or a transient error indicator. */
+    val isRetired: Boolean get() = false
     fun initialize(): McpServerInfo
     fun listTools(timeoutMs: Long = McpServerConfig.DEFAULT_TOOL_CALL_TIMEOUT_MS): List<McpToolDescriptor>
     fun callTool(name: String, argumentsJson: String, timeoutMs: Long): McpToolCallResult

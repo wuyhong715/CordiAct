@@ -37,7 +37,7 @@ class McpToolBridge(
     private var publication: AutoCloseable? = null
 
     /** Active tool IDs mapped to their raw MCP names; pending cleanup is not publication. */
-    fun publishedTools(): Map<String, String> = active?.tools?.toMap().orEmpty()
+    fun publishedTools(): Map<String, String> = active?.takeUnless { it.connection.isRetired }?.tools?.toMap().orEmpty()
 
     /**
      * Replace the previous generation with whatever [live] reports.
@@ -51,11 +51,12 @@ class McpToolBridge(
 
     @Synchronized
     fun sync(live: McpConnection, descriptors: List<McpToolDescriptor>): Map<String, String> {
+        if (live.isRetired) throw McpProtocolException("MCP connection is retired; open a new connection explicitly")
         val byId = indexDescriptors(descriptors)
         val next = Generation(live, byId.mapValues { (_, raw) -> raw.name })
         val definitions = byId.map { (id, raw) ->
             GlobalToolPublication(buildDefinition(id, raw, next)) { ctx ->
-                active === next && approval?.invoke(ctx.workspaceId, raw) != false && active === next
+                admitted(next) && approval?.invoke(ctx.workspaceId, raw) != false && admitted(next)
             }
         }
 
@@ -99,7 +100,7 @@ class McpToolBridge(
         ),
         executor = ToolExecutor { ctx, arguments ->
             when {
-                active !== owner -> retiredResult()
+                !admitted(owner) -> retiredResult()
                 approval?.invoke(ctx.workspaceId, raw) == false -> errorResult("MCP tool authorization is no longer valid")
                 else -> invoke(owner, raw.name, arguments)
             }
@@ -109,10 +110,10 @@ class McpToolBridge(
     private fun invoke(owner: Generation, rawName: String, arguments: ToolArguments): ToolResult {
         val json = argumentsToJson(arguments)
         // Approval or argument serialization can overlap retirement. Do not switch transports.
-        if (active !== owner) return retiredResult()
+        if (!admitted(owner)) return retiredResult()
         return try {
             val result = owner.connection.callTool(rawName, json, toolTimeoutMs)
-            if (active !== owner) return retiredResult()
+            if (!admitted(owner)) return retiredResult()
             if (result.isError) {
                 errorResult(result.text.ifBlank { "MCP tool '$rawName' reported a failure" })
             } else {
@@ -122,9 +123,15 @@ class McpToolBridge(
                 ))
             }
         } catch (failure: McpProtocolException) {
-            if (active !== owner) retiredResult() else errorResult(failure.message ?: "MCP call to '$rawName' failed")
+            if (owner.connection.isRetired) {
+                synchronized(this) { if (active === owner) runCatching { dispose() } }
+                errorResult("MCP connection ended; reconnect explicitly (the remote action may have run)")
+            } else if (!admitted(owner)) retiredResult()
+            else errorResult(failure.message ?: "MCP call to '$rawName' failed")
         }
     }
+
+    private fun admitted(owner: Generation) = active === owner && !owner.connection.isRetired
 
     private fun retiredResult() = errorResult("MCP tool registration is no longer active")
 

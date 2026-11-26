@@ -4,6 +4,9 @@ import com.cordiact.core.mcp.McpConfigException
 import com.cordiact.core.mcp.McpCredential
 import com.cordiact.core.mcp.McpProtocolException
 import com.cordiact.core.mcp.McpServerConfig
+import com.cordiact.core.tool.InMemoryToolDefinitionRegistry
+import com.cordiact.core.tool.ToolArguments
+import com.cordiact.core.tool.ToolInvocationContext
 import com.sun.net.httpserver.HttpExchange
 import com.sun.net.httpserver.HttpServer
 import java.io.File
@@ -13,6 +16,9 @@ import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -149,6 +155,81 @@ class McpHttpConnectionTest {
         val result = connection.callTool("echo", "{}", 5_000)
         assertTrue(result.isError)
         assertEquals("bad input", result.text)
+    }
+
+    @Test
+    fun anExplicitSession404WithdrawsToolsWithoutReplayingAndNewConnectionListsAgain() {
+        val requests = java.util.concurrent.CopyOnWriteArrayList<Pair<String, String?>>()
+        var generation = 0
+        val base = serve { exchange ->
+            val method = methodOf(exchange)
+            requests += method to exchange.requestHeaders.getFirst("Mcp-Session-Id")
+            when (method) {
+                "initialize" -> {
+                    exchange.responseHeaders.add("Mcp-Session-Id", "session-${++generation}")
+                    reply(exchange, """{"jsonrpc":"2.0","id":${idOf(exchange)},"result":{"protocolVersion":"2025-06-18"}}""")
+                }
+                "notifications/initialized" -> { exchange.sendResponseHeaders(202, -1); exchange.close() }
+                "tools/list" -> reply(exchange, """{"jsonrpc":"2.0","id":${idOf(exchange)},"result":{"tools":[{"name":"echo"}]}}""")
+                "tools/call" -> {
+                    if (generation == 1) {
+                        exchange.responseHeaders.add("Mcp-Session-Id", "unsolicited")
+                        exchange.sendResponseHeaders(404, -1)
+                        exchange.close()
+                    } else reply(exchange, """{"jsonrpc":"2.0","id":${idOf(exchange)},"result":{"content":[{"type":"text","text":"ok"}]}}""")
+                }
+            }
+        }
+        val registry = InMemoryToolDefinitionRegistry()
+        val bridge = McpToolBridge("fake", registry, "core.mcp.fake", 5_000)
+        val connection = HttpMcpClientFactory.connect(config(base), credential = null)
+        val id = "core.mcp.fake.echo"
+        connection.initialize()
+        bridge.sync(connection)
+        val old = assertNotNull(registry.get(id))
+        assertTrue("error" in old.executor.invoke(ToolInvocationContext(workspaceId = "ws"), ToolArguments()).values)
+        assertTrue(connection.isRetired)
+        assertTrue(bridge.publishedTools().isEmpty())
+        assertNull(registry.get(id))
+        assertFailsWith<McpProtocolException> { connection.initialize() }
+        assertFailsWith<McpProtocolException> { connection.callTool("echo", "{}", 5_000) }
+        val replacement = HttpMcpClientFactory.connect(config(base), credential = null)
+        try {
+            replacement.initialize()
+            bridge.sync(replacement)
+            assertTrue("error" in old.executor.invoke(ToolInvocationContext(workspaceId = "ws"), ToolArguments()).values)
+            val current = assertNotNull(registry.get(id))
+            assertFalse("error" in current.executor.invoke(ToolInvocationContext(workspaceId = "ws"), ToolArguments()).values)
+            assertEquals(listOf(null, "session-1", "session-1", "session-1", null, "session-2", "session-2", "session-2"), requests.map { it.second })
+            assertEquals(List(2) { listOf("initialize", "notifications/initialized", "tools/list", "tools/call") }.flatten(), requests.map { it.first })
+        } finally { bridge.dispose(); replacement.close() }
+    }
+
+    @Test
+    fun transientFailureDoesNotRetireButAnUnsolicitedSessionChangeDoes() {
+        var calls = 0
+        val base = serve { exchange ->
+            when (methodOf(exchange)) {
+                "initialize" -> {
+                    exchange.responseHeaders.add("Mcp-Session-Id", "original")
+                    reply(exchange, """{"jsonrpc":"2.0","id":${idOf(exchange)},"result":{"protocolVersion":"2025-06-18"}}""")
+                }
+                "notifications/initialized" -> { exchange.sendResponseHeaders(202, -1); exchange.close() }
+                "tools/call" -> if (++calls == 1) {
+                    exchange.sendResponseHeaders(503, -1)
+                    exchange.close()
+                } else {
+                    exchange.responseHeaders.add("Mcp-Session-Id", "different")
+                    reply(exchange, """{"jsonrpc":"2.0","id":${idOf(exchange)},"result":{"content":[]}}""")
+                }
+            }
+        }
+        val connection = HttpMcpClientFactory.connect(config(base), credential = null)
+        connection.initialize()
+        assertFailsWith<McpProtocolException> { connection.callTool("echo", "{}", 5_000) }
+        assertFalse(connection.isRetired)
+        assertFailsWith<McpProtocolException> { connection.callTool("echo", "{}", 5_000) }
+        assertTrue(connection.isRetired)
     }
 
     private fun config(base: String) = McpServerConfig(

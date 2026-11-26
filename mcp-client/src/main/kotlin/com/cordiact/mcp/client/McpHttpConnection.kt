@@ -30,47 +30,69 @@ internal class McpHttpConnection(
     private val credential: McpCredential?,
 ) : McpConnection {
 
+    private data class Session(val id: String?, val protocol: String)
+
     private val requestIds = AtomicLong(0)
-    private var sessionId: String? = null
-    private var negotiatedProtocol: String? = null
-    private var closed = false
+    private val stateLock = Any()
+    private var session: Session? = null
+    private var initializing = false
+    @Volatile override var isRetired: Boolean = false
+        private set
 
     override fun initialize(): McpServerInfo {
-        val response = request(
-            method = "initialize",
-            params = buildString {
-                append("{\"protocolVersion\":").append(JsonWrite.string(SUPPORTED_PROTOCOL_VERSION))
-                append(",\"capabilities\":{\"roots\":{\"listChanged\":false}}")
-                append(",\"clientInfo\":{\"name\":").append(JsonWrite.string(CLIENT_NAME))
-                append(",\"version\":").append(JsonWrite.string(CLIENT_VERSION)).append("}}")
-            },
-            timeoutMs = config.connectTimeoutMs,
-        )
-        val result = response.field("result")?.asObject()
-            ?: throw McpProtocolException("initialize returned no result")
-        val protocol = result.field("protocolVersion")?.asString()
-            ?: throw McpProtocolException("initialize returned no protocolVersion")
-        negotiatedProtocol = protocol
-        val serverInfo = result.field("serverInfo")
-        notify("notifications/initialized")
-        return McpServerInfo(
-            protocolVersion = protocol,
-            serverName = serverInfo?.field("name")?.let { runCatching { it.asString() }.getOrNull() },
-            serverVersion = serverInfo?.field("version")?.let { runCatching { it.asString() }.getOrNull() },
-            instructions = result.field("instructions")?.let { runCatching { it.asString() }.getOrNull() }
-                ?.take(MAX_INSTRUCTION_CHARS),
-        )
+        synchronized(stateLock) {
+            checkLive()
+            if (initializing || session != null) throw McpProtocolException("MCP connection cannot be initialized twice")
+            initializing = true
+        }
+        try {
+            val response = request(
+                method = "initialize",
+                params = buildString {
+                    append("{\"protocolVersion\":").append(JsonWrite.string(SUPPORTED_PROTOCOL_VERSION))
+                    append(",\"capabilities\":{\"roots\":{\"listChanged\":false}}")
+                    append(",\"clientInfo\":{\"name\":").append(JsonWrite.string(CLIENT_NAME))
+                    append(",\"version\":").append(JsonWrite.string(CLIENT_VERSION)).append("}}")
+                },
+                timeoutMs = config.connectTimeoutMs,
+                selected = null,
+            )
+            val result = response.envelope.field("result")?.asObject()
+                ?: throw McpProtocolException("initialize returned no result")
+            val protocol = result.field("protocolVersion")?.asString()
+                ?: throw McpProtocolException("initialize returned no protocolVersion")
+            val selected = Session(response.sessionId, protocol)
+            notify("notifications/initialized", selected)
+            synchronized(stateLock) {
+                checkLive()
+                session = selected
+            }
+            val serverInfo = result.field("serverInfo")
+            return McpServerInfo(
+                protocolVersion = protocol,
+                serverName = serverInfo?.field("name")?.let { runCatching { it.asString() }.getOrNull() },
+                serverVersion = serverInfo?.field("version")?.let { runCatching { it.asString() }.getOrNull() },
+                instructions = result.field("instructions")?.let { runCatching { it.asString() }.getOrNull() }
+                    ?.take(MAX_INSTRUCTION_CHARS),
+            )
+        } catch (failure: Exception) {
+            close()
+            throw failure
+        } finally {
+            synchronized(stateLock) { initializing = false }
+        }
     }
 
     override fun listTools(timeoutMs: Long): List<McpToolDescriptor> {
+        val selected = currentSession()
         val tools = mutableListOf<McpToolDescriptor>()
         var cursor: String? = null
         // Paginate, but bound the loop: a server that always returns a cursor must not hang a
         // plugin enable forever.
         repeat(MAX_PAGES) {
             val paramsJson = cursor?.let { "{\"cursor\":${JsonWrite.string(it)}}" } ?: "{}"
-            val response = request("tools/list", paramsJson, timeoutMs)
-            val result = response.field("result")?.asObject()
+            val response = request("tools/list", paramsJson, timeoutMs, selected)
+            val result = response.envelope.field("result")?.asObject()
                 ?: throw McpProtocolException("tools/list returned no result")
             val page = result.field("tools")?.asArray().orEmpty()
             page.forEach { entry ->
@@ -96,20 +118,26 @@ internal class McpHttpConnection(
             append(",\"arguments\":").append(argumentsJson.ifBlank { "{}" })
             append('}')
         }
-        val response = request("tools/call", params, timeoutMs)
-        val result = response.field("result")?.asObject()
+        val response = request("tools/call", params, timeoutMs, currentSession())
+        val result = response.envelope.field("result")?.asObject()
             ?: throw McpProtocolException("tools/call returned no result")
         val isError = result.field("isError")?.let { runCatching { it.asBoolean("isError") }.getOrNull() } ?: false
         return McpToolCallResult(text = flattenContent(result.field("content")), isError = isError)
     }
 
-    override fun close() {
-        if (closed) return
-        closed = true
-        // Streamable HTTP has no long-lived socket here, so there is nothing to tear down beyond
-        // forgetting the session. A DELETE is optional per spec and servers may reject it, so it
-        // is deliberately not attempted.
-        sessionId = null
+    override fun close() = synchronized(stateLock) {
+        // Local retirement only. Already-admitted HTTP requests can still finish; no DELETE or replay.
+        isRetired = true
+        session = null
+    }
+
+    private fun checkLive() {
+        if (isRetired) throw McpProtocolException("MCP connection is retired; open a new connection explicitly")
+    }
+
+    private fun currentSession(): Session = synchronized(stateLock) {
+        checkLive()
+        session ?: throw McpProtocolException("MCP connection is not initialized")
     }
 
     private fun flattenContent(content: JsonValue?): String {
@@ -125,11 +153,13 @@ internal class McpHttpConnection(
         }.joinToString("\n")
     }
 
-    private fun notify(method: String) {
-        // Notifications carry no id and expect no body; a failure here must not abort the
-        // handshake, because servers differ on whether they answer 202 or 404.
-        runCatching { post(method, params = null, id = null, timeoutMs = config.connectTimeoutMs) }
+    private fun notify(method: String, selected: Session) {
+        // Preserve compatibility with servers that do not implement the notification endpoint.
+        runCatching { post(method, params = null, id = null, timeoutMs = config.connectTimeoutMs, selected = selected) }
     }
+
+    private data class HttpReply(val body: String, val sessionId: String?)
+    private data class RpcReply(val envelope: JsonValue.Obj, val sessionId: String?)
 
     /**
      * Send one request and return the JSON-RPC envelope.
@@ -137,10 +167,10 @@ internal class McpHttpConnection(
      * @throws McpProtocolException when the server answers with a JSON-RPC error, an
      *   unexpected id, or a body this client cannot parse.
      */
-    private fun request(method: String, params: String, timeoutMs: Long): JsonValue.Obj {
+    private fun request(method: String, params: String, timeoutMs: Long, selected: Session?): RpcReply {
         val id = requestIds.incrementAndGet()
-        val body = post(method, params, id, timeoutMs)
-        val envelope = JsonParser(body).parseDocument().asObject()
+        val response = post(method, params, id, timeoutMs, selected)
+        val envelope = JsonParser(response.body).parseDocument().asObject()
         val error = envelope.field("error")
         if (error != null) {
             val obj = runCatching { error.asObject() }.getOrNull()
@@ -152,37 +182,57 @@ internal class McpHttpConnection(
         if (returnedId != null && returnedId != id) {
             throw McpProtocolException("$method answered request id $returnedId while $id was outstanding")
         }
-        return envelope
+        checkLive()
+        return RpcReply(envelope, response.sessionId)
     }
 
-    private fun post(method: String, params: String?, id: Long?, timeoutMs: Long): String {
-        check(!closed) { "MCP connection '${config.serverName}' is closed" }
+    private fun post(method: String, params: String?, id: Long?, timeoutMs: Long, selected: Session?): HttpReply {
+        checkLive()
         val payload = buildString {
             append("{\"jsonrpc\":\"2.0\",\"method\":").append(JsonWrite.string(method))
             if (params != null) append(",\"params\":").append(params)
             if (id != null) append(",\"id\":").append(id)
             append('}')
         }
+        val bytes = payload.toByteArray(Charsets.UTF_8)
         val connection = (URL(config.url).openConnection() as HttpURLConnection).apply {
-                instanceFollowRedirects = false
+            instanceFollowRedirects = false
             requestMethod = "POST"
             connectTimeout = config.connectTimeoutMs.toInt()
             readTimeout = timeoutMs.toInt()
             doOutput = true
             setRequestProperty("Content-Type", "application/json")
             setRequestProperty("Accept", "application/json, text/event-stream")
-            setRequestProperty("MCP-Protocol-Version", negotiatedProtocol ?: SUPPORTED_PROTOCOL_VERSION)
-            sessionId?.let { setRequestProperty("Mcp-Session-Id", it) }
+            setFixedLengthStreamingMode(bytes.size)
             config.headers.forEach { (key, value) -> setRequestProperty(key, value) }
             credential?.let { setRequestProperty(it.headerName, it.value) }
+            setRequestProperty("MCP-Protocol-Version", selected?.protocol ?: SUPPORTED_PROTOCOL_VERSION)
+            selected?.id?.let { setRequestProperty("Mcp-Session-Id", it) }
         }
         return try {
-            connection.outputStream.use { it.write(payload.toByteArray(Charsets.UTF_8)) }
+            checkLive()
+            connection.outputStream.use { it.write(bytes) }
             val status = connection.responseCode
             val returnedSession = connection.getHeaderField("Mcp-Session-Id")
-            if (returnedSession != null) sessionId = returnedSession
             when {
-                status in 200..299 -> readBody(connection.inputStream)
+                status == 404 && selected?.id != null -> {
+                    close()
+                    throw McpProtocolException("MCP session expired (HTTP 404); reconnect explicitly")
+                }
+                status in 200..299 -> {
+                    if (selected != null && returnedSession != null && returnedSession != selected.id) {
+                        close()
+                        throw McpProtocolException("MCP session identity changed; reconnect explicitly")
+                    }
+                    if (returnedSession != null && (returnedSession.length !in 1..MAX_SESSION_ID_CHARS ||
+                            returnedSession.any { it !in '!'..'~' })) {
+                        close()
+                        throw McpProtocolException("Invalid MCP session identity")
+                    }
+                    val body = readBody(connection.inputStream)
+                    checkLive()
+                    HttpReply(body, returnedSession)
+                }
                 status == 401 || status == 403 ->
                     throw McpConfigException("MCP server '${config.serverName}' rejected the credentials (HTTP $status)")
                 else -> {
@@ -211,7 +261,17 @@ internal class McpHttpConnection(
         return data.toString().trim().ifEmpty { text }
     }
 
+    private fun managedHeader(name: String): Boolean =
+        name.equals("Mcp-Session-Id", ignoreCase = true) || name.equals("MCP-Protocol-Version", ignoreCase = true)
+
+    init {
+        if (config.headers.keys.any(::managedHeader) || credential?.headerName?.let(::managedHeader) == true) {
+            throw McpConfigException("MCP session and protocol headers are managed by the connection")
+        }
+    }
+
     private companion object {
+        const val MAX_SESSION_ID_CHARS = 1024
         const val CLIENT_NAME = "cordiact"
         const val CLIENT_VERSION = "0.1.0"
         const val SUPPORTED_PROTOCOL_VERSION = "2025-06-18"
