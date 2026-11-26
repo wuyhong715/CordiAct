@@ -4,6 +4,9 @@ import android.content.ContentValues
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
+import com.cordiact.core.mcp.MCP_PLUGIN_ID
+import com.cordiact.core.plugin.McpPluginDiagnostic
+import com.cordiact.core.plugin.McpPluginDiagnostics
 import com.cordiact.core.plugin.PluginCapabilities
 import com.cordiact.core.plugin.PluginOrigin
 import com.cordiact.core.plugin.PluginRecord
@@ -12,6 +15,11 @@ import com.cordiact.core.plugin.PluginSpec
 import com.cordiact.core.plugin.PluginState
 import com.cordiact.core.plugin.PluginTarget
 import org.json.JSONArray
+import java.io.RandomAccessFile
+import java.nio.file.Files
+import java.nio.file.LinkOption.NOFOLLOW_LINKS
+import java.nio.file.NoSuchFileException
+import java.nio.file.attribute.BasicFileAttributes
 
 /**
  * Durable transactional store for plugin lifecycle records and app-level user-consent grants.
@@ -19,10 +27,12 @@ import org.json.JSONArray
  */
 class AndroidPluginLifecycleStore(
     context: Context,
-    databaseName: String = DEFAULT_DATABASE_NAME,
+    private val databaseName: String = DEFAULT_DATABASE_NAME,
 ) : SQLiteOpenHelper(context.applicationContext, databaseName, null, DATABASE_VERSION),
     PluginRecordStore,
     PluginCapabilities {
+
+    private val appContext = context.applicationContext
 
     override fun onConfigure(db: SQLiteDatabase) {
         super.onConfigure(db)
@@ -93,6 +103,39 @@ class AndroidPluginLifecycleStore(
         null,
         null,
     ).use { cursor -> if (cursor.moveToFirst()) cursor.toRecord() else null }
+
+    /** Read-only diagnostic path: absent DB is distinct from unreadable/side-effecting SQLite. */
+    internal fun readExistingMcpDiagnostics(): List<McpPluginDiagnostic>? {
+        val file = appContext.getDatabasePath(databaseName).absoluteFile
+        check(file == file.canonicalFile) { "PLUGIN_STORAGE_UNAVAILABLE" }
+        val attrs = try { Files.readAttributes(file.toPath(), BasicFileAttributes::class.java, NOFOLLOW_LINKS) }
+        catch (_: NoSuchFileException) { return null }
+        if (!attrs.isRegularFile) throw IllegalStateException("PLUGIN_STORAGE_UNAVAILABLE")
+        RandomAccessFile(file, "r").use { input ->
+            input.seek(SQLITE_FILE_VERSION_OFFSET)
+            if (input.readUnsignedByte() != 1 || input.readUnsignedByte() != 1) throw IllegalStateException("PLUGIN_STORAGE_UNAVAILABLE")
+        }
+        SQLiteDatabase.openDatabase(file.path, null, SQLiteDatabase.OPEN_READONLY or SQLiteDatabase.NO_LOCALIZED_COLLATORS,
+            { _ -> }).use { db ->
+            if (db.version != DATABASE_VERSION) throw IllegalStateException("PLUGIN_STORAGE_UNAVAILABLE")
+            // Project only the two diagnostic fields; never read configuration or raw errors.
+            val idColumn = "CASE WHEN length(CAST($COL_ID AS BLOB)) BETWEEN 1 AND 41 THEN $COL_ID ELSE NULL END"
+            val stateColumn = "CASE WHEN length(CAST($COL_STATE AS BLOB)) BETWEEN 1 AND 16 THEN $COL_STATE ELSE NULL END"
+            return db.query(TABLE_RECORDS, arrayOf(idColumn, stateColumn),
+                "$COL_ORIGIN = ? AND $COL_TARGET = ? AND $COL_ID GLOB ?",
+                arrayOf(PluginOrigin.USER_INSTALLED.name, PluginTarget.ANDROID_NATIVE.name, "$MCP_PLUGIN_ID.*"),
+                null, null, "$COL_ID ASC", (McpPluginDiagnostics.MAX_ENTRIES + 1).toString(),
+            ).use { cursor ->
+                check(cursor.count <= McpPluginDiagnostics.MAX_ENTRIES) { "PLUGIN_STORAGE_UNAVAILABLE" }
+                buildList {
+                    while (cursor.moveToNext()) {
+                        add(McpPluginDiagnostic(checkNotNull(cursor.getString(0)),
+                            PluginState.valueOf(checkNotNull(cursor.getString(1))), runtime = null))
+                    }
+                }
+            }
+        }
+    }
 
     override fun all(): List<PluginRecord> = readableDatabase.query(
         TABLE_RECORDS,
@@ -372,6 +415,7 @@ class AndroidPluginLifecycleStore(
     private companion object {
         const val DEFAULT_DATABASE_NAME = "cordiact-plugin-lifecycle.db"
         const val DATABASE_VERSION = 4
+        const val SQLITE_FILE_VERSION_OFFSET = 18L
         const val MAX_CONFIG_LENGTH = 64 * 1024
         const val TABLE_RECORDS = "plugin_records"
         const val TABLE_WORKSPACE_CONSENTS = "plugin_workspace_consents"

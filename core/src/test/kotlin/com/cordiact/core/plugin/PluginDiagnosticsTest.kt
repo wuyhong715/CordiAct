@@ -106,7 +106,7 @@ class PluginDiagnosticsTest {
         val receipt = ExtensionPackageSourceReceipt("source", "publisher", "test-key", 1, 1)
         val signed = record.copy(previous = null, sourceReceipt = receipt)
         fun read(observation: () -> SignedCatalogObservation?) = PluginDiagnostics({ true }, { listOf(signed) },
-            { WorkspacePackageRuntime.Status.TRUST_WITHDRAWN }, emptyList(), observation).snapshot("a")
+            { WorkspacePackageRuntime.Status.TRUST_WITHDRAWN }, emptyList(), signedObservation = observation).snapshot("a")
         val unavailable = listOf(
             SignedCatalogObservation.notConfigured() to SignedCatalogDiagnosticState.NOT_CONFIGURED,
             SignedCatalogObservation.invalidPolicy() to SignedCatalogDiagnosticState.INVALID_POLICY,
@@ -138,7 +138,7 @@ class PluginDiagnosticsTest {
     @Test
     fun `an unavailable package store does not erase the catalog observation`() {
         val snapshot = PluginDiagnostics({ true }, { throw ExtensionPackageStoreException() }, { fail("No record to inspect") },
-            emptyList(), { SignedCatalogObservation(SignedCatalogDiagnosticState.EXPIRED, 8) }).snapshot("a")
+            emptyList(), signedObservation = { SignedCatalogObservation(SignedCatalogDiagnosticState.EXPIRED, 8) }).snapshot("a")
         assertEquals(WorkspacePackageDiagnostics.StorageUnavailable, snapshot.packages)
         assertEquals(SignedCatalogDiagnosticState.EXPIRED, snapshot.signedCatalog)
         assertEquals(8L, snapshot.observedRootRevision)
@@ -149,11 +149,12 @@ class PluginDiagnosticsTest {
         val signed = record.copy(previous = null, sourceReceipt = ExtensionPackageSourceReceipt("source", "publisher", "test-key", 1, 1))
         val cancelled = CancellationException("cancelled")
         val catalog = PluginDiagnostics({ true }, { fail("Cancellation before package read") }, { null }, emptyList(),
-            { throw cancelled })
+            signedObservation = { throw cancelled })
         assertSame(cancelled, assertFailsWith<CancellationException> { catalog.snapshot("a") })
-        val release = PluginDiagnostics({ true }, { listOf(signed) }, { null }, emptyList(), {
-            SignedCatalogObservation(SignedCatalogDiagnosticState.OBSERVED, 1) { throw cancelled }
-        })
+        val release = PluginDiagnostics({ true }, { listOf(signed) }, { null }, emptyList(),
+            signedObservation = {
+                SignedCatalogObservation(SignedCatalogDiagnosticState.OBSERVED, 1) { throw cancelled }
+            })
         assertSame(cancelled, assertFailsWith<CancellationException> { release.snapshot("a") })
     }
 
@@ -162,11 +163,41 @@ class PluginDiagnosticsTest {
         var scope = Any()
         val original = scope
         val service = PluginDiagnostics({ it == "a" && scope === original }, { fail("Invalidated scope must not read packages") },
-            { fail("Invalidated scope must not inspect runtime") }, emptyList(), {
+            { fail("Invalidated scope must not inspect runtime") }, emptyList(),
+            signedObservation = {
                 scope = Any()
                 SignedCatalogObservation.notOpened()
             })
         assertEquals("PLUGIN_DIAGNOSTICS_WORKSPACE_UNAVAILABLE", assertFailsWith<IllegalStateException> { service.snapshot("a") }.message)
+    }
+
+    @Test
+    fun `global MCP observation distinguishes missing empty and unreadable without erasing workspace diagnostics`() {
+        fun read(observe: () -> McpPluginDiagnostics) = PluginDiagnostics({ it == "a" }, { listOf(record) },
+            { WorkspacePackageRuntime.Status.INACTIVE }, emptyList(), globalMcpObservation = observe).snapshot("a")
+        val missing = read { McpPluginDiagnostics.StorageNotCreated }
+        assertEquals(McpPluginDiagnostics.StorageNotCreated, missing.globalMcp)
+        assertEquals(missing.copy(globalMcp = McpPluginDiagnostics.Entries(emptyList())), read { McpPluginDiagnostics.Entries(emptyList()) })
+        val unreadable = read { error("PRIVATE_ENDPOINT_AND_BODY") }
+        assertEquals(missing.copy(globalMcp = McpPluginDiagnostics.Unavailable), unreadable)
+        assertFalse(unreadable.toString().contains("PRIVATE_ENDPOINT_AND_BODY"))
+        val cancelled = CancellationException("cancelled")
+        assertSame(cancelled, assertFailsWith<CancellationException> { read { throw cancelled } })
+    }
+
+    @Test
+    fun `reselection during the global MCP read discards the entire old snapshot`() {
+        var selected = true
+        var observations = 0
+        val service = PluginDiagnostics({ selected && it == "a" }, { listOf(record) }, { null }, emptyList(),
+            globalMcpObservation = {
+                observations++
+                selected = false
+                McpPluginDiagnostics.Entries(listOf(McpPluginDiagnostic("core.mcp.demo", PluginState.ENABLED, PluginInstanceState.FAILED)))
+            })
+        assertFailsWith<IllegalStateException> { service.snapshot("a") }
+        assertFailsWith<IllegalStateException> { service.snapshot("a") }
+        assertEquals(1, observations)
     }
 
     @Test

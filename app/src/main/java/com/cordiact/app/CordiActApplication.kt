@@ -843,6 +843,9 @@ class CordiActApplication : Application(), androidx.work.Configuration.Provider 
                 if (signedCatalogPolicyInvalid) SignedCatalogObservation.invalidPolicy()
                 else signedCatalogAccess?.diagnosticObservation() ?: SignedCatalogObservation.notConfigured()
             },
+            globalMcpObservation = {
+                pluginLifecycle.manager.observeMcpDiagnostics(pluginLifecycle.store::readExistingMcpDiagnostics)
+            },
         ).snapshot(workspaceId)
 
     internal val workspaceExtensionPackages by lazy {

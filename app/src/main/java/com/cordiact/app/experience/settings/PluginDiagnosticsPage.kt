@@ -14,6 +14,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import com.cordiact.app.experience.settings.components.SettingsCard
 import com.cordiact.core.plugin.ExtensionPackageArtifact
+import com.cordiact.core.plugin.McpPluginDiagnostics
 import com.cordiact.core.plugin.PluginDiagnosticSnapshot
 import com.cordiact.core.plugin.PluginInstanceState
 import com.cordiact.core.plugin.SignedCatalogDiagnosticState
@@ -28,7 +29,7 @@ import kotlinx.coroutines.ensureActive
 @Composable
 internal fun PluginDiagnosticsPage(facade: SettingsFacade, workspace: SecurityWorkspace?, scopeBusy: Boolean) {
     Text("只读快照 · 不启动插件或检测连接", style = MaterialTheme.typography.labelLarge)
-    Text("本页不读取会话试用或 MCP。", style = MaterialTheme.typography.bodySmall)
+    Text("本页不读取会话试用、工作区临时连接或 MCP 凭据。", style = MaterialTheme.typography.bodySmall)
     if (scopeBusy) {
         LinearProgressIndicator(Modifier.fillMaxWidth())
         return
@@ -85,8 +86,25 @@ private fun DiagnosticsContent(snapshot: PluginDiagnosticSnapshot) {
     snapshot.bundled.forEach { item ->
         DiagnosticCard(item.id, "v${item.version} · APK 随包", "进程运行：${item.runtime.label()}")
     }
-    Text("仅展示内置目录和进程观测，不读取全局启用记录。内置状态不代表工作区授权或连通性。",
+    Text("内置部分仅展示 APK 清单和进程观测。内置状态不代表工作区授权或连通性。",
         style = MaterialTheme.typography.bodySmall)
+    Text("MCP 连接 · 全局", style = MaterialTheme.typography.titleMedium)
+    Text("仅显示安装状态与进程观测，不代表所选工作区的授权或连通性。", style = MaterialTheme.typography.bodySmall)
+    when (val mcp = snapshot.globalMcp) {
+        McpPluginDiagnostics.StorageNotCreated -> Text("插件生命周期存储尚未建立；诊断未创建存储。")
+        McpPluginDiagnostics.Unavailable -> Text("暂无法读取全局 MCP 诊断。")
+        is McpPluginDiagnostics.Entries -> {
+            if (mcp.items.isEmpty()) Text("没有已安装的全局 MCP 插件。")
+            mcp.items.forEach { item ->
+                val runtime = when (item.runtime) {
+                    PluginInstanceState.ACTIVE -> "目录已发布"
+                    PluginInstanceState.FAILED -> "连接失效或启动失败"
+                    else -> item.runtime.label()
+                }
+                DiagnosticCard(item.id, "安装状态：${item.state.name}", "进程运行：$runtime")
+            }
+        }
+    }
 }
 
 @Composable

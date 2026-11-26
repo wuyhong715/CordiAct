@@ -390,6 +390,18 @@ class PluginLifecycleManager(
 
     fun all(): List<PluginRecord> = synchronized(lock) { records.all().map { it.withRuntimeStatus() } }
 
+    /** Join only the metadata from a passive reader to the current global MCP runtime bindings. */
+    fun observeMcpDiagnostics(readExisting: () -> List<McpPluginDiagnostic>?): McpPluginDiagnostics = synchronized(lock) {
+        val rows = readExisting() ?: return@synchronized McpPluginDiagnostics.StorageNotCreated
+        check(rows.size <= McpPluginDiagnostics.MAX_ENTRIES && rows.all { McpPluginDiagnostics.acceptsId(it.id) } &&
+            rows.map { it.id }.distinct().size == rows.size) { "INVALID_MCP_DIAGNOSTICS" }
+        McpPluginDiagnostics.Entries(rows.sortedBy { it.id }.map { row ->
+            val runtime = (bindings[row.id] as? RuntimeAwarePlugin)?.runtimeStatus()
+                ?.takeIf { it.id == PluginInstanceId(row.id) }?.state
+            row.copy(runtime = runtime)
+        })
+    }
+
     private fun PluginRecord.withRuntimeStatus(): PluginRecord = copy(
         runtimeStatus = (bindings[spec.id] as? RuntimeAwarePlugin)?.runtimeStatus(),
     )

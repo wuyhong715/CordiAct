@@ -9,6 +9,7 @@ data class PluginDiagnosticSnapshot(
     val bundled: List<BundledPluginDiagnostic>,
     val signedCatalog: SignedCatalogDiagnosticState? = null,
     val observedRootRevision: Long? = null,
+    val globalMcp: McpPluginDiagnostics = McpPluginDiagnostics.Unavailable,
 )
 
 sealed interface WorkspacePackageDiagnostics {
@@ -32,12 +33,31 @@ data class WorkspacePackageDiagnostic(
 
 data class BundledPluginDiagnostic(val id: String, val version: String, val runtime: PluginInstanceState?)
 
+sealed interface McpPluginDiagnostics {
+    data object StorageNotCreated : McpPluginDiagnostics
+    data object Unavailable : McpPluginDiagnostics
+    data class Entries(val items: List<McpPluginDiagnostic>) : McpPluginDiagnostics
+
+    companion object {
+        const val MAX_ENTRIES = 256
+        internal fun acceptsId(id: String) = id.matches(Regex("core\\.mcp\\.[a-z0-9_-]{1,32}"))
+    }
+}
+
+/** Global installed connection, not its endpoint, config, workspace consent or credential. */
+data class McpPluginDiagnostic(
+    val id: String,
+    val state: PluginState,
+    val runtime: PluginInstanceState?,
+)
+
 /** Host supplies passive reads only; notably no lifecycle manager, credential or effect port. */
 class PluginDiagnostics(
     private val isCurrentWorkspace: (String) -> Boolean,
     private val readExistingPackages: (String) -> List<ExtensionPackageRecord>?,
     private val packageRuntime: (ExtensionPackageRecord) -> WorkspacePackageRuntime.Status?,
     private val bundled: List<ManagedPlugin>,
+    private val globalMcpObservation: () -> McpPluginDiagnostics = { McpPluginDiagnostics.Unavailable },
     private val signedObservation: () -> SignedCatalogObservation? = { null },
 ) {
     fun snapshot(workspaceId: String): PluginDiagnosticSnapshot {
@@ -74,7 +94,9 @@ class PluginDiagnostics(
             BundledPluginDiagnostic(spec.id, spec.version, runtime)
         }.sortedBy { it.id }
         check(isCurrentWorkspace(workspaceId)) { "PLUGIN_DIAGNOSTICS_WORKSPACE_UNAVAILABLE" }
-        return PluginDiagnosticSnapshot(workspaceId, packages, builtins, trust?.state, trust?.rootRevision)
+        val mcp = readObservation(globalMcpObservation) ?: McpPluginDiagnostics.Unavailable
+        check(isCurrentWorkspace(workspaceId)) { "PLUGIN_DIAGNOSTICS_WORKSPACE_UNAVAILABLE" }
+        return PluginDiagnosticSnapshot(workspaceId, packages, builtins, trust?.state, trust?.rootRevision, mcp)
     }
 
     private fun <T> readObservation(read: () -> T?): T? = try { read() }
