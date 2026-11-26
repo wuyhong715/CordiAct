@@ -7,8 +7,14 @@ import com.cordiact.core.mcp.McpServerInfo
 import com.cordiact.core.mcp.McpToolCallResult
 import com.cordiact.core.mcp.McpToolDescriptor
 import com.cordiact.core.tool.InMemoryToolDefinitionRegistry
+import com.cordiact.core.tool.ToolActivationContext
 import com.cordiact.core.tool.ToolArguments
+import com.cordiact.core.tool.ToolDefinitionRegistry
+import com.cordiact.core.tool.ToolInvocationContext
 import com.cordiact.core.tool.ToolValue
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -95,6 +101,106 @@ class McpToolBridgeTest {
         assertNull(registry.get("core.mcp.demo.old"))
         assertNotNull(registry.get("core.mcp.demo.new"))
         assertEquals(1, registry.all().size)
+    }
+
+    @Test
+    fun retainedExecutorsAndVisibilityCannotFollowSameIdOrSameConnection() {
+        val registry = InMemoryToolDefinitionRegistry()
+        val bridge = McpToolBridge("demo", registry, "$MCP_PLUGIN_ID.demo", 5_000)
+        val first = FakeConnection(listOf(McpToolDescriptor("echo", "Echo")))
+        val second = FakeConnection(listOf(McpToolDescriptor("echo", "Echo")))
+        val id = "core.mcp.demo.echo"
+        val ctx = ToolInvocationContext(workspaceId = "ws")
+        val activation = ToolActivationContext("ws")
+        bridge.sync(first)
+        val old = requireNotNull(registry.get(id)).executor
+        val oldGate = requireNotNull(registry.visibility(id))
+        assertTrue(oldGate.visible(activation))
+        bridge.sync(second)
+        val middle = requireNotNull(registry.get(id)).executor
+        assertFalse(oldGate.visible(activation))
+        assertEquals("MCP tool registration is no longer active", (old.invoke(ctx, ToolArguments()).values["error"] as ToolValue.StringValue).value)
+        assertNull(first.lastArgumentsJson)
+        assertNull(second.lastArgumentsJson)
+        bridge.sync(first)
+        assertTrue("error" in old.invoke(ctx, ToolArguments()).values)
+        assertTrue("error" in middle.invoke(ctx, ToolArguments()).values)
+        assertNull(first.lastArgumentsJson)
+        assertNull(second.lastArgumentsJson)
+        assertFalse("error" in requireNotNull(registry.get(id)).executor.invoke(ctx, ToolArguments()).values)
+        assertEquals("{}", first.lastArgumentsJson)
+    }
+
+    @Test
+    fun replacementDuringApprovalCannotSendOnEitherConnection() {
+        val registry = InMemoryToolDefinitionRegistry()
+        val first = FakeConnection(listOf(McpToolDescriptor("echo", "Echo")))
+        val second = FakeConnection(listOf(McpToolDescriptor("echo", "Echo")))
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val worker = Executors.newSingleThreadExecutor()
+        try {
+            val bridge = McpToolBridge("demo", registry, "$MCP_PLUGIN_ID.demo", 5_000) { _, _ ->
+                entered.countDown()
+                release.await(3, TimeUnit.SECONDS)
+            }
+            bridge.sync(first)
+            val executor = requireNotNull(registry.get("core.mcp.demo.echo")).executor
+            val result = worker.submit<Boolean> {
+                "error" in executor.invoke(ToolInvocationContext(workspaceId = "ws"), ToolArguments()).values
+            }
+            assertTrue(entered.await(2, TimeUnit.SECONDS))
+            bridge.sync(second)
+            release.countDown()
+            assertTrue(result.get(2, TimeUnit.SECONDS))
+            assertNull(first.lastArgumentsJson)
+            assertNull(second.lastArgumentsJson)
+        } finally {
+            release.countDown()
+            worker.shutdownNow()
+        }
+    }
+
+    @Test
+    fun retirementSuppressesLateResultsAndPendingCleanupIsNotPublished() {
+        val inner = InMemoryToolDefinitionRegistry()
+        var refuseWithdrawal = true
+        val registry = object : ToolDefinitionRegistry by inner {
+            override fun unregister(toolId: String): Boolean {
+                check(!refuseWithdrawal) { "Synthetic withdrawal failed" }
+                return inner.unregister(toolId)
+            }
+        }
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val worker = Executors.newSingleThreadExecutor()
+        try {
+            val bridge = McpToolBridge("demo", registry, "$MCP_PLUGIN_ID.demo", 5_000)
+            val connection = object : McpConnection by FakeConnection(listOf(McpToolDescriptor("echo", "Echo"))) {
+                override fun callTool(name: String, argumentsJson: String, timeoutMs: Long): McpToolCallResult {
+                    entered.countDown()
+                    check(release.await(3, TimeUnit.SECONDS))
+                    return McpToolCallResult(text = "late payload")
+                }
+            }
+            bridge.sync(connection)
+            val id = "core.mcp.demo.echo"
+            val executor = requireNotNull(registry.get(id)).executor
+            val ctx = ToolInvocationContext(workspaceId = "ws")
+            val result = worker.submit<com.cordiact.core.tool.ToolResult> { executor.invoke(ctx, ToolArguments()) }
+            assertTrue(entered.await(2, TimeUnit.SECONDS))
+            assertFailsWith<IllegalStateException> { bridge.dispose() }
+            assertTrue(bridge.publishedTools().isEmpty())
+            assertFalse(requireNotNull(registry.visibility(id)).visible(ToolActivationContext("ws")))
+            release.countDown()
+            assertTrue("error" in result.get(2, TimeUnit.SECONDS).values)
+            refuseWithdrawal = false
+            bridge.dispose()
+            assertNull(registry.get(id))
+        } finally {
+            release.countDown()
+            worker.shutdownNow()
+        }
     }
 
     @Test

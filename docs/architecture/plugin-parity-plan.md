@@ -96,6 +96,8 @@ CordiAct 不缺「插件」这个概念，也不缺插件内核。当前缺口�
 
 **P0/P1 · 真机检查点。** [PR #92](https://github.com/wuyhong715/CordiAct/pull/92) 的 `623ee44` 对应 [Android CI 第 2 次尝试](https://github.com/wuyhong715/CordiAct/actions/runs/45334743450/attempts/2) 和 [Debug APK 工件](https://github.com/wuyhong715/CordiAct/actions/runs/45334743450/artifacts/14893009027)。Android Debug 单测 265 项、JVM 1,181 项通过；用户于 2026-11-24 确认实机测试通过，未提供设备型号或逐项记录。该普通 APK 不含签名发行配置，不把此次确认扩展为生产签名分发验收。P2 在独立分支继续，不改本候选。
 
+**P2 · MCP 发布世代。** [MCP 工具桥](../../mcp-client/src/main/kotlin/com/cordiact/mcp/client/McpToolBridge.kt)将执行器和可见性回调绑定到原发布世代与原连接。同名重发（包括复用连接对象）不会让旧执行器转发新调用；撤回先关准入，注册清理仍可重试，诊断不把待清理项当成已发布。已经派发的远端动作不承诺撤销；若结果晚于世代撤回，则不交付旧结果，也不自动重放。本切片不把暂时请求失败等同于断线，也未实现自动重连或目录统一诊断。
+
 **P2 · DSH 只读跟随首切片。** [固定版兼容性与模型](dsh-readonly-session-follow.md)已核对到 `dsh-v0.2.3-alpha.1`。默认认证是 owner，不能充当只读主体；已实现不联网的最小状态投影，按连接、本地工作区、会话和打开世代隔离，断线或撤权清空，旧响应不可恢复。不开放清单、历史、远程写入或 Android 连接入口。
 
 **P2 · Host 插件切片。** [只读 Host 插件](../../deepseek-harness/host-follow/README.md)加入一次性、单目标、短时进程内授权，从已加载的真实 DSH 注册目录只采三个字段，撤权和卸载关闭现有流。核心与继承管道共 16 项 Node 回归通过；真实 Loader 既验证了固定提交重建 Cordis 的混合工件，也验证了同树正式构建。独立 Node TLS 载体只绑定回环临时端口，已与 Kotlin 互操作，并在同树正式 CLI 的合成 profile 内验证真实 Loader 的卸载撤回；未装入默认 DSH profile，没有外网入口或 APK 接线。

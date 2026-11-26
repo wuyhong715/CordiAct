@@ -21,9 +21,7 @@ import com.cordiact.core.tool.ToolDefinitionRegistry
  *
  * Failures during [onEnable] are intentionally not swallowed: the manager turns a thrown hook
  * into a `FAILED` record and revokes capabilities, which is exactly the "no half-connected
- * server" outcome this needs. The one exception is a reconnect policy — a server that was up
- * and then dropped keeps its tools until the retry budget is exhausted, mirroring what the
- * upstream mcp-client does.
+ * server" outcome this needs. This lifecycle does not reconnect or replay tool calls.
  */
 class McpPlugin(
     override val spec: PluginSpec,
