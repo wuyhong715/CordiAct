@@ -7,6 +7,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.cordiact.core.mcp.McpToolDescriptor
+import com.cordiact.core.plugin.PluginInstanceState
 import com.cordiact.core.settings.SettingsMutationUncertain
 import com.cordiact.app.experience.settings.components.SecretField
 import com.cordiact.app.experience.settings.components.DangerConfirmDialog
@@ -106,7 +107,16 @@ internal fun McpSettingsPage(facade: McpSettings?, dirty: (Boolean) -> Unit, onB
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(item.name, style = MaterialTheme.typography.titleMedium)
                         Text(item.url)
-                        Text("${item.state} · ${item.toolCount} 个工具 · ${if (item.keySet) "鉴权已设置" else "无鉴权凭据"}")
+                        val runtime = when (item.runtime) {
+                            PluginInstanceState.ACTIVE -> "目录已发布"
+                            PluginInstanceState.STARTING -> "正在初始化"
+                            PluginInstanceState.WAITING -> "等待依赖"
+                            PluginInstanceState.FAILED -> "连接失效或启动失败"
+                            PluginInstanceState.DISABLED -> "未运行"
+                            null -> "未观测到运行状态"
+                        }
+                        Text("$runtime · ${item.toolCount} 个工具 · ${if (item.keySet) "鉴权已设置" else "无鉴权凭据"}")
+                        if (diagnostic) Text("${if (item.enabled) "启用意图：开" else "启用意图：关"} · ${item.state}")
                         if (!diagnostic) Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
                             Switch(item.enabled, enabled = !busy, onCheckedChange = { enabled -> work { facade.setEnabled(item.name, enabled); statuses.remove(item.name); details.remove(item.name) } })
                             Text(if (item.enabled) "已启用" else "已关闭")

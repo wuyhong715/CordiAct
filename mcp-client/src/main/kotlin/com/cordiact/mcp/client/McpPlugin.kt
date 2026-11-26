@@ -1,15 +1,17 @@
 package com.cordiact.mcp.client
 
-import com.cordiact.core.mcp.MCP_PLUGIN_ID
 import com.cordiact.core.mcp.McpClientFactory
 import com.cordiact.core.mcp.McpConnection
 import com.cordiact.core.mcp.McpCredential
 import com.cordiact.core.mcp.McpServerConfig
 import com.cordiact.core.mcp.McpServerInfo
 import com.cordiact.core.mcp.McpServerConfigCodec
-import com.cordiact.core.plugin.ManagedPlugin
-import com.cordiact.core.plugin.PluginSpec
+import com.cordiact.core.plugin.PluginInstanceId
+import com.cordiact.core.plugin.PluginInstanceState
+import com.cordiact.core.plugin.PluginInstanceStatus
 import com.cordiact.core.plugin.PluginScope
+import com.cordiact.core.plugin.PluginSpec
+import com.cordiact.core.plugin.RuntimeAwarePlugin
 import com.cordiact.core.tool.ToolDefinitionRegistry
 
 /**
@@ -29,7 +31,7 @@ class McpPlugin(
     private val factory: McpClientFactory,
     private val credential: McpCredential? = null,
     private val credentialProvider: ((String) -> McpCredential?)? = null,
-) : ManagedPlugin {
+) : RuntimeAwarePlugin {
 
     private val config: McpServerConfig = McpServerConfigCodec.decode(spec.config)
     private val bridge = McpToolBridge(
@@ -41,25 +43,40 @@ class McpPlugin(
 
     private var resources: PluginScope? = null
 
-    @Volatile
-    private var connection: McpConnection? = null
+    private data class Runtime(
+        val state: PluginInstanceState,
+        val connection: McpConnection? = null,
+        val serverInfo: McpServerInfo? = null,
+        val reason: String? = null,
+    )
 
-    @Volatile
-    var serverInfo: McpServerInfo? = null
-        private set
+    @Volatile private var runtime = Runtime(PluginInstanceState.DISABLED)
 
-    @Volatile
-    var lastError: String? = null
-        private set
+    val serverInfo: McpServerInfo? get() = runtime.let { if (it.connection?.isRetired == false) it.serverInfo else null }
+    val lastError: String? get() = runtimeStatus().lastError
+
+    /** Called under the lifecycle manager's lock: never locks the plugin or accesses the network. */
+    override fun runtimeStatus(): PluginInstanceStatus {
+        val current = runtime
+        val retired = current.connection?.isRetired == true
+        return PluginInstanceStatus(PluginInstanceId(spec.id),
+            if (retired) PluginInstanceState.FAILED else current.state, emptySet(),
+            if (retired) "MCP_CONNECTION_RETIRED" else current.reason)
+    }
 
     /** Tool ids currently published by this plugin. */
-    fun publishedTools(): Map<String, String> = bridge.publishedTools()
+    fun publishedTools(): Map<String, String> {
+        val current = runtime
+        if (current.state != PluginInstanceState.ACTIVE || current.connection?.isRetired != false) return emptyMap()
+        return bridge.publishedTools().takeIf { runtime === current }.orEmpty()
+    }
 
     @Synchronized
     override fun onEnable() {
-        if (connection != null && resources?.isOpen == true) return
+        if (runtime.connection != null && resources?.isOpen == true) return
         // Never reconnect over a connection/tool generation whose cleanup failed.
         resources?.let { it.close(); resources = null }
+        runtime = Runtime(PluginInstanceState.STARTING)
         val scope = PluginScope()
         resources = scope
         try {
@@ -68,31 +85,25 @@ class McpPlugin(
             // Reverse release order: withdraw tools, then close the transport. Register before
             // sync so a partial publication is also withdrawn if initialization fails.
             scope.effect { bridge.dispose() }
-            serverInfo = live.initialize()
+            val info = live.initialize()
             bridge.sync(live)
-            connection = live
-            lastError = null
+            runtime = Runtime(PluginInstanceState.ACTIVE, live, info)
         } catch (failure: Exception) {
             try { scope.close(); resources = null } catch (cleanup: Exception) { failure.addSuppressed(cleanup) }
-            connection = null
-            serverInfo = null
-            lastError = failure.message
+            runtime = Runtime(PluginInstanceState.FAILED, reason = "MCP_START_FAILED")
             throw failure
         }
     }
 
     @Synchronized
     override fun onDisable() {
+        runtime = Runtime(PluginInstanceState.DISABLED)
         try {
             resources?.close()
             resources = null
-            lastError = null
         } catch (failure: Exception) {
-            lastError = failure.message
+            runtime = Runtime(PluginInstanceState.FAILED, reason = "MCP_CLEANUP_PENDING")
             throw failure
-        } finally {
-            connection = null
-            serverInfo = null
         }
     }
 

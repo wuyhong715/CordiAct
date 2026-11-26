@@ -1,6 +1,7 @@
 package com.cordiact.app.experience.settings
 
 import com.cordiact.core.mcp.McpToolDescriptor
+import com.cordiact.core.plugin.PluginInstanceState
 
 /**
  * One tool an installed server currently publishes.
@@ -20,6 +21,8 @@ data class McpSummary(
     val keySet: Boolean,
     /** Tools published right now. Empty while the server is disabled or never started. */
     val tools: List<McpToolEntry> = emptyList(),
+    /** Passive in-process state, distinct from the durable enable intent; not a network probe. */
+    val runtime: PluginInstanceState? = null,
 )
 
 /**

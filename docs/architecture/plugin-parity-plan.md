@@ -100,6 +100,8 @@ CordiAct 不缺「插件」这个概念，也不缺插件内核。当前缺口�
 
 **P2 · MCP 鉴权更新。** [更新流程](../../app/src/main/java/com/cordiact/app/experience/settings/AndroidMcpSettings.kt)先在独立连接预检新凭据，再经固定 `mcp.authentication` 审计目标提交；请求审计失败不写凭据库。Android 设置写入串行化，同一进程中其他设置写入（包括可能部分成功的失败）会使旧预检失效。提交前复核安装配置与状态；启用的插件先停用再换凭据。若提交失败，只有确认旧凭据写回后才允许尝试恢复启动；旧连接不是原地复活，生命周期若已进入 FAILED 则保留待修复状态。失败提示要求先核对状态，审计不含凭据或远端原始错误。这不是跨存储事务或插件管理入口的全局并发锁。
 
+**P2 · MCP 被动运行态。** MCP 插件现在实现 [RuntimeAwarePlugin](../../mcp-client/src/main/kotlin/com/cordiact/mcp/client/McpPlugin.kt)：诊断可区分持久启用意图与当前 ACTIVE/STARTING/FAILED/DISABLED 运行态；连接被服务端明确清退后，工具目录和状态立即按失效投影，不自动重连。插件管理清理、设置重连或显式再次启用才建立新连接；诊断读取不发网络探测。
+
 **P2 · DSH 只读跟随首切片。** [固定版兼容性与模型](dsh-readonly-session-follow.md)已核对到 `dsh-v0.2.3-alpha.1`。默认认证是 owner，不能充当只读主体；已实现不联网的最小状态投影，按连接、本地工作区、会话和打开世代隔离，断线或撤权清空，旧响应不可恢复。不开放清单、历史、远程写入或 Android 连接入口。
 
 **P2 · Host 插件切片。** [只读 Host 插件](../../deepseek-harness/host-follow/README.md)加入一次性、单目标、短时进程内授权，从已加载的真实 DSH 注册目录只采三个字段，撤权和卸载关闭现有流。核心与继承管道共 16 项 Node 回归通过；真实 Loader 既验证了固定提交重建 Cordis 的混合工件，也验证了同树正式构建。独立 Node TLS 载体只绑定回环临时端口，已与 Kotlin 互操作，并在同树正式 CLI 的合成 profile 内验证真实 Loader 的卸载撤回；未装入默认 DSH profile，没有外网入口或 APK 接线。

@@ -1,12 +1,15 @@
 package com.cordiact.mcp.client
 
 import com.cordiact.core.mcp.*
+import com.cordiact.core.plugin.PluginInstanceId
+import com.cordiact.core.plugin.PluginInstanceState
 import com.cordiact.core.tool.InMemoryToolDefinitionRegistry
 import kotlin.test.*
 
 class McpPluginCredentialTest {
     private class Connection : McpConnection {
         var closed = false
+        override val isRetired get() = closed
         override fun initialize() = McpServerInfo(protocolVersion = "2025-06-18", serverName = "fake")
         override fun listTools(timeoutMs: Long) = listOf(McpToolDescriptor("ping", "Ping"))
         override fun callTool(name: String, argumentsJson: String, timeoutMs: Long) = McpToolCallResult("ok", false)
@@ -26,6 +29,31 @@ class McpPluginCredentialTest {
         assertFalse(spec.config.contains("first-secret")); assertFalse(spec.config.contains("replacement"))
         plugin.onDisable()
     }
+    @Test fun passiveRuntimeDistinguishesRetiredConnectionFromDisabledAndDoesNotRestart() {
+        val registry = InMemoryToolDefinitionRegistry()
+        val connections = mutableListOf<Connection>()
+        val spec = mcpPluginSpec(McpServerConfig("demo", "https://example.test/mcp"))
+        val plugin = McpPlugin(spec, registry, McpClientFactory { _, _ -> Connection().also { connections += it } })
+        assertEquals(PluginInstanceState.DISABLED, plugin.runtimeStatus().state)
+        plugin.onEnable()
+        assertEquals(PluginInstanceId(spec.id), plugin.runtimeStatus().id)
+        assertEquals(PluginInstanceState.ACTIVE, plugin.runtimeStatus().state)
+        assertEquals(1, plugin.publishedTools().size)
+        connections.single().close()
+        assertEquals(PluginInstanceState.FAILED, plugin.runtimeStatus().state)
+        assertEquals("MCP_CONNECTION_RETIRED", plugin.runtimeStatus().lastError)
+        assertNull(plugin.serverInfo)
+        assertTrue(plugin.publishedTools().isEmpty())
+        plugin.onEnable() // Repeated lifecycle hook does not implicitly reconnect a retired transport.
+        assertEquals(1, connections.size)
+        plugin.onDisable()
+        assertEquals(PluginInstanceState.DISABLED, plugin.runtimeStatus().state)
+        plugin.onEnable()
+        assertEquals(2, connections.size)
+        assertEquals(PluginInstanceState.ACTIVE, plugin.runtimeStatus().state)
+        plugin.onDisable()
+    }
+
     @Test fun failedTransportCleanupIsVisibleAndRetriedBeforeReconnect() {
         val registry = InMemoryToolDefinitionRegistry()
         var fail = true

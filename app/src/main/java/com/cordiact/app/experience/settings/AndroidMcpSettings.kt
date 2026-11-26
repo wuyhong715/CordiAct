@@ -41,7 +41,7 @@ class AndroidMcpSettings(private val app: CordiActApplication) : McpSettings {
         service.inventory().filter { it.spec.id.startsWith("$MCP_PLUGIN_ID.") }.map { entry ->
             val config = McpServerConfigCodec.decode(entry.spec.config)
             McpSummary(config.serverName, config.url, entry.state == PluginState.ENABLED, entry.state.name, entry.publishedToolIds.size,
-                AndroidSystemCredentials.get(app).has("mcp", config.serverName))
+                AndroidSystemCredentials.get(app).has("mcp", config.serverName), runtime = entry.runtimeStatus?.state)
         }
     }
     override suspend fun reconnect(name: String): McpReconnectOutcome = withContext(Dispatchers.IO) {
