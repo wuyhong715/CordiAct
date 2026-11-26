@@ -1,6 +1,7 @@
 package com.cordiact.app.plugin
 
 import android.content.Context
+import android.database.sqlite.SQLiteDatabase
 import com.cordiact.core.plugin.BundledPluginVerifier
 import com.cordiact.core.plugin.ManagedPlugin
 import com.cordiact.core.plugin.PluginLifecycleException
@@ -13,7 +14,9 @@ import com.cordiact.core.plugin.PluginTarget
 import java.io.File
 import java.nio.file.Files
 import org.junit.After
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -23,6 +26,7 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.SQLiteMode
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
@@ -48,26 +52,48 @@ class AndroidPluginLifecycleIntegrationTest {
     }
 
     @Test
+    @SQLiteMode(SQLiteMode.Mode.NATIVE)
     fun diagnosticMcpProjectionReadsOnlyInstalledMetadataAndDoesNotOpenWritableHelper() {
         val spec = PluginSpec(
             id = "core.mcp.demo", version = "0.1.0", target = PluginTarget.ANDROID_NATIVE,
             config = "PRIVATE_ENDPOINT_AND_CREDENTIAL",
         )
         store.put(PluginRecord(spec, PluginOrigin.USER_INSTALLED, PluginState.ENABLED, "PRIVATE_ERROR"))
+        store.put(PluginRecord(spec.copy(id = "core.mcp.bundled"), PluginOrigin.BUNDLED_SYSTEM, PluginState.ENABLED))
+        store.put(PluginRecord(spec.copy(id = "core.mcp.remote", target = PluginTarget.HARNESS_REMOTE), PluginOrigin.USER_INSTALLED, PluginState.DISABLED))
         store.close()
         store = AndroidPluginLifecycleStore(context, TEST_DATABASE)
         val file = context.getDatabasePath(TEST_DATABASE)
-        val before = file.readBytes()
+        val before = diagnosticFiles(file)
         val rows = store.readExistingMcpDiagnostics()
-        val after = file.readBytes()
-        assertEquals(before.toList(), after.toList())
+        assertDiagnosticFilesUnchanged(file, before)
         assertEquals(listOf("core.mcp.demo"), rows!!.map { it.id })
         assertEquals(PluginState.ENABLED, rows.single().state)
         assertTrue(rows.single().runtime == null)
         assertFalse(rows.toString().contains("PRIVATE"))
+        assertFalse(rows.any { it.id == "core.mcp.bundled" || it.id == "core.mcp.remote" })
     }
 
     @Test
+    @SQLiteMode(SQLiteMode.Mode.NATIVE)
+    fun diagnosticMcpProjectionRejectsWalFilesAndLeavesTheDatabaseUntouched() {
+        val spec = PluginSpec("core.mcp.demo", "0.1.0", PluginTarget.ANDROID_NATIVE)
+        store.put(PluginRecord(spec, PluginOrigin.USER_INSTALLED, PluginState.DISABLED))
+        store.close()
+        val file = context.getDatabasePath(TEST_DATABASE)
+        SQLiteDatabase.openDatabase(file.path, null, SQLiteDatabase.OPEN_READWRITE).use { db ->
+            assertTrue(db.enableWriteAheadLogging())
+            db.execSQL("UPDATE plugin_records SET state = ? WHERE plugin_id = ?", arrayOf(PluginState.ENABLED.name, spec.id))
+        }
+        assertEquals(2, file.readBytes()[18].toInt()) // Ensure the fixture really remains in WAL format after close.
+        val before = diagnosticFiles(file)
+        store = AndroidPluginLifecycleStore(context, TEST_DATABASE)
+        assertTrue(runCatching { store.readExistingMcpDiagnostics() }.isFailure)
+        assertDiagnosticFilesUnchanged(file, before)
+    }
+
+    @Test
+    @SQLiteMode(SQLiteMode.Mode.NATIVE)
     fun diagnosticMcpProjectionSeparatesMissingDatabaseFromExistingEmptyDatabase() {
         store.close()
         context.deleteDatabase(TEST_DATABASE)
@@ -369,6 +395,18 @@ class AndroidPluginLifecycleIntegrationTest {
         store.revokeAll(record.spec.id)
         assertTrue(store.workspaceConsents(WORKSPACE_A, record.spec.id).isEmpty())
         assertTrue(store.activeConsents(record.spec.id).isEmpty())
+    }
+
+    private fun diagnosticFiles(file: File): Map<String, ByteArray?> = mapOf(
+        "db" to file.takeIf(File::isFile)?.readBytes(),
+        "wal" to File(file.path + "-wal").takeIf(File::isFile)?.readBytes(),
+        "shm" to File(file.path + "-shm").takeIf(File::isFile)?.readBytes(),
+    )
+
+    private fun assertDiagnosticFilesUnchanged(file: File, before: Map<String, ByteArray?>) {
+        val after = diagnosticFiles(file)
+        assertEquals(before.keys, after.keys)
+        before.keys.forEach { assertArrayEquals(before[it], after[it]) }
     }
 
     private fun record(

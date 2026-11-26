@@ -18,7 +18,11 @@ import com.cordiact.app.experience.ExperienceTheme
 import com.cordiact.core.plugin.ExtensionPackageArtifact
 import com.cordiact.core.plugin.ExtensionPackageChange
 import com.cordiact.core.plugin.ExtensionPackageSourceReceipt
+import com.cordiact.core.plugin.McpPluginDiagnostic
+import com.cordiact.core.plugin.McpPluginDiagnostics
 import com.cordiact.core.plugin.PluginDiagnosticSnapshot
+import com.cordiact.core.plugin.PluginInstanceState
+import com.cordiact.core.plugin.PluginState
 import com.cordiact.core.plugin.SignedCatalogDiagnosticState
 import com.cordiact.core.plugin.SignedReleaseDiagnostic
 import com.cordiact.core.plugin.WorkspacePackageDiagnostic
@@ -104,7 +108,8 @@ class WorkspacePackageSettingsTest {
                 kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) { lateA.await() }
             } else com.cordiact.core.plugin.PluginDiagnosticSnapshot("b",
                 com.cordiact.core.plugin.WorkspacePackageDiagnostics.Entries(emptyList()),
-                listOf(com.cordiact.core.plugin.BundledPluginDiagnostic("core.bravo", "1.0.0", null)))
+                listOf(com.cordiact.core.plugin.BundledPluginDiagnostic("core.bravo", "1.0.0", null)),
+                globalMcp = McpPluginDiagnostics.Entries(listOf(McpPluginDiagnostic("core.mcp.bravo", PluginState.ENABLED, PluginInstanceState.FAILED))))
         }
         val vm = SettingsViewModel(fixture.facade)
         compose.setContent { ExperienceTheme { SettingsHost(vm) { error("Unexpected exit from Settings") } } }
@@ -123,11 +128,17 @@ class WorkspacePackageSettingsTest {
             compose.onNodeWithText("core.bravo").assertHasNoClickAction()
             compose.runOnIdle {
                 lateA.complete(PluginDiagnosticSnapshot("a", WorkspacePackageDiagnostics.StorageNotCreated,
-                    listOf(com.cordiact.core.plugin.BundledPluginDiagnostic("core.alpha", "1.0.0", null))))
+                    listOf(com.cordiact.core.plugin.BundledPluginDiagnostic("core.alpha", "1.0.0", null)),
+                    globalMcp = McpPluginDiagnostics.Entries(listOf(McpPluginDiagnostic("core.mcp.alpha", PluginState.DISABLED, null)))))
             }
             compose.onNodeWithText("core.alpha").assertDoesNotExist()
             compose.onNodeWithText("core.bravo").assertHasNoClickAction()
-            compose.onNodeWithText("本页不读取会话试用或 MCP。").assertExists()
+            compose.onNodeWithText("core.mcp.alpha").assertDoesNotExist()
+            compose.onNodeWithText("MCP 连接 · 全局").assertHasNoClickAction()
+            compose.onNodeWithText("core.mcp.bravo").assertHasNoClickAction()
+            compose.onNodeWithText("安装状态：ENABLED").assertHasNoClickAction()
+            compose.onNodeWithText("进程运行：连接失效或启动失败").assertHasNoClickAction()
+            compose.onNodeWithText("本页不读取会话试用、工作区临时连接或 MCP 凭据。").assertExists()
             compose.onNodeWithContentDescription("返回").performClick()
             builtIn().assertIsDisplayed()
         } finally {
