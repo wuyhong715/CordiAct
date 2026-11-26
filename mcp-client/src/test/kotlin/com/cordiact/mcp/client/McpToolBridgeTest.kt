@@ -6,9 +6,11 @@ import com.cordiact.core.mcp.McpProtocolException
 import com.cordiact.core.mcp.McpServerInfo
 import com.cordiact.core.mcp.McpToolCallResult
 import com.cordiact.core.mcp.McpToolDescriptor
+import com.cordiact.core.tool.GlobalToolPublication
 import com.cordiact.core.tool.InMemoryToolDefinitionRegistry
 import com.cordiact.core.tool.ToolActivationContext
 import com.cordiact.core.tool.ToolArguments
+import com.cordiact.core.tool.ToolDefinition
 import com.cordiact.core.tool.ToolDefinitionRegistry
 import com.cordiact.core.tool.ToolInvocationContext
 import com.cordiact.core.tool.ToolValue
@@ -166,9 +168,12 @@ class McpToolBridgeTest {
         val inner = InMemoryToolDefinitionRegistry()
         var refuseWithdrawal = true
         val registry = object : ToolDefinitionRegistry by inner {
-            override fun unregister(toolId: String): Boolean {
-                check(!refuseWithdrawal) { "Synthetic withdrawal failed" }
-                return inner.unregister(toolId)
+            override fun publishGlobalBatch(entries: List<GlobalToolPublication>): AutoCloseable {
+                val handle = inner.publishGlobalBatch(entries)
+                return AutoCloseable {
+                    check(!refuseWithdrawal) { "Synthetic withdrawal failed" }
+                    handle.close()
+                }
             }
         }
         val entered = CountDownLatch(1)
@@ -201,6 +206,38 @@ class McpToolBridgeTest {
             release.countDown()
             worker.shutdownNow()
         }
+    }
+
+    @Test
+    fun cleanupRetryDoesNotRemoveAReplacementDefinitionOrItsVisibility() {
+        val inner = InMemoryToolDefinitionRegistry()
+        var refuseWithdrawal = true
+        val registry = object : ToolDefinitionRegistry by inner {
+            override fun publishGlobalBatch(entries: List<GlobalToolPublication>): AutoCloseable {
+                val handle = inner.publishGlobalBatch(entries)
+                return AutoCloseable {
+                    check(!refuseWithdrawal) { "Synthetic withdrawal failed" }
+                    handle.close()
+                }
+            }
+        }
+        val bridge = McpToolBridge("demo", registry, "$MCP_PLUGIN_ID.demo", 5_000)
+        val live = FakeConnection(listOf(McpToolDescriptor("echo", "Echo"), McpToolDescriptor("now", "Time")))
+        bridge.sync(live)
+        val id = "core.mcp.demo.echo"
+        val old = requireNotNull(registry.get(id))
+        assertFailsWith<IllegalStateException> { bridge.dispose() }
+        assertTrue(registry.unregister(id))
+        registry.register(ToolDefinition(old.descriptor.copy(description = "Replacement"), old.executor))
+        registry.registerVisibility(id) { false }
+        val replacement = requireNotNull(registry.get(id))
+        val gate = registry.visibility(id)
+        refuseWithdrawal = false
+        bridge.dispose()
+        assertEquals(replacement, registry.get(id))
+        assertEquals(gate, registry.visibility(id))
+        assertNull(registry.get("core.mcp.demo.now"))
+        assertTrue(bridge.publishedTools().isEmpty())
     }
 
     @Test

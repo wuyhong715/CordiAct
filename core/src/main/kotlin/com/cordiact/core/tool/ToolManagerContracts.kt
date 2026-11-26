@@ -273,8 +273,19 @@ fun interface ToolCapabilityGate {
         grantsAll(workspaceId, descriptor.requiredCapabilities)
 }
 
+/** One global definition and its optional per-turn policy, installed together by the host. */
+data class GlobalToolPublication(val definition: ToolDefinition, val visibility: ToolVisibilityGate? = null)
+
 interface ToolDefinitionRegistry {
     fun register(definition: ToolDefinition)
+
+    /**
+     * Publish the entire global batch or nothing. The returned handle only withdraws these exact
+     * registrations, even if a legacy caller removed one and registered a replacement by ID.
+     * The default fails closed for registries that cannot provide the atomic contract.
+     */
+    fun publishGlobalBatch(entries: List<GlobalToolPublication>): AutoCloseable =
+        throw UnsupportedOperationException("Atomic global tool publication is not supported")
     fun get(toolId: String): ToolDefinition?
 
     /**
@@ -311,6 +322,30 @@ class InMemoryToolDefinitionRegistry : ToolDefinitionRegistry {
         publish(definition, globalScope) { true }
     }
 
+    @Synchronized override fun publishGlobalBatch(entries: List<GlobalToolPublication>): AutoCloseable {
+        val staged = linkedMapOf<String, Pair<ToolDefinition, ToolVisibilityGate?>>()
+        for ((definition, visibility) in entries) {
+            val bound = bind(definition, globalScope, hostEffect = null)
+            val id = bound.descriptor.id
+            require(id !in staged) { "Duplicate tool '$id' in global publication" }
+            require(definitions[id].orEmpty().keys.none(globalScope::overlaps)) {
+                "Tool '$id' is already registered in an overlapping scope"
+            }
+            staged[id] = bound to visibility
+        }
+        for ((id, entry) in staged) {
+            val (bound, visibility) = entry
+            definitions.getOrPut(id) { linkedMapOf() }[globalScope] = Binding(bound) { true }
+            if (visibility != null) visibilityGates[id] = visibility
+        }
+        val tokens = staged.mapValues { (_, entry) -> checkNotNull(entry.first.registration) }
+        return AutoCloseable { withdrawGlobalBatch(tokens) }
+    }
+
+    @Synchronized private fun withdrawGlobalBatch(tokens: Map<String, ToolRegistration>) {
+        tokens.forEach { (id, token) -> withdraw(id, globalScope, token) }
+    }
+
     /** The activation reader must be lock-free and must never invoke plugin code. */
     @Synchronized internal fun publish(
         definition: ToolDefinition,
@@ -318,14 +353,25 @@ class InMemoryToolDefinitionRegistry : ToolDefinitionRegistry {
         hostEffect: com.cordiact.core.security.ToolEffectClass? = null,
         active: () -> Boolean,
     ): AutoCloseable {
+        val bound = bind(definition, scope, hostEffect)
+        val id = bound.descriptor.id
+        val bindings = definitions.getOrPut(id) { linkedMapOf() }
+        require(bindings.keys.none(scope::overlaps)) { "Tool '$id' is already registered in an overlapping scope" }
+        bindings[scope] = Binding(bound, active)
+        val token = checkNotNull(bound.registration)
+        return AutoCloseable { withdraw(id, scope, token) }
+    }
+
+    private fun bind(
+        definition: ToolDefinition,
+        scope: ToolContributionScope,
+        hostEffect: com.cordiact.core.security.ToolEffectClass?,
+    ): ToolDefinition {
         val descriptor = snapshotDescriptor(definition.descriptor)
         validateDescriptor(descriptor)
         validateExecutionDeclaration(descriptor)
-        val bindings = definitions.getOrPut(descriptor.id) { linkedMapOf() }
-        require(bindings.keys.none(scope::overlaps)) { "Tool '${descriptor.id}' is already registered in an overlapping scope" }
         val token = ToolRegistration(scope, hostEffect, descriptor.inputSchema.parameters.any(ToolParameter::sensitive))
-        bindings[scope] = Binding(ToolDefinition(descriptor, definition.executor, token), active)
-        return AutoCloseable { withdraw(descriptor.id, scope, token) }
+        return ToolDefinition(descriptor, definition.executor, token)
     }
 
     @Synchronized private fun withdraw(toolId: String, scope: ToolContributionScope, token: ToolRegistration) {

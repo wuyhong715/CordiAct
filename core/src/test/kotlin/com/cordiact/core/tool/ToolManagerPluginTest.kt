@@ -457,6 +457,36 @@ class ToolManagerPluginTest {
     }
 
     @Test
+    fun globalBatchValidatesEveryEntryBeforePublishingAnyDefinitionsOrGates() {
+        val registry = InMemoryToolDefinitionRegistry()
+        val executor = ToolExecutor { _, _ -> ToolResult() }
+        val first = GlobalToolPublication(ToolDefinition(descriptor(), executor)) { false }
+        val invalid = GlobalToolPublication(ToolDefinition(descriptor().copy(id = "bad id"), executor))
+        assertFailsWith<IllegalArgumentException> { registry.publishGlobalBatch(listOf(first, invalid)) }
+        assertFailsWith<IllegalArgumentException> { registry.publishGlobalBatch(listOf(first, first)) }
+        assertTrue(registry.all().isEmpty())
+        assertNull(registry.visibility(TOOL_ID))
+    }
+
+    @Test
+    fun globalBatchCannotOverlapAnExistingScopedContribution() {
+        val registry = InMemoryToolDefinitionRegistry()
+        val executor = ToolExecutor { _, _ -> ToolResult() }
+        val scoped = ToolDefinition(descriptor().copy(id = "test.scoped"), executor)
+        registry.publish(scoped, ToolContributionScope(workspaceId = WORKSPACE_A)) { true }.use {
+            val original = assertNotNull(registry.getIn("test.scoped", WORKSPACE_A, null))
+            val first = GlobalToolPublication(ToolDefinition(descriptor(), executor)) { false }
+            assertFailsWith<IllegalArgumentException> {
+                registry.publishGlobalBatch(listOf(first, GlobalToolPublication(scoped)))
+            }
+            assertNull(registry.get(TOOL_ID))
+            assertNull(registry.visibility(TOOL_ID))
+            assertNull(registry.get("test.scoped"))
+            assertEquals(original, registry.getIn("test.scoped", WORKSPACE_A, null))
+        }
+    }
+
+    @Test
     fun rawSchemaMustLookLikeAJsonObject() {
         val registry = InMemoryToolDefinitionRegistry()
         val arrayRoot = ToolDescriptor(

@@ -5,6 +5,7 @@ import com.cordiact.core.mcp.McpProtocolException
 import com.cordiact.core.mcp.McpServerConfig
 import com.cordiact.core.mcp.McpToolDescriptor
 import com.cordiact.core.mcp.mcpToolId
+import com.cordiact.core.tool.GlobalToolPublication
 import com.cordiact.core.tool.ToolArguments
 import com.cordiact.core.tool.ToolDefinition
 import com.cordiact.core.tool.ToolDefinitionRegistry
@@ -32,8 +33,8 @@ class McpToolBridge(
     private class Generation(val connection: McpConnection, val tools: Map<String, String>)
 
     @Volatile private var active: Generation? = null
-    // Mutated only by sync/dispose under the bridge lock; includes incomplete withdrawals.
-    private var registeredTools: Map<String, String> = emptyMap()
+    // Retained on cleanup failure; the handle cannot withdraw a replacement by ID.
+    private var publication: AutoCloseable? = null
 
     /** Active tool IDs mapped to their raw MCP names; pending cleanup is not publication. */
     fun publishedTools(): Map<String, String> = active?.tools?.toMap().orEmpty()
@@ -42,8 +43,8 @@ class McpToolBridge(
      * Replace the previous generation with whatever [live] reports.
      *
      * @throws McpProtocolException when the tool list cannot be read.
-     * @throws IllegalStateException when registration is refused. Cleanup attempts every
-     *   registered tool; any failed withdrawal stays tracked for a later disposal retry.
+     * If publication is refused, no new tools are installed. A failed withdrawal keeps
+     * its exact handle for a later disposal retry and blocks replacement.
      */
     @Synchronized
     fun sync(live: McpConnection): Map<String, String> = sync(live, live.listTools(toolTimeoutMs))
@@ -52,27 +53,15 @@ class McpToolBridge(
     fun sync(live: McpConnection, descriptors: List<McpToolDescriptor>): Map<String, String> {
         val byId = indexDescriptors(descriptors)
         val next = Generation(live, byId.mapValues { (_, raw) -> raw.name })
-        val definitions = byId.mapValues { (id, raw) -> buildDefinition(id, raw, next) }
+        val definitions = byId.map { (id, raw) ->
+            GlobalToolPublication(buildDefinition(id, raw, next)) { ctx ->
+                active === next && approval?.invoke(ctx.workspaceId, raw) != false && active === next
+            }
+        }
 
         // A listing or indexing failure leaves the currently working generation in place.
         dispose()
-
-        val registered = linkedMapOf<String, String>()
-        try {
-            definitions.forEach { (toolId, definition) ->
-                registry.register(definition)
-                val raw = byId.getValue(toolId)
-                registered[toolId] = raw.name
-                registry.registerVisibility(toolId) { ctx ->
-                    active === next && approval?.invoke(ctx.workspaceId, raw) != false && active === next
-                }
-            }
-        } catch (failure: Exception) {
-            registeredTools = registered
-            try { dispose() } catch (cleanup: Exception) { failure.addSuppressed(cleanup) }
-            throw failure
-        }
-        registeredTools = registered
+        publication = registry.publishGlobalBatch(definitions)
         active = next
         return next.tools.toMap()
     }
@@ -81,18 +70,8 @@ class McpToolBridge(
     @Synchronized
     fun dispose() {
         active = null
-        var failure: Exception? = null
-        val remaining = registeredTools.toMutableMap()
-        for (id in registeredTools.keys) {
-            try {
-                registry.unregister(id)
-                remaining.remove(id)
-            } catch (caught: Exception) {
-                if (failure == null) failure = caught else failure.addSuppressed(caught)
-            }
-        }
-        registeredTools = remaining
-        failure?.let { throw it }
+        publication?.close()
+        publication = null
     }
 
     private fun indexDescriptors(descriptors: List<McpToolDescriptor>): Map<String, McpToolDescriptor> {
