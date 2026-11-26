@@ -18,6 +18,7 @@ import com.cordiact.model.providers.ConversationTurnService
 import com.cordiact.core.conversation.ModelAdapterService
 import com.cordiact.mcp.client.HttpMcpClientFactory
 import com.cordiact.mcp.client.McpPlugin
+import com.cordiact.mcp.client.probeTools
 import com.cordiact.model.providers.ModelProviderRegistryService
 import com.cordiact.core.conversation.SessionManagerPlugin
 import com.cordiact.core.conversation.SessionManagerService
@@ -1031,8 +1032,7 @@ class CordiActApplication : Application(), androidx.work.Configuration.Provider 
         onSpecInstalled = ::installUserPlugin,
         probeMcp = { config ->
             val credential = com.cordiact.app.settings.McpCredentialStore(this).readForExecution(config.serverName)
-            val connection = HttpMcpClientFactory.connect(config, credential)
-            try { connection.listTools() } finally { connection.close() }
+            HttpMcpClientFactory.probeTools(config, credential)
         },
         afterRemoved = { id ->
             if (id.startsWith("$MCP_PLUGIN_ID.")) {

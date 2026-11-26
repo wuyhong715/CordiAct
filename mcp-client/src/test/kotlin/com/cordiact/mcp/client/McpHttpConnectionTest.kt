@@ -232,6 +232,36 @@ class McpHttpConnectionTest {
         assertTrue(connection.isRetired)
     }
 
+    @Test
+    fun disposableProbeInitializesAndListsOnlyThenRetiresTheConnection() {
+        val requests = java.util.concurrent.CopyOnWriteArrayList<Triple<String, String?, String?>>()
+        val base = serve { exchange ->
+            val method = methodOf(exchange)
+            requests += Triple(method, exchange.requestHeaders.getFirst("Mcp-Session-Id"), exchange.requestHeaders.getFirst("Authorization"))
+            when (method) {
+                "initialize" -> {
+                    exchange.responseHeaders.add("Mcp-Session-Id", "probe-session")
+                    reply(exchange, """{"jsonrpc":"2.0","id":${idOf(exchange)},"result":{"protocolVersion":"2025-06-18"}}""")
+                }
+                "notifications/initialized" -> { exchange.sendResponseHeaders(202, -1); exchange.close() }
+                "tools/list" -> reply(exchange, """{"jsonrpc":"2.0","id":${idOf(exchange)},"result":{"tools":[{"name":"preview"}]}}""")
+                else -> error("Unexpected probe method")
+            }
+        }
+        val config = config(base)
+        val credential = McpCredential("Authorization", "Bearer synthetic-probe")
+        val connection = HttpMcpClientFactory.connect(config, credential)
+        val factory = com.cordiact.core.mcp.McpClientFactory { _, _ -> connection }
+        assertEquals(listOf("preview"), factory.probeTools(config, credential).map { it.name })
+        assertTrue(connection.isRetired)
+        assertFailsWith<McpProtocolException> { connection.listTools() }
+        assertEquals(listOf<Triple<String, String?, String?>>(
+            Triple("initialize", null, credential.value),
+            Triple("notifications/initialized", "probe-session", credential.value),
+            Triple("tools/list", "probe-session", credential.value),
+        ), requests)
+    }
+
     private fun config(base: String) = McpServerConfig(
         serverName = "fake",
         url = "$base/mcp",

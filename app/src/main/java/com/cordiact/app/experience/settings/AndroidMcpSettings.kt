@@ -7,6 +7,7 @@ import com.cordiact.core.mcp.*
 import com.cordiact.core.plugin.PluginChangeResult
 import com.cordiact.core.plugin.PluginState
 import com.cordiact.mcp.client.HttpMcpClientFactory
+import com.cordiact.mcp.client.probeTools
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -40,10 +41,7 @@ class AndroidMcpSettings(private val app: CordiActApplication) : McpSettings {
         catch (_: Exception) { return@withContext McpReconnectOutcome.Failed(McpReconnectFailure.CREDENTIAL_UNREADABLE) }
         reconnectMcpTools(
             enabled = { service.inventory().find { it.spec.id == entry.spec.id }?.state == PluginState.ENABLED },
-            loadTools = {
-                val connection = HttpMcpClientFactory.connect(config, credential)
-                try { connection.listTools() } finally { connection.close() }
-            },
+            loadTools = { HttpMcpClientFactory.probeTools(config, credential) },
             restart = {
                 write("mcp.reconnect") {
                     check(service.setEnabled(entry.spec.id, false).application == PluginChangeResult.Application.APPLIED)
@@ -66,15 +64,13 @@ class AndroidMcpSettings(private val app: CordiActApplication) : McpSettings {
         return McpCredential(header.trim(), secret.trim())
     }
     override suspend fun probe(name: String, url: String, header: String?, secret: String?): List<McpToolDescriptor> = withContext(Dispatchers.IO) {
-        val connection = HttpMcpClientFactory.connect(config(name, url), credential(header, secret))
-        try { connection.listTools() } finally { connection.close() }
+        HttpMcpClientFactory.probeTools(config(name, url), credential(header, secret))
     }
     override suspend fun install(name: String, url: String, header: String?, secret: String?) = withContext(Dispatchers.IO) {
         val config = config(name, url); val credential = credential(header, secret)
         check(service.inventory().none { it.spec.id == "$MCP_PLUGIN_ID.${config.serverName}" }) { "MCP_ALREADY_EXISTS" }
         // Repeat probe at commit, so form changes cannot reuse a successful stale preview.
-        val connection = HttpMcpClientFactory.connect(config, credential)
-        try { connection.listTools() } finally { connection.close() }
+        HttpMcpClientFactory.probeTools(config, credential)
         write("mcp.install") {
             credentials.set(config.serverName, credential)
             val result = service.install(com.cordiact.core.mcp.mcpPluginSpec(config))
@@ -88,8 +84,7 @@ class AndroidMcpSettings(private val app: CordiActApplication) : McpSettings {
         val server = McpServerConfigCodec.decode(entry.spec.config)
         val replacement = credential(header, secret)
         // Validate the replacement before touching either the vault or the active transport.
-        val connection = HttpMcpClientFactory.connect(server, replacement)
-        val tools = try { connection.listTools() } finally { connection.close() }
+        val tools = HttpMcpClientFactory.probeTools(server, replacement)
         val previous = credentials.readForExecution(name)
         val wasEnabled = entry.state == PluginState.ENABLED
         write("mcp.authentication") {
