@@ -15,23 +15,45 @@ internal class ForegroundFollowScope(private val controller: FollowRouteControll
     private var route: FollowRouteController.Route? = null
     private var challenge: FollowPairing.Challenge? = null
     private var attempt: FollowRouteController.Attempt? = null
+    private var configuration: Configuration? = null
+
+    /** Opaque one-use intent; scope is captured before asynchronous provisioning starts. */
+    class Configuration internal constructor(internal val target: FollowTarget, internal val remoteWorkspace: String)
 
     fun resume() = synchronized(lock) { if (!closed) foreground = true }
 
     fun pause() = synchronized(lock) {
         foreground = false
+        configuration = null
         retire()
+    }
+
+    /** Capture intent before provisioning. Null expects an empty selection, never any current route. */
+    fun requestConfiguration(
+        expectedRoute: FollowRouteController.Route?,
+        target: FollowTarget,
+        remoteWorkspace: String,
+    ): Configuration? = synchronized(lock) {
+        if (!foreground || closed || route !== expectedRoute) return null
+        Configuration(target, remoteWorkspace).also { configuration = it }
+    }
+
+    fun discardConfiguration(exact: Configuration): Boolean = synchronized(lock) {
+        if (configuration !== exact) return false
+        configuration = null
+        true
     }
 
     /** The trusted owner authenticates the descriptor and separately provisions the key. */
     fun configure(
-        target: FollowTarget,
-        remoteWorkspace: String,
+        exact: Configuration,
         descriptor: FollowRouteDescriptor,
         key: ByteArray,
     ): FollowRouteController.Route? = synchronized(lock) {
-        if (!foreground || closed) return null
-        val next = controller.configure(target, remoteWorkspace, descriptor, key) ?: return null
+        if (!foreground || closed || configuration !== exact) return null
+        configuration = null
+        if (key.size != 32) return null
+        val next = controller.configure(exact.target, exact.remoteWorkspace, descriptor, key) ?: return null
         route = next
         challenge = null
         attempt = null
@@ -48,6 +70,7 @@ internal class ForegroundFollowScope(private val controller: FollowRouteControll
     /** Release the page's exact selection, even when it exits while the Activity is paused. */
     fun clear(exact: FollowRouteController.Route): Boolean = synchronized(lock) {
         if (route !== exact) return false
+        configuration = null
         route = null
         challenge = null
         attempt = null
@@ -89,6 +112,7 @@ internal class ForegroundFollowScope(private val controller: FollowRouteControll
         if (closed) return@synchronized
         closed = true
         foreground = false
+        configuration = null
         route = null
         challenge = null
         attempt = null

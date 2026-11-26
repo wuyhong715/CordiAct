@@ -122,7 +122,61 @@ class ForegroundFollowScopeTest {
         }
     }
 
-    private fun configure(scope: ForegroundFollowScope) = scope.configure(target, "remote", descriptor, ByteArray(32) { 1 })
+    @Test fun staleConfigurationCannotReplaceSameIdRouteOrConsumeNewIntent() = withScope { scope ->
+        assertNull(scope.requestConfiguration(null, target, "remote"))
+        scope.resume()
+        val original = checkNotNull(configure(scope))
+        val old = checkNotNull(scope.requestConfiguration(original, target, "remote"))
+        val fresh = checkNotNull(scope.requestConfiguration(original, target, "remote"))
+        assertNull(scope.requestConfiguration(null, target, "remote"))
+        val key = ByteArray(32) { 1 }
+        assertNull(scope.configure(old, descriptor, key))
+        assertFalse(scope.discardConfiguration(old))
+        checkNotNull(scope.begin(original))
+        val next = checkNotNull(scope.configure(fresh, descriptor, key))
+        assertNotSame(original, next)
+        assertNull(scope.requestConfiguration(original, target, "remote"))
+        assertNull(scope.configure(fresh, descriptor, key))
+        assertNull(scope.begin(original))
+        checkNotNull(scope.begin(next))
+    }
+
+    @Test fun discardedPausedAndRejectedConfigurationResultsCannotInstallTrust() = withScope { scope ->
+        scope.resume()
+        val original = checkNotNull(configure(scope))
+        val key = ByteArray(32) { 2 }
+        val pending = checkNotNull(scope.requestConfiguration(original, target, "remote"))
+        scope.pause()
+        scope.resume()
+        assertNull(scope.configure(pending, descriptor, key))
+        val discarded = checkNotNull(scope.requestConfiguration(original, target, "remote"))
+        assertTrue(scope.discardConfiguration(discarded))
+        assertNull(scope.configure(discarded, descriptor, key))
+        val wrongTarget = checkNotNull(scope.requestConfiguration(original, target.copy(localWorkspaceId = "other"), "remote"))
+        assertNull(scope.configure(wrongTarget, descriptor, key))
+        val wrongKeySize = checkNotNull(scope.requestConfiguration(original, target, "remote"))
+        assertNull(scope.configure(wrongKeySize, descriptor, ByteArray(31)))
+        assertNull(scope.configure(wrongKeySize, descriptor, key))
+        checkNotNull(scope.begin(original))
+    }
+
+    @Test fun pageExitInvalidatesPendingReplacementButStalePageExitDoesNot() = withScope { scope ->
+        scope.resume()
+        val first = checkNotNull(configure(scope))
+        val secondIntent = checkNotNull(scope.requestConfiguration(first, target, "remote"))
+        val second = checkNotNull(scope.configure(secondIntent, descriptor, ByteArray(32) { 2 }))
+        val pending = checkNotNull(scope.requestConfiguration(second, target, "remote"))
+        assertFalse(scope.clear(first))
+        assertFalse(scope.discardConfiguration(secondIntent))
+        val third = checkNotNull(scope.configure(pending, descriptor, ByteArray(32) { 3 }))
+        val abandoned = checkNotNull(scope.requestConfiguration(third, target, "remote"))
+        assertTrue(scope.clear(third))
+        assertNull(scope.configure(abandoned, descriptor, ByteArray(32) { 4 }))
+        checkNotNull(configure(scope))
+    }
+
+    private fun configure(scope: ForegroundFollowScope): FollowRouteController.Route? =
+        scope.requestConfiguration(null, target, "remote")?.let { scope.configure(it, descriptor, ByteArray(32) { 1 }) }
 
     private fun withScope(test: (ForegroundFollowScope) -> Unit) {
         val scheduler = Executors.newSingleThreadScheduledExecutor()

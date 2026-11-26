@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Source/type check against the actual SDK and AndroidX classes; does not run Android or build an APK.
+# To run offline, point FOLLOW_ANDROIDX_CACHE at a previous work directory with the three originals.
 set -euo pipefail
 root=$(cd -- "$(dirname -- "$0")/.." && pwd -P)
 : "${JAVA_HOME:?Set JAVA_HOME to a JDK 21 installation}"
@@ -14,20 +15,31 @@ work=$(mktemp -d "${TMPDIR:-/tmp}/cordiact-follow-compile.XXXXXXXX")
 # Keep the unique output directory (including downloaded public deps) for inspection.
 printf 'Verification work directory: %s\n' "$work"
 fetch() {
-    local relative=$1 target=$2
-    curl --fail --silent --show-error --location --max-time 30 \
-        "https://dl.google.com/dl/android/maven2/$relative" -o "$target"
+    local relative=$1 target=$2 expected=$3
+    if [[ -n ${FOLLOW_ANDROIDX_CACHE:-} ]]; then
+        cp -- "$FOLLOW_ANDROIDX_CACHE/${target##*/}" "$target"
+    else
+        curl --fail --silent --show-error --location --max-time 30 \
+            "https://dl.google.com/dl/android/maven2/$relative" -o "$target"
+    fi
+    printf '%s  %s\n' "$expected" "$target" | sha256sum --check --status || {
+        printf 'Unexpected AndroidX digest: %s\n' "$relative" >&2
+        return 1
+    }
 }
 fetch_aar() {
-    local relative=$1 name=$2
-    fetch "$relative" "$work/$name.aar"
+    local relative=$1 name=$2 expected=$3
+    fetch "$relative" "$work/$name.aar" "$expected"
     mkdir "$work/$name"
     (cd "$work/$name" && "$JAVA17_HOME/bin/jar" xf "$work/$name.aar" classes.jar)
     cp "$work/$name/classes.jar" "$work/$name.jar"
 }
-fetch_aar androidx/test/core/1.6.1/core-1.6.1.aar test-core
-fetch_aar androidx/test/ext/junit/1.2.1/junit-1.2.1.aar test-ext-junit
-fetch androidx/lifecycle/lifecycle-common-jvm/2.8.7/lifecycle-common-jvm-2.8.7.jar "$work/lifecycle-common.jar"
+fetch_aar androidx/test/core/1.6.1/core-1.6.1.aar test-core \
+    7a7af31c21785ddb7c4319c838847e6d4d9b5bb531f3a951481ec3b98780bf51
+fetch_aar androidx/test/ext/junit/1.2.1/junit-1.2.1.aar test-ext-junit \
+    7b146a73c545b983430d2fae0081df67c76722c19a9abd2904e131696a8c5b20
+fetch androidx/lifecycle/lifecycle-common-jvm/2.8.7/lifecycle-common-jvm-2.8.7.jar "$work/lifecycle-common.jar" \
+    61c873a7327c946ec033c310bb98f3f92eeabcede0e1a5200ab8a1896483c7bf
 shopt -s nullglob
 compiler=("$cache"/org.jetbrains.kotlin/{kotlin-compiler-embeddable,kotlin-stdlib,kotlin-script-runtime,kotlin-reflect,kotlin-daemon-embeddable}/*/*/*.jar
     "$cache"/org.jetbrains.kotlinx/kotlinx-coroutines-core-jvm/*/*/*.jar "$cache"/org.jetbrains/annotations/*/*/*.jar)
