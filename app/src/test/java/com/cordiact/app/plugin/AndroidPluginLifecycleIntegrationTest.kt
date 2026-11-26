@@ -48,6 +48,38 @@ class AndroidPluginLifecycleIntegrationTest {
     }
 
     @Test
+    fun diagnosticMcpProjectionReadsOnlyInstalledMetadataAndDoesNotOpenWritableHelper() {
+        val spec = PluginSpec(
+            id = "core.mcp.demo", version = "0.1.0", target = PluginTarget.ANDROID_NATIVE,
+            config = "PRIVATE_ENDPOINT_AND_CREDENTIAL",
+        )
+        store.put(PluginRecord(spec, PluginOrigin.USER_INSTALLED, PluginState.ENABLED, "PRIVATE_ERROR"))
+        store.close()
+        store = AndroidPluginLifecycleStore(context, TEST_DATABASE)
+        val file = context.getDatabasePath(TEST_DATABASE)
+        val before = file.readBytes()
+        val rows = store.readExistingMcpDiagnostics()
+        val after = file.readBytes()
+        assertEquals(before.toList(), after.toList())
+        assertEquals(listOf("core.mcp.demo"), rows!!.map { it.id })
+        assertEquals(PluginState.ENABLED, rows.single().state)
+        assertTrue(rows.single().runtime == null)
+        assertFalse(rows.toString().contains("PRIVATE"))
+    }
+
+    @Test
+    fun diagnosticMcpProjectionSeparatesMissingDatabaseFromExistingEmptyDatabase() {
+        store.close()
+        context.deleteDatabase(TEST_DATABASE)
+        store = AndroidPluginLifecycleStore(context, TEST_DATABASE)
+        assertEquals(null, store.readExistingMcpDiagnostics())
+        store.put(record(state = PluginState.DISABLED))
+        val rows = store.readExistingMcpDiagnostics()
+        assertNotNull(rows)
+        assertTrue(rows!!.isEmpty())
+    }
+
+    @Test
     fun workspaceDependencySurvivesStoreReopen() {
         val plugin = PluginSpec(
             id = "core.session-manager",

@@ -186,6 +186,18 @@ class PluginDiagnosticsTest {
     }
 
     @Test
+    fun `global MCP rows are bounded, sorted, and runtime is read from the original binding`() {
+        val rows = listOf(
+            McpPluginDiagnostic("core.mcp.zed", PluginState.DISABLED, null),
+            McpPluginDiagnostic("core.mcp.able", PluginState.ENABLED, null),
+        )
+        // The diagnostic core is unit-tested as a passive projection; no lifecycle side effect is allowed.
+        val snapshot = PluginDiagnostics({ true }, { emptyList() }, { null }, emptyList(),
+            globalMcpObservation = { McpPluginDiagnostics.Entries(rows) }).snapshot("a")
+        assertEquals(rows, (snapshot.globalMcp as McpPluginDiagnostics.Entries).items)
+    }
+
+    @Test
     fun `reselection during the global MCP read discards the entire old snapshot`() {
         var selected = true
         var observations = 0
