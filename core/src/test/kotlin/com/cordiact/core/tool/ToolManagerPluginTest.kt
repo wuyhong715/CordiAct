@@ -9,6 +9,9 @@ import com.cordiact.core.security.ToolEffectClass
 import com.cordiact.core.workspace.Workspace
 import com.cordiact.core.workspace.WorkspaceManagerService
 import java.io.File
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -260,6 +263,60 @@ class ToolManagerPluginTest {
 
         assertEquals(1, plugin.resolveEnabled(WORKSPACE_A).size)
         assertEquals(0, plugin.resolveEnabled(WORKSPACE_A, ToolActivationContext(WORKSPACE_A)).size)
+    }
+
+    @Test
+    fun aReplacedCatalogCandidateDoesNotCallTheReplacementGateOrAppearInTheOldTurn() {
+        val inner = InMemoryToolDefinitionRegistry()
+        val definition = ToolDefinition(descriptor(), ToolExecutor { _, _ -> ToolResult() })
+        val old = inner.publishGlobalBatch(listOf(GlobalToolPublication(definition) { error("Retired gate ran") }))
+        var replace = true
+        var gateCalls = 0
+        val registry = object : ToolDefinitionRegistry by inner {
+            override fun all(): List<ToolDefinition> = inner.all().also {
+                if (replace) {
+                    replace = false
+                    old.close()
+                    inner.publishGlobalBatch(listOf(GlobalToolPublication(definition) { gateCalls++; true }))
+                }
+            }
+        }
+        val preferences = FakePreferences().apply { setEnabled(WORKSPACE_A, TOOL_ID, true) }
+        val plugin = manager(registry, preferences, FakeWorkspaceManager()) { PluginState.ENABLED }
+        plugin.onEnable()
+        val activation = ToolActivationContext(WORKSPACE_A)
+        assertTrue(plugin.resolveForTurn(activation).isEmpty())
+        assertEquals(0, gateCalls)
+        assertEquals(TOOL_ID, plugin.resolveForTurn(activation).single().descriptor.id)
+        assertEquals(1, gateCalls)
+    }
+
+    @Test
+    fun visibilityDecisionIsDiscardedIfItsGateChangesWhileRunningOutsideRegistryLock() {
+        val registry = InMemoryToolDefinitionRegistry()
+        val definition = ToolDefinition(descriptor(), ToolExecutor { _, _ -> ToolResult() })
+        registry.register(definition)
+        val candidate = assertNotNull(registry.get(TOOL_ID))
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val workers = Executors.newFixedThreadPool(2)
+        try {
+            registry.registerVisibility(TOOL_ID) {
+                entered.countDown()
+                check(release.await(5, TimeUnit.SECONDS))
+                true
+            }
+            val activation = ToolActivationContext(WORKSPACE_A)
+            val previous = workers.submit<Boolean> { registry.isVisible(candidate, activation) }
+            assertTrue(entered.await(2, TimeUnit.SECONDS))
+            workers.submit { registry.registerVisibility(TOOL_ID) { true } }.get(2, TimeUnit.SECONDS)
+            release.countDown()
+            assertFalse(previous.get(2, TimeUnit.SECONDS))
+            assertTrue(registry.isVisible(candidate, activation))
+        } finally {
+            release.countDown()
+            workers.shutdownNow()
+        }
     }
 
     @Test

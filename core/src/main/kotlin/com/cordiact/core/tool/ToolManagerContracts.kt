@@ -308,15 +308,21 @@ interface ToolDefinitionRegistry {
     /** Attach the per-request visibility gate for an already registered tool. */
     fun registerVisibility(toolId: String, gate: ToolVisibilityGate)
 
-    /** The gate for [toolId], or null when the tool is always visible. */
+    /** Inspect the gate attached to the current global registration, if any. */
     fun visibility(toolId: String): ToolVisibilityGate?
+
+    /** Check visibility for the candidate itself, not whichever registration now has its ID. */
+    fun isVisible(definition: ToolDefinition, activation: ToolActivationContext): Boolean
 }
 
 class InMemoryToolDefinitionRegistry : ToolDefinitionRegistry {
-    private data class Binding(val definition: ToolDefinition, val active: () -> Boolean)
+    private data class Binding(
+        val definition: ToolDefinition,
+        val visibility: ToolVisibilityGate? = null,
+        val active: () -> Boolean,
+    )
     private val globalScope = ToolContributionScope()
     private val definitions = linkedMapOf<String, MutableMap<ToolContributionScope, Binding>>()
-    private val visibilityGates = mutableMapOf<String, ToolVisibilityGate>()
 
     override fun register(definition: ToolDefinition) {
         publish(definition, globalScope) { true }
@@ -335,8 +341,7 @@ class InMemoryToolDefinitionRegistry : ToolDefinitionRegistry {
         }
         for ((id, entry) in staged) {
             val (bound, visibility) = entry
-            definitions.getOrPut(id) { linkedMapOf() }[globalScope] = Binding(bound) { true }
-            if (visibility != null) visibilityGates[id] = visibility
+            definitions.getOrPut(id) { linkedMapOf() }[globalScope] = Binding(bound, visibility) { true }
         }
         val tokens = staged.mapValues { (_, entry) -> checkNotNull(entry.first.registration) }
         return AutoCloseable { withdrawGlobalBatch(tokens) }
@@ -357,7 +362,7 @@ class InMemoryToolDefinitionRegistry : ToolDefinitionRegistry {
         val id = bound.descriptor.id
         val bindings = definitions.getOrPut(id) { linkedMapOf() }
         require(bindings.keys.none(scope::overlaps)) { "Tool '$id' is already registered in an overlapping scope" }
-        bindings[scope] = Binding(bound, active)
+        bindings[scope] = Binding(bound, active = active)
         val token = checkNotNull(bound.registration)
         return AutoCloseable { withdraw(id, scope, token) }
     }
@@ -382,7 +387,6 @@ class InMemoryToolDefinitionRegistry : ToolDefinitionRegistry {
         val bindings = definitions[toolId] ?: return false
         val removed = bindings.remove(scope) != null
         if (bindings.isEmpty()) definitions.remove(toolId)
-        if (scope.global) visibilityGates.remove(toolId)
         return removed
     }
 
@@ -406,11 +410,28 @@ class InMemoryToolDefinitionRegistry : ToolDefinitionRegistry {
     private fun Binding.snapshotIfActive(): ToolDefinition? = if (active()) snapshotDefinition(definition) else null
 
     @Synchronized override fun registerVisibility(toolId: String, gate: ToolVisibilityGate) {
-        require(definitions[toolId]?.containsKey(globalScope) == true) { "Tool '$toolId' is not registered" }
-        visibilityGates[toolId] = gate
+        val bindings = requireNotNull(definitions[toolId]) { "Tool '$toolId' is not registered" }
+        val binding = requireNotNull(bindings[globalScope]) { "Tool '$toolId' is not registered" }
+        bindings[globalScope] = binding.copy(visibility = gate)
     }
 
-    @Synchronized override fun visibility(toolId: String): ToolVisibilityGate? = visibilityGates[toolId]
+    @Synchronized override fun visibility(toolId: String): ToolVisibilityGate? = definitions[toolId]?.get(globalScope)?.visibility
+
+    override fun isVisible(definition: ToolDefinition, activation: ToolActivationContext): Boolean {
+        val token = definition.registration ?: return false
+        if (!token.scope.includes(activation.workspaceId, activation.sessionId)) return false
+        val id = definition.descriptor.id
+        val selected = synchronized(this) {
+            val binding = definitions[id]?.get(token.scope) ?: return false
+            if (binding.definition.registration !== token || !binding.active()) return false
+            binding
+        }
+        // A policy can consult external host state. Never call it under the registry lock.
+        if (selected.visibility?.visible(activation) == false) return false
+        return synchronized(this) {
+            definitions[id]?.get(token.scope) === selected && selected.active()
+        }
+    }
 
     private fun validateExecutionDeclaration(descriptor: ToolDescriptor) {
         val parameterNames = descriptor.inputSchema.parameters.map { it.name }.toSet()
@@ -641,7 +662,7 @@ class ToolManagerPlugin(
         val candidates = if (session == null) registry.all() else registry.allIn(workspace, session)
         return candidates.filter { definition ->
             availability(workspace, definition).dispatchable &&
-                registry.visibility(definition.descriptor.id)?.visible(activation) != false
+                registry.isVisible(definition, activation)
         }
     }
 
