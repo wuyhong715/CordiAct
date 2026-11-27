@@ -118,13 +118,14 @@ private fun DiagnosticCard(id: String, vararg details: String?) {
 }
 
 private fun SignedCatalogDiagnosticState?.label(): String = when (this) {
-    SignedCatalogDiagnosticState.NOT_CONFIGURED -> "此 APK 未配置可信来源"
-    SignedCatalogDiagnosticState.INVALID_POLICY -> "APK 内置策略无效"
+    SignedCatalogDiagnosticState.NOT_CONFIGURED -> "尚未观测到可信来源"
+    SignedCatalogDiagnosticState.INVALID_POLICY -> "目录策略无效或不可用"
     SignedCatalogDiagnosticState.NOT_OPENED -> "本进程尚未打开目录"
     SignedCatalogDiagnosticState.RETIRED -> "本进程目录已失效"
     SignedCatalogDiagnosticState.NOT_REFRESHED -> "尚无已验签的根清单"
     SignedCatalogDiagnosticState.EXPIRED -> "已观测的根清单已过期"
     SignedCatalogDiagnosticState.OBSERVED -> "有已验签的根清单快照"
+    SignedCatalogDiagnosticState.MULTIPLE -> "已配置多个目录，制品状态按来源显示"
     null -> "未观测"
 }
 

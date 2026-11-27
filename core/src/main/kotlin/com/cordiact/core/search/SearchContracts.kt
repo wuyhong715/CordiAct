@@ -123,6 +123,8 @@ data class FetchResult(
 
 interface SearchProvider {
     val id: String
+    val displayName: String get() = id
+    val requiresExplicitSelection: Boolean get() = false
 
     /** True when this provider performs the model vendor's own search. */
     val native: Boolean
@@ -225,30 +227,37 @@ interface SearchService {
 
 /** Thread-safe provider registry. Ids are unique within each capability kind. */
 class SearchProviderRegistry {
-    private class SearchEntry(val provider: SearchProvider, val context: PluginContext? = null) {
-        fun active() = context?.isContributionActive() != false
-    }
+    private data class SearchKey(val workspaceId: String?, val id: String)
+    private class SearchEntry(val provider: SearchProvider, val active: () -> Boolean = { true })
 
-    private val searchProviders = linkedMapOf<String, SearchEntry>()
+    private val searchProviders = linkedMapOf<SearchKey, SearchEntry>()
     private val fetchProviders = linkedMapOf<String, FetchProvider>()
 
-    fun registerSearch(provider: SearchProvider) = addSearch(provider.id, SearchEntry(provider))
+    fun registerSearch(provider: SearchProvider) = addSearch(SearchKey(null, provider.id), SearchEntry(provider))
 
-    /** APK composition only. A workbench or declaration package cannot publish network adapters. */
-    fun registerSearch(context: PluginContext, provider: SearchProvider) {
+    /** Trusted host projection. Package adapters are confined to their installation workspace. */
+    fun registerSearch(context: PluginContext, provider: SearchProvider, admitted: () -> Boolean = { true }) {
         context.scope.requireOpen()
-        require(context.id.workspaceId == null && context.id.sessionId == null) { "Search adapters are host-global" }
+        require(context.id.sessionId == null) { "Search adapters require workspace or host scope" }
+        val workspace = context.id.workspaceId
         val id = provider.id
+        if (workspace != null) require(!provider.native && id.startsWith("${context.id.pluginId}.")) {
+            "Workspace search adapter must use its package namespace"
+        }
+        val key = SearchKey(workspace, id)
+        val active = { context.isContributionActive() && admitted() }
         val guarded = object : SearchProvider {
             override val id = id
+            override val displayName = provider.displayName
+            override val requiresExplicitSelection = workspace != null || provider.requiresExplicitSelection
             override val native = provider.native
             override val routeProviderId = provider.routeProviderId
             override val pricing = provider.pricing
             override val billable = provider.billable
-            override fun available(): Boolean = context.isContributionActive() && provider.available() && context.isContributionActive()
-            override fun ready(route: ModelRoute?): Boolean = context.isContributionActive() && provider.ready(route) && context.isContributionActive()
+            override fun available(): Boolean = active() && provider.available() && active()
+            override fun ready(route: ModelRoute?): Boolean = active() && provider.ready(route) && active()
             override fun search(request: SearchRequest, signal: CancellationSignal): SearchResult {
-                val guardedSignal = CancellationSignal { signal.isCancelled() || Thread.currentThread().isInterrupted || !context.isContributionActive() }
+                val guardedSignal = CancellationSignal { signal.isCancelled() || Thread.currentThread().isInterrupted || !active() }
                 if (guardedSignal.isCancelled()) throw retiredSearchProvider()
                 val result = try { provider.search(request, guardedSignal) } catch (failure: Exception) {
                     if (guardedSignal.isCancelled()) throw retiredSearchProvider()
@@ -258,15 +267,18 @@ class SearchProviderRegistry {
                 return result
             }
         }
-        val entry = SearchEntry(guarded, context)
-        addSearch(id, entry)
-        context.effect { synchronized(this) { searchProviders.remove(id, entry) } }
+        val entry = SearchEntry(guarded, active)
+        addSearch(key, entry)
+        context.effect { synchronized(this) { searchProviders.remove(key, entry) } }
     }
 
     @Synchronized
-    private fun addSearch(id: String, entry: SearchEntry) {
-        require(id.isNotBlank()) { "Search provider id must not be blank" }
-        require(searchProviders.putIfAbsent(id, entry) == null) { "Search provider '$id' is already registered" }
+    private fun addSearch(key: SearchKey, entry: SearchEntry) {
+        require(key.id.isNotBlank()) { "Search provider id must not be blank" }
+        require(searchProviders.keys.none { it.id == key.id && (it.workspaceId == null || key.workspaceId == null || it.workspaceId == key.workspaceId) }) {
+            "Search provider '${key.id}' is already registered"
+        }
+        searchProviders[key] = entry
     }
 
     private fun retiredSearchProvider() = SearchException(SearchException.Code.CANCELLED, "Search provider registration retired")
@@ -279,15 +291,19 @@ class SearchProviderRegistry {
         }
     }
 
-    @Synchronized
-    fun searchProviders(): List<SearchProvider> = searchProviders.values.filter(SearchEntry::active).map { it.provider }
+    fun searchProviders(workspaceId: String? = null): List<SearchProvider> = searchSnapshot()
+        .filter { (key, entry) -> (key.workspaceId == null || key.workspaceId == workspaceId) && entry.active() }
+        .map { (_, entry) -> entry.provider }
 
     @Synchronized
     fun fetchProviders(): List<FetchProvider> = fetchProviders.values.toList()
 
-    @Synchronized
-    fun searchProvider(id: String): SearchProvider? = searchProviders[id]?.takeIf(SearchEntry::active)?.provider
+    fun searchProvider(id: String, workspaceId: String? = null): SearchProvider? =
+        synchronized(this) { searchProviders[SearchKey(workspaceId, id)] ?: searchProviders[SearchKey(null, id)] }
+            ?.takeIf { it.active() }?.provider
 
     @Synchronized
     fun fetchProvider(id: String): FetchProvider? = fetchProviders[id]
+
+    private fun searchSnapshot(): Map<SearchKey, SearchEntry> = synchronized(this) { searchProviders.toMap() }
 }

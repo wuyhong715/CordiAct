@@ -130,6 +130,10 @@ class SignedPackageCatalog private constructor(
         Instant.ofEpochSecond(it.epochSecond) // Reject a malformed time bound immediately.
     }
     @Volatile private var retired = false
+
+    /** Retires in-process evidence while preserving the durable rollback checkpoint. */
+    @Synchronized
+    fun retire() { retired = true }
     private val observedTime = java.util.concurrent.atomic.AtomicReference(saved?.let { Instant.ofEpochSecond(it.epochSecond) } ?: Instant.MIN)
 
     private fun now(): Instant {

@@ -35,6 +35,11 @@ internal fun WorkspaceDeclarationsPage(
     if (workspace.isBlank()) { Text("正在读取工作区…"); return }
     val app = LocalContext.current.applicationContext as CordiActApplication
     val store = remember(app) { WorkspaceDeclarations(app.conversationCatalog.fileManager) }
+    val packageCatalog = app.conversationCatalog.packageModelContributions
+    val packageRevision by packageCatalog.revision.collectAsState()
+    val packageOffers = remember(workspace, kind, packageRevision) {
+        if (kind == WorkspaceDeclarations.Kind.PROVIDER) packageCatalog.offers(workspace) else emptyList()
+    }
     val scope = rememberCoroutineScope()
     val protocols = WorkspaceDeclarations.protocols(kind)
     key(workspace, kind) {
@@ -66,6 +71,7 @@ internal fun WorkspaceDeclarationsPage(
                 Column {
                     Text(request.summary)
                     request.details["origin"]?.let { Text(it + request.details["endpointPath"].orEmpty()) }
+                    request.details["packageSource"]?.let { Text("插件 $it") }
                     request.details["selection"]?.let {
                         Text(it, modifier = Modifier.heightIn(max = 220.dp).verticalScroll(rememberScrollState()))
                     }
@@ -115,10 +121,20 @@ internal fun WorkspaceDeclarationsPage(
                 }
             }
         }
-        val draft = snapshot?.drafts?.firstOrNull { it.id == reviewing }
+        if (packageOffers.isNotEmpty()) SettingsGroup {
+            packageOffers.forEach { offer ->
+                val host = java.net.URI(offer.draft.endpoint).host
+                com.cordiact.app.experience.settings.components.SettingsRow(offer.draft.name, "${offer.source} · $host", onClick = {
+                    if (!busy) { reviewing = offer.draft.id; selected = emptySet(); secret = "" }
+                })
+            }
+        }
+        val offer = packageOffers.firstOrNull { it.draft.id == reviewing }
+        LaunchedEffect(offer) { if (reviewing?.startsWith("pkg.") == true) { secret = ""; selected = emptySet() } }
+        val draft = offer?.draft ?: snapshot?.drafts?.firstOrNull { it.id == reviewing }
         if (draft != null) {
             val key = WorkspaceConnections.Key(workspace, kind, draft.id)
-            val status = remember(key, progress, snapshot?.revision) { app.workspaceConnections.status(key) }
+            val status = remember(key, progress, snapshot?.revision, offer) { app.workspaceConnections.status(key) }
             Text("接入审查 · ${draft.name}", style = MaterialTheme.typography.titleMedium)
             if (status == null) {
                 OutlinedTextField(secret, { secret = it }, enabled = !busy, singleLine = true,
@@ -126,9 +142,9 @@ internal fun WorkspaceDeclarationsPage(
                     visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
                 Button(enabled = !busy && (kind == WorkspaceDeclarations.Kind.MCP || secret.isNotBlank()), onClick = {
                     val oneTime = secret.takeIf(String::isNotBlank); secret = ""
-                    val revision = snapshot?.revision
+                    val revision = offer?.revision ?: snapshot?.revision
                     scope.launch { run {
-                        withContext(Dispatchers.IO) { app.workspaceConnections.probe(key, revision, draft, oneTime) }
+                        withContext(Dispatchers.IO) { app.workspaceConnections.probe(key, revision, draft, oneTime, offer) }
                         progress++; selected = emptySet()
                         message = "探测成功。尚未授权任何工具或模型。"
                     } }

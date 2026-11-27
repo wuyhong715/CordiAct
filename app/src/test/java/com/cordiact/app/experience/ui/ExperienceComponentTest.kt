@@ -146,6 +146,23 @@ class ExperienceComponentTest {
         assertTrue(selected.contains("当前工作区"))
         compose.onNodeWithText("CordiAct", useUnmergedTree = true).assertDoesNotExist()
     }
+
+    @Test fun packageMessageNodeWithdrawsWithoutChangingTheTranscript() {
+        var available by mutableStateOf(true)
+        val event = com.cordiact.core.plugin.ExtensionPackageMessageEvent.ASSISTANT
+        val node = com.cordiact.interaction.WorkspaceClientContributions.MessageNode("views-pack@1.0.0",
+            com.cordiact.interaction.ToolResultCard("Reply checklist", listOf("Review the answer")))
+        content {
+            TranscriptView(ready(listOf(TranscriptTurn("t", "Original question", answer = "Original answer"))), {}, {},
+                messageNodes = { if (available && it == event) listOf(node) else emptyList() })
+        }
+        compose.onNodeWithText("Reply checklist").assertExists()
+        compose.onNodeWithText("Original answer").assertExists()
+        compose.runOnIdle { available = false }
+        compose.onNodeWithText("Reply checklist").assertDoesNotExist()
+        compose.onNodeWithText("Original question").assertExists()
+        compose.onNodeWithText("Original answer").assertExists()
+    }
     @Test fun input_clearsOnlyWhenSubmissionAccepted() {
         var accepted = false
         var submitted = ""

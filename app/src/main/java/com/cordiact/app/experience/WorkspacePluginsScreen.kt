@@ -30,6 +30,7 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -37,6 +38,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.withResumed
 import com.cordiact.app.CordiActApplication
 import com.cordiact.app.experience.settings.components.SettingsCard
@@ -66,19 +68,30 @@ internal fun WorkspacePackageManagement(
     onExportWriting: (Boolean) -> Unit = {},
 ) {
     val workspaceId = page.workspaceId
+    val catalogLoad by produceState<Result<com.cordiact.app.plugin.AndroidUserCatalogs>?>(null, app) {
+        value = runInterruptible(Dispatchers.IO) { runCatching { checkNotNull(app.userSignedCatalogs) } }
+    }
+    val userCatalogs = catalogLoad?.getOrNull()
+    val customDirectories = userCatalogs?.directories?.collectAsStateWithLifecycle()?.value.orEmpty()
+    val apkDirectory = app.signedCatalogAccess
+    val directories = listOfNotNull(apkDirectory) + customDirectories.map { it.access }
+    var directorySource by rememberSaveable(workspaceId) { mutableStateOf<String?>(null) }
+    val activeDirectory = directories.firstOrNull { it.trustSourceId == directorySource } ?: directories.firstOrNull()
     val scope = rememberCoroutineScope()
     var current by remember(page) { mutableStateOf<List<ExtensionPackageRecord>?>(null) }
     var pending by remember(page) { mutableStateOf<PackagePrompt?>(null) }
+    var pendingWorkflow by remember(page) { mutableStateOf<com.cordiact.core.plugin.PackageWorkflows.Offer?>(null) }
     var trials by remember(page) { mutableStateOf<List<AuthoredPluginInstallationEntry>?>(null) }
     var busy by remember(page) { mutableStateOf(false) }
     var signedBusy by remember(page) { mutableStateOf(false) }
+    var catalogConfigurationBusy by remember(page) { mutableStateOf(false) }
     var status by remember(page) { mutableStateOf<String?>(null) }
     var pickerRequested by remember(page) { mutableStateOf(false) }
     // Not saveable: a recreated screen cannot inherit an export destination or candidate.
     var exportRequest by remember(page) { mutableStateOf<ExtensionPackageRecord?>(null) }
     var query by rememberSaveable(workspaceId) { mutableStateOf("") }
-    val controlsBlocked = blocked || busy || signedBusy || pickerRequested || exportRequest != null
-    fun publishBusy() = onBusy(busy || signedBusy || pickerRequested || exportRequest != null)
+    val controlsBlocked = blocked || busy || signedBusy || catalogConfigurationBusy || pickerRequested || exportRequest != null || pendingWorkflow != null
+    fun publishBusy() = onBusy(busy || signedBusy || catalogConfigurationBusy || pickerRequested || exportRequest != null)
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     var pauseEpoch by remember(page, lifecycle) { mutableStateOf(0L) }
     DisposableEffect(lifecycle, page) {
@@ -86,6 +99,7 @@ internal fun WorkspacePackageManagement(
             if (event == Lifecycle.Event.ON_PAUSE) {
                 pauseEpoch++
                 pending = null
+                pendingWorkflow = null
                 trials = null
             }
         }
@@ -261,8 +275,12 @@ internal fun WorkspacePackageManagement(
         Text("此构建的签名目录配置无效；无法导入、启动或导出可能占用受控包名的声明包。",
             color = MaterialTheme.colorScheme.error)
     }
+    if (catalogLoad?.isFailure == true || userCatalogs?.uncertain == true) {
+        Text("无法确认自管签名目录配置。新本地包操作已关闭，请重启后检查。", color = MaterialTheme.colorScheme.error)
+    }
     if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
     status?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
+    if (current != null) PackageWorkflowJobs(app, workspaceId, controlsBlocked)
     current?.let { records ->
         if (records.isEmpty()) Text("这个工作区还没有已安装的声明包。")
         else {
@@ -300,16 +318,47 @@ internal fun WorkspacePackageManagement(
                             if (record.previous != null) TextButton(enabled = !controlsBlocked && mayChangeVersion, onClick = { pending = PackagePrompt.Rollback(record) }) { Text("回滚") }
                             TextButton(enabled = !controlsBlocked && mayChangeVersion, onClick = { pending = PackagePrompt.Remove(record) }) { Text("移除") }
                         }
+                        val workflowOffers = if (manifest.workflows.isEmpty()) emptyList() else
+                            app.conversationCatalog.packageWorkflows.offers(workspaceId, "pkg.${manifest.id}")
+                        workflowOffers.forEach { workflow ->
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Column(Modifier.weight(1f)) {
+                                    Text("工作流 · ${workflow.title}", style = MaterialTheme.typography.labelLarge)
+                                    Text("${workflow.stepTitles.size} 个步骤 · 当前会话运行", style = MaterialTheme.typography.bodySmall)
+                                }
+                                TextButton(enabled = !controlsBlocked && app.activeSessionWorkspaceId() == workspaceId,
+                                    onClick = { pendingWorkflow = workflow }) { Text("运行") }
+                            }
+                        }
                         if (!mayChangeVersion) Text("更换、回滚或移除版本前请先停用。", style = MaterialTheme.typography.bodySmall)
                     }
                 }
             } }
         }
     }
-    app.signedCatalogAccess?.let { access ->
+    userCatalogs?.let { store ->
+        UserSignedCatalogControls(app, page, store, customDirectories,
+            blocked = blocked || busy || signedBusy || pickerRequested || exportRequest != null ||
+                pendingWorkflow != null || pending != null || trials != null,
+            canImport = !app.signedCatalogPolicyInvalid,
+            onBusy = { catalogConfigurationBusy = it; publishBusy() },
+            onAdded = { directorySource = it },
+        )
+    }
+    if (directories.size > 1) {
+        Column {
+            directories.forEach { directory ->
+                TextButton(enabled = directory !== activeDirectory && !controlsBlocked, onClick = { directorySource = directory.trustSourceId }) {
+                    Text(if (directory === apkDirectory) "APK 签名目录 · ${directory.trustSourceId}" else "自管签名目录 · ${directory.trustSourceId}")
+                }
+            }
+        }
+    }
+    activeDirectory?.let { access -> key(access) {
         SignedPackageDirectoryPanel(
             trustSourceId = access.trustSourceId, page = page,
-            blocked = blocked || busy || pickerRequested || exportRequest != null || pending != null || trials != null,
+            blocked = app.signedCatalogPolicyInvalid || blocked || busy || catalogConfigurationBusy || pickerRequested ||
+                exportRequest != null || pending != null || pendingWorkflow != null || trials != null,
             onBusy = { signedBusy = it; publishBusy() },
             onPreview = { preview ->
                 if (preview.sourceReceipt != null && pending == null && !busy && !pickerRequested &&
@@ -318,9 +367,43 @@ internal fun WorkspacePackageManagement(
                 }
             },
             prepareTrust = { access.prepareTrust(page) },
+            title = if (access === apkDirectory) "APK 签名插件包目录" else "自管签名插件包目录 · ${access.trustSourceId}",
         )
-    }
+    } }
     trials?.let { entries -> SavedTrialPicker(entries, onDismiss = { trials = null }, onSelect = ::previewTrial) }
+    pendingWorkflow?.let { workflow -> key(workflow) {
+        val sessionId = remember(workflow) { app.activeSessionId }
+        var input by remember(workflow) { mutableStateOf("") }
+        fun sameSession(): Boolean {
+            if (sessionId == null || app.activeSessionId != sessionId) return false
+            val session = app.sessions.getSession(sessionId) ?: return false
+            return session.workspaceId == workspaceId && session.archivedAtMillis == null
+        }
+        AlertDialog(
+            onDismissRequest = { pendingWorkflow = null },
+            title = { Text(workflow.title) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("${workflow.source} · ${workflow.stepTitles.joinToString(" → ")}")
+                    OutlinedTextField(input, { if (it.length <= 4096) input = it }, label = { Text("输入文本") },
+                        minLines = 2, maxLines = 5, modifier = Modifier.fillMaxWidth())
+                }
+            },
+            confirmButton = {
+                TextButton(enabled = !blocked && !busy && !signedBusy && sessionId != null, onClick = {
+                    pendingWorkflow = null
+                    if (sessionId != null) start {
+                        val snapshot = runInterruptible(Dispatchers.IO) {
+                            check(sameSession() && lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) { "工作流目标会话已改变" }
+                            app.conversationCatalog.packageWorkflows.start(workflow, sessionId, input, ::sameSession)
+                        }
+                        status = "工作流已提交（${snapshot.id}），可在后台任务中查看。"
+                    }
+                }) { Text("开始运行") }
+            },
+            dismissButton = { TextButton(onClick = { pendingWorkflow = null }) { Text("取消") } },
+        )
+    } }
     pending?.let { prompt ->
         WorkspacePackagePrompt(prompt, onDismiss = { pending = null }, onConfirm = { apply(prompt) }, canConfirm = !controlsBlocked)
     }
@@ -467,9 +550,22 @@ private fun ManifestDetails(manifest: ExtensionPackageManifest) {
             ExtensionPackageCapability.COMMAND_PUBLISH -> "提供斜杠命令"
             ExtensionPackageCapability.UI_SETTINGS_PUBLISH -> "在工作区设置中显示说明页"
             ExtensionPackageCapability.UI_SESSION_ACTION_PUBLISH -> "在会话菜单中提供命令填入动作"
+            ExtensionPackageCapability.UI_WORKBENCH_PANEL_PUBLISH -> "在工作台中显示面板"
+            ExtensionPackageCapability.TOOL_SCRIPT_EXECUTE -> "在隔离进程中运行文本工具脚本"
+            ExtensionPackageCapability.AGENT_SKILL_PUBLISH -> "在当前工作区发布 Agent 技能"
+            ExtensionPackageCapability.AGENT_CONTEXT_PUBLISH -> "向前台对话提供 Agent 参考上下文"
+            ExtensionPackageCapability.SEARCH_PROVIDER_PUBLISH -> "在工作区发布隔离搜索服务"
+            ExtensionPackageCapability.MODEL_PROVIDER_PUBLISH -> "在工作区发布可审查的模型声明"
+            ExtensionPackageCapability.AGENT_TOOL_POLICY_PUBLISH -> "在当前工作区阻止指定工具调用"
+            ExtensionPackageCapability.WORKFLOW_PUBLISH -> "提供由用户启动的隔离文本工作流"
+            ExtensionPackageCapability.AGENT_SUBAGENT_PRESET_PUBLISH -> "提供工作区子 Agent 预设"
+            ExtensionPackageCapability.UI_CONVERSATION_PUBLISH -> "为会话消息和本包工具结果提供展示"
         }
     }}")
-    manifest.tools.forEach { Text("工具 ${it.name}：${it.operation?.name ?: it.text}") }
+    manifest.tools.forEach { tool ->
+        val behavior = if (tool.script != null) "隔离 JavaScript 文本处理（Android 10+）" else tool.operation?.name ?: tool.text
+        Text("工具 ${tool.name}：$behavior")
+    }
     manifest.commands.forEach { Text("命令 /${it.name}：${it.text}") }
     manifest.client?.settingsPage?.let { page ->
         Text("说明页：${page.title}")
@@ -477,6 +573,34 @@ private fun ManifestDetails(manifest: ExtensionPackageManifest) {
         page.rows.forEach { Text("${it.label}：${it.value}") }
     }
     manifest.client?.sessionActions?.forEach { Text("会话动作 ${it.label}：仅填入 /${it.command}，不发送。") }
+    manifest.client?.workbenchPanel?.let { panel ->
+        Text("工作台面板：${panel.title}")
+        Text(panel.description)
+        panel.rows.forEach { Text("${it.label}：${it.value}") }
+    }
+    manifest.client?.conversation?.let { views ->
+        views.messages.forEach { view -> Text("消息节点 ${view.selector.wireName} · ${view.title}") }
+        views.toolResults.forEach { view -> Text("工具结果卡 ${view.selector} · ${view.title}") }
+    }
+    manifest.agent?.let { agent ->
+        agent.skills.forEach { skill -> Text("技能 ${manifest.id}.${skill.name}：${skill.description}") }
+        agent.context?.let { Text("对话参考上下文\n$it") }
+        agent.beforeTool.forEach { policy -> Text("工具前策略 ${policy.name} · ${policy.tools.joinToString("、")}") }
+        agent.subagents.forEach { preset ->
+            Text("子 Agent 预设 ${preset.title} · ${manifest.id}.${preset.name}")
+            Text(preset.instructions)
+            Text(preset.tools.joinToString("、").ifEmpty { "纯文本子 Agent" })
+        }
+    }
+    manifest.searchProviders.forEach { provider -> Text("搜索服务 ${provider.title} · pkg.${manifest.id}.${provider.name}") }
+    manifest.modelProviders.forEach { provider ->
+        Text("模型服务 ${provider.title} · ${provider.protocol}")
+        Text(provider.endpoint)
+        Text(provider.models.joinToString("、"))
+    }
+    manifest.workflows.forEach { workflow ->
+        Text("工作流 ${workflow.title} · ${workflow.steps.joinToString(" → ") { it.title }}")
+    }
     if (manifest.tools.isNotEmpty()) Text("启用并调用后，工具结果可能随对话发送给所选模型。")
 }
 

@@ -1,6 +1,10 @@
 package com.cordiact.interaction
 
 import com.cordiact.core.plugin.ExtensionPackageManifest
+import com.cordiact.core.plugin.ExtensionPackageMessageEvent
+import com.cordiact.core.conversation.ToolHistoryFormat
+import com.cordiact.core.conversation.ToolHistoryProvenance
+import com.cordiact.core.conversation.ToolHistorySource
 import com.cordiact.core.plugin.ExtensionPackageSessionAction
 import com.cordiact.core.plugin.ExtensionPackageSettingsPage
 import com.cordiact.core.plugin.PluginContext
@@ -10,10 +14,13 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 /**
- * App-owned directory for the two declarative client slots. Registration grants no write,
+ * App-owned directory for declarative client slots. Registration grants no write,
  * navigation, send, or execution authority. The UI must use an offer tied to the session it showed.
  */
-class WorkspaceClientContributions(private val commands: InteractionCommandRegistry) {
+class WorkspaceClientContributions(
+    private val commands: InteractionCommandRegistry,
+    private val publishPanel: ((PluginContext, ExtensionPackageSettingsPage, () -> Boolean) -> Unit)? = null,
+) {
     class SettingsPage internal constructor(
         val ownerPluginId: String,
         val description: ExtensionPackageSettingsPage,
@@ -29,6 +36,8 @@ class WorkspaceClientContributions(private val commands: InteractionCommandRegis
         val action: SessionAction,
     )
 
+    data class MessageNode(val source: String, val card: ToolResultCard)
+
     class Snapshot internal constructor(private val groups: List<Group>) {
         fun settingsPages(workspaceId: String): List<SettingsPage> = Collections.unmodifiableList(
             groups.asSequence().filter { it.workspaceId == workspaceId && it.active() }.mapNotNull { it.settings }.toList(),
@@ -38,12 +47,22 @@ class WorkspaceClientContributions(private val commands: InteractionCommandRegis
             groups.asSequence().filter { it.workspaceId == context.workspaceId && it.active() }
                 .flatMap { it.actions.asSequence() }.map { SessionActionOffer(context, it) }.toList(),
         )
+
+        fun messageNodes(workspaceId: String, event: ExtensionPackageMessageEvent): List<MessageNode> =
+            groups.asSequence().filter { it.workspaceId == workspaceId && it.active() }
+                .mapNotNull { it.messageNodes[event] }.toList()
+
+        fun toolResultCard(workspaceId: String, trace: ToolHistoryProvenance): ToolResultCard? =
+            groups.asSequence().filter { it.workspaceId == workspaceId && it.active() }
+                .firstNotNullOfOrNull { it.toolResultCards[trace] }
     }
 
     internal class Group(
         val workspaceId: String,
         val settings: SettingsPage?,
         val actions: List<SessionAction>,
+        val messageNodes: Map<ExtensionPackageMessageEvent, MessageNode>,
+        val toolResultCards: Map<ToolHistoryProvenance, ToolResultCard>,
         val active: () -> Boolean,
     )
 
@@ -85,15 +104,29 @@ class WorkspaceClientContributions(private val commands: InteractionCommandRegis
                 SettingsPage(instance.pluginId, it.copy(rows = Collections.unmodifiableList(it.rows.toList())))
             },
             actions = actions,
+            messageNodes = client.conversation?.messages.orEmpty().associate { view ->
+                view.selector to MessageNode("${manifest.id}@${manifest.version}", ToolResultCard(view.title, view.lines))
+            },
+            toolResultCards = client.conversation?.toolResults.orEmpty().associate { view ->
+                require(manifest.tools.any { it.name == view.selector }) { "Tool card must belong to its own package" }
+                ToolHistoryProvenance(instance.pluginId, "extension.${instance.pluginId}.${view.selector}",
+                    ToolHistorySource.HOST_REGISTRATION, ToolHistoryFormat.BOUNDED_SUMMARY_V1, manifest.sha256) to ToolResultCard(view.title, view.lines)
+            },
             active = { context.isContributionActive() && admitted() },
         ), actionCommands)
         synchronized(lock) {
             check(instance !in registrations) { "Client contributions already registered: $instance" }
+            require(registration.group.messageNodes.keys.all { event ->
+                registrations.values.count { it.group.workspaceId == workspace && event in it.group.messageNodes } < 4
+            }) { "Too many package nodes for the same message event" }
             registrations[instance] = registration
         }
         context.effect {
             synchronized(lock) { registrations.remove(instance, registration) }
             refreshAdmission()
+        }
+        client.workbenchPanel?.let { panel ->
+            checkNotNull(publishPanel) { "Host does not provide declarative workbench panels" }(context, panel, admitted)
         }
     }
 

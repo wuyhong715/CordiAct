@@ -39,6 +39,7 @@ enum class SkillOrigin(val rank: Int) {
      */
     GENERATED(200),
 
+    PACKAGE(400),
     BUNDLED(600),
 }
 
@@ -238,9 +239,12 @@ interface SkillService {
     fun body(workspaceId: String, name: String): String?
 }
 
+data class PackageSkill(val name: String, val description: String, val body: String)
+
 class SkillPlugin(
     private val source: SkillFileSource,
     private val bundled: List<SkillDescriptor> = emptyList(),
+    private val packageSkills: (workspaceId: String) -> List<PackageSkill> = { emptyList() },
 ) : ManagedPlugin, SkillService {
     override val spec: PluginSpec = skillPluginSpec()
 
@@ -269,11 +273,24 @@ class SkillPlugin(
         delegate?.invalidate(workspaceId)
     }
 
-    override fun catalog(workspaceId: String): SkillCatalog = service().catalog(workspaceId)
+    override fun catalog(workspaceId: String): SkillCatalog {
+        val local = service().catalog(workspaceId)
+        val contributed = packageSkills(workspaceId)
+        if (contributed.isEmpty()) return local
+        val descriptors = contributed.map { skill ->
+            SkillDescriptor(skill.name, skill.description, SkillOrigin.PACKAGE, workspaceId, "package:${skill.name}")
+        }
+        return local.copy(skills = (local.skills + descriptors).sortedWith(compareBy({ it.origin.rank }, { it.name })).distinctBy { it.name })
+    }
 
-    override fun find(workspaceId: String, name: String): SkillDescriptor? = service().find(workspaceId, name)
+    override fun find(workspaceId: String, name: String): SkillDescriptor? = catalog(workspaceId).skills.firstOrNull { it.name == name }
 
-    override fun body(workspaceId: String, name: String): String? = service().body(workspaceId, name)
+    override fun body(workspaceId: String, name: String): String? {
+        val local = service()
+        val existing = local.find(workspaceId, name)
+        if (existing != null && existing.origin != SkillOrigin.BUNDLED) return local.body(workspaceId, name)
+        return packageSkills(workspaceId).firstOrNull { it.name == name }?.body ?: local.body(workspaceId, name)
+    }
 }
 
 internal class DefaultSkillService(

@@ -196,11 +196,12 @@ class BundledConversationPluginCatalogTest {
             val page = service.openPage(workspace.id)
             service.resume(Any())
             val preview = page.preview("""
-                {"schemaVersion":2,"id":"checkpoint","version":"1.0.0","title":"Checkpoint","description":"Test fixture",
-                 "host":{"api":1,"minVersion":"0.1.0"},"capabilities":["tool.publish","command.publish","ui.settings.publish","ui.session-action.publish"],
+                {"schemaVersion":3,"id":"checkpoint","version":"1.0.0","title":"Checkpoint","description":"Test fixture",
+                 "host":{"api":1,"minVersion":"0.1.0"},"capabilities":["tool.publish","command.publish","ui.settings.publish","ui.session-action.publish","ui.workbench-panel.publish"],
                  "tools":[{"name":"message","description":"Read fixture","kind":"static_text","text":"fixture tool output"}],
                  "commands":[{"name":"package-checkpoint","aliases":[],"description":"Show fixture","text":"fixture command output"}],
                  "client":{"settingsPage":{"title":"Checkpoint guide","description":"Local fixture"},
+                           "workbenchPanel":{"title":"Checkpoint panel","description":"Local fixture"},
                            "sessionActions":[{"id":"insert","label":"Insert command","command":"package-checkpoint"}]}}
             """.trimIndent().byteInputStream())
             val installed = page.approveInstall(preview).commit() as ExtensionPackageChange.Applied
@@ -208,10 +209,16 @@ class BundledConversationPluginCatalogTest {
             assertTrue(bindings(session.id, workspace.id).isEmpty())
             assertFalse("package-checkpoint" in commands(owner))
             val client = catalog.workspaceClientContributions
+            val tabs = catalog.workbenchTabs
+            val panelId = "pkg.checkpoint"
+            assertTrue(tabs.snapshot.value.visible(workspace.id, session.id).none { it.id == panelId })
             assertTrue(client.snapshot.value.settingsPages(workspace.id).isEmpty())
             val enabled = page.approveEnable(installed.record, true).commit() as ExtensionPackageChange.Applied
             assertEquals("Checkpoint guide", client.snapshot.value.settingsPages(workspace.id).single().description.title)
             assertTrue(client.snapshot.value.settingsPages(other.id).isEmpty())
+            val panel = tabs.snapshot.value.visible(workspace.id, session.id).single { it.id == panelId }
+            assertEquals("Checkpoint panel", panel.content.title)
+            assertTrue(tabs.snapshot.value.visible(other.id, otherSession.id).none { it.id == panelId })
             val offer = client.snapshot.value.sessionActions(owner).single()
             assertEquals("/package-checkpoint", client.draftInsertion(offer, owner, "", false))
             val context = ToolInvocationContext(workspace.id, sessionId = session.id,
@@ -228,6 +235,8 @@ class BundledConversationPluginCatalogTest {
             page.approveEnable(enabled.record, false).commit()
             assertTrue(client.snapshot.value.settingsPages(workspace.id).isEmpty())
             assertTrue(client.snapshot.value.sessionActions(owner).isEmpty())
+            assertTrue(tabs.snapshot.value.visible(workspace.id, session.id).none { it.id == panelId })
+            assertFalse(tabs.isCurrent(panel, workspace.id, session.id))
             assertEquals(null, client.draftInsertion(offer, owner, "", false))
             assertTrue(bindings(session.id, workspace.id).isEmpty())
             assertFalse("package-checkpoint" in commands(owner))

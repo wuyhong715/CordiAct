@@ -300,6 +300,14 @@ class BundledConversationPlugins private constructor(
     /** Shared trusted-code runtime; durable lifecycle and approval remain authoritative. */
     internal val workbenchTabs = com.cordiact.interaction.TrustedWorkbenchTabs<com.cordiact.app.experience.tabs.TabContributor>()
     internal val toolResultCards = com.cordiact.app.experience.builtinToolResultDirectory()
+    internal val packageAgentContributions = com.cordiact.core.plugin.PackageAgentContributions()
+    internal val packageToolPolicies = com.cordiact.core.plugin.PackageToolPolicies()
+    internal val packageModelContributions = com.cordiact.core.plugin.PackageModelContributions()
+    internal val packageWorkflows by lazy {
+        com.cordiact.core.plugin.PackageWorkflows(jobRegistry, java.util.concurrent.Executors.newFixedThreadPool(2) { task ->
+            Thread(task, "cordiact-plugin-workflow").apply { isDaemon = true }
+        })
+    }
     val pluginKernel = com.cordiact.core.plugin.PluginKernel {
         workbenchTabs.refresh()
         toolResultCards.refresh()
@@ -307,11 +315,21 @@ class BundledConversationPlugins private constructor(
     val toolContributions = com.cordiact.core.plugin.PluginToolContributions(registry)
 
     internal val workspaceClientContributions by lazy {
-        com.cordiact.interaction.WorkspaceClientContributions(interactionPlugin.commandRegistry)
+        com.cordiact.interaction.WorkspaceClientContributions(interactionPlugin.commandRegistry) { context, panel, admitted ->
+            val tab = com.cordiact.app.experience.tabs.DeclarativeWorkbenchTab(context.id.pluginId, panel)
+            workbenchTabs.register(context, tab.id, tab, order = Int.MAX_VALUE, admitted = admitted)
+        }
     }
 
-    internal fun workspacePackageRuntime() = com.cordiact.core.plugin.WorkspacePackageRuntime(
-        admissionChanged = { workspaceClientContributions.refreshAdmission() },
+    internal fun workspacePackageRuntime(
+        scriptRuntime: com.cordiact.core.plugin.PackageScriptRuntime? = null,
+        retireModelProvider: (com.cordiact.core.plugin.PackageModelContributions.Offer) -> Unit = {},
+    ) = com.cordiact.core.plugin.WorkspacePackageRuntime(
+        admissionChanged = {
+            workspaceClientContributions.refreshAdmission()
+            workbenchTabs.refresh()
+            packageModelContributions.refresh()
+        },
     ) { record, admitted ->
         DeclarativePackagePlugin(
             manifest = record.manifest,
@@ -322,6 +340,13 @@ class BundledConversationPlugins private constructor(
             workspaceId = record.workspaceId,
             clientContributions = workspaceClientContributions,
             admitted = admitted,
+            scriptRuntime = scriptRuntime,
+            agentContributions = packageAgentContributions,
+            toolPolicies = packageToolPolicies,
+            searchContributions = searchRegistry?.let { com.cordiact.core.plugin.PackageSearchContributions(it) },
+            modelContributions = packageModelContributions,
+            retireModelProvider = retireModelProvider,
+            workflows = if (record.manifest.workflows.isNotEmpty()) packageWorkflows else null,
         )
     }
 
@@ -344,7 +369,7 @@ class BundledConversationPlugins private constructor(
         registerContextTools(registry, spillStore)
         registerJobTools(registry, jobRegistry)
         registerWorkspaceFileTools(registry, fileManager)
-        skillPlugin = SkillPlugin(AndroidSkillFileSource(fileManager))
+        skillPlugin = SkillPlugin(AndroidSkillFileSource(fileManager), packageSkills = packageAgentContributions::skills)
         registerSkillTools(registry, skillPlugin)
         toolManagerPlugin = ToolManagerPlugin(
             registry = registry,
@@ -354,6 +379,7 @@ class BundledConversationPlugins private constructor(
             capabilities = capabilityGate,
             executionPolicy = com.cordiact.core.tool.ToolExecutionAuthorizationPolicy(approvalGateway),
             autoReview = autoReview,
+            toolPreflight = packageToolPolicies::preflight,
             sessionWorkspace = { id -> conversationStore.get(id)?.takeIf { it.archivedAtMillis == null }?.workspaceId },
             accessPolicy = com.cordiact.core.security.EnvelopeToolAccessPolicy(
                 com.cordiact.app.security.BuiltInToolEffectClassifier(),

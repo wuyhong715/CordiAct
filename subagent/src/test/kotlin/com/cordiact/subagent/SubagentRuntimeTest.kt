@@ -8,6 +8,12 @@ import com.cordiact.core.conversation.ModelId
 import com.cordiact.core.conversation.ModelToolSpec
 import com.cordiact.core.conversation.SessionKind
 import com.cordiact.core.conversation.SessionManagerPlugin
+import com.cordiact.core.plugin.ContextPlugin
+import com.cordiact.core.plugin.ExtensionPackageSource
+import com.cordiact.core.plugin.PackageAgentContributions
+import com.cordiact.core.plugin.PluginContext
+import com.cordiact.core.plugin.PluginInstanceId
+import com.cordiact.core.plugin.PluginKernel
 import com.cordiact.core.subagent.ChildSpec
 import com.cordiact.core.subagent.ChildToolPlanner
 import com.cordiact.core.subagent.ChildTurnRequest
@@ -16,6 +22,11 @@ import com.cordiact.core.subagent.SUBAGENT_TOOL_ID
 import com.cordiact.core.subagent.SubagentLimits
 import com.cordiact.core.tool.GrantedScope
 import com.cordiact.core.tool.ToolInvocationContext
+import com.cordiact.core.tool.InMemoryToolDefinitionRegistry
+import com.cordiact.core.tool.ToolDefinition
+import com.cordiact.core.tool.ToolDescriptor
+import com.cordiact.core.tool.ToolInputSchema
+import com.cordiact.core.tool.ToolResult
 import com.cordiact.core.toolloop.ToolLoopStop
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
@@ -112,6 +123,65 @@ private class Harness(
 private fun tool(name: String) = ModelToolSpec(name = name, description = "", parametersJson = "{}")
 
 class SubagentRuntimeTest {
+    @Test
+    fun `package preset intersects exact parent bindings and stops a withdrawn admission`() {
+        val h = Harness()
+        val root = h.rootSession()
+        val catalog = PackageAgentContributions()
+        val kernel = PluginKernel()
+        val owner = PluginInstanceId("pkg.review-pack", WS)
+        val manifest = ExtensionPackageSource.compile("""{
+            "schemaVersion":10,"id":"review-pack","version":"1.0.0","title":"Review","description":"Review evidence",
+            "host":{"api":1,"minVersion":"0.1.0"},"capabilities":["agent.subagent-preset.publish"],"tools":[],"commands":[],
+            "agent":{"subagents":[{"name":"review","title":"Review","instructions":"Check evidence","tools":["files.read","files.write","files.list"]}]}
+        }""".trimIndent().encodeToByteArray())
+        kernel.register(owner, object : ContextPlugin {
+            override fun start(context: PluginContext) = catalog.register(context, manifest) { true }
+        })
+        kernel.enable(owner)
+        val tools = InMemoryToolDefinitionRegistry()
+        fun register(id: String): ModelToolSpec {
+            tools.register(ToolDefinition(ToolDescriptor(id, id, id, ToolInputSchema(), "core.files")) { _, _ -> ToolResult() })
+            return tool(id).copy(registration = requireNotNull(tools.get(id)?.registration))
+        }
+        val read = register("files.read")
+        val write = register("files.write")
+        val list = register("files.list")
+        val requests = mutableListOf<ChildTurnRequest>()
+        val cancelled = mutableListOf<String>()
+        var retireDuringRun = false
+        val runtime = SubagentRuntime(h.sessions, ChildTurnRunner {
+            requests += it
+            if (retireDuringRun) kernel.disable(owner)
+            com.cordiact.core.subagent.ChildTurnOutcome("verified", ToolLoopStop.COMPLETED)
+        }, ChildToolPlanner { _, _ -> error("Preset requires the child session catalog") },
+            packagePresets = catalog, childSessionTools = { _, _, _ -> listOf(read, list) },
+            cancelChildTurn = { cancelled += it }).apply { onEnable() }
+        val parent = h.context(root.id).copy(toolRegistrations = mapOf(read.name to requireNotNull(read.registration), write.name to requireNotNull(write.registration)))
+        assertEquals(listOf("review-pack.review"), runtime.listPresets(parent).map { it.id })
+        assertTrue(runtime.listPresets(parent.copy(workspaceId = OTHER_WS)).isEmpty())
+        val spec = ChildSpec(WS, root.id, "review", "check a conclusion", model = ModelId("another", "route"), presetId = "review-pack.review")
+        val first = runtime.admit(spec, parent) as SubagentRuntime.Admission.Admitted
+        assertEquals(ToolLoopStop.COMPLETED, runtime.execute(first.child, Long.MAX_VALUE).stop)
+        assertEquals(listOf(read), requests.single().tools)
+        assertEquals(ModelId("deepseek", "deepseek-flash"), requests.single().model)
+        assertTrue(requests.single().systemContext.orEmpty().contains("review-pack@1.0.0"))
+        val gate = requireNotNull(requests.single().context.delegatedToolAdmission)
+        assertTrue(gate(read.name))
+        assertFalse(gate(write.name))
+        val pending = runtime.admit(spec, parent) as SubagentRuntime.Admission.Admitted
+        kernel.disable(owner)
+        kernel.enable(owner)
+        assertFalse(gate(read.name))
+        assertEquals(ToolLoopStop.FAILED, runtime.execute(pending.child, Long.MAX_VALUE).stop)
+        assertEquals(1, requests.size)
+        retireDuringRun = true
+        val withdrawn = runtime.runChild(spec, parent, Long.MAX_VALUE)
+        assertEquals(ToolLoopStop.FAILED, withdrawn.stop)
+        assertEquals(listOf(withdrawn.sessionId), cancelled)
+        assertEquals(false, requests.last().maySendRound?.invoke())
+    }
+
 
     @Test
     fun `delegation creates a child Session linked to its parent`() {

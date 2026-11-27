@@ -45,7 +45,11 @@ data class ChildSpec(
     val model: ModelId? = null,
     /** Why this Session exists; orchestrated children are distinguishable from one-off delegations. */
     val kind: SessionKind = SessionKind.SUBAGENT,
+    /** Optional ID of an enabled workspace-provided delegation preset. */
+    val presetId: String? = null,
 )
+
+data class ChildPresetInfo(val id: String, val title: String, val source: String)
 
 /** What a delegated run produced. A failure is a [stop] value, never an exception. */
 data class ChildResult(
@@ -84,6 +88,8 @@ data class ChildTurnRequest(
     val systemContext: String?,
     /** Absolute wall-clock bound inherited from the delegating turn, not a fresh budget. */
     val deadlineAtMillis: Long,
+    val preset: ChildPresetInfo? = null,
+    val maySendRound: (() -> Boolean)? = null,
 )
 
 /** One child turn's outcome, reported as data rather than through an event stream. */
@@ -148,6 +154,8 @@ interface SubagentRuntimeService {
     fun runChild(spec: ChildSpec, parent: ToolInvocationContext, deadlineAtMillis: Long): ChildResult
 
     fun listChildren(parentSessionId: String): List<ChildSessionInfo>
+
+    fun listPresets(context: ToolInvocationContext): List<ChildPresetInfo> = emptyList()
 }
 
 /** Fixed, non-configurable bounds for in-process delegation. */

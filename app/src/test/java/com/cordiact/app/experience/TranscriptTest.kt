@@ -7,6 +7,31 @@ import org.junit.Test
 class TranscriptTest {
     private fun running() = TranscriptTurn("t", "prompt", phase = RunPhase.RUNNING, startedAt = 100)
 
+    @Test fun `subagent preset source survives transcript replay without a live plugin`() {
+        val preset = requireNotNull(TranscriptSubagentPreset.parse("review-pack.review", "review-pack@1.0.0"))
+        val turns = restoreTranscript(listOf(
+            StoredMessage("u1", "USER", "Check this", 1, subagentPreset = preset),
+            StoredMessage("a1", "ASSISTANT", "Result", 2),
+            StoredMessage("u2", "USER", "Next", 3),
+        ))
+        assertEquals(preset, turns[0].subagentPreset)
+        assertNull(turns[1].subagentPreset)
+        assertNull(TranscriptSubagentPreset.parse("review-pack.review", "different@1.0.0"))
+    }
+
+    @Test fun `package context attribution uses the current message and survives restoration`() {
+        val sources = listOf("review-kit@1.0.0")
+        val live = running().reduce(TranscriptEvent.PackageContext(sources)).reduce(TranscriptEvent.Answer("reply"))
+        assertEquals(sources, live.packageContextSources)
+        val restored = restoreTranscript(listOf(
+            StoredMessage("u1", "USER", "review", 10, packageContextSources = sources),
+            StoredMessage("a1", "ASSISTANT", "reply", 11),
+            StoredMessage("u2", "USER", "other", 12),
+        ))
+        assertEquals(sources, restored[0].packageContextSources)
+        assertTrue(restored[1].packageContextSources.isEmpty())
+    }
+
     @Test fun `streams append answer and reasoning independently`() {
         val result = running().reduce(TranscriptEvent.Answer("你")).reduce(TranscriptEvent.Reasoning("check"))
             .reduce(TranscriptEvent.Answer("好"))

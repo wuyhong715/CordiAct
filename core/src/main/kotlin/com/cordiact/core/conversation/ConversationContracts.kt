@@ -203,6 +203,7 @@ data class ToolHistoryProvenance(
     val toolId: String,
     val source: ToolHistorySource,
     val format: ToolHistoryFormat,
+    val packageSha256: String? = null,
 )
 
 enum class ToolHistorySource(val wireValue: String) {

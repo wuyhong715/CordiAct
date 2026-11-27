@@ -52,6 +52,7 @@ internal fun SignedPackageDirectoryPanel(
     onPreview: (WorkspaceExtensionPackages.Preview) -> Unit,
     prepareTrust: () -> WorkspaceExtensionPackages.SignedRefresh = { page.prepareTrustRefresh(trustSourceId) },
     workDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    title: String = "签名插件包目录",
 ) {
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     key(page, trustSourceId, lifecycle) {
@@ -149,7 +150,7 @@ internal fun SignedPackageDirectoryPanel(
         val enabled = resumed && !blocked && action == null
         SettingsCard {
             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("签名插件包目录", style = MaterialTheme.typography.titleMedium)
+                Text(title, style = MaterialTheme.typography.titleMedium)
                 Text("只有手动刷新或下载才会联网。下载并校验后仍须确认，不会直接安装或启用插件。",
                     style = MaterialTheme.typography.bodySmall)
                 OutlinedButton(enabled = enabled, onClick = {
@@ -161,7 +162,7 @@ internal fun SignedPackageDirectoryPanel(
                     }, work = { running ->
                         val operation = prepareTrust()
                         running.withCancel(operation::cancel, operation::refresh)
-                        page.signedPublishers()
+                        page.signedPublishers(trustSourceId)
                     }, publish = { publishers = it })
                 }) { Text("刷新信任根") }
                 if (action != null) LinearProgressIndicator(Modifier.fillMaxWidth())

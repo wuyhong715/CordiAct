@@ -46,4 +46,24 @@ class TabsControllerTest {
         tabs.move(0, 2)
         assertEquals(listOf("s:b", "s:c", "s:a"), tabs.tabs.map { it.key })
     }
+
+    @Test fun layoutReordersPanelsInTheirExistingPositions() {
+        val store = Memory(listOf("s:a", "p:trace", "s:b", "p:git", "p:other"), "p:git")
+        val tabs = TabsController(store)
+
+        tabs.orderPluginTabs(listOf("git", "trace"))
+
+        assertEquals(listOf("s:a", "p:git", "s:b", "p:trace", "p:other"), store.keys)
+        assertEquals("p:git", store.active)
+    }
+
+    @Test fun configuredVisiblePanelOpensWithoutTakingFocusFromConversation() {
+        val store = Memory(listOf("s:a"), "s:a")
+        val tabs = TabsController(store)
+
+        tabs.orderPluginTabs(listOf("git", "trace"), setOf("git", "missing"))
+
+        assertEquals(listOf("s:a", "p:git"), store.keys)
+        assertEquals("s:a", store.active)
+    }
 }

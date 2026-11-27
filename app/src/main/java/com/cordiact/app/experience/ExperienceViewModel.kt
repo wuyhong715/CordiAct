@@ -320,6 +320,15 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
                 },
                 phase = phase,
                 trace = trace,
+                packageContextSources = if (message.role == com.cordiact.core.conversation.MessageRole.USER) {
+                    val sources = parsedMeta?.optJSONArray("plugin_context_sources")
+                    List(minOf(sources?.length() ?: 0, 100)) { sources?.opt(it) as? String }
+                        .filterNotNull().filter { it.length in 1..48 }.distinct()
+                } else emptyList(),
+                subagentPreset = if (message.role == com.cordiact.core.conversation.MessageRole.USER) TranscriptSubagentPreset.parse(
+                    parsedMeta?.opt("subagent_preset_id") as? String,
+                    parsedMeta?.opt("subagent_preset_source") as? String,
+                ) else null,
             )
         }
 
@@ -577,6 +586,9 @@ class ExperienceViewModel(private val app: CordiActApplication) : ViewModel() {
                             onUserMessagePersisted = { viewModelScope.launch { composerController.submitted(session, draft); refreshSessionMetadata() } },
                             authoredPluginTurn = authoring,
                             onModelCallStarted = owner::attach,
+                            onPackageContextSources = { sources ->
+                                events.trySend(OwnedEvent(session, turnId, TranscriptEvent.PackageContext(sources)))
+                            },
                             onEvent = callback)
                     owner.attach(call)
                 }

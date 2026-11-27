@@ -67,6 +67,54 @@ class AndroidSignedCatalogAccessTest {
         }
     }
 
+    @Test fun userCatalogIsOptInAndRetirementPreservesReservationsAcrossRestart() {
+        val privateRoot = folder.root
+        val custom = AndroidUserCatalogs.preview(policyText().byteInputStream())
+        val store = AndroidUserCatalogs(privateRoot, emptyList())
+        assertTrue(store.directories.value.isEmpty())
+        assertFalse(store.reserves("alpha-tools"))
+        store.add(custom)
+        val added = store.directories.value.single()
+        assertEquals(custom.rootFingerprint, added.rootFingerprint)
+        assertEquals("alpha", added.access.trustSourceId)
+        assertTrue(store.reserves("alpha-tools"))
+        assertNull(store.catalogForSource("alpha"))
+        val state = privateRoot.toPath().resolve("cordiact-user-catalog-${custom.id}/catalog.state")
+        assertFalse(Files.exists(state))
+
+        val app = service(added.access)
+        val owner = Any()
+        app.resume(owner)
+        val page = app.openPage("test")
+        added.access.prepareTrust(page).cancel()
+        val opened = requireNotNull(added.access.catalog())
+        assertTrue(Files.exists(state))
+        val oldRemoval = page.approveCatalogConfiguration { store.remove(added) }
+        app.pause(owner)
+        app.resume(owner)
+        assertThrows(IllegalStateException::class.java) { oldRemoval.commit() }
+        assertSame(added, store.directories.value.single())
+        page.approveCatalogConfiguration { store.remove(added) }.commit()
+        assertEquals(SignedCatalogDiagnosticState.RETIRED, opened.diagnosticObservation().state)
+        assertThrows(IllegalStateException::class.java) { added.access.prepareTrust(page) }
+        assertTrue(Files.exists(state))
+
+        val restarted = AndroidUserCatalogs(privateRoot, emptyList())
+        assertTrue(restarted.directories.value.isEmpty())
+        assertTrue(restarted.reserves("alpha-tools"))
+        assertThrows(IllegalArgumentException::class.java) { restarted.add(AndroidUserCatalogs.preview(policyText().byteInputStream())) }
+        restarted.add(custom)
+        assertEquals(custom.id, restarted.directories.value.single().id)
+        assertTrue(Files.exists(state))
+    }
+
+    @Test fun userCatalogCannotClaimAnApkSourceOrNamespace() {
+        val bundled = policy()
+        val store = AndroidUserCatalogs(folder.root, bundled.sources)
+        assertThrows(IllegalArgumentException::class.java) { store.add(AndroidUserCatalogs.preview(policyText().byteInputStream())) }
+        assertTrue(store.directories.value.isEmpty())
+    }
+
     private fun service(access: AndroidSignedCatalogAccess): WorkspaceExtensionPackages = WorkspaceExtensionPackages(
         ExtensionPackageInstaller(InMemoryExtensionPackageStore(), reservedSourceId = access::reserves,
             signedCatalogProvider = access::catalog), { EffectiveSecurityProfile.fullAccess(it) },

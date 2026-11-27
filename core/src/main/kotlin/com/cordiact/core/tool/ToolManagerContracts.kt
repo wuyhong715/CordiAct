@@ -198,6 +198,8 @@ data class ToolInvocationContext(
     @Transient val authoredPluginTurn: com.cordiact.core.plugin.AuthoredPluginTurn? = null,
     /** One host loop dispatch; deliberately separate from the model's call ID. */
     @Transient internal val historyInvocation: ToolHistoryInvocation? = null,
+    /** Host-only gate for a child whose tool catalog was explicitly narrowed by a preset. */
+    @Transient val delegatedToolAdmission: ((String) -> Boolean)? = null,
 ) {
     /** The grant covering [targetWorkspaceId], or null when it is not readable this turn. */
     fun scopeFor(targetWorkspaceId: String): GrantedScope? =
@@ -213,6 +215,7 @@ class ToolRegistration internal constructor(
     internal val scope: ToolContributionScope,
     internal val hostEffect: com.cordiact.core.security.ToolEffectClass? = null,
     internal val hasSensitiveArguments: Boolean,
+    internal val packageSha256: String? = null,
 )
 
 /** Identity of one dispatch, even if a model reuses the same public call ID. */
@@ -356,9 +359,10 @@ class InMemoryToolDefinitionRegistry : ToolDefinitionRegistry {
         definition: ToolDefinition,
         scope: ToolContributionScope,
         hostEffect: com.cordiact.core.security.ToolEffectClass? = null,
+        packageSha256: String? = null,
         active: () -> Boolean,
     ): AutoCloseable {
-        val bound = bind(definition, scope, hostEffect)
+        val bound = bind(definition, scope, hostEffect, packageSha256)
         val id = bound.descriptor.id
         val bindings = definitions.getOrPut(id) { linkedMapOf() }
         require(bindings.keys.none(scope::overlaps)) { "Tool '$id' is already registered in an overlapping scope" }
@@ -371,11 +375,12 @@ class InMemoryToolDefinitionRegistry : ToolDefinitionRegistry {
         definition: ToolDefinition,
         scope: ToolContributionScope,
         hostEffect: com.cordiact.core.security.ToolEffectClass?,
+        packageSha256: String? = null,
     ): ToolDefinition {
         val descriptor = snapshotDescriptor(definition.descriptor)
         validateDescriptor(descriptor)
         validateExecutionDeclaration(descriptor)
-        val token = ToolRegistration(scope, hostEffect, descriptor.inputSchema.parameters.any(ToolParameter::sensitive))
+        val token = ToolRegistration(scope, hostEffect, descriptor.inputSchema.parameters.any(ToolParameter::sensitive), packageSha256)
         return ToolDefinition(descriptor, definition.executor, token)
     }
 
@@ -583,6 +588,8 @@ class ToolManagerPlugin(
     private val executionPolicy: ToolExecutionAuthorizationPolicy = ToolExecutionAuthorizationPolicy(null),
     private val accessPolicy: com.cordiact.core.security.EnvelopeToolAccessPolicy? = null,
     private val autoReview: ((com.cordiact.core.security.SecurityContext, String, ToolArguments, () -> ToolResult) -> ToolResult)? = null,
+    /** Optional workspace veto. The returned guard checks the policy used by this attempt. */
+    private val toolPreflight: ((String, ToolDescriptor, ToolArguments) -> (() -> Unit))? = null,
     /** Authoritative host lookup. Without it no session-scoped contribution is visible. */
     private val sessionWorkspace: (String) -> String? = { null },
 ) : ManagedPlugin, ToolManagerService {
@@ -751,6 +758,9 @@ class ToolManagerPlugin(
         // No stale registration should even open an approval card. All execution backends share
         // this check, then recheck inside the serial queue or timeout worker at admission.
         recheck()
+        val policyGuard = toolPreflight?.invoke(context.workspaceId, descriptor, arguments)
+        recheck()
+        policyGuard?.invoke()
         when (val authorization = executionPolicy.authorize(
             descriptor, arguments, com.cordiact.core.action.ApprovalOwner(context.workspaceId, context.sessionId),
         )) {
@@ -763,6 +773,7 @@ class ToolManagerPlugin(
         // An admitted action may have side effects; withdrawal invalidates its publication, not history.
         val invokeExecutor = {
             recheck()
+            policyGuard?.invoke()
             // The executor receives its authorization context, never the loop's event channel
             // or receipt identity. A nested call is not the tool shown on this trace row.
             definition.executor.invoke(context.copy(onEvent = null, historyInvocation = null), arguments)
@@ -795,6 +806,7 @@ class ToolManagerPlugin(
                 toolId = descriptor.id,
                 source = ToolHistorySource.HOST_REGISTRATION,
                 format = ToolHistoryFormat.BOUNDED_SUMMARY_V1,
+                packageSha256 = registration.packageSha256,
             ))
         } else null
         return if (receipt == null && result.historyReceipt == null) result else result.copy(historyReceipt = receipt)
@@ -802,6 +814,7 @@ class ToolManagerPlugin(
 
     private fun currentDefinition(context: ToolInvocationContext, toolId: String): ToolDefinition? {
         val binding = context.toolRegistrations[toolId]
+        if (context.delegatedToolAdmission?.let { binding == null || !it(toolId) } == true) return null
         if (binding == null || binding.scope.global) {
             // Legacy host calls can resolve only global definitions. A bound turn cannot silently
             // switch to a replacement, even when the public schema is unchanged.

@@ -17,6 +17,8 @@ data class TranscriptTurn(
     val outputTokens: Long? = null,
     val attachments: List<TranscriptAttachment> = emptyList(),
     val process: List<ProcessEntry> = emptyList(),
+    val packageContextSources: List<String> = emptyList(),
+    val subagentPreset: TranscriptSubagentPreset? = null,
 ) {
     val isRunning: Boolean get() = phase == RunPhase.RUNNING
 }
@@ -44,6 +46,7 @@ sealed interface ProcessEntry {
 sealed interface TranscriptEvent {
     data class Answer(val text: String) : TranscriptEvent
     data class Reasoning(val text: String) : TranscriptEvent
+    data class PackageContext(val sources: List<String>) : TranscriptEvent
     data class ToolStarted(val id: String, val name: String, val arguments: String, val at: Long) : TranscriptEvent
     data class ToolFinished(
         val id: String, val name: String, val success: Boolean, val summary: String?, val duration: Long, val at: Long,
@@ -57,6 +60,7 @@ fun TranscriptTurn.reduce(event: TranscriptEvent): TranscriptTurn {
     if (!isRunning) return this
     return when (event) {
         is TranscriptEvent.Answer -> copy(answer = answer + event.text)
+        is TranscriptEvent.PackageContext -> copy(packageContextSources = event.sources)
         is TranscriptEvent.Reasoning -> {
             if (event.text.isEmpty()) return this
             val end = reasoning.length + event.text.length
@@ -99,7 +103,8 @@ fun restoreTranscript(messages: List<StoredMessage>): List<TranscriptTurn> {
     val result = mutableListOf<TranscriptTurn>()
     messages.forEach { message ->
         when (message.role) {
-            "USER" -> result += TranscriptTurn(message.id, message.content, startedAt = message.at, attachments = message.attachments)
+            "USER" -> result += TranscriptTurn(message.id, message.content, startedAt = message.at, attachments = message.attachments,
+                packageContextSources = message.packageContextSources, subagentPreset = message.subagentPreset)
             "ASSISTANT" -> {
                 val phase = message.phase
                 val trace = message.trace
@@ -176,7 +181,24 @@ data class StoredMessage(
     val attachments: List<TranscriptAttachment> = emptyList(),
     val phase: RunPhase = RunPhase.COMPLETE,
     val trace: StoredTurnTrace? = null,
+    val packageContextSources: List<String> = emptyList(),
+    val subagentPreset: TranscriptSubagentPreset? = null,
 )
+
+@ConsistentCopyVisibility
+data class TranscriptSubagentPreset private constructor(val id: String, val source: String) {
+    companion object {
+        private val presetId = Regex("([a-z][a-z0-9-]{1,23})\\.[a-z][a-z0-9-]{1,23}")
+        private val version = Regex("[0-9]{1,6}\\.[0-9]{1,6}\\.[0-9]{1,6}")
+
+        fun parse(id: String?, source: String?): TranscriptSubagentPreset? {
+            if (id == null || source == null) return null
+            val owner = presetId.matchEntire(id)?.groupValues?.get(1) ?: return null
+            val release = source.substringAfter('@', "")
+            return if (source == "$owner@$release" && version.matches(release)) TranscriptSubagentPreset(id, source) else null
+        }
+    }
+}
 
 fun durationLabel(millis: Long): String = when {
     millis < 1000 -> "${millis.coerceAtLeast(0)} ms"

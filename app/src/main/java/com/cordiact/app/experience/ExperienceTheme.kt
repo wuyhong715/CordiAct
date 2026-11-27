@@ -8,6 +8,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.shape.RoundedCornerShape
+import com.cordiact.core.workbench.WorkbenchAccent
 
 // v3 "Lumen": warm parchment neutrals (Claude-like); pale honey is the brand signal,
 // reserved for agent activity. Pale yellow never carries text: onPrimary is dark ink.
@@ -44,11 +45,28 @@ private val DarkPalette = darkColorScheme(
     outlineVariant = Color(0xFF3D3B33), onSurfaceVariant = Color(0xFFADA796), error = Color(0xFFF26B5E),
 )
 
-/** Explicit light default. Surface translucency never blurs its foreground content. */
 @Composable
-fun ExperienceTheme(darkTheme: Boolean = false, content: @Composable () -> Unit) {
+fun ExperienceTheme(darkTheme: Boolean = false, accent: WorkbenchAccent = WorkbenchAccent.AMBER, content: @Composable () -> Unit) {
+    val palette = if (darkTheme) DarkPalette else LightPalette
+    val colors = when (accent) {
+        WorkbenchAccent.AMBER -> palette
+        WorkbenchAccent.INDIGO -> if (darkTheme) palette.copy(
+            primary = Color(0xFFC4C5FF), onPrimary = Color(0xFF222460),
+            primaryContainer = Color(0xFF383981), onPrimaryContainer = Color(0xFFE2DFFF),
+        ) else palette.copy(
+            primary = Color(0xFF4D4EA0), onPrimary = Color.White,
+            primaryContainer = Color(0xFFE2DFFF), onPrimaryContainer = Color(0xFF1B1C59),
+        )
+        WorkbenchAccent.TEAL -> if (darkTheme) palette.copy(
+            primary = Color(0xFF8CD5C4), onPrimary = Color(0xFF00382F),
+            primaryContainer = Color(0xFF005045), onPrimaryContainer = Color(0xFFAAF2E0),
+        ) else palette.copy(
+            primary = Color(0xFF00685B), onPrimary = Color.White,
+            primaryContainer = Color(0xFFAAF2E0), onPrimaryContainer = Color(0xFF00201A),
+        )
+    }
     MaterialTheme(
-        colorScheme = if (darkTheme) DarkPalette else LightPalette,
+        colorScheme = colors,
         typography = Typography(
             displaySmall = TextStyle(fontSize = 34.sp, lineHeight = 41.sp, fontWeight = FontWeight.Bold),
             headlineLarge = TextStyle(fontSize = 34.sp, lineHeight = 41.sp, fontWeight = FontWeight.Bold),

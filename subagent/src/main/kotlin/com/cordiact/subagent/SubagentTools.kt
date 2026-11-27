@@ -75,6 +75,8 @@ private fun delegateDescriptor() = ToolDescriptor(
                     "conversation's context, so include the goal, the known facts, the constraints " +
                     "and the expected output shape.",
             ),
+            ToolParameter(name = "preset", type = ToolValueType.STRING, required = false, maxLength = 49,
+                description = "Optional workspace subagent preset ID listed by list_children."),
         ),
     ),
     ownerPluginId = SUBAGENT_PLUGIN_ID,
@@ -93,6 +95,7 @@ private fun listChildrenDescriptor() = ToolDescriptor(
         List the subagents you delegated in this Session, oldest first, with their Session ids.
         Use it to refer back to earlier delegated work — a Session id is how its full transcript
         stays reachable.
+        Also lists available workspace preset IDs for delegate_task.
     """.trimIndent(),
     inputSchema = ToolInputSchema(),
     ownerPluginId = SUBAGENT_PLUGIN_ID,
@@ -109,8 +112,12 @@ private fun executeDelegate(
 ): ToolResult {
     val label = (arguments.values["label"] as? ToolValue.StringValue)?.value?.trim().orEmpty()
     val prompt = (arguments.values["prompt"] as? ToolValue.StringValue)?.value?.trim().orEmpty()
+    val preset = (arguments.values["preset"] as? ToolValue.StringValue)?.value
     if (label.isEmpty()) return error("invalid_arguments", "label must not be empty")
     if (prompt.isEmpty()) return error("invalid_arguments", "prompt must not be empty")
+    if (preset != null && !Regex("[a-z][a-z0-9-]{1,23}\\.[a-z][a-z0-9-]{1,23}").matches(preset)) {
+        return error("invalid_arguments", "preset must be an exact workspace preset ID")
+    }
 
     val sessionId = context.sessionId
         ?: return error("no_session", "delegate_task requires a calling Session")
@@ -125,6 +132,7 @@ private fun executeDelegate(
             parentSessionId = sessionId,
             label = label,
             prompt = prompt,
+            presetId = preset,
         ),
         parent = context,
         deadlineAtMillis = deadline,
@@ -156,6 +164,7 @@ private fun executeListChildren(
     val sessionId = context.sessionId
         ?: return error("no_session", "list_children requires a calling Session")
     val children = runtime.listChildren(sessionId)
+    val presets = runtime.listPresets(context)
     return ToolResult(
         values = linkedMapOf(
             "children" to ToolValue.ArrayValue(
@@ -169,7 +178,12 @@ private fun executeListChildren(
                     )
                 },
             ),
-        ),
+        ).apply {
+            if (presets.isNotEmpty()) put("presets", ToolValue.ArrayValue(presets.map {
+                ToolValue.ObjectValue(mapOf("id" to ToolValue.StringValue(it.id), "title" to ToolValue.StringValue(it.title),
+                    "source" to ToolValue.StringValue(it.source)))
+            }))
+        },
     )
 }
 

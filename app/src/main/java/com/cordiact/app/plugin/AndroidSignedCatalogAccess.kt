@@ -16,14 +16,17 @@ import java.security.spec.X509EncodedKeySpec
 import java.time.Instant
 import java.util.Base64
 
-/** APK policy, not a URI picker, workspace setting, preference, or downloaded document. */
+/** A configured catalog's live access and independent rollback checkpoint. */
 internal class AndroidSignedCatalogAccess private constructor(
     private val policy: CatalogBuildPolicy,
     private val privateRoot: () -> Path,
     private val clock: () -> Instant,
+    private val directoryName: String = "cordiact-signed-catalog",
 ) {
     val trustSourceId get() = policy.trustSourceId
+    val sources get() = policy.sources
     @Volatile private var opened: SignedPackageCatalog? = null
+    @Volatile private var retired = false
     fun catalog(): SignedPackageCatalog? = opened
 
     /** The settings snapshot must not open or initialize the private catalog. */
@@ -32,16 +35,26 @@ internal class AndroidSignedCatalogAccess private constructor(
 
     fun reserves(id: String): Boolean = policy.sources.any { id.startsWith(it.packagePrefix) }
 
+    fun ownsSource(id: String): Boolean = policy.sources.any { it.id == id }
+
+    @Synchronized
+    fun retire() {
+        retired = true
+        opened?.retire()
+        opened = null
+    }
+
     fun prepareTrust(page: WorkspaceExtensionPackages.Page): WorkspaceExtensionPackages.SignedRefresh =
         page.prepareTrustRefresh(trustSourceId) { openForExplicitRefresh() }
 
     @Synchronized
     private fun openForExplicitRefresh() {
+        check(!retired) { "CATALOG_UNTRUSTED" }
         if (opened != null) return
         val requested = privateRoot().toAbsolutePath().normalize()
         val root = requested.toRealPath()
         check(root == requested && Files.isDirectory(root, NOFOLLOW_LINKS)) { "CATALOG_STATE_UNAVAILABLE" }
-        val directory = root.resolve("cordiact-signed-catalog")
+        val directory = root.resolve(directoryName)
         val state = directory.resolve("catalog.state")
         // Creating the directory is the one initialization attempt. A prior partial initialization,
         // missing state within an existing directory, or corruption must not be repaired here.
@@ -67,6 +80,9 @@ internal class AndroidSignedCatalogAccess private constructor(
 
         internal fun forTest(policy: CatalogBuildPolicy, directory: Path, clock: () -> Instant): AndroidSignedCatalogAccess =
             AndroidSignedCatalogAccess(policy, { directory }, clock)
+
+        fun forUser(policy: CatalogBuildPolicy, directory: Path, id: String): AndroidSignedCatalogAccess =
+            AndroidSignedCatalogAccess(policy, { directory }, Instant::now, "cordiact-user-catalog-$id")
     }
 }
 
@@ -78,7 +94,7 @@ internal class CatalogBuildPolicy private constructor(
     val sources: List<CatalogSource>,
 ) {
     companion object {
-        private const val MAX_POLICY_BYTES = 4096
+        internal const val MAX_POLICY_BYTES = 4096
         private val key = Regex("[A-Za-z0-9+/]{40,252}={0,2}")
         private val revision = Regex("[1-9][0-9]{0,15}")
         private val digest = Regex("[0-9a-f]{64}")

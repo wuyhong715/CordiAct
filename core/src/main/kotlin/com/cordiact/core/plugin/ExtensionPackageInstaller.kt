@@ -188,25 +188,29 @@ class ExtensionPackageInstaller(
     private val signedCatalog: SignedPackageCatalog? = null,
     private val reservedSourceId: (String) -> Boolean = { false },
     private val signedCatalogProvider: () -> SignedPackageCatalog? = { signedCatalog },
+    private val signedCatalogBySource: (String) -> SignedPackageCatalog? = { signedCatalogProvider() },
+    private val openedSignedCatalogs: () -> List<SignedPackageCatalog> = { listOfNotNull(signedCatalogProvider()) },
 ) {
-    private val activeCatalog get() = signedCatalogProvider()
     /** Host namespaces can remain reserved even while no trusted catalog can be opened. */
-    internal fun requiresSignedSource(id: String): Boolean = reservedSourceId(id) || activeCatalog?.controlsPackageId(id) == true
+    internal fun requiresSignedSource(id: String): Boolean = reservedSourceId(id) || openedSignedCatalogs().any { it.controlsPackageId(id) }
 
-    internal fun signedDownload(): SignedPackageDownload = SignedPackageDownload(checkNotNull(activeCatalog) { "CATALOG_UNTRUSTED" })
+    internal fun signedDownload(selection: SignedPackageCatalog.Selection): SignedPackageDownload = SignedPackageDownload(catalog(selection.sourceId))
 
-    internal fun signedRefresh(trustSourceId: String): SignedCatalogRefresh =
-        SignedCatalogRefresh(checkNotNull(activeCatalog) { "CATALOG_UNTRUSTED" }, trustSourceId)
+    internal fun signedRefresh(trustSourceId: String): SignedCatalogRefresh = SignedCatalogRefresh(catalog(trustSourceId), trustSourceId)
 
-    internal fun signedPublishers() = checkNotNull(activeCatalog) { "CATALOG_UNTRUSTED" }.publishers()
+    internal fun signedPublishers(trustSourceId: String?) = (if (trustSourceId == null) {
+        checkNotNull(signedCatalogProvider()) { "CATALOG_UNTRUSTED" }
+    } else catalog(trustSourceId)).publishers()
 
-    internal fun signedVersions(sourceId: String) = checkNotNull(activeCatalog) { "CATALOG_UNTRUSTED" }.versions(sourceId)
+    internal fun signedVersions(sourceId: String) = catalog(sourceId).versions(sourceId)
 
     internal fun selectSignedVersion(sourceId: String, packageId: String, version: String) =
-        checkNotNull(activeCatalog) { "CATALOG_UNTRUSTED" }.select(sourceId, packageId, version)
+        catalog(sourceId).select(sourceId, packageId, version)
 
     internal fun requireCurrent(candidate: SignedPackageCatalog.Verified) =
-        checkNotNull(activeCatalog) { "CATALOG_UNTRUSTED" }.withCurrent(candidate) {}
+        catalog(candidate.sourceReceipt.sourceId).withCurrent(candidate) {}
+
+    private fun catalog(sourceId: String) = checkNotNull(signedCatalogBySource(sourceId)) { "CATALOG_UNTRUSTED" }
 
     internal fun <T> withRuntimeTrust(record: ExtensionPackageRecord, admit: () -> T): T =
         withArtifactTrust(record.artifact, record.sourceReceipt, admit)
@@ -219,16 +223,16 @@ class ExtensionPackageInstaller(
             check(!requiresSignedSource(record.manifest.id)) { "CATALOG_UNTRUSTED" }
             return null
         }
-        return checkNotNull(activeCatalog) { "CATALOG_UNTRUSTED" }.runtimeLease(record.artifact, receipt)
+        return catalog(receipt.sourceId).runtimeLease(record.artifact, receipt)
     }
 
-    internal fun pollRuntimeTrust() { activeCatalog?.pollRuntimeTrust() }
+    internal fun pollRuntimeTrust() { openedSignedCatalogs().forEach { runCatching { it.pollRuntimeTrust() } } }
 
     private fun <T> withArtifactTrust(artifact: ExtensionPackageArtifact, receipt: ExtensionPackageSourceReceipt?, proceed: () -> T): T =
         if (receipt == null) {
             check(!requiresSignedSource(artifact.manifest.id)) { "CATALOG_UNTRUSTED" }
             proceed()
-        } else checkNotNull(activeCatalog) { "CATALOG_UNTRUSTED" }.withInstalled(artifact, receipt, proceed)
+        } else catalog(receipt.sourceId).withInstalled(artifact, receipt, proceed)
 
     private fun <T> publishWithTrust(check: (() -> T) -> T, commit: () -> T): T {
         var entered = false
@@ -285,7 +289,7 @@ class ExtensionPackageInstaller(
         granted: Set<ExtensionPackageCapability>,
         publish: (() -> Unit) -> Unit,
     ): ExtensionPackageChange {
-        val catalog = activeCatalog ?: return trustUnavailable()
+        val catalog = signedCatalogBySource(candidate.sourceReceipt.sourceId) ?: return trustUnavailable()
         if (!trustAllows { catalog.withCurrent(candidate) {} }) return trustUnavailable()
         return installArtifact(workspaceId, candidate.artifact, candidate.sourceReceipt, expectedInstallationId, granted) { commit ->
             publish { publishWithTrust({ catalog.withCurrent(candidate, it) }, commit) }

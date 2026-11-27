@@ -65,7 +65,7 @@ class DefaultSearchService(
         val normalized = normalizeQueries(queries)
         val cap = maxResults.coerceIn(1, this.maxResults)
         val policy = policies.policy(workspaceId)
-        val provider = resolveSearch(policy, route)
+        val provider = resolveSearch(workspaceId, policy, route)
         if (expectedSearchProvider != null && expectedSearchProvider !== provider) {
             throw SearchException(SearchException.Code.CANCELLED, "Search provider changed; start a new probe")
         }
@@ -74,9 +74,9 @@ class DefaultSearchService(
             runSearch(workspaceId, route, provider, normalized, cap, oriQuestion, budget, policy)
         } catch (failure: SearchException) {
             if (expectedSearchProvider != null || failure.code == SearchException.Code.CANCELLED) throw failure
-            ensureCurrent(provider)
+            ensureCurrent(workspaceId, provider)
             if (policies.policy(workspaceId) != policy) throw failure
-            val fallback = autoFallback(policy, route, provider, failure) ?: throw failure
+            val fallback = autoFallback(workspaceId, policy, route, provider, failure) ?: throw failure
             runSearch(workspaceId, route, fallback, normalized, cap, oriQuestion, budget, policy)
         }
     }
@@ -93,19 +93,19 @@ class DefaultSearchService(
         expectedPolicy: WorkspaceSearchPolicy,
     ): SearchResult {
         // Fan-out means one tool call can spend several billable calls; reserve them all up front.
-        ensureCurrent(provider)
+        ensureCurrent(workspaceId, provider)
         val selectedPolicy = policies.policy(workspaceId)
         if (selectedPolicy != expectedPolicy) throw SearchException(SearchException.Code.CANCELLED, "Search policy changed before dispatch")
         enforceBudget(workspaceId, provider, normalized.size, selectedPolicy)
         val tasks = normalized.map { query ->
             Callable {
-                ensureCurrent(provider)
+                ensureCurrent(workspaceId, provider)
                 if (policies.policy(workspaceId) != selectedPolicy) {
                     throw SearchException(SearchException.Code.CANCELLED, "Search policy changed before dispatch")
                 }
                 provider.search(
                     SearchRequest(query = query, maxResults = cap, oriQuestion = oriQuestion, route = route),
-                    CancellationSignal { Thread.currentThread().isInterrupted || registry.searchProvider(provider.id) !== provider },
+                    CancellationSignal { Thread.currentThread().isInterrupted || registry.searchProvider(provider.id, workspaceId) !== provider },
                 )
             }
         }
@@ -119,13 +119,13 @@ class DefaultSearchService(
         val results = ArrayList<SearchResult>(futures.size)
         for (future in futures) {
             if (future.isCancelled) {
-                ensureCurrent(provider)
+                ensureCurrent(workspaceId, provider)
                 throw SearchException(SearchException.Code.TIMED_OUT, "Search timed out", retryable = true)
             }
             try {
                 results += future.get()
             } catch (failure: ExecutionException) {
-                ensureCurrent(provider)
+                ensureCurrent(workspaceId, provider)
                 when (val cause = failure.cause) {
                     is SearchException -> throw cause
                     else -> throw SearchException(
@@ -140,7 +140,7 @@ class DefaultSearchService(
                 throw SearchException(SearchException.Code.CANCELLED, "Search was interrupted", cause = interrupted)
             }
         }
-        ensureCurrent(provider)
+        ensureCurrent(workspaceId, provider)
         if (policies.policy(workspaceId) != selectedPolicy) {
             throw SearchException(SearchException.Code.CANCELLED, "Search policy changed before delivery")
         }
@@ -150,8 +150,8 @@ class DefaultSearchService(
         )
     }
 
-    private fun ensureCurrent(provider: SearchProvider) {
-        if (registry.searchProvider(provider.id) !== provider) {
+    private fun ensureCurrent(workspaceId: String, provider: SearchProvider) {
+        if (registry.searchProvider(provider.id, workspaceId) !== provider) {
             throw SearchException(SearchException.Code.CANCELLED, "Search provider registration retired")
         }
     }
@@ -212,17 +212,17 @@ class DefaultSearchService(
         policy.searchProviderId?.let { pinned ->
             // A configured provider that is registered but cannot authenticate is hidden; a
             // configured-but-missing provider stays visible so the call returns a setup error.
-            val provider = registry.searchProvider(pinned) ?: return true
+            val provider = registry.searchProvider(pinned, workspaceId) ?: return true
             if (!isEnabled(policy, provider)) return false
             if (provider.native && (policy.mode == SearchMode.TOOL || provider.routeProviderId != route?.providerId)) return false
             return provider.ready(route)
         }
-        val usable = readyNatives(policy, route).isNotEmpty() ||
-            registry.searchProviders().any { !it.native && isEnabled(policy, it) && it.ready(route) }
+        val usable = readyNatives(workspaceId, policy, route).isNotEmpty() ||
+            registry.searchProviders(workspaceId).any { !it.native && isEnabled(policy, it) && it.ready(route) }
         if (usable) return true
         // Nothing usable at all: stay visible only when no provider is configured, so the call
         // can report the setup problem instead of the tool silently disappearing.
-        return registry.searchProviders().none { isEnabled(policy, it) }
+        return registry.searchProviders(workspaceId).none { isEnabled(policy, it) }
     }
 
     override fun shouldExposeFetch(workspaceId: String, route: ModelRoute?): Boolean {
@@ -241,12 +241,14 @@ class DefaultSearchService(
      * driven by [WorkspaceSearchPolicy.mode] so an external-id allowlist never removes it.
      */
     private fun isEnabled(policy: WorkspaceSearchPolicy, provider: SearchProvider): Boolean =
-        provider.native || (policy.enabledProviders?.contains(provider.id) ?: true)
+        provider.native || (policy.enabledProviders?.contains(provider.id) ?: true) &&
+            (!provider.requiresExplicitSelection || provider.id == policy.searchProviderId ||
+                provider.id in policy.providerOrder || policy.enabledProviders?.contains(provider.id) == true)
 
     /** Native providers bound to [route]; empty outside NATIVE/AUTO, so TOOL never uses them. */
-    private fun readyNatives(policy: WorkspaceSearchPolicy, route: ModelRoute?): List<SearchProvider> {
+    private fun readyNatives(workspaceId: String, policy: WorkspaceSearchPolicy, route: ModelRoute?): List<SearchProvider> {
         if (policy.mode != SearchMode.NATIVE && policy.mode != SearchMode.AUTO) return emptyList()
-        return registry.searchProviders().filter {
+        return registry.searchProviders(workspaceId).filter {
             it.native && it.routeProviderId == route?.providerId && it.ready(route)
         }
     }
@@ -256,18 +258,18 @@ class DefaultSearchService(
      * registered, enabled and ready id in order; without one the legacy rule stands (exactly one
      * usable provider, ambiguity otherwise). Disabled providers are never a candidate.
      */
-    private fun resolveExternal(policy: WorkspaceSearchPolicy, route: ModelRoute?): SearchProvider {
+    private fun resolveExternal(workspaceId: String, policy: WorkspaceSearchPolicy, route: ModelRoute?): SearchProvider {
         val order = policy.providerOrder
         if (order.isNotEmpty()) {
             val ordered = order.mapNotNull { id ->
-                registry.searchProvider(id)?.takeIf { !it.native && isEnabled(policy, it) && it.ready(route) }
+                registry.searchProvider(id, workspaceId)?.takeIf { !it.native && isEnabled(policy, it) && it.ready(route) }
             }
             return ordered.firstOrNull() ?: throw SearchException(
                 SearchException.Code.PROVIDER_UNAVAILABLE,
                 "None of the ordered search providers is available: " + order.joinToString(", "),
             )
         }
-        val usable = registry.searchProviders().filter { !it.native && isEnabled(policy, it) && it.ready(route) }
+        val usable = registry.searchProviders(workspaceId).filter { !it.native && isEnabled(policy, it) && it.ready(route) }
         return when (usable.size) {
             1 -> usable.first()
             0 -> throw SearchException(SearchException.Code.PROVIDER_UNAVAILABLE, "No search provider is configured")
@@ -282,6 +284,7 @@ class DefaultSearchService(
      * never retried, and there is no second fallback after this one.
      */
     private fun autoFallback(
+        workspaceId: String,
         policy: WorkspaceSearchPolicy,
         route: ModelRoute?,
         failed: SearchProvider,
@@ -290,15 +293,15 @@ class DefaultSearchService(
         if (policy.mode != SearchMode.AUTO || policy.searchProviderId != null) return null
         if (!failed.native || failed.billable) return null
         if (failure.code != SearchException.Code.PROVIDER_ERROR && failure.code != SearchException.Code.TIMED_OUT) return null
-        return runCatching { resolveExternal(policy, route) }.getOrNull()?.takeIf { it.id != failed.id }
+        return runCatching { resolveExternal(workspaceId, policy, route) }.getOrNull()?.takeIf { it.id != failed.id }
     }
 
-    private fun resolveSearch(policy: WorkspaceSearchPolicy, route: ModelRoute?): SearchProvider {
+    private fun resolveSearch(workspaceId: String, policy: WorkspaceSearchPolicy, route: ModelRoute?): SearchProvider {
         if (policy.mode == SearchMode.OFF) {
             throw SearchException(SearchException.Code.UNSUPPORTED, "Web search is disabled for this workspace")
         }
         policy.searchProviderId?.let { pinned ->
-            val provider = registry.searchProvider(pinned)
+            val provider = registry.searchProvider(pinned, workspaceId)
                 ?: throw SearchException(SearchException.Code.PROVIDER_UNAVAILABLE, "Search provider '$pinned' is not available")
             // A disabled provider stays rejected even when pinned: no path bypasses the allowlist.
             if (!isEnabled(policy, provider)) {
@@ -316,7 +319,7 @@ class DefaultSearchService(
             return provider
         }
 
-        val natives = readyNatives(policy, route)
+        val natives = readyNatives(workspaceId, policy, route)
         if (natives.size > 1) {
             throw SearchException(SearchException.Code.PROVIDER_AMBIGUOUS, "Multiple native search providers are configured")
         }
@@ -325,7 +328,7 @@ class DefaultSearchService(
             throw SearchException(SearchException.Code.UNSUPPORTED, "The current model has no native web search")
         }
 
-        return resolveExternal(policy, route)
+        return resolveExternal(workspaceId, policy, route)
     }
 
     private fun resolveFetch(workspaceId: String, route: ModelRoute?): FetchProvider {

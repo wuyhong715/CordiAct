@@ -15,6 +15,8 @@ CordiAct 是一个原生 Android、以工作区为中心的行动运行时：对
 - `deepseek-harness`：DeepSeek 动作提交适配器契约（尚未被 app 消费）
 - `search-providers`、`mcp-client`、`subagent`：搜索、MCP 与子 Agent 运行时
 
+客户端 DIY 扩展目前覆盖工作区布局、声明式工具与命令、隔离文本脚本、技能与上下文、搜索和模型 Provider、工具前策略、子 Agent 预设、文本工作流、会话视图以及签名插件目录。插件 SDK 与签发工具位于 [`plugin-sdk`](plugin-sdk/README.md)。Remote 适配器仍未接入。
+
 ## Agent 编写插件
 
 普通前台会话的 Agent 可以写工作区插件源码、检查版本并申请用户批准；用户也能在会话插件面板直接预览、确认启用和撤回。会话试用提供固定文本和有界文本变换，不执行第三方脚本，也不在进程重启后自动启用。可信宿主插件可按全局、工作区或会话发布工具、斜杠命令与别名。声明式扩展包把工具和命令放进同一个带版本、宿主兼容与能力声明的清单，支持安装、升级、回滚和旧插件迁移；格式与边界见[声明式扩展包](docs/architecture/extension-packages.md)。插件架构与创作流程见[插件架构](docs/architecture/plugin-extension.md)与[示例与验收](docs/testing/authored-plugins.md)。

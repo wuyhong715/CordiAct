@@ -3,7 +3,7 @@ package com.cordiact.core.jobs
 /** A shell/SSH/Termux/sub-agent job is not evidence of an Android dataSync use case. */
 object AndroidExecutionPolicy {
     fun allowsDataSync(kind: JobKind): Boolean = when (kind) {
-        JobKind.SHELL, JobKind.SSH, JobKind.TERMUX, JobKind.SUBAGENT -> false
+        JobKind.SHELL, JobKind.SSH, JobKind.TERMUX, JobKind.SUBAGENT, JobKind.PLUGIN_WORKFLOW -> false
     }
 }
 

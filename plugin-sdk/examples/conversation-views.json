@@ -1,0 +1,13 @@
+{
+  "id": "conversation-views",
+  "version": "1.0.0",
+  "title": "会话检查节点",
+  "description": "为助手回复和文本清理结果提供附加展示。",
+  "tools": [{ "name": "trim-text", "description": "去除文本首尾空白。", "entry": "trim.ts" }],
+  "client": {
+    "conversation": {
+      "messages": [{ "event": "assistant.message", "title": "回复检查", "lines": ["核对结论是否回答了当前问题。"] }],
+      "toolResults": [{ "tool": "trim-text", "title": "已清理文本", "lines": ["本次结果已去除首尾空白。"] }]
+    }
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 6,
+  "id": "reference-search",
+  "version": "1.0.0",
+  "title": "参考资料索引",
+  "description": "搜索随插件附带的参考项目。",
+  "host": {
+    "api": 1,
+    "minVersion": "0.1.0"
+  },
+  "capabilities": [
+    "provider.search.publish"
+  ],
+  "tools": [],
+  "commands": [],
+  "providers": {
+    "search": [
+      {
+        "name": "docs",
+        "title": "参考资料索引",
+        "source": "(function () {\n'use strict';\nconst exports = {};\n\"use strict\";\nObject.defineProperty(exports, \"__esModule\", { value: true });\nconst index = [\n    { url: 'https://github.com/wuyhong715/CordiAct', title: 'CordiAct', snippet: 'Android Agent 工作台和工作区插件。' },\n    { url: 'https://github.com/deepseek-ai/deepseek-harness', title: 'DeepSeek Harness', snippet: 'Cordis 插件、工作区与 Agent 组装。' },\n];\nconst search = ({ query, maxResults }) => {\n    const terms = query.toLowerCase().split(/\\s+/).filter(Boolean);\n    return { sources: index.filter(item => terms.some(term => `${item.title} ${item.snippet}`.toLowerCase().includes(term))).slice(0, maxResults) };\n};\nexports.default = search;\nreturn (input) => JSON.stringify(exports.default(JSON.parse(input)));\n})()"
+      }
+    ]
+  }
+}

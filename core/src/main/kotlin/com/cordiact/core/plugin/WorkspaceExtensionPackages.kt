@@ -193,9 +193,9 @@ class WorkspaceExtensionPackages(
             return previewArtifact(artifact, expected, epoch)
         }
 
-        fun signedPublishers(): List<SignedPackageCatalog.PublisherSummary> {
+        fun signedPublishers(trustSourceId: String? = null): List<SignedPackageCatalog.PublisherSummary> {
             val (expected, epoch) = beginPreview()
-            return installer.signedPublishers().also { requireSameScope(expected, epoch) }
+            return installer.signedPublishers(trustSourceId).also { requireSameScope(expected, epoch) }
         }
 
         fun signedVersions(sourceId: String): List<SignedPackageCatalog.VersionSummary> {
@@ -236,7 +236,27 @@ class WorkspaceExtensionPackages(
 
         /** Capture authority before I/O; a late download cannot open a new preview epoch. */
         fun prepareSignedDownload(selection: SignedPackageCatalog.Selection): SignedPreviewDownload =
-            prepareSignedDownload(selection, installer.signedDownload())
+            prepareSignedDownload(selection, installer.signedDownload(selection))
+
+        /** Commit host-owned catalog configuration with a one-use foreground confirmation. */
+        fun approveCatalogConfiguration(allowReadOnly: Boolean = false, validate: () -> Unit = {}, update: () -> Unit): CatalogConfigurationChange {
+            val (expected, epoch) = beginPreview()
+            check(allowReadOnly || expected.accessEnvelope != AccessEnvelope.READ_ONLY) { "PACKAGE_WORKSPACE_READ_ONLY" }
+            return CatalogConfigurationChange {
+                synchronized(operations) {
+                    requireSameScope(expected, epoch)
+                    validate()
+                    try {
+                        synchronized(lock) {
+                            requireSameScope(expected, epoch)
+                            update()
+                        }
+                    } finally {
+                        reconcileSignedRuntime()
+                    }
+                }
+            }
+        }
 
         internal fun prepareSignedDownload(selection: SignedPackageCatalog.Selection, downloader: SignedPackageDownload): SignedPreviewDownload {
             require(selection.packageId !in reservedPackageIds) { "PACKAGE_ID_RESERVED" }
@@ -488,6 +508,14 @@ class WorkspaceExtensionPackages(
         fun commit(): ExtensionPackageChange {
             check(used.compareAndSet(false, true)) { "PACKAGE_CONFIRMATION_EXPIRED" }
             return apply()
+        }
+    }
+
+    class CatalogConfigurationChange internal constructor(private val apply: () -> Unit) {
+        private val used = java.util.concurrent.atomic.AtomicBoolean()
+        fun commit() {
+            check(used.compareAndSet(false, true)) { "PACKAGE_CONFIRMATION_EXPIRED" }
+            apply()
         }
     }
 }

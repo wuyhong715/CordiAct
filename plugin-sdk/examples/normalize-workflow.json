@@ -1,0 +1,14 @@
+{
+  "id": "normalize-workflow",
+  "version": "1.0.0",
+  "title": "文本清理工作流",
+  "description": "按顺序清理一段文本并输出结果。",
+  "workflows": [{
+    "name": "normalize",
+    "title": "清理文本",
+    "steps": [
+      { "title": "去除首尾空格", "entry": "trim.ts" },
+      { "title": "转为小写", "entry": "lower.ts" }
+    ]
+  }]
+}

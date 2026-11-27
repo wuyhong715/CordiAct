@@ -173,6 +173,7 @@ internal fun TabOverview(
     onDismiss: () -> Unit,
     onNewSession: () -> Unit,
     onSettings: () -> Unit,
+    onLayout: (() -> Unit)? = null,
     onSelectTab: (WorkTab.Session) -> Unit = { controller.select(it.key) },
     onSegmentChange: () -> Unit = {},
     allSessions: @Composable (Modifier, @Composable () -> Unit) -> Unit,
@@ -187,6 +188,9 @@ internal fun TabOverview(
         Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.systemBars)) {
             Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp, top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text(if (segment == 0) "标签页" else "全部会话", style = MaterialTheme.typography.headlineLarge, modifier = Modifier.weight(1f).semantics { heading() })
+                if (onLayout != null) {
+                    TextButton(onClick = onLayout, modifier = Modifier.testTag("edit-workbench-layout")) { Text("工作台布局") }
+                }
                 IconButton(onClick = onSettings) { AppGlyph(GlyphName.Settings, "设置") }
             }
             val segments: @Composable () -> Unit = {

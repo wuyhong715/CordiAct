@@ -300,7 +300,7 @@ object UiSnapshotChecks {
     private fun parseHex(text: String): Rgba? {
         val hex = text.removePrefix("#")
         fun component(i: Int): Double =
-            (hex.substring(i, i + 2).toIntOrNull(16) ?: return -1.0) / 255.0
+            hex.substring(i, i + 2).toIntOrNull(16)?.div(255.0) ?: -1.0
         return when (hex.length) {
             3 -> {
                 val r = hex[0].digitToIntOrNull(16)?.times(17) ?: return null

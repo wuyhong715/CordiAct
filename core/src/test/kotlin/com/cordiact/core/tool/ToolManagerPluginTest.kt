@@ -1,5 +1,17 @@
 package com.cordiact.core.tool
 
+import com.cordiact.core.action.ApprovalDecision
+import com.cordiact.core.action.ApprovalGateway
+import com.cordiact.core.action.ApprovalRequest
+import com.cordiact.core.action.DefaultApprovalGateway
+import com.cordiact.core.plugin.ContextPlugin
+import com.cordiact.core.plugin.ExtensionPackageSource
+import com.cordiact.core.plugin.PackageScriptRuntime
+import com.cordiact.core.plugin.PackageScriptSession
+import com.cordiact.core.plugin.PackageToolPolicies
+import com.cordiact.core.plugin.PluginContext
+import com.cordiact.core.plugin.PluginInstanceId
+import com.cordiact.core.plugin.PluginKernel
 import com.cordiact.core.plugin.PluginState
 import com.cordiact.core.security.EffectiveSecurityProfile
 import com.cordiact.core.security.EnvelopeToolAccessPolicy
@@ -21,6 +33,118 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class ToolManagerPluginTest {
+    @Test
+    fun packageResultCardDigestComesFromTheExecutedToolRegistration() {
+        val source = """{
+            "schemaVersion":11,"id":"views-pack","version":"1.0.0","title":"Views","description":"Session views",
+            "host":{"api":1,"minVersion":"0.1.0"},"capabilities":["ui.conversation.publish","tool.publish"],
+            "tools":[{"name":"test-text","description":"Test text","kind":"static_text","text":"check"}],"commands":[],
+            "client":{"conversation":{"toolResults":[{"tool":"test-text","title":"Output","lines":["Observed result"]}]}}
+        }""".trimIndent()
+        val manifest = ExtensionPackageSource.compile(source.encodeToByteArray())
+        assertFailsWith<IllegalArgumentException> {
+            ExtensionPackageSource.compile(source.replace("\"tool\":\"test-text\"", "\"tool\":\"other-tool\"").encodeToByteArray())
+        }
+        val registry = InMemoryToolDefinitionRegistry()
+        val contributions = com.cordiact.core.plugin.PluginToolContributions(registry)
+        val kernel = PluginKernel()
+        val owner = PluginInstanceId("pkg.views-pack", WORKSPACE_A)
+        kernel.register(owner, object : ContextPlugin {
+            override fun start(context: PluginContext) = contributions.registerDeclarativePackage(context, manifest)
+        })
+        kernel.enable(owner)
+        val manager = ToolManagerPlugin(registry, FakePreferences(), FakeWorkspaceManager(), { PluginState.ENABLED },
+            sessionWorkspace = { WORKSPACE_A }).apply { onEnable() }
+        val id = "extension.pkg.views-pack.test-text"
+        val session = "views-session"
+        val registration = requireNotNull(registry.getIn(id, WORKSPACE_A, session)?.registration)
+        val result = manager.invoke(ToolInvocationContext(WORKSPACE_A, sessionId = session,
+            toolRegistrations = mapOf(id to registration), historyInvocation = ToolHistoryInvocation()), id, ToolArguments())
+        assertEquals(manifest.sha256, result.historyReceipt?.provenance?.packageSha256)
+        assertEquals(ToolValue.StringValue("check"), result.values["text"])
+    }
+
+    @Test
+    fun packagePolicyVetoesBeforeApprovalAndRetiresWhileApprovalIsPending() {
+        val manifest = ExtensionPackageSource.compile("""{
+            "schemaVersion":8,"id":"call-guard","version":"1.0.0","title":"Call guard","description":"Tool policy",
+            "host":{"api":1,"minVersion":"0.1.0"},"capabilities":["agent.tool-policy.publish"],"tools":[],"commands":[],
+            "agent":{"beforeTool":[{"name":"guard-read","tools":["$TOOL_ID"],"source":"(input) => 'continue'"}]}
+        }""".trimIndent().toByteArray())
+        val policies = PackageToolPolicies()
+        val kernel = PluginKernel()
+        val owner = PluginInstanceId("pkg.call-guard", WORKSPACE_A)
+        var decision = "block"
+        var evaluations = 0
+        var disposed = 0
+        val runtime = PackageScriptRuntime {
+            object : PackageScriptSession {
+                override fun evaluate(source: ByteArray, input: ByteArray): ByteArray {
+                    evaluations++
+                    val request = com.google.gson.JsonParser.parseString(input.decodeToString()).asJsonObject
+                    assertEquals(setOf("toolId", "suppliedParameters", "argumentCount"), request.keySet())
+                    assertEquals("path", request.getAsJsonArray("suppliedParameters")[0].asString)
+                    assertFalse("notes.txt" in input.decodeToString())
+                    return decision.toByteArray()
+                }
+                override fun close() { disposed++ }
+            }
+        }
+        kernel.register(owner, object : ContextPlugin {
+            override fun start(context: PluginContext) = policies.register(context, manifest, runtime) { true }
+        })
+        kernel.enable(owner)
+
+        var calls = 0
+        var approvals = 0
+        var userApproves = false
+        var replaceDuringApproval = false
+        val gateway = object : ApprovalGateway by DefaultApprovalGateway() {
+            override fun requestApproval(request: ApprovalRequest, timeoutMillis: Long): ApprovalDecision {
+                approvals++
+                if (replaceDuringApproval) { kernel.disable(owner); kernel.enable(owner) }
+                return ApprovalDecision(userApproves)
+            }
+        }
+        val registry = InMemoryToolDefinitionRegistry().apply {
+            val action = ToolExecutionAction("fixture", ToolExecutionBackend.TERMUX, ToolExecutionInputKind.COMMAND, "path")
+            register(ToolDefinition(descriptor().copy(defaultEnabled = true, execution = ToolExecutionMetadata(listOf(action)))) { _, _ ->
+                calls++
+                ToolResult()
+            })
+        }
+        val manager = ToolManagerPlugin(registry, FakePreferences(), FakeWorkspaceManager(), { PluginState.ENABLED },
+            executionPolicy = ToolExecutionAuthorizationPolicy(gateway), toolPreflight = policies::preflight).also { it.onEnable() }
+        fun run(workspaceId: String = WORKSPACE_A) = manager.invoke(context(workspaceId), TOOL_ID, validArgs())
+
+        val veto = assertFailsWith<ToolManagerException> { run() }
+        assertTrue(veto.message.orEmpty().contains("call-guard@1.0.0/guard-read"))
+        assertEquals(0, approvals)
+        decision = "continue"
+        assertFailsWith<ToolManagerException> { run() }
+        assertEquals(1, approvals)
+        assertEquals(0, calls)
+
+        userApproves = true
+        replaceDuringApproval = true
+        val stale = assertFailsWith<ToolManagerException> { run() }
+        assertTrue(stale.message.orEmpty().contains("policy changed"))
+        assertEquals(1, disposed)
+        assertEquals(0, calls)
+        replaceDuringApproval = false
+        run()
+        assertEquals(1, calls)
+        decision = "invalid-result"
+        assertFailsWith<ToolManagerException> { run() }
+        assertEquals(3, approvals)
+        run(WORKSPACE_B)
+        assertEquals(2, calls)
+        assertEquals(5, evaluations)
+        kernel.disable(owner)
+        run()
+        assertEquals(3, calls)
+    }
+
     @Test
     fun dispatchIsWorkspaceScopedAndRechecksOwnerState() {
         val workspaces = FakeWorkspaceManager()

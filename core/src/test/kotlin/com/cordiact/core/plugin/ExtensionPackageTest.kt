@@ -107,7 +107,7 @@ class ExtensionPackageTest {
     }
 
     @Test
-    fun `only version two accepts client and still requires the existing fields`() {
+    fun `client declarations require a compatible schema and all existing fields`() {
         val validClient = """{"settingsPage": $settingsPage}"""
         val validV2 = text(v2Source(client = validClient))
         val validV1 = text(source())
@@ -120,7 +120,7 @@ class ExtensionPackageTest {
             "empty client" to text(v2Source(client = "{}")),
             "version one client" to validV1.replaceFirst("{", "{\"client\": $validClient,"),
             "version one UI capability" to validV1.replace("\"tool.publish\"", "\"tool.publish\", \"ui.settings.publish\""),
-            "unsupported schema" to validV2.replace("\"schemaVersion\": 2", "\"schemaVersion\": 3"),
+            "unsupported schema" to validV2.replace("\"schemaVersion\": 2", "\"schemaVersion\": 12"),
             "fractional schema" to validV2.replace("\"schemaVersion\": 2", "\"schemaVersion\": 2.0"),
             "string schema" to validV2.replace("\"schemaVersion\": 2", "\"schemaVersion\": \"2\""),
             "host API 2" to validV2.replace("\"api\": 1", "\"api\": 2"),
@@ -131,6 +131,70 @@ class ExtensionPackageTest {
             assertTrue(invalid != validV2 && invalid != validV1, "$name fixture must differ from valid sources")
             assertFailsWith<IllegalArgumentException>(name) { ExtensionPackageSource.compile(invalid.toByteArray()) }
         }
+    }
+
+    @Test
+    fun `a workbench panel is explicitly authorized in schema three`() {
+        val source = text(v2Source(
+            client = """{"workbenchPanel": $settingsPage}""",
+            capabilities = listOf("ui.workbench-panel.publish"),
+        ))
+        val versionThree = source.replace("\"schemaVersion\": 2", "\"schemaVersion\": 3")
+
+        val manifest = ExtensionPackageSource.compile(versionThree.toByteArray())
+        assertEquals(3, manifest.schemaVersion)
+        assertEquals(ExtensionPackageSettingsPage("包设置", "只读信息"), manifest.client?.workbenchPanel)
+        assertFailsWith<IllegalArgumentException> { ExtensionPackageSource.compile(source.toByteArray()) }
+        assertFailsWith<IllegalArgumentException> {
+            ExtensionPackageSource.compile(versionThree.replace("\"ui.workbench-panel.publish\"", "").toByteArray())
+        }
+        assertFailsWith<IllegalArgumentException> {
+            ExtensionPackageSource.compile(versionThree.replace("workbenchPanel", "settingsPage").toByteArray())
+        }
+    }
+
+    @Test
+    fun `only schema four with a matching grant admits script source`() {
+        val bytes = """{
+            "schemaVersion":4,"id":"script-sample","version":"1.0.0","title":"Sample","description":"Script tool",
+            "host":{"api":1,"minVersion":"0.1.0"},"capabilities":["tool.publish","tool.script.execute"],
+            "tools":[{"name":"count-lines","description":"Count lines","kind":"text_script","source":"(text) => text"}],"commands":[]
+        }""".trimIndent()
+        val manifest = ExtensionPackageSource.compile(bytes.toByteArray())
+
+        assertEquals("(text) => text", manifest.tools.single().script)
+        assertEquals(PluginTarget.ANDROID_ISOLATED_JS, extensionPackageSpec(manifest).target)
+        assertNull(manifest.client)
+        listOf(
+            bytes.replace("\"schemaVersion\":4", "\"schemaVersion\":1"),
+            bytes.replace(",\"tool.script.execute\"", ""),
+            bytes.replace("(text) => text", "x".repeat(PACKAGE_SCRIPT_MAX_SOURCE_BYTES + 1)),
+            bytes.replace("(text) => text", "\\uD800"),
+            bytes.replace("\"kind\":\"text_script\"", "\"kind\":\"text_script\",\"text\":\"shadow\""),
+        ).forEach { invalid ->
+            assertFailsWith<IllegalArgumentException> { ExtensionPackageSource.compile(invalid.toByteArray()) }
+        }
+    }
+
+    @Test
+    fun `agent declarations require each exact grant and name`() {
+        val contribution = """{"name":"review-plan","description":"Read a plan","body":"Review it"}"""
+        val valid = """{
+            "schemaVersion":5,"id":"review-kit","version":"1.0.0","title":"Review kit","description":"Review",
+            "host":{"api":1,"minVersion":"0.1.0"},"capabilities":["agent.skill.publish","agent.context.publish"],
+            "tools":[],"commands":[],"agent":{"skills":[$contribution],"context":"Reference"}
+        }""".trimIndent()
+        val manifest = ExtensionPackageSource.compile(valid.toByteArray())
+        assertEquals("Reference", manifest.agent?.context)
+        assertEquals("review-plan", manifest.agent?.skills?.single()?.name)
+        for (invalid in listOf(
+            valid.replace("\"schemaVersion\":5", "\"schemaVersion\":4"),
+            valid.replace("\"agent.skill.publish\",", ""),
+            valid.replace(",\"agent.context.publish\"", ""),
+            valid.replace(contribution, "$contribution,$contribution"),
+            valid.replace("Reference", "界".repeat(350)),
+            valid.replace("review-plan", "a.b"),
+        )) assertFailsWith<IllegalArgumentException> { ExtensionPackageSource.compile(invalid.toByteArray()) }
     }
 
     @Test

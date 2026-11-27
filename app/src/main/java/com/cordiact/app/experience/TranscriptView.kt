@@ -31,6 +31,8 @@ import androidx.compose.ui.unit.sp
 import com.cordiact.app.experience.composer.Motion
 import com.cordiact.app.experience.composer.motionDuration
 import com.cordiact.app.experience.model.*
+import com.cordiact.core.plugin.ExtensionPackageMessageEvent
+import com.cordiact.interaction.WorkspaceClientContributions.MessageNode
 import kotlinx.coroutines.launch
 
 @Composable
@@ -42,6 +44,7 @@ fun TranscriptView(
     onDecideApproval: ((String, Boolean) -> Unit)? = null,
     onOpenApprovalQueue: (() -> Unit)? = null,
     onOpenTrace: (() -> Unit)? = null,
+    messageNodes: (ExtensionPackageMessageEvent) -> List<MessageNode> = { emptyList() },
 ) {
     val list = rememberLazyListState()
     val scope = rememberCoroutineScope()
@@ -127,7 +130,7 @@ fun TranscriptView(
                 modifier = Modifier.fillMaxSize().nestedScroll(connection).testTag("transcript"),
             ) {
                 items(state.turns, key = { it.id }, contentType = { "turn" }) { turn ->
-                    TurnView(turn, onInspect, onOpenTrace = onOpenTrace)
+                    TurnView(turn, onInspect, onOpenTrace = onOpenTrace, messageNodes = messageNodes)
                 }
                 if (state.currentApprovals.isNotEmpty() && onDecideApproval != null) {
                     items(state.currentApprovals, key = { "inline-ap:${it.id}" }, contentType = { "approval" }) { req ->
@@ -227,8 +230,10 @@ private fun Suggestion(title: String, prompt: String, icon: GlyphName, onPrompt:
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-internal fun TurnView(turn: TranscriptTurn, onInspect: (ToolActivity) -> Unit, onOpenTrace: (() -> Unit)? = null) {
+internal fun TurnView(turn: TranscriptTurn, onInspect: (ToolActivity) -> Unit, onOpenTrace: (() -> Unit)? = null,
+    messageNodes: (ExtensionPackageMessageEvent) -> List<MessageNode> = { emptyList() }) {
     var menu by remember { mutableStateOf(false) }
+    var contextSourcesOpen by remember { mutableStateOf(false) }
     val clipboard = LocalClipboardManager.current
     Column(verticalArrangement = Arrangement.spacedBy(13.dp)) {
         if (turn.attachments.isNotEmpty()) com.cordiact.app.experience.composer.AttachmentTray(turn.attachments.map { attachment ->
@@ -251,6 +256,26 @@ internal fun TurnView(turn: TranscriptTurn, onInspect: (ToolActivity) -> Unit, o
                 }
             }
         }
+        if (turn.prompt.isNotEmpty() || turn.attachments.isNotEmpty()) {
+            PackageMessageNodes(messageNodes(ExtensionPackageMessageEvent.USER))
+        }
+        turn.subagentPreset?.let { preset ->
+            Text("子 Agent 预设 · ${preset.id} · ${preset.source}", style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        if (turn.packageContextSources.isNotEmpty()) {
+            TextButton(onClick = { contextSourcesOpen = true }) { Text("插件上下文 · ${turn.packageContextSources.size} 项") }
+        }
+        if (contextSourcesOpen) AlertDialog(
+            onDismissRequest = { contextSourcesOpen = false },
+            title = { Text("插件上下文来源") },
+            text = {
+                Column(Modifier.heightIn(max = 300.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    turn.packageContextSources.forEach { Text(it, style = MaterialTheme.typography.bodyMedium) }
+                }
+            },
+            confirmButton = { TextButton(onClick = { contextSourcesOpen = false }) { Text("关闭") } },
+        )
         ProcessThread(turn, onInspect)
         if (turn.answer.isNotEmpty()) {
             SafeMarkdown(
@@ -267,6 +292,9 @@ internal fun TurnView(turn: TranscriptTurn, onInspect: (ToolActivity) -> Unit, o
             }
         }
         turn.error?.let { ErrorStrip(it) }
+        if (!turn.isRunning && turn.answer.isNotEmpty()) {
+            PackageMessageNodes(messageNodes(ExtensionPackageMessageEvent.ASSISTANT))
+        }
         if (!turn.isRunning) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
@@ -291,6 +319,16 @@ internal fun TurnView(turn: TranscriptTurn, onInspect: (ToolActivity) -> Unit, o
                     AppGlyph(GlyphName.Copy, "复制回复", modifier = Modifier.size(17.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun PackageMessageNodes(nodes: List<MessageNode>) {
+    nodes.forEach { node ->
+        Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Text(node.source, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            ToolResultCardView(node.card)
         }
     }
 }

@@ -1,0 +1,4 @@
+{
+  "compilerOptions": { "moduleResolution": "Bundler", "module": "ESNext", "target": "ES2022", "strict": true },
+  "include": ["*.ts"]
+}

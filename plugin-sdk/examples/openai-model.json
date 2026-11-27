@@ -1,0 +1,15 @@
+{
+  "id": "openai-model",
+  "version": "1.0.0",
+  "title": "OpenAI 模型路由",
+  "description": "通过工作区审批启用已声明的对话模型。",
+  "providers": {
+    "model": [{
+      "name": "responses",
+      "title": "OpenAI Responses",
+      "protocol": "OPENAI_RESPONSES",
+      "endpoint": "https://api.openai.com/v1",
+      "models": ["gpt-5-mini"]
+    }]
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "id": "reference-search",
+  "version": "1.0.0",
+  "title": "参考资料索引",
+  "description": "搜索随插件附带的参考项目。",
+  "providers": { "search": [{ "name": "docs", "title": "参考资料索引", "entry": "reference-search.ts" }] }
+}

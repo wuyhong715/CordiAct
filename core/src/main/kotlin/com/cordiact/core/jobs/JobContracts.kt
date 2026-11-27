@@ -5,6 +5,7 @@ enum class JobKind {
     SSH,
     TERMUX,
     SUBAGENT,
+    PLUGIN_WORKFLOW,
 }
 
 /**
@@ -68,6 +69,8 @@ interface JobHandle {
     val ownerSessionId: String
     val snapshot: JobSnapshot
     fun append(text: String)
+    /** Publish a complete output and settle success only while the job still accepts results. */
+    fun completeWithOutput(text: String): Boolean
     fun updateProgress(line: String?)
     fun updateRemotePid(pid: Long)
 

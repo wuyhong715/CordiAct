@@ -1,6 +1,6 @@
 # 声明式扩展包
 
-目标不是把 npm 或 Cordis 搬进 APK，而是让**不执行第三方代码**的扩展也能被安装、升级、撤回和迁移。包只声明宿主理解的有界贡献：固定文本工具、文本变换工具、固定文本斜杠命令，以及 v2 的客户端说明页与会话动作。包本身没有解释器、文件、网络或命令执行能力。
+扩展包支持安装、升级、撤回和迁移。可贡献固定文本工具、文本变换工具、固定文本斜杠命令、客户端说明页、会话动作和工作台面板。v4 还可在隔离进程中执行文本工具脚本。
 
 ## 清单格式
 
@@ -66,6 +66,58 @@ v2 在原有字段之外要求 `client`，其中至少有 `settingsPage` 或 `se
 - 会话动作若声明，须有 1–2 项。`id` 是包内唯一 slug，`command` 必须正好是同包 `commands` 中的主名称，不含 `/`、不接受别名。`title` / `label` 限 120 UTF-8 字节，`description` / `value` 限 480 字节，均为非空单行纯文本。
 - `ui.settings.publish` 与 `ui.session-action.publish` 各自与对应声明严格双向匹配。它们不授予设置写入、命令执行、权限、联网或发消息能力。会话动作只提供填入裸命令的能力；执行仍由用户独立发送并走宿主授权。示例刻意不用内置包已注册的 `/release-checklist`；重叠作用域的名称冲突不得覆盖。
 - Android 设置的「插件与连接」显示当前设置工作区的已发布说明页；「标签总览 → 全部会话 → 当前会话操作」显示已发布会话动作。安装预览不等于运行时发布，入口随停用撤回。可直接导入 [发布前检查](../testing/fixtures/extension-packages/release-preflight.json) 和 [会话交接](../testing/fixtures/extension-packages/session-notes.json)；真机流程以[验收手册](../testing/workspace-extension-packages.md)为准。
+
+### 清单 v3 工作台面板
+
+v3 要求 `client.workbenchPanel` 和 `ui.workbench-panel.publish`，可与 v2 的客户端贡献组合。面板复用说明页的 `title`、`description` 和最多四项 `rows` 文本格式。兼容 v1、v2 的客户端可继续导入对应版本的包。
+
+导入并启用[发布工作台示例](../testing/fixtures/extension-packages/release-panel.json)后，从「标签总览 → 工作台布局」为面板选择标签页、侧栏或隐藏。在宽屏横向工作台可使用侧栏，窄屏使用标签页。停用包会撤回面板，同 ID 的布局设置保留供重新启用时使用。布局 JSON 只携带面板引用与外观设置，安装和启用仍在工作区插件页完成。
+
+### 清单 v4 隔离脚本工具
+
+v4 要求至少一个 `kind: "text_script"` 工具及 `tool.publish`、`tool.script.execute`。`source` 是求值后得到同步函数的 JavaScript 表达式，输入与返回值均为字符串。包可同时声明现有命令和客户端贡献。导入及批准保存只解析包，显式启用后的工具调用才交给 Android 10+ 隔离进程执行。
+
+每次调用使用独立进程，源码最多 16 KiB，输入和输出各最多 4 KiB UTF-8，解释器执行期限为 2 秒。JavaScript 可使用标准语言内建，工具承载只提供本次文本参数。停用会撤回注册并关闭属于该安装代的在途调用。安装和运行时限见 [Sandbox ADR](../adr/0002-sandbox-manager-design.md)。可导入[行数统计示例](../testing/fixtures/extension-packages/line-counter.json)，开启后在会话里请 Agent 调用 `count-lines` 并传入要统计的文本。
+
+[插件 SDK](../../plugin-sdk/README.md)提供 TypeScript 示例、独立项目安装方法和本地打包命令。
+
+### 清单 v5 技能和参考上下文
+
+v5 要求 `agent` 中至少一个贡献。`agent.skills` 支持最多四个带 `name`、`description`、`body` 的条目，并要求 `agent.skill.publish`。技能通过 `<包 ID>.<技能名>` 加入当前工作区的现有索引，用 `skill.open` 按需读取。技能正文每项最多 4 KiB。
+
+`agent.context` 是最多 1 KiB 的 UTF-8 参考文本，要求 `agent.context.publish`。启用后，随后开始的普通前台对话按预算读取参考文本，附上包 ID、版本和不可信数据标记。消息下方的「插件上下文」显示该次请求实际纳入的来源。停用即撤回技能和后续上下文。v5 可组合现有客户端和工具贡献。可导入[变更审阅示例](../testing/fixtures/extension-packages/review-kit.json)验证。
+
+### 清单 v6 工作区搜索服务
+
+v6 要求 `provider.search.publish` 和 `providers.search` 中的一到两个服务。每项声明 `name`、`title` 和 `source`，注册 ID 为 `pkg.<包 ID>.<服务名>`。脚本在 Android 10+ 隔离进程中接收 `{query, maxResults}` 的 JSON 字符串，并返回含 `sources` 数组和可选 `content` 的 JSON 字符串。每个来源包含 HTTP(S) `url`，可带 `title` 和 `snippet`。SDK 的 `SearchProvider` 类型和打包器负责将 TypeScript 对象签名转换为此接口。
+
+启用包后，在当前工作区的搜索策略勾选该服务、调整优先级并保存。诊断测试与 `search.web` 走同一注册表。插件只收到本次查询和结果上限，旧安装代的结果在撤回后失效。可直接导入[参考资料索引示例](../testing/fixtures/extension-packages/reference-search.json)。该示例查询随插件附带的数据，由 [SDK 示例源码](../../plugin-sdk/examples/reference-search.ts)生成，使用隔离运行时的 4 KiB 输入输出限制。
+
+### 清单 v7 工作区模型服务
+
+v7 要求 `provider.model.publish` 和 `providers.model` 中的一到两个声明。每项包含 `name`、`title`、`protocol`、`endpoint` 和一到 32 个不同的 `models`。协议可为 OpenAI Chat Completions、OpenAI Responses、Anthropic Messages 或 Gemini Generate Content。端点使用 HTTPS，URL 不携带账号、查询参数或片段。v7 可组合已有搜索、工具、Agent 和客户端贡献。
+
+启用包后，在「设置 → 模型 → 提供商声明」选择带插件来源的声明。用户输入本次 API 密钥，分别批准外连和密钥绑定。宿主探测模型清单并与包声明取交集，再由用户授权具体模型。获批模型进入本工作区的模型选择器，宿主负责协议、凭据和流式传输。停用或升级会撤回该安装代授权并取消在途请求。应用进程重启后需要重新接入。SDK 中的 [OpenAI 模型声明示例](../../plugin-sdk/examples/openai-model.json)可用相同打包命令生成制品。
+
+### 清单 v8 工具前策略
+
+v8 要求 `agent.tool-policy.publish` 和 `agent.beforeTool` 中的一到四条策略。每条声明 `name`、一到 16 个精确工具 ID `tools` 和 `source`。工具管理器完成基础授权检查后，在请求宿主审批前让匹配策略判定。Android 10+ 隔离进程只收到 `{toolId, suppliedParameters, argumentCount}`，其中 `suppliedParameters` 只列出本次提供的已声明参数名。返回 `block` 时拦截调用，返回 `continue` 时继续宿主授权流程。策略异常或返回无效决定时，当前调用被拦截。
+
+等待期间发生策略增删或换代时，宿主拒绝旧调用，重新发起才会按当前策略判定。同一工作区的同一工具最多登记四条策略。拒绝信息会注明包版本和策略名。可编译 [网页抓取限制示例](../../plugin-sdk/examples/web-fetch-policy.ts)，安装并启用后尝试 `search.fetch`，停用包后再按原宿主策略调用。
+
+### 清单 v9 工作流
+
+v9 要求 `workflow.publish` 和 `workflows` 中的一到四个工作流。每个工作流包含一个名称、标题和一到四个隔离脚本步骤。用户在工作区插件页点击「运行」，输入文本并确认后，工作流以 `PLUGIN_WORKFLOW` Job 启动。后续步骤依次接收上一步的 UTF-8 文本输出。输入和输出各限 4 KiB。用户可以在插件页查看当前会话的工作流进度、读取结果或取消运行。插件停用会取消该安装代的工作流。进程重启会将未结束的任务标为已中断。可用 SDK 打包[文本清理示例](../../plugin-sdk/examples/normalize-workflow.json)。
+
+### 清单 v10 子 Agent 预设
+
+声明 `agent.subagents` 时需同时声明 `agent.subagent-preset.publish`。每包可提供一到四项。每项包含 `name`、`title`、`instructions` 和最多 16 个精确工具 ID `tools`。空工具列表运行纯文本子 Agent。启用后，`list_children` 返回当前工作区内的预设 ID 和包版本。用 `delegate_task` 的可选 `preset` 字段选择，例如 `review-subagent.review`。预设沿用父回合模型，只使用父回合和子会话都能调用的同一代工具注册。子会话历史从回合记录显示预设 ID 和包版本。停用或替换时，宿主会撤回工具调用和新模型回合，请求取消在途模型调用，并丢弃旧代预设返回给父回合的结果。
+
+### 清单 v11 会话视图
+
+`client.conversation` 需同时声明 `ui.conversation.publish`。`messages` 可订阅 `user.message` 和 `assistant.message`，每个事件最多声明一个附加消息节点。`toolResults` 按 `tool` 声明本包工具的附加结果卡。每项需提供 `title` 及一到四行 `lines`。只有宿主登记的成功调用结果，且记录中的工具 ID、发布者与制品摘要都匹配当前启用包时，才显示该结果卡。
+
+宿主从实时会话和历史记录投影这些节点，同时保留原消息与工具摘要。消息节点根据当前工作区启用的包展示，工具结果卡绑定精确制品。插件停用后附加节点撤回，换版时旧制品的结果回退到原摘要。此投影使用事件类型与宿主记录的身份字段，可用 SDK 打包[会话检查节点示例](../../plugin-sdk/examples/conversation-views.json)。
 
 ## 安装、升级、回滚、迁移
 

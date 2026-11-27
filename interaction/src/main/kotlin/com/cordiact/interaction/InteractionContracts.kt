@@ -215,6 +215,8 @@ data class InteractionEnvelope(
     @Transient val authoredPluginTurn: com.cordiact.core.plugin.AuthoredPluginTurn? = null,
     /** Delivers the exact controller before synchronous tool rounds begin. Host only. */
     @Transient val onModelCallStarted: ((ModelCall) -> Unit)? = null,
+    /** Host-only attribution from the snapshot stored with this user message. */
+    @Transient val onPackageContextSources: ((List<String>) -> Unit)? = null,
 )
 
 /** Host-owned adapter to the existing ConversationTurnService; model choice stays provider-neutral. */
@@ -440,12 +442,14 @@ class InteractionService(
         onUserMessagePersisted: (() -> Unit)? = null,
         authoredPluginTurn: com.cordiact.core.plugin.AuthoredPluginTurn? = null,
         onModelCallStarted: ((ModelCall) -> Unit)? = null,
+        onPackageContextSources: ((List<String>) -> Unit)? = null,
         onEvent: (ModelEvent) -> Unit,
     ): ModelCall {
         check(enabled) { "Interaction plugin is disabled" }
         val envelope = requireNotNull(prepared.envelope) { "Interaction has syntax errors" }
             .copy(attachments = attachments, onUserMessagePersisted = onUserMessagePersisted,
-                authoredPluginTurn = authoredPluginTurn, onModelCallStarted = onModelCallStarted)
+                authoredPluginTurn = authoredPluginTurn, onModelCallStarted = onModelCallStarted,
+                onPackageContextSources = onPackageContextSources)
         require(prepared.diagnostics.isEmpty()) { "Interaction has syntax errors" }
         require(envelope.command == null) { "Behavior commands must be dispatched, not sent as ordinary prompts" }
         require(envelope.submittedText.isNotBlank() || attachments.isNotEmpty()) { "Message must not be blank" }

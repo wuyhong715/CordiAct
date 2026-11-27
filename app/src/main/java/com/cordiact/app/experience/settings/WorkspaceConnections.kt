@@ -5,6 +5,7 @@ import com.cordiact.core.action.ApprovalOwner
 import com.cordiact.core.action.ApprovalRequest
 import com.cordiact.core.conversation.*
 import com.cordiact.core.mcp.*
+import com.cordiact.core.plugin.PackageModelContributions
 import com.cordiact.core.security.*
 import com.cordiact.core.settings.WorkspaceDeclarations
 import com.cordiact.core.settings.WorkspaceDeclarations.Kind
@@ -16,6 +17,7 @@ import java.net.URI
 import java.security.MessageDigest
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -23,31 +25,35 @@ import kotlinx.coroutines.sync.withLock
 /** Trusted, process-scoped approvals. On process death no connection or authorization is restored. */
 internal class WorkspaceConnections(private val app: CordiActApplication) {
     data class Key(val workspace: String, val kind: Kind, val id: String)
-    private data class Binding(val revision: String?, val observation: String, val draft: WorkspaceDeclarations.Draft, val profileRevision: Long, val policyEpoch: Long)
+    private data class Binding(val revision: String?, val observation: String, val draft: WorkspaceDeclarations.Draft,
+        val profileRevision: Long, val policyEpoch: Long, val offer: PackageModelContributions.Offer? = null)
     data class Choice(val id: String, val label: String)
     data class Status(val choices: List<Choice>, val granted: Set<String>)
     private class Live(val binding: Binding) {
         var mcp: McpConnection? = null
         var bridge: McpToolBridge? = null
-        var backend: ConfigurableModelBackend? = null
+        var backend: RevocableModelRoute? = null
         var descriptors: List<McpToolDescriptor> = emptyList()
         var models: List<String> = emptyList()
+        val credential = AtomicReference<String?>()
         @Volatile var granted: Set<String> = emptySet()
     }
     private val lock = Mutex()
     private val providerExecutor = java.util.concurrent.Executors.newCachedThreadPool()
     private val live = ConcurrentHashMap<Key, Live>()
     private val repository by lazy { WorkspaceDeclarations(app.workspaceFiles) }
+    private val packageModels get() = app.conversationCatalog.packageModelContributions
 
     fun status(key: Key): Status? = live[key]?.takeIf { valid(key, it) }?.let { item ->
         Status(if (key.kind == Kind.MCP) item.descriptors.map { Choice(it.name, it.name) }
             else item.models.map { Choice(it, it) }, item.granted)
     }
 
-    suspend fun probe(key: Key, expectedRevision: String?, expected: WorkspaceDeclarations.Draft, secret: String?) = lock.withLock {
+    suspend fun probe(key: Key, expectedRevision: String?, expected: WorkspaceDeclarations.Draft, secret: String?,
+        expectedOffer: PackageModelContributions.Offer? = null) = lock.withLock {
         require(key.id == expected.id && secret.orEmpty().length <= 4096 && secret.orEmpty().none(Char::isISOControl))
         val binding = resolve(key)
-        require(binding.revision == expectedRevision && binding.draft == expected) { "Declaration changed" }
+        require(binding.revision == expectedRevision && binding.draft == expected && binding.offer === expectedOffer) { "Declaration changed" }
         check(canUseNetwork(key.workspace)) { "Network not allowed by workspace policy" }
         authorize(key, binding, "NETWORK_PROBE")
         if (!secret.isNullOrBlank()) authorize(key, binding, "CREDENTIAL_BINDING")
@@ -67,15 +73,27 @@ internal class WorkspaceConnections(private val app: CordiActApplication) {
                 require(protocol != ModelProtocol.OPENAI_IMAGES) { "This route does not support conversation streaming" }
                 require(!secret.isNullOrBlank()) { "Model provider credential is required" }
                 val conn = ModelProviderConnection(id, binding.draft.name, protocol, binding.draft.endpoint)
-                next.models = HttpModelDiscoveryService().discover(conn, secret).distinct().take(200)
+                val discovered = HttpModelDiscoveryService().discover(conn, secret)
+                next.models = binding.offer?.models?.filter { it in discovered } ?: discovered.distinct().take(200)
                 require(next.models.isNotEmpty()) { "No models discovered" }
-                next.backend = ConfigurableModelBackend(conn.config(next.models), ApiKeyProvider { secret }, providerExecutor)
+                next.credential.set(secret)
+                val delegate = ConfigurableModelBackend(conn.config(next.models), ApiKeyProvider {
+                    next.credential.get()?.takeIf { live[key] === next && valid(key, next) }
+                }, providerExecutor)
+                next.backend = RevocableModelRoute(delegate,
+                    published = { live[key] === next && binding.offer?.let(packageModels::isCurrent) != false },
+                    admit = { request -> request.model.providerId == id && request.model.modelId in next.granted &&
+                        request.workspaceId?.let { it == key.workspace } != false &&
+                        app.sessions.getSession(request.sessionId)?.workspaceId == key.workspace && valid(key, next) },
+                )
             }
             check(resolve(key) == binding && canUseNetwork(key.workspace))
             audit(key, "PROBE", AuditPhase.SUCCEEDED, AuditOutcome.SUCCEEDED)
             live[key] = next
+            check(valid(key, next)) { "Declaration changed during connection publication" }
         } catch (e: Exception) {
-            runCatching { next.bridge?.dispose() }; runCatching { next.mcp?.close() }; next.backend?.cancelActiveCalls()
+            live.remove(key, next)
+            runCatching { release(next) }
             audit(key, "PROBE", AuditPhase.FAILED, AuditOutcome.FAILED)
             throw e
         }
@@ -87,7 +105,7 @@ internal class WorkspaceConnections(private val app: CordiActApplication) {
         val selection = requested.sorted().joinToString("\n")
         require(requested.isNotEmpty() && names.containsAll(requested) && requested.size <= 50 && selection.length <= 3500)
         authorize(key, item.binding, if (key.kind == Kind.MCP) "MCP_TOOL_GRANT" else "MODEL_ROUTE", selection)
-        check(valid(key, item))
+        check(live[key] === item && valid(key, item))
         if (key.kind == Kind.MCP) {
             val conn = requireNotNull(item.mcp)
             val selected = item.descriptors.filter { it.name in requested }
@@ -103,6 +121,7 @@ internal class WorkspaceConnections(private val app: CordiActApplication) {
             requireNotNull(item.backend)
         }
         audit(key, if (key.kind == Kind.MCP) "MCP_TOOLS_ENABLED" else "MODEL_ROUTE_ENABLED", AuditPhase.SUCCEEDED, AuditOutcome.SUCCEEDED)
+        if (item.binding.offer != null) check(live[key] === item && valid(key, item))
         item.granted = requested.toSet()
     }
 
@@ -125,16 +144,7 @@ internal class WorkspaceConnections(private val app: CordiActApplication) {
         if (request.workspaceId != null && request.workspaceId != workspace) return null
         val match = live.entries.firstOrNull { (key, item) -> key.workspace == workspace && key.kind == Kind.PROVIDER &&
             resourceId(key, item.binding) == request.model.providerId && request.model.modelId in item.granted && valid(key, item) } ?: return null
-        val delegate = match.value.backend ?: return null
-        return object : ModelBackend by delegate {
-            override fun generate(request: ModelGenerationRequest, onEvent: (ModelEvent) -> Unit): ModelCall {
-                if (live[match.key] !== match.value || request.model.modelId !in match.value.granted || !valid(match.key, match.value)) {
-                    onEvent(ModelEvent.Failed("route_revoked", "Workspace model route is no longer approved"))
-                    return ModelCall {}
-                }
-                return delegate.generate(request, onEvent)
-            }
-        }
+        return match.value.backend
     }
 
     suspend fun revoke(key: Key) = lock.withLock {
@@ -144,13 +154,28 @@ internal class WorkspaceConnections(private val app: CordiActApplication) {
 
     private fun retire(key: Key) {
         val gone = live.remove(key) ?: return
+        release(gone)
+    }
+
+    fun retirePackage(offer: PackageModelContributions.Offer) {
+        val key = Key(offer.workspaceId, Kind.PROVIDER, offer.draft.id)
+        val item = live[key]?.takeIf { it.binding.offer === offer } ?: return
+        if (live.remove(key, item)) release(item)
+    }
+
+    private fun release(gone: Live) {
         gone.granted = emptySet()
-        try { gone.bridge?.dispose() } finally { runCatching { gone.mcp?.close() }; gone.backend?.cancelActiveCalls() }
+        gone.credential.set(null)
+        try { gone.bridge?.dispose() } finally { runCatching { gone.mcp?.close() }; gone.backend?.close() }
     }
 
     private fun resolve(key: Key): Binding {
-        val snapshot = repository.read(key.workspace, key.kind)
         val profile = app.credentialVaultRuntime.profileStore.profileFor(key.workspace)
+        if (key.kind == Kind.PROVIDER && PackageModelContributions.owns(key.id)) {
+            val offer = requireNotNull(packageModels.find(key.workspace, key.id)) { "Package model declaration is unavailable" }
+            return Binding(offer.revision, offer.generation, offer.draft, profile.profileRevision, profile.policyEpoch, offer)
+        }
+        val snapshot = repository.read(key.workspace, key.kind)
         return Binding(snapshot.revision, requireNotNull(snapshot.observation) { "Stable file identity unavailable" },
             snapshot.drafts.single { it.id == key.id }, profile.profileRevision, profile.policyEpoch)
     }
@@ -163,6 +188,7 @@ internal class WorkspaceConnections(private val app: CordiActApplication) {
         val endpoint = URI(binding.draft.endpoint)
         val details = mapOf("workspace" to key.workspace, "origin" to "https://${endpoint.authority}", "endpointPath" to endpoint.rawPath.orEmpty(),
             "protocol" to binding.draft.protocol, "revision" to binding.revision.orEmpty()) +
+            (binding.offer?.let { mapOf("packageSource" to it.source) } ?: emptyMap()) +
             (selection?.let { mapOf("selection" to it) }.orEmpty())
         audit(key, step, AuditPhase.APPROVAL_ASKED, AuditOutcome.PENDING, id)
         val decision = runInterruptible { app.approvalGateway.requestApproval(ApprovalRequest(id, "workspace_connection", when (step) {

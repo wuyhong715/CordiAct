@@ -14,6 +14,12 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ToolTracePresentationTest {
+    @Test fun packageCardProvenanceRequiresAnExactDigest() {
+        val digest = "a".repeat(64)
+        assertEquals(identity.copy(packageSha256 = digest), decodeToolTraceProvenance(trace().put("packageSha256", digest)))
+        assertNull(decodeToolTraceProvenance(trace().put("packageSha256", "latest")))
+        assertNull(decodeToolTraceProvenance(trace().put("packageSha256", digest).put("unexpected", "field")))
+    }
     private val identity = ToolHistoryProvenance("pkg.core-quick-notes", "extension.pkg.core-quick-notes.checklist",
         ToolHistorySource.HOST_REGISTRATION, ToolHistoryFormat.BOUNDED_SUMMARY_V1)
     private fun trace() = JSONObject().put("ownerPluginId", identity.ownerPluginId).put("toolId", identity.toolId)

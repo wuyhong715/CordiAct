@@ -82,6 +82,22 @@ class TabsController(private val store: TabStore) {
         persist()
     }
 
+    fun orderPluginTabs(orderedPanelIds: List<String>, showPanelIds: Set<String> = emptySet()) {
+        val order = orderedPanelIds.withIndex().associate { (index, id) -> id to index }
+        val updated = tabs.toMutableList()
+        orderedPanelIds.filter { it in showPanelIds }.forEach { id ->
+            val tab = WorkTab.Plugin(id)
+            if (tab !in updated) updated.add(tab)
+        }
+        val positions = updated.indices.filter { updated[it] is WorkTab.Plugin }
+        val sorted = positions.map { updated[it] as WorkTab.Plugin }.sortedBy { order[it.pluginId] ?: Int.MAX_VALUE }
+        positions.zip(sorted).forEach { (index, tab) -> updated[index] = tab }
+        if (updated == tabs) return
+        tabs.clear()
+        tabs.addAll(updated)
+        persist()
+    }
+
     /** A missing optional page returns to the loaded conversation, not an unrelated neighbor. */
     fun prune(liveSessions: Set<String>, livePlugins: Set<String>, loadedSession: String? = null) {
         val preferred = loadedSession?.let { WorkTab.Session(it) }

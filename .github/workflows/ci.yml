@@ -19,6 +19,33 @@ jobs:
           test -f LICENSE
           test -f docs/ARCHITECTURE.md
 
+  plugin-sdk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: plugin-sdk/package-lock.json
+      - name: Test SDK types and packer
+        working-directory: plugin-sdk
+        run: |
+          npm ci --ignore-scripts
+          npm test
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: |
+            17
+            21
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Verify SDK catalog output with the Kotlin verifier
+        run: |
+          export CORDIACT_CATALOG_FIXTURE="$RUNNER_TEMP/cordiact-catalog-fixture"
+          node plugin-sdk/verification/catalog-interop.mjs "$CORDIACT_CATALOG_FIXTURE"
+          ./gradlew -p verification/jvm :core:test --tests com.cordiact.core.plugin.SignedCatalogPublisherInteropTest --no-daemon
+
   readonly-host-tests:
     runs-on: ubuntu-latest
     steps:

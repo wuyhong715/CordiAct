@@ -1,0 +1,9 @@
+{
+  "id": "web-fetch-policy",
+  "version": "1.0.0",
+  "title": "网页抓取限制",
+  "description": "在当前工作区阻止直接抓取网页。",
+  "agent": {
+    "beforeTool": [{ "name": "block-fetch", "tools": ["search.fetch"], "entry": "web-fetch-policy.ts" }]
+  }
+}

@@ -44,15 +44,74 @@ import com.cordiact.app.experience.tabs.WorkTab
 import com.cordiact.app.experience.tabs.PublishedTab
 import com.cordiact.app.experience.tabs.TabHost
 import com.cordiact.app.experience.tabs.TraceTab
+import com.cordiact.app.experience.tabs.WorkbenchLayoutEditor
+import com.cordiact.app.experience.tabs.WorkbenchProfiles
+import com.cordiact.app.experience.tabs.WorkbenchProfileStore
+import com.cordiact.core.workbench.PanelPlacement
+import com.cordiact.core.workbench.WorkbenchTheme
 import com.cordiact.interaction.InteractionContext
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 internal enum class StudioPane(val label: String) { Conversation("对话"), Activity("执行轨迹"), Artifacts("产物") }
 
-@OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun ExperienceScreen(viewModel: ExperienceViewModel) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val workspaceId = state.workspace?.id
+    val context = LocalContext.current.applicationContext
+    val store = remember(context) { WorkbenchProfileStore(context) }
+    var profiles by remember(workspaceId) { mutableStateOf<WorkbenchProfiles?>(null) }
+    var layoutReadFailed by remember(workspaceId) { mutableStateOf(false) }
+    LaunchedEffect(workspaceId) {
+        if (workspaceId == null) return@LaunchedEffect
+        try {
+            profiles = withContext(Dispatchers.IO) { store.load(workspaceId) }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            layoutReadFailed = true
+        }
+    }
+    val profile = profiles?.selected ?: WorkbenchProfiles.presets.getValue(WorkbenchProfiles.CLASSIC)
+    val dark = when (profile.theme) {
+        WorkbenchTheme.LIGHT -> false
+        WorkbenchTheme.DARK -> true
+        WorkbenchTheme.SYSTEM -> isSystemInDarkTheme()
+    }
+    ExperienceTheme(darkTheme = dark, accent = profile.accent) {
+        ExperienceContent(
+            viewModel, state, profiles, layoutReadFailed,
+            onSaveLayout = { next ->
+                val owner = checkNotNull(workspaceId)
+                val previous = checkNotNull(profiles)
+                check(viewModel.state.value.workspace?.id == owner)
+                withContext(Dispatchers.IO) { store.save(owner, previous, next) }
+                profiles = next
+            },
+            onRestoreLayouts = {
+                val owner = checkNotNull(workspaceId)
+                check(viewModel.state.value.workspace?.id == owner)
+                withContext(Dispatchers.IO) { store.restoreDefault(owner) }
+                profiles = WorkbenchProfiles()
+                layoutReadFailed = false
+            },
+        )
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
+@Composable
+private fun ExperienceContent(
+    viewModel: ExperienceViewModel,
+    state: ExperienceState,
+    profiles: WorkbenchProfiles?,
+    layoutReadFailed: Boolean,
+    onSaveLayout: suspend (WorkbenchProfiles) -> Unit,
+    onRestoreLayouts: suspend () -> Unit,
+) {
     val saveable = rememberSaveableStateHolder()
     val saveableKey = "${state.workspace?.id}:${state.sessionId}"
     var approvalId by rememberSaveable { mutableStateOf<String?>(null) }
@@ -60,6 +119,7 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
     var promptToInsert by remember { mutableStateOf("") }
     var settingsLink by remember { mutableStateOf<String?>(null) }
     var manageModels by remember { mutableStateOf(false) }
+    var editingLayoutFor by rememberSaveable { mutableStateOf<String?>(null) }
     var sessionPluginsOwner by remember(saveableKey, state.archived) { mutableStateOf<InteractionContext?>(null) }
     var openedPublication by remember { mutableStateOf<PublishedTab?>(null) }
     val composer by viewModel.composer.collectAsStateWithLifecycle()
@@ -77,15 +137,35 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
     val tabs = remember(tabContext) { com.cordiact.app.experience.tabs.TabsController(com.cordiact.app.experience.tabs.PrefsTabStore(tabContext)) }
     val resultDirectory = settingsApp.conversationCatalog.toolResultCards
     val resultCards by resultDirectory.snapshot.collectAsStateWithLifecycle()
+    val clientCatalog = settingsApp.conversationCatalog.workspaceClientContributions
+    val clientSnapshot by clientCatalog.snapshot.collectAsStateWithLifecycle()
     val resultCardFor: (ToolActivity) -> com.cordiact.interaction.ToolResultCard? = { tool ->
         val key = tool.forToolInspector().provenance
-        resultCards[key]?.takeIf { resultDirectory.resolve(key) === it }
+        val packageCard = state.workspace?.id?.let { workspaceId -> key?.let { clientSnapshot.toolResultCard(workspaceId, it) } }
+        packageCard ?: resultCards[key]?.takeIf { resultDirectory.resolve(key) === it }
     }
     val tabDirectory = settingsApp.conversationCatalog.workbenchTabs
     val tabSnapshot by tabDirectory.snapshot.collectAsStateWithLifecycle()
     val tabWorkspace = state.workspace?.id
     val tabSession = state.sessionId
-    val displayedTabs = remember(tabSnapshot, tabWorkspace, tabSession) { tabSnapshot.visible(tabWorkspace, tabSession) }
+    val messageNodes: (com.cordiact.core.plugin.ExtensionPackageMessageEvent) -> List<com.cordiact.interaction.WorkspaceClientContributions.MessageNode> = { event ->
+        tabWorkspace?.let { clientSnapshot.messageNodes(it, event) }.orEmpty()
+    }
+    val availableTabs = remember(tabSnapshot, tabWorkspace, tabSession) { tabSnapshot.visible(tabWorkspace, tabSession) }
+    val layout = profiles?.selected ?: WorkbenchProfiles.presets.getValue(WorkbenchProfiles.CLASSIC)
+    val configuration = LocalConfiguration.current
+    val landscape = configuration.screenWidthDp > configuration.screenHeightDp && configuration.screenWidthDp >= 600
+    val canDock = landscape && configuration.screenWidthDp >= LANDSCAPE_DOCK_MIN_WIDTH
+    val placedPanels = remember(layout, availableTabs, canDock) { layout.visiblePanels(availableTabs.map { it.id }, canDock) }
+    val byId = remember(availableTabs) { availableTabs.associateBy { it.id } }
+    val displayedTabs = remember(placedPanels, byId) {
+        placedPanels.filter { it.placement == PanelPlacement.TAB }.mapNotNull { byId[it.id] }
+    }
+    val dockedTabs = remember(placedPanels, byId) {
+        placedPanels.filter { it.placement == PanelPlacement.DOCK }.mapNotNull { byId[it.id] }
+    }
+    val currentDisplayedTabs by rememberUpdatedState(displayedTabs)
+    var selectedDockId by rememberSaveable(tabWorkspace) { mutableStateOf<String?>(null) }
     var overview by rememberSaveable { mutableStateOf(false) }
     var overviewEpoch by remember { mutableLongStateOf(0L) }
     fun showOverview(show: Boolean) {
@@ -102,7 +182,7 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
         inspected = null
         tabs.followSession(state.sessionId)
     }
-    LaunchedEffect(state.sidebar, state.loading, tabSession, tabSnapshot, tabWorkspace, activePublication) {
+    LaunchedEffect(state.sidebar, state.loading, tabSession, displayedTabs, tabWorkspace, activePublication) {
         if (state.loading || tabSession == null) return@LaunchedEffect
         val live = state.sidebar.flatMap { it.sessions }.filter { !it.isArchived }.map { it.id }.toSet()
         val livePages = displayedTabs.mapTo(mutableSetOf()) { it.id }
@@ -110,6 +190,11 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
         if (previousPage != null && activePublication == null) livePages.remove(previousPage.pluginId)
         tabs.prune(live, livePages, tabSession)
         openedPublication = activePublication
+    }
+    LaunchedEffect(layout.panels, displayedTabs, tabSession, state.loading) {
+        if (layout.panels.isNotEmpty() && tabSession != null && !state.loading) {
+            tabs.orderPluginTabs(displayedTabs.map { it.id }, layout.panels.mapTo(hashSetOf()) { it.id })
+        }
     }
     // A session tab is the selection: activating one moves the view model onto that session.
     LaunchedEffect(activeTab?.key) {
@@ -127,8 +212,6 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
             else -> "${group.name} / 工作区请求"
         }
     }
-    val configuration = LocalConfiguration.current
-    val landscape = configuration.screenWidthDp > configuration.screenHeightDp && configuration.screenWidthDp >= 600
     var requestedTab by remember { mutableStateOf<WorkTab.Session?>(null) }
     var loadingTab by remember { mutableStateOf<WorkTab.Session?>(null) }
     val committedKey = if (activeTab is WorkTab.Plugin) activeTab.key else state.sessionId?.let { "s:$it" }
@@ -162,19 +245,22 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
             current.workspace?.id == tabWorkspace && current.sessionId == tabSession && tabWorkspace != null && tabSession != null
     }
     fun openPublication(publication: PublishedTab): Boolean {
-        if (!sameLoadedOwner() || !tabDirectory.isCurrent(publication, tabWorkspace, tabSession)) return false
+        if (!sameLoadedOwner() || publication !in currentDisplayedTabs ||
+            !tabDirectory.isCurrent(publication, tabWorkspace, tabSession)) return false
         inspected = null
         closeSessionPluginDetail()
         openedPublication = publication
         tabs.open(WorkTab.Plugin(publication.id))
+        if (layout.panels.isNotEmpty()) tabs.orderPluginTabs(currentDisplayedTabs.map { it.id })
         return true
     }
     fun openTrace(): Boolean = displayedTabs.firstOrNull { it.id == TraceTab.id }?.let(::openPublication) == true
     fun pluginHost(publication: PublishedTab, isLandscape: Boolean,
         onInspect: (ToolActivity) -> Unit, onArtifact: (String) -> Unit = {},
+        isPresented: () -> Boolean = { tabs.active?.key == "p:${publication.id}" && publication in currentDisplayedTabs },
     ): TabHost = object : TabHost {
         override val landscape = isLandscape
-        private fun current() = sameLoadedOwner() && tabs.active?.key == "p:${publication.id}" &&
+        private fun current() = sameLoadedOwner() && isPresented() &&
             tabDirectory.isCurrent(publication, tabWorkspace, tabSession)
         override fun inspect(step: ToolActivity) { if (current()) onInspect(step) }
         override fun inspectArtifact(id: String) { if (current()) onArtifact(id) }
@@ -191,7 +277,6 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
         if (sessionPluginsOwner != pluginOwner) sessionPluginsOwner = null
     }
     val pluginDetailOwner = sessionPluginsOwner?.takeIf { it == pluginOwner }
-    val clientSnapshot by settingsApp.conversationCatalog.workspaceClientContributions.snapshot.collectAsStateWithLifecycle()
     val sessionActions = remember(clientSnapshot, pluginOwner) { pluginOwner?.let(clientSnapshot::sessionActions).orEmpty() }
     val sessionActionScope = rememberCoroutineScope()
     val viewLifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
@@ -206,6 +291,18 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
     val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
     val keyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
     val canInsertSessionAction = !state.running && !state.stopping && composer.text.isEmpty() && composer.attachments.isEmpty()
+    if (editingLayoutFor != null && editingLayoutFor == tabWorkspace && !state.loading) {
+        val workspace = checkNotNull(state.workspace)
+        if (profiles != null) {
+            key(workspace.id) {
+                WorkbenchLayoutEditor(workspace.name, profiles, availableTabs, onSaveLayout) { editingLayoutFor = null }
+            }
+            return
+        }
+        if (layoutReadFailed) {
+            RestoreWorkbenchLayoutDialog(onRestoreLayouts) { editingLayoutFor = null }
+        }
+    }
     BackHandler(!landscape && pluginDetailOwner != null && !overview, onBack = closeSessionPluginDetail)
     BackHandler(inspected != null && !overview) { inspected = null }
     val workbench: @Composable () -> Unit = {
@@ -238,6 +335,7 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
                                     approvalId = (state.currentApprovals.firstOrNull() ?: state.approvals.firstOrNull())?.id
                                 },
                                 onOpenTrace = if (displayedTabs.any { it.id == TraceTab.id }) ({ openTrace(); Unit }) else null,
+                                messageNodes = messageNodes,
                             )
                             else key(activePublication) {
                                 activePublication.content.Content(state, pluginHost(activePublication, true, openStep, openArtifact))
@@ -269,6 +367,11 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
                 onCloseSessionPluginDetail = closeSessionPluginDetail,
                 tabPublication = activePublication,
                 resultCardFor = resultCardFor,
+                docked = if (dockedTabs.isEmpty()) null else { modifier, inspect, artifact ->
+                    DockedWorkbenchPanels(dockedTabs, selectedDockId, { selectedDockId = it }, modifier) { publication, isPresented ->
+                        publication.content.Content(state, pluginHost(publication, true, inspect, artifact, isPresented))
+                    }
+                },
             )
         } else Surface(color = MaterialTheme.colorScheme.background, modifier = Modifier.fillMaxSize()) {
             Box(Modifier.fillMaxSize()) {
@@ -322,6 +425,7 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
                                         approvalId = (state.currentApprovals.firstOrNull() ?: state.approvals.firstOrNull())?.id
                                     },
                                     onOpenTrace = if (displayedTabs.any { it.id == TraceTab.id }) ({ openTrace(); Unit }) else null,
+                                    messageNodes = messageNodes,
                                 )
                         }
                     }
@@ -397,6 +501,9 @@ fun ExperienceScreen(viewModel: ExperienceViewModel) {
                 onDismiss = { showOverview(false) },
                 onNewSession = { viewModel.newSession(state.workspace?.id, closeAfterSelection) },
                 onSettings = { closeAfterSelection(); settingsVm.reload(); openSettings() },
+                onLayout = if (tabWorkspace != null && !state.loading && (profiles != null || layoutReadFailed)) {
+                    { closeAfterSelection(); editingLayoutFor = tabWorkspace }
+                } else null,
                 onSelectTab = { requestedTab = it; closeSessionPluginDetail() },
                 onSegmentChange = { overviewEpoch++ },
             ) { m, overviewSegments ->
@@ -542,7 +649,7 @@ internal fun CompactInspector(
                         when (tab) {
                             0 -> {
                                 if (card != null) ToolResultCardView(card)
-                                else Text(
+                                if (card == null || preview.provenance?.packageSha256 != null) Text(
                                     preview.summary?.takeIf { it.isNotBlank() } ?: "工具尚未返回可显示摘要",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = colors.onSurface,

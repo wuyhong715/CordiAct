@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 3,
+  "id": "release-panel",
+  "version": "1.0.0",
+  "title": "发布工作台",
+  "description": "将发布清单摆在工作台上。",
+  "host": { "api": 1, "minVersion": "0.1.0" },
+  "capabilities": ["command.publish", "ui.workbench-panel.publish"],
+  "tools": [],
+  "commands": [
+    {
+      "name": "release-panel-check",
+      "aliases": [],
+      "description": "显示发布工作台清单",
+      "text": "检查测试报告、变更说明和回滚安排。"
+    }
+  ],
+  "client": {
+    "workbenchPanel": {
+      "title": "发布工作台",
+      "description": "发布前核对以下项目。",
+      "rows": [
+        { "label": "验证", "value": "记录真实测试结果。" },
+        { "label": "回滚", "value": "确认可用的上一版和回滚负责人。" }
+      ]
+    }
+  }
+}

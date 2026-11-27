@@ -117,7 +117,7 @@ internal fun SettingsBranch(route: SettingsRoute, navigate: (SettingsRoute) -> U
         SettingsRoute.MODELS -> listOf(
             "当前工作区" to listOf(
                 Triple(SettingsRoute.WORKSPACE_DEFAULTS, "新会话默认模型", "查看有效配置和继承来源"),
-                Triple(SettingsRoute.PROVIDER_DRAFTS, "提供商声明", "查看 Agent 或用户保存的离线声明"),
+                Triple(SettingsRoute.PROVIDER_DRAFTS, "提供商声明", "审查工作区文件和插件发布的模型服务"),
             ),
             "此客户端" to listOf(
                 Triple(SettingsRoute.PROVIDERS, "提供商", "管理连接、凭据状态、模型和能力声明"),

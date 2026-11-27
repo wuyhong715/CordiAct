@@ -364,6 +364,11 @@ class CordiActApplication : Application(), androidx.work.Configuration.Provider 
             dispatcher = toolDispatcher,
             toolContext = request.context,
             systemContext = request.systemContext,
+            sourceMetadataJson = request.preset?.let { preset -> org.json.JSONObject().apply {
+                put("subagent_preset_id", preset.id)
+                put("subagent_preset_source", preset.source)
+            }.toString() },
+            maySendRound = request.maySendRound,
         )
         when (outcome) {
             is ToolLoopOutcome.Completed -> ChildTurnOutcome(outcome.text, ToolLoopStop.COMPLETED)
@@ -385,6 +390,9 @@ class CordiActApplication : Application(), androidx.work.Configuration.Provider 
             runner = childTurnRunner,
             toolPlanner = ChildToolPlanner { workspaceId, model -> availableToolSpecs(workspaceId, model) },
             systemContextFor = { workspaceId -> skillIndexFor(workspaceId) },
+            packagePresets = conversationCatalog.packageAgentContributions,
+            childSessionTools = { workspaceId, model, sessionId -> availableToolSpecs(workspaceId, model, sessionId) },
+            cancelChildTurn = { sessionId -> turnService.cancelTurn(sessionId) },
         )
     }
 
@@ -714,6 +722,9 @@ class CordiActApplication : Application(), androidx.work.Configuration.Provider 
                 authoredPluginTurn = authoring,
                 securityContext = security,
             )
+            val packageContext = conversationCatalog.packageAgentContributions.context(envelope.context.workspaceId)
+            val systemContext = listOfNotNull(skillIndexFor(envelope.context.workspaceId), packageContext?.text)
+                .joinToString("\n\n").takeIf(String::isNotEmpty)
             turnService.submitWithTools(
                 sessionId = envelope.context.sessionId,
                 model = modelId,
@@ -723,15 +734,17 @@ class CordiActApplication : Application(), androidx.work.Configuration.Provider 
                 dispatcher = toolDispatcher,
                 toolContext = toolContext,
                 parameters = parameters,
-                systemContext = skillIndexFor(envelope.context.workspaceId),
+                systemContext = systemContext,
                 parts = envelope.attachments,
                 userMetadataJson = org.json.JSONObject().apply {
                     put("input_version", 1)
                     put("original_input", envelope.originalText)
                     put("expanded_input", envelope.submittedText)
+                    packageContext?.let { put("plugin_context_sources", org.json.JSONArray(it.sources)) }
                 }.toString(),
                 onUserMessagePersisted = {
                     sessions.updateFirstUserTitleFromOriginal(envelope.context.sessionId, envelope.originalText)
+                    packageContext?.let { envelope.onPackageContextSources?.invoke(it.sources) }
                     envelope.onUserMessagePersisted?.invoke()
                 },
                 onModelCallStarted = envelope.onModelCallStarted,
@@ -827,7 +840,14 @@ class CordiActApplication : Application(), androidx.work.Configuration.Provider 
     private val signedCatalogPolicy by lazy { runCatching { com.cordiact.app.plugin.AndroidSignedCatalogAccess.fromApk(this) } }
     internal val signedCatalogAccess get() = signedCatalogPolicy.getOrNull()
     internal val signedCatalogPolicyInvalid get() = signedCatalogPolicy.isFailure
-    private val workspacePackageRuntime = lazy { conversationCatalog.workspacePackageRuntime() }
+    private val userCatalogStorage = lazy {
+        runCatching { com.cordiact.app.plugin.AndroidUserCatalogs(noBackupFilesDir, signedCatalogAccess?.sources.orEmpty()) }
+    }
+    internal val userSignedCatalogs get() = userCatalogStorage.value.getOrNull()
+    internal val userSignedCatalogsInvalid get() = userCatalogStorage.value.isFailure || userSignedCatalogs?.uncertain == true
+    private val workspacePackageRuntime = lazy {
+        conversationCatalog.workspacePackageRuntime(com.cordiact.app.sandbox.AndroidPackageScriptRuntime(this), workspaceConnections::retirePackage)
+    }
     @Volatile private var bundledDiagnosticPlugins: List<ManagedPlugin> = emptyList()
 
     internal fun readPluginDiagnostics(workspaceId: String, isSelected: () -> Boolean): com.cordiact.core.plugin.PluginDiagnosticSnapshot =
@@ -840,8 +860,15 @@ class CordiActApplication : Application(), androidx.work.Configuration.Provider 
             },
             bundled = bundledDiagnosticPlugins,
             signedObservation = {
-                if (signedCatalogPolicyInvalid) SignedCatalogObservation.invalidPolicy()
-                else signedCatalogAccess?.diagnosticObservation() ?: SignedCatalogObservation.notConfigured()
+                val stored = userCatalogStorage.takeIf { it.isInitialized() }?.value
+                val users = stored?.getOrNull()
+                if (signedCatalogPolicyInvalid || stored?.isFailure == true || users?.uncertain == true) SignedCatalogObservation.invalidPolicy()
+                else {
+                    val directories = listOfNotNull(signedCatalogAccess) + users?.directories?.value.orEmpty().map { it.access }
+                    SignedCatalogObservation.combine(directories.map { directory ->
+                        directory.sources.mapTo(hashSetOf()) { it.id } to directory.diagnosticObservation()
+                    })
+                }
             },
             globalMcpObservation = {
                 pluginLifecycle.manager.observeMcpDiagnostics(pluginLifecycle.store::readExistingMcpDiagnostics)
@@ -853,8 +880,17 @@ class CordiActApplication : Application(), androidx.work.Configuration.Provider 
             installer = com.cordiact.core.plugin.ExtensionPackageInstaller(
                 extensionPackageStore.value,
                 // A malformed shipped policy cannot reveal which names it meant to reserve. Deny new local admissions.
-                reservedSourceId = { id -> signedCatalogPolicyInvalid || signedCatalogAccess?.reserves(id) == true },
+                reservedSourceId = { id -> signedCatalogPolicyInvalid || userSignedCatalogsInvalid ||
+                    signedCatalogAccess?.reserves(id) == true || userSignedCatalogs?.reserves(id) == true },
                 signedCatalogProvider = { signedCatalogAccess?.catalog() },
+                signedCatalogBySource = { sourceId ->
+                    if (signedCatalogPolicyInvalid) null else {
+                        signedCatalogAccess?.takeIf { it.ownsSource(sourceId) }?.catalog() ?: userSignedCatalogs?.catalogForSource(sourceId)
+                    }
+                },
+                openedSignedCatalogs = {
+                    listOfNotNull(signedCatalogAccess?.catalog()) + userSignedCatalogs?.directories?.value.orEmpty().mapNotNull { it.access.catalog() }
+                },
             ),
             profileForLiveWorkspace = { id ->
                 workspaceManager.findSessionWorkspace(id)?.let { credentialVaultRuntime.profileStore.profileFor(id) }
@@ -862,6 +898,25 @@ class CordiActApplication : Application(), androidx.work.Configuration.Provider 
             reservedPackageIds = setOf(com.cordiact.app.plugin.BundledDeclarativePackages.manifest.id),
             runtime = workspacePackageRuntime.value,
         )
+    }
+
+    internal fun approveUserCatalogImport(page: com.cordiact.core.plugin.WorkspaceExtensionPackages.Page,
+        candidate: com.cordiact.app.plugin.AndroidUserCatalogs.Candidate): com.cordiact.core.plugin.WorkspaceExtensionPackages.CatalogConfigurationChange {
+        check(!signedCatalogPolicyInvalid)
+        val store = checkNotNull(userSignedCatalogs)
+        return page.approveCatalogConfiguration(validate = {
+            fun claims(id: String) = candidate.sources.any { id.startsWith(it.packagePrefix) }
+            check(!claims(com.cordiact.app.plugin.BundledDeclarativePackages.manifest.id)) { "CATALOG_SOURCE_CONFLICT" }
+            check(workspaceManager.list(includeArchived = true).none { workspace ->
+                extensionPackageStore.value.list(workspace.id).any { it.sourceReceipt == null && claims(it.manifest.id) }
+            }) { "CATALOG_SOURCE_CONFLICT" }
+        }) { store.add(candidate) }
+    }
+
+    internal fun approveUserCatalogRemoval(page: com.cordiact.core.plugin.WorkspaceExtensionPackages.Page,
+        directory: com.cordiact.app.plugin.AndroidUserCatalogs.Directory): com.cordiact.core.plugin.WorkspaceExtensionPackages.CatalogConfigurationChange {
+        val store = checkNotNull(userSignedCatalogs)
+        return page.approveCatalogConfiguration(allowReadOnly = true) { store.remove(directory) }
     }
 
     private val authoredPluginDrafts by lazy { AuthoredPluginDrafts(workspaceFiles) }

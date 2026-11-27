@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 4,
+  "id": "line-counter",
+  "version": "1.0.0",
+  "title": "行数统计",
+  "description": "统计输入文本中的行和非空行。",
+  "host": { "api": 1, "minVersion": "0.1.0" },
+  "capabilities": ["tool.publish", "tool.script.execute"],
+  "tools": [
+    {
+      "name": "count-lines",
+      "description": "统计传入文本的行数和非空行数。",
+      "kind": "text_script",
+      "source": "(text) => { const rows = text.length === 0 ? [] : text.split(/\\r\\n|\\r|\\n/); return `总行数 ${rows.length}，非空行 ${rows.filter(row => row.trim()).length}`; }"
+    }
+  ],
+  "commands": []
+}

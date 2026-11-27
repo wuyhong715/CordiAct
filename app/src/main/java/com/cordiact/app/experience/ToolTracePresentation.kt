@@ -10,15 +10,19 @@ import org.json.JSONObject
 
 /** Strict lookup metadata from the host trace, not from a model response or result body. */
 internal fun decodeToolTraceProvenance(value: JSONObject?): ToolHistoryProvenance? {
-    if (value == null || value.length() != 4) return null
+    if (value == null || value.length() != (if (value.has("packageSha256")) 5 else 4)) return null
     val owner = (value.opt("ownerPluginId") as? String)?.takeIf(historyId::matches) ?: return null
     val id = (value.opt("toolId") as? String)?.takeIf(historyId::matches) ?: return null
     val source = ToolHistorySource.entries.find { it.wireValue == value.opt("source") } ?: return null
     val format = ToolHistoryFormat.entries.find { it.wireValue == value.opt("format") } ?: return null
-    return ToolHistoryProvenance(owner, id, source, format)
+    val digest = if (value.has("packageSha256")) {
+        (value.opt("packageSha256") as? String)?.takeIf(packageDigest::matches) ?: return null
+    } else null
+    return ToolHistoryProvenance(owner, id, source, format, digest)
 }
 
 private val historyId = Regex("[A-Za-z0-9_][A-Za-z0-9._:-]{0,159}")
+private val packageDigest = Regex("[a-f0-9]{64}")
 private val restrictedLegacyTools = setOf(
     CredentialToolIds.LIST, CredentialToolIds.READ, CredentialToolIds.WRITE, CredentialToolIds.DELETE, CredentialToolIds.USE,
 )

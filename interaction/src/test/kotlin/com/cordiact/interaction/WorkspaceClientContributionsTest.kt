@@ -1,5 +1,9 @@
 package com.cordiact.interaction
 
+import com.cordiact.core.conversation.ToolHistoryFormat
+import com.cordiact.core.conversation.ToolHistoryProvenance
+import com.cordiact.core.conversation.ToolHistorySource
+import com.cordiact.core.plugin.ExtensionPackageMessageEvent
 import com.cordiact.core.plugin.ExtensionPackageChange
 import com.cordiact.core.plugin.ExtensionPackageInstaller
 import com.cordiact.core.plugin.InMemoryExtensionPackageStore
@@ -18,17 +22,55 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class WorkspaceClientContributionsTest {
+    @Test
+    fun `message nodes and result cards are scoped and old tool results retain their own release identity`() {
+        val f = Fixture()
+        val page = f.packages.openPage("a")
+        fun source(version: String) = """{
+            "schemaVersion":11,"id":"views-pack","version":"$version","title":"Views","description":"Session views",
+            "host":{"api":1,"minVersion":"0.1.0"},"capabilities":["ui.conversation.publish","tool.publish"],
+            "tools":[{"name":"test-text","description":"Test text","kind":"static_text","text":"check"}],"commands":[],
+            "client":{"conversation":{"messages":[{"event":"assistant.message","title":"Reply","lines":["Review the answer"]}],
+                "toolResults":[{"tool":"test-text","title":"Output $version","lines":["A result was observed"]}]}}
+        }""".trimIndent().byteInputStream()
+        val installed = f.install(page, source("1.0.0"))
+        val initial = f.catalog.snapshot.value
+        assertTrue(initial.messageNodes("a", ExtensionPackageMessageEvent.ASSISTANT).isEmpty())
+        val enabled = assertIs<ExtensionPackageChange.Applied>(page.approveEnable(installed, true).commit()).record
+        val active = f.catalog.snapshot.value
+        val provenance = ToolHistoryProvenance("pkg.views-pack", "extension.pkg.views-pack.test-text", ToolHistorySource.HOST_REGISTRATION,
+            ToolHistoryFormat.BOUNDED_SUMMARY_V1, installed.manifest.sha256)
+        assertEquals("views-pack@1.0.0", active.messageNodes("a", ExtensionPackageMessageEvent.ASSISTANT).single().source)
+        assertTrue(active.messageNodes("a", ExtensionPackageMessageEvent.USER).isEmpty())
+        assertTrue(active.messageNodes("b", ExtensionPackageMessageEvent.ASSISTANT).isEmpty())
+        assertEquals("Output 1.0.0", active.toolResultCard("a", provenance)?.title)
+        assertNull(active.toolResultCard("b", provenance))
+        assertNull(active.toolResultCard("a", provenance.copy(packageSha256 = null)))
+
+        page.approveEnable(enabled, false).commit()
+        assertNull(active.toolResultCard("a", provenance))
+        assertTrue(active.messageNodes("a", ExtensionPackageMessageEvent.ASSISTANT).isEmpty())
+        val upgraded = f.install(page, source("1.0.1"))
+        page.approveEnable(upgraded, true).commit()
+        val replacement = f.catalog.snapshot.value
+        assertNull(replacement.toolResultCard("a", provenance))
+        assertEquals("Output 1.0.1", replacement.toolResultCard("a", provenance.copy(packageSha256 = upgraded.manifest.sha256))?.title)
+    }
+
     private class Fixture {
         val a = InteractionContext("a-1", "a")
         val secondSession = InteractionContext("a-2", "a")
         val b = InteractionContext("b-1", "b")
         val commands = InteractionCommandRegistry { it in setOf(a, secondSession, b) }
-        val catalog = WorkspaceClientContributions(commands)
+        val tabs = TrustedWorkbenchTabs<String>()
+        val catalog = WorkspaceClientContributions(commands) { context, panel, admitted ->
+            tabs.register(context, context.id.pluginId, panel.title, admitted = admitted)
+        }
         val tools = InMemoryToolDefinitionRegistry()
-        val kernel = PluginKernel()
+        val kernel = PluginKernel(tabs::refresh)
         var readOnly = false
         var checkBeforeCleanup: (() -> Unit)? = null
-        val runtime = WorkspacePackageRuntime(admissionChanged = catalog::refreshAdmission) { record, gate ->
+        val runtime = WorkspacePackageRuntime(admissionChanged = { catalog.refreshAdmission(); tabs.refresh() }) { record, gate ->
             val plugin = DeclarativePackagePlugin(record.manifest, kernel, PluginToolContributions(tools),
                 PluginCommandContributions(commands), record.grantedCapabilities, workspaceId = record.workspaceId,
                 clientContributions = catalog, admitted = gate)
@@ -163,6 +205,30 @@ class WorkspaceClientContributionsTest {
             f.catalog.draftInsertion(it, f.a, "", false)
         })
         assertTrue(snapshot.sessionActions(f.b).isEmpty())
+    }
+
+    @Test
+    fun `the release panel follows the exact workspace installation and withdraws before cleanup`() {
+        val f = Fixture()
+        val page = f.packages.openPage("a")
+        val record = f.install(page, requireNotNull(javaClass.getResourceAsStream("/release-panel.json")))
+        assertTrue(f.tabs.snapshot.value.visible("a", "a-1").isEmpty())
+
+        val enabled = assertIs<ExtensionPackageChange.Applied>(page.approveEnable(record, true).commit()).record
+        val old = f.tabs.snapshot.value
+        val panel = old.visible("a", "a-2").single()
+        assertEquals("pkg.release-panel", panel.id)
+        assertEquals("发布工作台", panel.content)
+        assertTrue(old.visible("b", "b-1").isEmpty())
+
+        f.checkBeforeCleanup = {
+            assertTrue(old.visible("a", "a-1").isEmpty())
+            assertTrue(!f.tabs.isCurrent(panel, "a", "a-1"))
+        }
+        val disabled = assertIs<ExtensionPackageChange.Applied>(page.approveEnable(enabled, false).commit()).record
+        f.checkBeforeCleanup = null
+        page.approveEnable(disabled, true).commit()
+        assertNotSame(panel, f.tabs.snapshot.value.visible("a", "a-1").single())
     }
 
     companion object {

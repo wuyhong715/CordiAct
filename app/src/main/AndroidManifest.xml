@@ -57,6 +57,11 @@
             android:isolatedProcess="true"
             android:process=":sandbox_js_poc" />
         <service
+            android:name=".sandbox.PackageScriptWorkerService"
+            android:exported="false"
+            android:isolatedProcess="true"
+            android:process=":package_script" />
+        <service
             android:name=".service.AgentExecutionService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />

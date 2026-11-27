@@ -1,0 +1,14 @@
+{
+  "name": "@cordiact/plugin-sdk",
+  "version": "0.1.0",
+  "description": "CordiAct text-tool types and local extension packer",
+  "type": "module",
+  "license": "Apache-2.0",
+  "types": "./index.d.ts",
+  "exports": { ".": { "types": "./index.d.ts" } },
+  "bin": { "cordiact-pack": "./bin/cordiact-pack.mjs", "cordiact-catalog": "./bin/cordiact-catalog.mjs" },
+  "files": ["index.d.ts", "bin", "src", "examples", "verification", "README.md"],
+  "scripts": { "test": "node --test && tsc --noEmit -p examples" },
+  "dependencies": { "typescript": "5.9.3" },
+  "engines": { "node": ">=20" }
+}

@@ -1,7 +1,7 @@
 package com.cordiact.core.plugin
 
 /** Execution target is metadata for routing; it does not promise cross-target portability. */
-enum class PluginTarget { ANDROID_NATIVE, CORDIS_JS, HARNESS_REMOTE }
+enum class PluginTarget { ANDROID_NATIVE, CORDIS_JS, HARNESS_REMOTE, ANDROID_ISOLATED_JS }
 
 data class PluginSpec(
     val id: String,

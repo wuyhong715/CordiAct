@@ -3,8 +3,10 @@ package com.cordiact.subagent
 import com.cordiact.core.conversation.ModelId
 import com.cordiact.core.conversation.SessionManagerService
 import com.cordiact.core.plugin.ManagedPlugin
+import com.cordiact.core.plugin.PackageAgentContributions
 import com.cordiact.core.plugin.PluginSpec
 import com.cordiact.core.subagent.ChildResult
+import com.cordiact.core.subagent.ChildPresetInfo
 import com.cordiact.core.subagent.ChildSessionInfo
 import com.cordiact.core.subagent.ChildSpec
 import com.cordiact.core.subagent.ChildToolPlanner
@@ -36,6 +38,9 @@ class SubagentRuntime(
     private val toolPlanner: ChildToolPlanner,
     private val systemContextFor: (workspaceId: String) -> String? = { null },
     private val limits: SubagentLimits = SubagentLimits(),
+    private val packagePresets: PackageAgentContributions? = null,
+    private val childSessionTools: ((workspaceId: String, model: ModelId, sessionId: String) -> List<com.cordiact.core.conversation.ModelToolSpec>)? = null,
+    private val cancelChildTurn: (sessionId: String) -> Unit = {},
 ) : ManagedPlugin, SubagentRuntimeService {
 
     override val spec: PluginSpec = subagentPluginSpec()
@@ -74,6 +79,12 @@ class SubagentRuntime(
             )
         }
 
+    override fun listPresets(context: ToolInvocationContext): List<ChildPresetInfo> {
+        val parent = context.sessionId?.let(sessions::getSession) ?: return emptyList()
+        if (!enabled || parent.workspaceId != context.workspaceId || parent.archivedAtMillis != null || !canDelegate(context)) return emptyList()
+        return packagePresets?.subagents(parent.workspaceId).orEmpty().map { ChildPresetInfo(it.id, it.title, it.source) }
+    }
+
     override fun runChild(
         spec: ChildSpec,
         parent: ToolInvocationContext,
@@ -103,9 +114,10 @@ class SubagentRuntime(
         // A child may only run where its parent could. The Workspace check is not an
         // optimization: cross-Workspace delegation would need the `@` authorization semantics
         // copied into a second place, and 0003 fixed that authorization to the referencing turn.
-        if (spec.workspaceId != parentSession.workspaceId) {
+        if (spec.workspaceId != parentSession.workspaceId || parent.workspaceId != parentSession.workspaceId || spec.parentSessionId != parentSessionId) {
             return Admission.Refused("A delegated agent cannot run in a different Workspace")
         }
+        if (parentSession.archivedAtMillis != null) return Admission.Refused("The calling Session is archived")
 
         val childDepth = parentSession.depth + 1
         if (childDepth > limits.maxDepth) {
@@ -119,7 +131,11 @@ class SubagentRuntime(
             )
         }
 
-        val model = spec.model ?: parent.modelRoute()
+        val preset = spec.presetId?.let { id ->
+            packagePresets?.subagent(spec.workspaceId, id) ?: return Admission.Refused("The selected subagent preset is unavailable")
+        }
+        fun presetCurrent() = preset == null || (enabled && packagePresets?.subagent(spec.workspaceId, preset.id) === preset)
+        val model = (if (preset != null) parent.modelRoute() else spec.model ?: parent.modelRoute())
             ?: return Admission.Refused("No model route for the delegated agent")
 
         val child = try {
@@ -137,29 +153,57 @@ class SubagentRuntime(
         // The depth gate has two halves on purpose: hiding the delegation tools keeps a child
         // from planning work it cannot finish; the check in canDelegate is what actually enforces
         // the ceiling if that list is ever wrong.
-        val tools = toolPlanner.specs(spec.workspaceId, model)
+        val childSpecs = if (preset != null) childSessionTools?.invoke(spec.workspaceId, model, child.id) else null
+        val candidates = (childSpecs ?: toolPlanner.specs(spec.workspaceId, model))
             .filter { childDepth < limits.maxDepth || it.name !in DELEGATION_TOOL_NAMES }
+        val tools = if (preset == null) candidates else candidates.filter {
+            it.name in preset.tools && it.name !in PRESET_EXCLUDED_TOOLS &&
+                it.registration != null && it.registration === parent.toolRegistrations[it.name] &&
+                parent.delegatedToolAdmission?.invoke(it.name) != false
+        }
+        val derived = childContext(parent, child.id, spec.prompt)
+        val toolIds = tools.mapTo(hashSetOf()) { it.name }
+        val context = if (preset == null) derived else derived.copy(
+            securityContext = parent.securityContext?.let { parentSecurity ->
+                parentSecurity.copy(sessionId = child.id, source = com.cordiact.core.security.InvocationSource.SUB_AGENT,
+                    principalChain = parentSecurity.principalChain + com.cordiact.core.security.Principal(child.id, com.cordiact.core.security.PrincipalType.SUB_AGENT),
+                    allowedGlobalCredentialIds = emptySet())
+            },
+            delegatedToolAdmission = { id -> id in toolIds && presetCurrent() && parent.delegatedToolAdmission?.invoke(id) != false },
+        )
+        val baseContext = systemContextFor(spec.workspaceId)
+        val childSystemContext = if (preset == null) baseContext else listOfNotNull(baseContext,
+            "Workspace subagent preset ${preset.source} (${preset.id}):\n${preset.instructions}").joinToString("\n\n")
 
         return Admission.Admitted(
             AdmittedChild(
                 sessionId = child.id,
-            label = spec.label,
-            request = ChildTurnRequest(
-                sessionId = child.id,
-                model = model,
-                prompt = spec.prompt,
-                tools = tools,
-                context = childContext(parent, child.id, spec.prompt),
-                systemContext = systemContextFor(spec.workspaceId),
-                deadlineAtMillis = 0L,
-            ),
+                label = spec.label,
+                request = ChildTurnRequest(
+                    sessionId = child.id,
+                    model = model,
+                    prompt = spec.prompt,
+                    tools = tools,
+                    context = context,
+                    systemContext = childSystemContext,
+                    deadlineAtMillis = 0L,
+                    preset = preset?.let { ChildPresetInfo(it.id, it.title, it.source) },
+                    maySendRound = if (preset == null) null else ::presetCurrent,
+                ),
+                stillAdmitted = ::presetCurrent,
+                observeRetirement = preset?.let { it::observeRetirement },
             ),
         )
     }
 
     /** Runs an admitted child. Callable from any thread; the runner owns its own synchronisation. */
-    fun execute(admitted: AdmittedChild, deadlineAtMillis: Long): ChildResult {        val outcome = try {
-            runner.run(admitted.request.copy(deadlineAtMillis = deadlineAtMillis))
+    fun execute(admitted: AdmittedChild, deadlineAtMillis: Long): ChildResult {
+        if (!admitted.stillAdmitted()) return ChildResult(admitted.sessionId, admitted.label, "The selected subagent preset was withdrawn", ToolLoopStop.FAILED)
+        val outcome = try {
+            admitted.observeRetirement?.invoke { cancelChildTurn(admitted.sessionId) }.use {
+                if (!admitted.stillAdmitted()) return ChildResult(admitted.sessionId, admitted.label, "The selected subagent preset was withdrawn", ToolLoopStop.FAILED)
+                runner.run(admitted.request.copy(deadlineAtMillis = deadlineAtMillis))
+            }
         } catch (failure: Exception) {
             // The child Session stays: it holds whatever the child wrote before failing, and the
             // user can open it. Only the result is reported as a failure.
@@ -170,6 +214,7 @@ class SubagentRuntime(
                 stop = ToolLoopStop.FAILED,
             )
         }
+        if (!admitted.stillAdmitted()) return ChildResult(admitted.sessionId, admitted.label, "The selected subagent preset was withdrawn", ToolLoopStop.FAILED)
 
         val (text, truncated) = truncate(outcome.text, limits.maxResultChars)
         return ChildResult(
@@ -235,6 +280,8 @@ class SubagentRuntime(
         val sessionId: String,
         val label: String,
         val request: ChildTurnRequest,
+        val stillAdmitted: () -> Boolean = { true },
+        val observeRetirement: ((() -> Unit) -> AutoCloseable)? = null,
     )
 
     /** The outcome of [admit]. A refusal carries its reason instead of a flag to read back. */
@@ -263,5 +310,9 @@ class SubagentRuntime(
     private companion object {
         /** Tools that delegate. Removed from a child's list once it is at the depth ceiling. */
         val DELEGATION_TOOL_NAMES = setOf(SUBAGENT_TOOL_ID, SUBAGENT_LIST_TOOL_ID)
+        val PRESET_EXCLUDED_TOOLS = DELEGATION_TOOL_NAMES + setOf(
+            com.cordiact.core.subagent.SPAWN_CHILD_TOOL_ID, com.cordiact.core.subagent.WAIT_CHILDREN_TOOL_ID,
+            com.cordiact.core.subagent.CLOSE_CHILD_TOOL_ID, com.cordiact.core.subagent.SEND_CHILD_TOOL_ID,
+            com.cordiact.core.subagent.ORCHESTRATION_TOOL_ID)
     }
 }

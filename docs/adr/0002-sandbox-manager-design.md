@@ -30,12 +30,18 @@ CordiAct's “everything is a plugin” model needs a first-class place to descr
 - Hard real-time guarantees or strict CPU fairness against a privileged OS process
 - Reversing external side effects already completed (for example a remote message already sent)
 
-## V1 product decision (accepted 2026-10-31)
+## Original V1 product decision (accepted 2026-10-31)
 
 - Local Cordis/JavaScript execution is restricted to code bundled in the signed APK and present in a host-owned exact allowlist. No post-install public third-party local plugin installation in v1.
 - Third-party DeepSeek Harness plugins remain available through the remote Harness/Gateway path; they do not execute in the Android app process.
 - The local sandbox execution path remains disabled until the isolated-service proof of concept and the production acceptance gates below pass. A signed bundle is provenance, not proof that in-process execution is safe.
 - The `core.sandbox-manager` system plugin is registered/enabled as an orchestration service before the runtime exists; its default runtime refuses execution. No in-process fallback.
+
+## Phase before Remote · author-installed script tools
+
+Schema v4 opens a local JavaScript text-tool contribution with separate user consent for `tool.script.execute`. The App creates a runtime lease for the exact enabled workspace package generation. Only an admitted tool call binds a uniquely named, non-exported isolated service on Android API 29 or later. The service checks the owning UID, wire version, code digest and frame sizes, and accepts one evaluation per binding. The interpreter starts with standard JavaScript built-ins and receives only the bounded input text. Unbind retires the worker. Package withdrawal closes its lease and late results fail the live-registration check.
+
+This decision applies to the v4 text-tool path. The original bundled Cordis manager retains its separate admission contract. Broader JavaScript capabilities require mediated interfaces and their own Android acceptance evidence. The release gate for this path includes the existing API 29/35 device workflow and true-device checks for worker isolation, deadlines, and package revocation.
 
 ## Core security decision
 

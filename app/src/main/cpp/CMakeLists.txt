@@ -26,7 +26,7 @@ target_compile_definitions(quickjs_ng PRIVATE _GNU_SOURCE)
 find_package(Threads REQUIRED)
 target_link_libraries(quickjs_ng PUBLIC m ${CMAKE_DL_LIBS} Threads::Threads)
 
-add_library(cordiact_qjs_poc SHARED quickjs_poc_jni.c)
+add_library(cordiact_qjs_poc SHARED quickjs_poc_jni.c quickjs_plugin_jni.c)
 target_compile_definitions(cordiact_qjs_poc PRIVATE _GNU_SOURCE)
 target_compile_options(cordiact_qjs_poc PRIVATE -Wall -Wextra -Werror)
 target_link_libraries(cordiact_qjs_poc PRIVATE quickjs_ng m ${CMAKE_DL_LIBS} log)

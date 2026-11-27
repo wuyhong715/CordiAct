@@ -2,6 +2,13 @@ package com.cordiact.interaction
 
 import com.cordiact.core.plugin.ExtensionPackageCapability
 import com.cordiact.core.plugin.ExtensionPackageSource
+import com.cordiact.core.plugin.PackageScriptRuntime
+import com.cordiact.core.plugin.PackageScriptSession
+import com.cordiact.core.plugin.PackageAgentContributions
+import com.cordiact.core.skill.SkillFileSource
+import com.cordiact.core.skill.SkillIndexRenderer
+import com.cordiact.core.skill.SkillOrigin
+import com.cordiact.core.skill.SkillPlugin
 import com.cordiact.core.plugin.PluginKernel
 import com.cordiact.core.plugin.PluginToolContributions
 import com.cordiact.core.tool.InMemoryToolDefinitionRegistry
@@ -15,6 +22,92 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 
 class DeclarativePackagePluginTest {
+    @Test
+    fun `installed agent package adds a qualified skill and bounded context until withdrawal`() {
+        val manifest = ExtensionPackageSource.compile(requireNotNull(javaClass.getResourceAsStream("/review-kit.json")).use { it.readBytes() })
+        val contributions = PackageAgentContributions()
+        val skill = SkillPlugin(object : SkillFileSource {
+            override fun listSkillFiles(workspaceId: String) = emptyList<String>()
+            override fun read(workspaceId: String, path: String) = null
+        }, packageSkills = contributions::skills).also { it.onEnable() }
+        val input = "</package> & <instruction>"
+        var admitted = true
+        val plugin = DeclarativePackagePlugin(
+            manifest.copy(agent = manifest.agent!!.copy(context = input)), PluginKernel(),
+            PluginToolContributions(InMemoryToolDefinitionRegistry()), PluginCommandContributions(InteractionCommandRegistry { true }),
+            manifest.capabilities, workspaceId = "ws-1", admitted = { admitted }, agentContributions = contributions,
+        )
+        val name = "review-kit.change-review"
+        plugin.onRegister()
+        assertNull(skill.find("ws-1", name))
+        assertNull(contributions.context("ws-1"))
+
+        plugin.onEnable()
+        assertEquals(SkillOrigin.PACKAGE, skill.find("ws-1", name)?.origin)
+        assertEquals(listOf(name), SkillIndexRenderer().render(skill.catalog("ws-1")).included)
+        assertEquals(manifest.agent!!.skills.single().body, skill.body("ws-1", name))
+        assertNull(skill.body("ws-2", name))
+        assertNull(contributions.context("ws-2"))
+        val context = assertNotNull(contributions.context("ws-1"))
+        assertEquals(listOf("review-kit@1.0.0"), context.sources)
+        kotlin.test.assertTrue("&lt;/package&gt; &amp; &lt;instruction&gt;" in context.text)
+        admitted = false
+        assertNull(skill.find("ws-1", name))
+        assertNull(skill.body("ws-1", name))
+        assertNull(contributions.context("ws-1"))
+        plugin.onDisable()
+        admitted = true
+        assertNull(skill.body("ws-1", name))
+    }
+
+    @Test
+    fun `script tool grants a bounded session for one workspace and closes it on withdrawal`() {
+        val registry = InMemoryToolDefinitionRegistry()
+        val commands = InteractionCommandRegistry { true }
+        val artifact = requireNotNull(javaClass.getResourceAsStream("/line-counter.json")).use { it.readBytes() }
+        val manifest = ExtensionPackageSource.compile(artifact)
+        var closed = false
+        var calls = 0
+        var admitted = true
+        val runtime = PackageScriptRuntime { owner ->
+            assertEquals("ws-1", owner.workspaceId)
+            object : PackageScriptSession {
+                override fun evaluate(source: ByteArray, input: ByteArray): ByteArray {
+                    assertEquals(manifest.tools.single().script, source.decodeToString())
+                    calls++
+                    if (input.decodeToString() == "withdraw") admitted = false
+                    return input
+                }
+                override fun close() { closed = true }
+            }
+        }
+        fun plugin(suppliedRuntime: PackageScriptRuntime?) = DeclarativePackagePlugin(
+            manifest, PluginKernel(), PluginToolContributions(registry), PluginCommandContributions(commands),
+            manifest.capabilities, workspaceId = "ws-1", admitted = { admitted }, scriptRuntime = suppliedRuntime,
+        ).also { it.onRegister() }
+        val unavailable = plugin(null)
+        assertFailsWith<IllegalStateException> { unavailable.onEnable() }
+        val installed = plugin(runtime)
+        installed.onEnable()
+        val id = installed.toolId("count-lines")
+        val tool = assertNotNull(registry.getIn(id, "ws-1", null))
+        assertNull(registry.getIn(id, "ws-2", null))
+        fun invoke(input: String) = tool.executor.invoke(
+            ToolInvocationContext("ws-1"), ToolArguments(mapOf("text" to ToolValue.StringValue(input))),
+        )
+
+        assertEquals(ToolValue.StringValue("🌱\n"), invoke("🌱\n").values["text"])
+        assertFailsWith<com.cordiact.core.tool.ToolManagerException> { invoke("界".repeat(2_000)) }
+        assertEquals(1, calls)
+        assertFailsWith<IllegalStateException> { invoke("withdraw") }
+        assertNull(registry.getIn(id, "ws-1", null))
+        installed.onDisable()
+        assertEquals(true, closed)
+        assertNull(registry.getIn(id, "ws-1", null))
+        assertFailsWith<IllegalStateException> { invoke("stale") }
+        assertEquals(2, calls)
+    }
+
     @Test
     fun `publishes tool and command in one workspace and withdraws both`() {
         val registry = InMemoryToolDefinitionRegistry()

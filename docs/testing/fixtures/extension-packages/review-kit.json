@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 5,
+  "id": "review-kit",
+  "version": "1.0.0",
+  "title": "变更审阅",
+  "description": "给当前工作区提供变更审阅技能和参考术语。",
+  "host": { "api": 1, "minVersion": "0.1.0" },
+  "capabilities": ["agent.skill.publish", "agent.context.publish"],
+  "tools": [],
+  "commands": [],
+  "agent": {
+    "skills": [
+      { "name": "change-review", "description": "审阅一个变更及其验证证据。", "body": "先定位变更，再核对受影响的调用方、旧数据兼容性和测试结果。把已核实的问题与仍待验证的事项分开陈述。" }
+    ],
+    "context": "本工作区的“回归”指既有调用路径出现行为变化。"
+  }
+}

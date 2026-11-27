@@ -384,6 +384,7 @@ class ConversationTurnService(
         systemContext: String? = null,
         onEvent: (ModelEvent) -> Unit = {},
         sourceMetadataJson: String? = null,
+        maySendRound: (() -> Boolean)? = null,
     ): ToolLoopOutcome {
         require(text.isNotBlank()) { "Message must not be blank" }
         requireNotNull(sessions.getSession(sessionId)) { "Session does not exist" }
@@ -393,6 +394,7 @@ class ConversationTurnService(
         val controller = run.controller
         activeCallsBySession[sessionId] = controller
         try {
+            check(maySendRound?.invoke() != false) { "Child preset was withdrawn" }
             sessions.appendMessage(sessionId, MessageRole.USER, text.trim(), sourceMetadataJson)
             // The user message was just persisted, so the history read below already contains it.
             // Appending it again would send every delegated / child turn a duplicated prompt.
@@ -411,8 +413,10 @@ class ConversationTurnService(
             val providerTools = tools.map { it.copy(registration = null) }
 
             val outcome = toolLoop.run(effectiveContext, initial, dispatcher, finalizeWithoutTools = { messages ->
+                check(maySendRound?.invoke() != false) { "Child preset was withdrawn" }
                 sendRound(sessionId, model, messages, emptyList(), parameters, run, onEvent)
             }) { messages ->
+                check(maySendRound?.invoke() != false) { "Child preset was withdrawn" }
                 sendRound(sessionId, model, messages, providerTools, parameters, run, onEvent)
             }
             val finalText = when (outcome) {
@@ -886,6 +890,7 @@ private fun completionMetadata(
                                         addProperty("toolId", provenance.toolId)
                                         addProperty("source", provenance.source.wireValue)
                                         addProperty("format", provenance.format.wireValue)
+                                        provenance.packageSha256?.let { addProperty("packageSha256", it) }
                                     })
                                 }
                             })

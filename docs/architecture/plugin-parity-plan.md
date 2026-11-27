@@ -45,6 +45,21 @@ CordiAct 不缺「插件」这个概念，也不缺插件内核。当前缺口�
 
 ## 4. 排期、责任与退出条件
 
+### DIY 阶段当前实现闭环
+
+以下贡献域现已具备同一套「清单 → 明确能力同意 → 工作区启用 → 运行投影 → 撤回」路径，采用宿主解释和 Android 隔离进程实现。
+
+| DeepSeek Harness 对标域 | CordiAct 入口 | 运行边界 |
+|---|---|---|
+| UI Client slots / settings / conversation nodes | 工作台标签页、停靠面板、设置说明、输入动作、v11 消息节点与工具结果卡 | 宿主 Compose 渲染，包只提供有界声明 |
+| Tools / commands / skills | v1/v2 工具命令、v5 技能和上下文 | 工具由宿主注册，技能按 `skill.open` 读取 |
+| Provider seams | v6 搜索服务、v7 模型服务 | 搜索脚本隔离运行，模型端点由宿主审批和协议适配 |
+| Agent hooks / policy | v8 工具前策略、v10 子 Agent 预设 | 策略隔离运行，宿主保留最终授权与回合控制 |
+| Jobs / workflows | v9 文本工作流 | 使用现有 Job Registry，支持取消、进度、输出和撤回 |
+| Bundles / distribution | 本地 JSON、SDK 打包器、APK 目录和自管签名目录 | CDX1 签名根、索引、摘要和独立租约 |
+
+退出条件是每个表格域都通过真实 APK 装配、工作区隔离、停用撤回、旧代结果回放和至少一个手机端回归用例。未通过 GitHub Actions Android 构建、API 29/35 隔离服务测试和真机验收前，不宣称 DIY 阶段完成，也不启动 Remote 接入。
+
 **估算前提：** 1 名 Android/Compose、1 名核心/协议工程师，QA 与安全评审各兼职；并行仅限独立任务，按累计 12–15 周估算，不是日历承诺。若只有一名工程师，优先交付 A 和 B 的首条切片，C 另排。阶段完成以退出条件为准。
 
 | 阶段 | 时长 / 主责 | 交付与退出条件 |

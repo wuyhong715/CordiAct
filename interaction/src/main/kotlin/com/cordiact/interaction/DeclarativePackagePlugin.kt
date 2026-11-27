@@ -13,12 +13,16 @@ import com.cordiact.core.plugin.extensionPackageSpec
 import com.cordiact.core.plugin.RuntimeAwarePlugin
 import com.cordiact.core.plugin.PluginInstanceStatus
 import com.cordiact.core.plugin.PluginToolContributions
+import com.cordiact.core.plugin.PackageScriptRuntime
+import com.cordiact.core.plugin.PackageAgentContributions
+import com.cordiact.core.plugin.PackageSearchContributions
+import com.cordiact.core.plugin.PackageModelContributions
+import com.cordiact.core.plugin.PackageToolPolicies
+import com.cordiact.core.plugin.PackageWorkflows
 
 /**
- * Publishes one validated declarative package through the ordinary plugin kernel. Tools and
- * commands are host executors over fixed text or a closed transform set; the package never runs
- * code. The plugin's scope is the workspace/session identity supplied by the host, and disabling
- * it withdraws both contribution kinds before cleanup.
+ * Publishes a validated package through the ordinary plugin kernel. Script evaluation uses the
+ * host-provided isolated runtime and shares the installation's revocable scope.
  */
 class DeclarativePackagePlugin(
     val manifest: ExtensionPackageManifest,
@@ -30,6 +34,13 @@ class DeclarativePackagePlugin(
     sessionId: String? = null,
     private val clientContributions: WorkspaceClientContributions? = null,
     private val admitted: () -> Boolean = { true },
+    private val scriptRuntime: PackageScriptRuntime? = null,
+    private val agentContributions: PackageAgentContributions? = null,
+    private val searchContributions: PackageSearchContributions? = null,
+    private val modelContributions: PackageModelContributions? = null,
+    private val retireModelProvider: (PackageModelContributions.Offer) -> Unit = {},
+    private val toolPolicies: PackageToolPolicies? = null,
+    private val workflows: PackageWorkflows? = null,
 ) : RuntimeAwarePlugin {
     override val spec: PluginSpec = extensionPackageSpec(manifest)
 
@@ -41,13 +52,35 @@ class DeclarativePackagePlugin(
             require(missing.isEmpty()) {
                 "Package capabilities were not granted: ${missing.joinToString { it.wireName }}"
             }
-            tools.registerDeclarativePackage(context, manifest, admitted)
+            tools.registerDeclarativePackage(context, manifest, admitted, scriptRuntime)
             val commandPublications = manifest.commands.associate { command ->
                 command.name to commands.registerDeclarativePackageCommand(context, commandDescriptor(command), admitted, command.text)
             }
             if (manifest.client != null) {
                 checkNotNull(clientContributions) { "Host does not provide declarative client slots" }
                     .register(context, manifest, commandPublications, admitted)
+            }
+            if (!manifest.agent?.skills.isNullOrEmpty() || manifest.agent?.context != null || !manifest.agent?.subagents.isNullOrEmpty()) {
+                checkNotNull(agentContributions) { "Host does not provide Agent contributions" }.register(context, manifest, admitted)
+            }
+            if (!manifest.agent?.beforeTool.isNullOrEmpty()) {
+                checkNotNull(toolPolicies) { "Host does not provide package tool policies" }.register(
+                    context, manifest, checkNotNull(scriptRuntime) { "Isolated script runtime unavailable" }, admitted,
+                )
+            }
+            if (manifest.searchProviders.isNotEmpty()) {
+                checkNotNull(searchContributions) { "Host does not provide search contributions" }.register(
+                    context, manifest, checkNotNull(scriptRuntime) { "Isolated script runtime unavailable" }, admitted,
+                )
+            }
+            if (manifest.modelProviders.isNotEmpty()) {
+                checkNotNull(modelContributions) { "Host does not provide model declarations" }
+                    .register(context, manifest, admitted, retireModelProvider)
+            }
+            if (manifest.workflows.isNotEmpty()) {
+                checkNotNull(workflows) { "Host does not provide package workflows" }.register(
+                    context, manifest, checkNotNull(scriptRuntime) { "Isolated script runtime unavailable" }, admitted,
+                )
             }
         }
     }, instanceId)

@@ -1,0 +1,14 @@
+{
+  "id": "review-subagent",
+  "version": "1.0.0",
+  "title": "文本审阅子 Agent",
+  "description": "使用父会话提供的文本核对结论与证据。",
+  "agent": {
+    "subagents": [{
+      "name": "review",
+      "title": "结论审阅",
+      "instructions": "检查给出的文本是否为每项结论提供了足够证据。按结论列出支持证据和待确认信息。",
+      "tools": []
+    }]
+  }
+}

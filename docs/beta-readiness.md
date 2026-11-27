@@ -3,6 +3,13 @@
 ## 分发
 
 - 公测工作流 `Signed beta APK` 仅可在 `main` 手工运行，产物是 Actions artifact，不会自动公开发布。Android `compileSdk` / `targetSdk` 为 36。此工作流交付 APK，不是 Play 上架全流程。
+
+## DIY 客户端发布门槛
+
+- 运行 `plugin-sdk` 的 Node 测试、TypeScript 类型检查和 CDX1 签发互操作测试。
+- 在手机上串行运行 core、interaction、search-providers、model-providers、subagent 和 UI 的定向测试。当前已通过 128 项 JVM 测试和 8 项 SDK 测试，最后一批自管目录、会话视图、工作流和子 Agent 预设变更仍需手机恢复后重跑。
+- 通过 Android CI 的 Debug、Release 和 instrumentation 构建。API 29/35 隔离服务测试需要覆盖脚本工具、策略撤回和工作流终止。真实设备安装 CI 产物后，复核配置导入、签名目录刷新、工作区隔离、插件停用、模型路由撤销、旧会话回放和进程重启。
+- DIY 阶段完成前，不接入 Remote Codex、Claude Code 或 DeepSeek Harness。Remote 的固定版本、配对和恢复验收属于下一阶段。
 - 在 GitHub 配置 Secrets：`CORDIACT_BETA_KEYSTORE_BASE64`、`CORDIACT_BETA_STORE_PASSWORD`、`CORDIACT_BETA_KEY_ALIAS`、`CORDIACT_BETA_KEY_PASSWORD`；配置变量 `CORDIACT_BETA_CERT_SHA256` 为从持有的签名证书独立取得的 SHA-256。不得使用仓库 debug key，妥善离线备份公测签名密钥。不要把密钥或密码放进仓库、日志、工单或对话。
 - 输入如 `0.1.0-beta.1`；由工作流运行号生成递增 versionCode（重跑相同 run 不生成新版本；发布时仍需确认版本号大于已发版）。工作流在上传前核对签名、包名、版本、target SDK 以及 release manifest，无签名输入则不上传。
 - `com.cordiact.app.beta` 和现有 debug `com.cordiact.app` 并存。不会覆盖 debug 数据，也不会自动复制数据库或凭证。保留旧包；需重配模型、连接、工作区与权限。尚无全量会话迁移；不要为安装 beta 卸载旧包。

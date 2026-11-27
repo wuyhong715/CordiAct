@@ -60,7 +60,7 @@ class WorkspaceDeclarations(private val files: WorkspaceFileService) {
         private const val MAX = 48 * 1024
         private val ID = Regex("[a-z][a-z0-9_-]{0,63}")
         private fun validName(name: String) = name.isNotBlank() && name.length <= 96 && name.none(Char::isISOControl)
-        private fun validEndpoint(text: String): Boolean {
+        fun validEndpoint(text: String): Boolean {
             if (text.length > 1024 || text.any(Char::isISOControl)) return false
             val url = runCatching { URI(text) }.getOrNull() ?: return false
             return url.scheme.equals("https", true) && !url.host.isNullOrBlank() &&

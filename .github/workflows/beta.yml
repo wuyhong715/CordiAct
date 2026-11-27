@@ -25,6 +25,18 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+      - name: Include optional public catalog policy
+        if: ${{ vars.CORDIACT_BETA_CATALOG_POLICY_BASE64 != '' }}
+        shell: bash
+        env:
+          CATALOG_POLICY_BASE64: ${{ vars.CORDIACT_BETA_CATALOG_POLICY_BASE64 }}
+        run: |
+          set -euo pipefail
+          policy=app/src/main/assets/cordiact-signed-catalog-v1.txt
+          test ! -e "$policy"
+          mkdir -p app/src/main/assets
+          printf '%s' "$CATALOG_POLICY_BASE64" | base64 --decode > "$policy"
+          node plugin-sdk/bin/cordiact-catalog.mjs check-policy "$policy"
       - name: Install Android SDK packages
         run: >-
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
@@ -58,6 +70,10 @@ jobs:
           set -euo pipefail
           tools="$ANDROID_HOME/build-tools/36.0.0"
           apk=app/build/outputs/apk/release/app-release.apk
+          policy=app/src/main/assets/cordiact-signed-catalog-v1.txt
+          if test -f "$policy"; then
+            unzip -p "$apk" assets/cordiact-signed-catalog-v1.txt | cmp "$policy" -
+          fi
           expected=$(printf '%s' "$BETA_CERT_SHA256" | tr -d '[:space:]:' | tr '[:upper:]' '[:lower:]')
           [[ "$expected" =~ ^[a-f0-9]{64}$ ]] || { echo 'Set CORDIACT_BETA_CERT_SHA256'; exit 1; }
           actual=$("$tools/apksigner" verify --print-certs "$apk" | sed -n 's/^Signer #[0-9]* certificate SHA-256 digest: //p')

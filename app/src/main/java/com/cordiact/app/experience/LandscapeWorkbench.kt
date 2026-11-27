@@ -29,6 +29,7 @@ import dev.chrisbanes.haze.hazeSource
 internal data class WorkbenchEntry(val id: String, val title: String, val status: String, val active: Boolean = false)
 internal data class WorkbenchActivity(val agents: List<WorkbenchEntry> = emptyList(), val jobs: List<WorkbenchEntry> = emptyList())
 private enum class Detail(val label: String) { QUEUE("待处理"), AGENTS("子 Agent"), JOBS("后台任务"), TOOL("步骤详情"), ARTIFACT("产物预览") }
+internal const val LANDSCAPE_DOCK_MIN_WIDTH = 950
 
 /** The left board reports context; only the top tab strip changes the main view. */
 @Composable
@@ -49,6 +50,7 @@ internal fun LandscapeWorkbench(
     onCloseSessionPluginDetail: () -> Unit = {},
     tabPublication: Any? = null,
     resultCardFor: (ToolActivity) -> com.cordiact.interaction.ToolResultCard? = { null },
+    docked: (@Composable (Modifier, (ToolActivity) -> Unit, (String) -> Unit) -> Unit)? = null,
 ) {
     val colors = MaterialTheme.colorScheme
     val backdrop = remember { HazeState() }
@@ -139,7 +141,7 @@ internal fun LandscapeWorkbench(
         tabs(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 2.dp))
         BoxWithConstraints(Modifier.fillMaxWidth().weight(1f)) {
             val boardWidth = (maxWidth * 0.245f).coerceIn(134.dp, 244.dp)
-            val dockInspector = maxWidth >= 950.dp
+            val dockInspector = maxWidth >= LANDSCAPE_DOCK_MIN_WIDTH.dp
             val editorLines = if (maxHeight < 305.dp) 1 else 3
             val shortBody = maxHeight < 275.dp
             if (pluginPage) {
@@ -177,6 +179,11 @@ internal fun LandscapeWorkbench(
                                 }
                                 if (dockInspector && hasInspector) inspector(
                                     Modifier.width(252.dp).fillMaxHeight().padding(end = 12.dp, top = 5.dp),
+                                )
+                                if (!hasInspector) docked?.invoke(
+                                    Modifier.width(252.dp).fillMaxHeight().padding(end = 12.dp, top = 5.dp),
+                                    inspectTool,
+                                    inspectArtifact,
                                 )
                             }
                             if (!dockInspector && hasInspector) inspector(
@@ -337,8 +344,10 @@ private fun WorkbenchDetail(detail: Detail, approvals: List<ApprovalRequest>, fa
                         item { DetailRow(step.name, step.statusLabel()) }
                         val card = resultCardFor(preview)
                         if (card != null) item { ToolResultCardView(card) }
-                        else item { Text(preview.summary?.takeIf(String::isNotBlank) ?: "工具尚未返回可显示摘要",
-                            style = MaterialTheme.typography.bodySmall) }
+                        if (card == null || preview.provenance?.packageSha256 != null) {
+                            item { Text(preview.summary?.takeIf(String::isNotBlank) ?: "工具尚未返回可显示摘要",
+                                style = MaterialTheme.typography.bodySmall) }
+                        }
                         preview.arguments.takeIf(String::isNotBlank)?.let { item { Text(it, style = MaterialTheme.typography.bodySmall) } }
                     } ?: Unit
                     Detail.AGENTS, Detail.JOBS -> {

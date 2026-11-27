@@ -1,0 +1,7 @@
+{
+  "id": "line-counter",
+  "version": "1.0.0",
+  "title": "行数统计",
+  "description": "统计输入文本中的行和非空行。",
+  "tools": [{ "name": "count-lines", "description": "统计文本的行数和非空行数。", "entry": "line-counter.ts" }]
+}

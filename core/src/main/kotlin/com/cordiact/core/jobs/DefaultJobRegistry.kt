@@ -227,6 +227,14 @@ class DefaultJobRegistry(
         }
 
         @Synchronized
+        override fun completeWithOutput(text: String): Boolean {
+            if (snapshot.state != JobState.RUNNING || settled.get()) return false
+            append(text)
+            settle(JobState.SUCCEEDED, exitCode = null, diagnostic = null)
+            return true
+        }
+
+        @Synchronized
         override fun updateProgress(line: String?) {
             if (settled.get()) return
             val now = clockMillis()
