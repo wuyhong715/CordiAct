@@ -136,10 +136,13 @@ class ActivityFollowBindingInstrumentationTest {
                     assertNull(original.begin(route))
                     assertFalse(original.cancel(challenge))
                     scenario.moveToState(Lifecycle.State.RESUMED)
-                    assertNull(original.configure(pending, descriptor, ByteArray(32) { 2 }))
-                    val fresh = checkNotNull(original.begin(route))
-                    assertNotSame(challenge, fresh)
-                    assertFalse(original.cancel(challenge))
+                    // The scenario can observe RESUMED before the post-resume callback completes.
+                    scenario.onActivity {
+                        assertNull(original.configure(pending, descriptor, ByteArray(32) { 2 }))
+                        val fresh = checkNotNull(original.begin(route))
+                        assertNotSame(challenge, fresh)
+                        assertFalse(original.cancel(challenge))
+                    }
                     scenario.recreate()
                     lateinit var replacement: ForegroundFollowScope
                     scenario.onActivity { activity -> replacement = checkNotNull(activity.binding).scope }
