@@ -3,6 +3,7 @@ plugins { kotlin("jvm") }
 kotlin { jvmToolchain(17) }
 
 dependencies {
+    api("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
     implementation("com.google.code.gson:gson:2.11.0")
     implementation("com.squareup.okhttp3:okhttp:5.3.2")
     testImplementation("com.squareup.okhttp3:okhttp-tls:5.3.2")
