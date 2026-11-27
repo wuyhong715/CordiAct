@@ -152,8 +152,10 @@ class ExperienceComponentTest {
         val event = com.cordiact.core.plugin.ExtensionPackageMessageEvent.ASSISTANT
         val node = com.cordiact.interaction.WorkspaceClientContributions.MessageNode("views-pack@1.0.0",
             com.cordiact.interaction.ToolResultCard("Reply checklist", listOf("Review the answer")))
+        // Fenced code uses Compose text, so the reply is visible to the Compose test API.
+        val turn = TranscriptTurn("t", "Original question", answer = "```text\nOriginal answer\n```")
         content {
-            TranscriptView(ready(listOf(TranscriptTurn("t", "Original question", answer = "Original answer"))), {}, {},
+            TranscriptView(ready(listOf(turn)), {}, {},
                 messageNodes = { if (available && it == event) listOf(node) else emptyList() })
         }
         compose.onNodeWithText("Reply checklist").assertExists()
