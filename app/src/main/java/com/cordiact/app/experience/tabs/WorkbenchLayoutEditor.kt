@@ -12,6 +12,7 @@ import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.heading
@@ -242,7 +243,7 @@ private fun <T> LayoutChoice(label: String, selected: T?, choices: List<Pair<T, 
 @Composable
 private fun MovePanelButton(title: String, up: Boolean, enabled: Boolean, onClick: () -> Unit) {
     IconButton(onClick = onClick, enabled = enabled) {
-        AppGlyph(if (up) GlyphName.ChevronUp else GlyphName.ChevronDown, if (up) "上移$title" else "下移$title")
+        AppGlyph(GlyphName.ChevronDown, if (up) "上移$title" else "下移$title", modifier = Modifier.rotate(if (up) 180f else 0f))
     }
 }
 
