@@ -57,6 +57,8 @@ import com.cordiact.interaction.InteractionModelSubmitter
 import com.cordiact.interaction.MentionType
 import com.cordiact.app.tool.AndroidToolDispatcher
 import com.cordiact.core.toolloop.ToolLoopPlugin
+import com.cordiact.core.toolloop.TOOL_LOOP_CONTRIBUTIONS
+import com.cordiact.core.toolloop.WorkspaceToolLoops
 import com.cordiact.core.conversation.ModelToolSpec
 import com.cordiact.core.subagent.ChildNotice
 import com.cordiact.core.subagent.ChildToolPlanner
@@ -294,6 +296,7 @@ class CordiActApplication : Application(), androidx.work.Configuration.Provider 
         )
     }
 
+    private val toolLoops = WorkspaceToolLoops()
     private val toolLoopPlugin by lazy {
         ToolLoopPlugin(
             limits = com.cordiact.core.toolloop.ToolLoopLimits(
@@ -309,7 +312,7 @@ class CordiActApplication : Application(), androidx.work.Configuration.Provider 
                     runCatching { backgroundSubagents.acknowledgeNotices(sessionId, delivered.map { it.sourceId }) }
                 }
             },
-        ).apply { onEnable() }
+        )
     }
 
     /**
@@ -364,7 +367,7 @@ class CordiActApplication : Application(), androidx.work.Configuration.Provider 
             model = request.model,
             text = request.prompt,
             tools = request.tools,
-            toolLoop = toolLoopPlugin,
+            toolLoop = toolLoops,
             dispatcher = toolDispatcher,
             toolContext = request.context,
             systemContext = request.systemContext,
@@ -746,7 +749,7 @@ class CordiActApplication : Application(), androidx.work.Configuration.Provider 
                 model = modelId,
                 text = prompt,
                 tools = availableToolSpecs(envelope.context.workspaceId, modelId, envelope.context.sessionId, toolContext.allowsPluginAuthoring),
-                toolLoop = toolLoopPlugin,
+                toolLoop = toolLoops,
                 dispatcher = toolDispatcher,
                 toolContext = toolContext,
                 parameters = parameters,
@@ -776,7 +779,16 @@ class CordiActApplication : Application(), androidx.work.Configuration.Provider 
             override val spec: PluginSpec = com.cordiact.core.plugin.authoredPluginHostSpec()
         }
         com.cordiact.core.plugin.registerAuthoredPluginTool(conversationCatalog.toolRegistry, authoredPlugins)
-        val systemPlugins = plugins + automationRuntime.plugins() + sandboxManagerPlugin + subagentRuntime + orchestrationPlugin + backgroundSubagents + pluginManagerPlugin + authoredPluginHost
+        val loopRuntime = com.cordiact.core.plugin.ContextManagedPlugin(toolLoopPlugin.spec, kernel, object : ContextPlugin {
+            override fun start(context: PluginContext) {
+                toolLoopPlugin.onEnable()
+                context.effect(toolLoopPlugin::onDisable)
+                context.provide(TOOL_LOOP_CONTRIBUTIONS, toolLoops)
+                toolLoops.register(context, toolLoopPlugin)
+            }
+        })
+        loopRuntime.onRegister()
+        val systemPlugins = plugins + loopRuntime + automationRuntime.plugins() + sandboxManagerPlugin + subagentRuntime + orchestrationPlugin + backgroundSubagents + pluginManagerPlugin + authoredPluginHost
         bundledDiagnosticPlugins = systemPlugins.filter { BundledConversationPluginCatalog.verifier.isTrustedBundled(it.spec) }
         systemPlugins.forEach(::registerAndEnableSystemPlugin)
         com.cordiact.app.automation.tasks.registerAutomationTaskTools(

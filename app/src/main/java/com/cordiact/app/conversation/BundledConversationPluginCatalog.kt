@@ -154,6 +154,7 @@ object BundledConversationPluginCatalog {
     private val trustedSpecs = setOf(
         workspaceManagerPluginSpec(),
         toolManagerPluginSpec(),
+        com.cordiact.core.toolloop.toolLoopPluginSpec(),
         fileManagerPluginSpec(),
         skillPluginSpec(),
         modelAdapterPluginSpec(),

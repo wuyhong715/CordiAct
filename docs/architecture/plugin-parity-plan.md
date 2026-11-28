@@ -54,6 +54,7 @@ CordiAct 不缺「插件」这个概念，也不缺插件内核。当前缺口�
 | UI Client slots / settings / conversation nodes | 工作台标签页、停靠面板、设置说明、输入动作、v11 消息节点与工具结果卡 | 宿主 Compose 渲染，包只提供有界声明 |
 | Tools / commands / skills | v1/v2 工具命令、v5 技能和上下文 | 工具由宿主注册，技能按 `skill.open` 读取 |
 | Provider seams | v6 搜索服务、v7 模型服务 | 搜索脚本隔离运行，模型端点由宿主审批和协议适配 |
+| Tool loop provider | 可信插件可为工作区注册 `ToolLoopService`，前台对话和子 Agent 共用该选择 | 单次回合绑定精确注册，撤回后结束旧回合，后续回合重新选择。工具调用仍经过宿主调度和审批 |
 | Agent hooks / policy | v8 工具前策略、v10 子 Agent 预设 | 策略隔离运行，宿主保留最终授权与回合控制 |
 | Jobs / workflows | v9 文本工作流 | 使用现有 Job Registry，支持取消、进度、输出和撤回 |
 | Bundles / distribution | 本地 JSON、SDK 打包器、APK 目录和自管签名目录 | CDX1 签名根、索引、摘要和独立租约 |
