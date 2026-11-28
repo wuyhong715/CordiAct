@@ -102,7 +102,9 @@ class WorkspacePluginAcceptanceTest {
                     val rootKey = java.security.KeyPairGenerator.getInstance("EC").apply {
                         initialize(java.security.spec.ECGenParameterSpec("secp256r1"))
                     }.generateKeyPair()
-                    val signed = SignedPackageCatalog(rootKey.public, listOf(CatalogSource("alpha", java.net.URI("https://alpha.example/"), "alpha-")))
+                    val signed = SignedPackageCatalog(
+                        rootKey.public, listOf(CatalogSource("alpha", java.net.URI("https://alpha.example/"), "alpha-")),
+                    ) { java.time.Instant.ofEpochSecond(1_000) }
                     val extension = ExtensionPackageInstaller(packagesStore,
                         signedCatalog = signed, reservedSourceId = { it.startsWith("alpha-") })
                     val service = WorkspaceExtensionPackages(extension, { EffectiveSecurityProfile.fullAccess(it) })
