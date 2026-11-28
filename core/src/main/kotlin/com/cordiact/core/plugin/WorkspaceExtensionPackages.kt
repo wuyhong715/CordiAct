@@ -182,7 +182,9 @@ class WorkspaceExtensionPackages(
                     buffer[size++] = next.toByte()
                 } else size += count
             }
-            return previewArtifact(installer.inspect(buffer.copyOf(size)), expected, epoch)
+            val artifact = installer.inspect(buffer.copyOf(size))
+            val verified = installer.verifyLocalArtifact(artifact)
+            return previewArtifact(verified?.artifact ?: artifact, expected, epoch, verified)
         }
 
         /** The source service must revalidate the selected saved generation before approval. */

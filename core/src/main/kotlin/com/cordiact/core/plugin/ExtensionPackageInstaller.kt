@@ -210,6 +210,15 @@ class ExtensionPackageInstaller(
     internal fun requireCurrent(candidate: SignedPackageCatalog.Verified) =
         catalog(candidate.sourceReceipt.sourceId).withCurrent(candidate) {}
 
+    internal fun verifyLocalArtifact(artifact: ExtensionPackageArtifact): SignedPackageCatalog.Verified? {
+        val id = artifact.manifest.id
+        val opened = openedSignedCatalogs()
+        val matching = opened.filter { it.controlsPackageId(id) }
+        if (matching.isEmpty() && !reservedSourceId(id)) return null
+        val source = checkNotNull(matching.singleOrNull()) { "PACKAGE_SIGNED_SOURCE_REQUIRED" }
+        return source.verifyLocalArtifact(artifact).also(::requireCurrent)
+    }
+
     private fun catalog(sourceId: String) = checkNotNull(signedCatalogBySource(sourceId)) { "CATALOG_UNTRUSTED" }
 
     internal fun <T> withRuntimeTrust(record: ExtensionPackageRecord, admit: () -> T): T =

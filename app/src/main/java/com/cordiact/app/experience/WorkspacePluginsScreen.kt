@@ -641,7 +641,7 @@ private fun importError(failure: Exception): String = when (failure.message) {
     "PACKAGE_EXPORT_READ_ONLY" -> "工作区为只读，不能导出文件。"
     "PACKAGE_EXPORT_FORMAT_UNSUPPORTED" -> "仅支持导出可以重新导入的声明包 JSON。"
     "PACKAGE_EXPORT_SIGNED_SOURCE" -> "受控来源的包不能导出为不带来源的 JSON。"
-    "PACKAGE_SIGNED_SOURCE_REQUIRED" -> "此包名由受控来源保留，不能通过本地 JSON 或试用转包安装。"
+    "PACKAGE_SIGNED_SOURCE_REQUIRED" -> "此包名由受控来源保留。导入本地文件前，请先刷新对应签名根和索引。"
     "CATALOG_UNTRUSTED", "CATALOG_EXPIRED", "CATALOG_STATE_UNAVAILABLE" -> "当前无法验证签发来源。"
     "PACKAGE_EXPORT_DESTINATION_UNAVAILABLE" -> "未取得可写的系统文件位置；未写入包内容。"
     else -> when (failure) {
