@@ -113,7 +113,7 @@ class WorkspacePluginAcceptanceTest {
                     try {
                         val workspace = catalog.workspaceManager.create("Signed local")
                         service.openPage(workspace.id).use { page ->
-                            assertThrows(IllegalArgumentException::class.java) { page.preview(LOCAL_RESERVED_MANIFEST.byteInputStream()) }
+                            assertThrows(IllegalStateException::class.java) { page.preview(LOCAL_RESERVED_MANIFEST.byteInputStream()) }
                         }
                     } finally {
                         catalog.workspacePlugin.onDisable()
