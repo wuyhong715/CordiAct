@@ -3,6 +3,8 @@ package com.cordiact.core.toolloop
 import com.cordiact.core.conversation.MessageRole
 import com.cordiact.core.conversation.ModelMessage
 import com.cordiact.core.conversation.ModelToolCall
+import com.cordiact.core.inbox.DefaultAgentInbox
+import com.cordiact.core.inbox.InboxItemKind
 import com.cordiact.core.plugin.ContextPlugin
 import com.cordiact.core.plugin.PluginContext
 import com.cordiact.core.plugin.PluginInstanceId
@@ -43,8 +45,13 @@ class WorkspaceToolLoopsTest {
     @Test
     fun withdrawalStopsAnExistingTurnBeforeItCanDispatchOrUseTheReplacement() {
         val fixture = Fixture()
-        val selected = ToolInvocationContext("target")
-        val delegate = ToolLoopPlugin().apply { onEnable() }
+        val selected = ToolInvocationContext("target", sessionId = "parent")
+        val inbox = DefaultAgentInbox()
+        inbox.enqueue(InboxItemKind.CHILD_SETTLED, "parent", "child-1", "done")
+        val acknowledgments = mutableListOf<String>()
+        val delegate = ToolLoopPlugin(inbox = inbox, onReportsDelivered = { reports ->
+            acknowledgments += reports.map { it.sourceId }
+        }).apply { onEnable() }
         fixture.registerWorkspace(delegate)
         var requests = 0
         val result = fixture.loops.run(selected, emptyList(), ToolDispatcher { _, _ -> error("Retired turn dispatched a tool") }) {
@@ -56,6 +63,8 @@ class WorkspaceToolLoopsTest {
         assertEquals("tool_loop_revoked", stopped.failure?.code)
         assertEquals("", stopped.lastText)
         assertEquals(1, requests)
+        assertEquals(listOf("child-1"), acknowledgments)
+        assertEquals(0, inbox.size("parent"))
     }
 
     private class Fixture {

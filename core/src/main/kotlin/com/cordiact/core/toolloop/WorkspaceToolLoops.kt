@@ -43,7 +43,9 @@ class WorkspaceToolLoops : ToolLoopService {
         }
         fun guard(round: (List<ModelMessage>) -> ToolLoopRound): (List<ModelMessage>) -> ToolLoopRound = { messages ->
             requireCurrent()
-            round(messages).also { requireCurrent() }
+            // The delegate must be able to acknowledge notices delivered by a completed
+            // round even if its registration was withdrawn while waiting for the model.
+            round(messages)
         }
         return try {
             requireCurrent()
