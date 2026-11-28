@@ -109,9 +109,14 @@ class WorkspacePluginAcceptanceTest {
                         signedCatalog = signed, reservedSourceId = { it.startsWith("alpha-") })
                     val service = WorkspaceExtensionPackages(extension, { EffectiveSecurityProfile.fullAccess(it) })
                     service.resume(Any())
-                    val workspace = catalog.workspaceManager.create("Signed local")
-                    service.openPage(workspace.id).use { page ->
-                        assertThrows(IllegalArgumentException::class.java) { page.preview(LOCAL_RESERVED_MANIFEST.byteInputStream()) }
+                    catalog.workspacePlugin.onEnable()
+                    try {
+                        val workspace = catalog.workspaceManager.create("Signed local")
+                        service.openPage(workspace.id).use { page ->
+                            assertThrows(IllegalArgumentException::class.java) { page.preview(LOCAL_RESERVED_MANIFEST.byteInputStream()) }
+                        }
+                    } finally {
+                        catalog.workspacePlugin.onDisable()
                     }
                 }
             }
