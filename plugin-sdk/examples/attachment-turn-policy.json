@@ -1,0 +1,9 @@
+{
+  "id": "attachment-turn-policy",
+  "version": "1.0.0",
+  "title": "附件说明检查",
+  "description": "发送附件时要求同时输入文字。",
+  "agent": {
+    "beforeTurn": { "name": "require-text", "entry": "attachment-turn-policy.ts" }
+  }
+}

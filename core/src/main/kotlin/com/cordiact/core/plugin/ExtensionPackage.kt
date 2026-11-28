@@ -35,6 +35,7 @@ enum class ExtensionPackageCapability(val wireName: String) {
     WORKFLOW_PUBLISH("workflow.publish"),
     AGENT_SUBAGENT_PRESET_PUBLISH("agent.subagent-preset.publish"),
     UI_CONVERSATION_PUBLISH("ui.conversation.publish"),
+    AGENT_TURN_POLICY_PUBLISH("agent.turn-policy.publish"),
 }
 
 /** One host-executed tool. [operation] is null for a fixed-text tool. */
@@ -92,6 +93,7 @@ data class ExtensionPackageAgent(
     val context: String? = null,
     val beforeTool: List<ExtensionPackageToolPolicy> = emptyList(),
     val subagents: List<ExtensionPackageSubagent> = emptyList(),
+    val beforeTurn: ExtensionPackageTurnPolicy? = null,
 )
 
 data class ExtensionPackageSubagent(val name: String, val title: String, val instructions: String, val tools: Set<String>)
@@ -99,6 +101,7 @@ data class ExtensionPackageSubagent(val name: String, val title: String, val ins
 data class ExtensionPackageSkill(val name: String, val description: String, val body: String)
 
 data class ExtensionPackageToolPolicy(val name: String, val tools: Set<String>, val script: String)
+data class ExtensionPackageTurnPolicy(val name: String, val script: String)
 
 data class ExtensionPackageWorkflow(val name: String, val title: String, val steps: List<ExtensionPackageWorkflowStep>)
 
@@ -141,7 +144,7 @@ fun extensionPackageSpec(manifest: ExtensionPackageManifest): PluginSpec = Plugi
     id = "pkg.${manifest.id}",
     version = manifest.version,
     target = if (manifest.tools.any { it.script != null } || manifest.searchProviders.isNotEmpty() ||
-        !manifest.agent?.beforeTool.isNullOrEmpty() || manifest.workflows.isNotEmpty())
+        !manifest.agent?.beforeTool.isNullOrEmpty() || manifest.agent?.beforeTurn != null || manifest.workflows.isNotEmpty())
         PluginTarget.ANDROID_ISOLATED_JS else PluginTarget.ANDROID_NATIVE,
     requestedCapabilities = manifest.capabilities.mapTo(linkedSetOf()) { it.wireName },
     config = manifest.sha256,
@@ -299,7 +302,11 @@ object ExtensionPackageSource {
         val hasSubagents = !agent?.subagents.isNullOrEmpty()
         require((!hasSubagents || compiledSchema >= 10) && (compiledSchema != 10 || hasSubagents)) { "Subagent presets require schema version 10 or later" }
         val conversation = client?.conversation
-        require((conversation != null) == (compiledSchema == 11)) { "Conversation views require schema version 11" }
+        require((conversation == null || compiledSchema >= 11) && (compiledSchema != 11 || conversation != null)) {
+            "Conversation views require schema version 11 or later"
+        }
+        val hasTurnPolicy = agent?.beforeTurn != null
+        require(hasTurnPolicy == (compiledSchema == 12)) { "Before-turn policy requires schema version 12" }
         require(fields.size == 9 + listOfNotNull(client, agent, providers, workflows.takeIf { it.isNotEmpty() }).size) { "Missing package field" }
         val compiledTools = Collections.unmodifiableList(requireNotNull(tools))
         val compiledCommands = Collections.unmodifiableList(requireNotNull(commands))
@@ -349,6 +356,9 @@ object ExtensionPackageSource {
         }
         require(required.contains(ExtensionPackageCapability.AGENT_TOOL_POLICY_PUBLISH) == hasToolPolicy) {
             "agent.tool-policy.publish must exactly match the beforeTool declaration"
+        }
+        require(required.contains(ExtensionPackageCapability.AGENT_TURN_POLICY_PUBLISH) == hasTurnPolicy) {
+            "agent.turn-policy.publish must exactly match the beforeTurn declaration"
         }
         require(required.contains(ExtensionPackageCapability.WORKFLOW_PUBLISH) == workflows.isNotEmpty()) {
             "workflow.publish must exactly match the workflow declaration"
@@ -402,6 +412,7 @@ object ExtensionPackageSource {
             "9" -> 9
             "10" -> 10
             "11" -> 11
+            "12" -> 12
             else -> throw IllegalArgumentException("Unsupported package schema version")
         }
     }
@@ -553,17 +564,36 @@ object ExtensionPackageSource {
         var context: String? = null
         var beforeTool: List<ExtensionPackageToolPolicy> = emptyList()
         var subagents: List<ExtensionPackageSubagent> = emptyList()
+        var beforeTurn: ExtensionPackageTurnPolicy? = null
         reader.readClientObject("agent") { field ->
             when (field) {
                 "skills" -> skills = readSkills(reader)
                 "context" -> context = reader.readString().validatedText(MAX_CONTEXT_BYTES, multiline = true, error = "Invalid agent context")
                 "beforeTool" -> beforeTool = readToolPolicies(reader)
                 "subagents" -> subagents = readSubagents(reader)
+                "beforeTurn" -> beforeTurn = readTurnPolicy(reader)
                 else -> throw IllegalArgumentException("Unknown package agent field")
             }
         }
-        require(skills.isNotEmpty() || context != null || beforeTool.isNotEmpty() || subagents.isNotEmpty()) { "Package agent must declare a contribution" }
-        return ExtensionPackageAgent(skills, context, beforeTool, subagents)
+        require(skills.isNotEmpty() || context != null || beforeTool.isNotEmpty() || subagents.isNotEmpty() || beforeTurn != null) {
+            "Package agent must declare a contribution"
+        }
+        return ExtensionPackageAgent(skills, context, beforeTool, subagents, beforeTurn)
+    }
+
+    private fun readTurnPolicy(reader: JsonReader): ExtensionPackageTurnPolicy {
+        var name: String? = null
+        var script: String? = null
+        reader.readClientObject("before-turn policy") { field ->
+            when (field) {
+                "name" -> name = reader.readString().also { validateSlug(it, "Invalid turn policy name") }
+                "source" -> script = reader.readString().validatedText(
+                    PACKAGE_SCRIPT_MAX_SOURCE_BYTES, multiline = true, error = "Invalid turn policy script",
+                )
+                else -> throw IllegalArgumentException("Unknown before-turn policy field")
+            }
+        }
+        return ExtensionPackageTurnPolicy(requireNotNull(name), requireNotNull(script))
     }
 
     private fun readSubagents(reader: JsonReader): List<ExtensionPackageSubagent> {

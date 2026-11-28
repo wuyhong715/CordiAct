@@ -32,6 +32,10 @@ import com.cordiact.core.plugin.AuthoredPluginReceipt
 import com.cordiact.core.plugin.AuthoredPluginTurn
 import com.cordiact.core.security.AccessEnvelope
 import com.cordiact.core.security.EffectiveSecurityProfile
+import com.cordiact.core.conversation.CONVERSATION_TURN_COMPLETED
+import com.cordiact.core.plugin.ContextPlugin
+import com.cordiact.core.plugin.PluginContext
+import com.cordiact.core.plugin.PluginInstanceId
 import com.cordiact.core.plugin.PluginKernel
 import com.cordiact.core.plugin.AuthoredPluginRuntime
 import com.cordiact.core.plugin.PluginManagerService
@@ -659,12 +663,25 @@ class CordiActApplication : Application(), androidx.work.Configuration.Provider 
                 }
             },
             sensitivePayloads = credentialRuntime.sensitivePayloads,
+            beforeUserTurn = conversationCatalog.packageTurnPolicies::check,
         )
-        // A finished turn is the cheapest moment to think about the next one: the summary can be
-        // prepared while nobody is waiting, and installed only if it still applies.
+        val kernel = conversationCatalog.pluginKernel
+        val turnObserver = PluginInstanceId("core.turn-observer")
+        kernel.register(turnObserver, object : ContextPlugin {
+            override fun start(context: PluginContext) {
+                context.on(CONVERSATION_TURN_COMPLETED) {
+                    synchronized(transcriptChanges) { transcriptChanges.value++ }
+                }
+                context.on(CONVERSATION_TURN_COMPLETED) { sessionId ->
+                    com.cordiact.app.context.ContextCompactionWorker.enqueue(this@CordiActApplication, sessionId)
+                }
+            }
+        })
+        kernel.enable(turnObserver)
         turnService.onTurnCompleted = { sessionId ->
-            synchronized(transcriptChanges) { transcriptChanges.value++ }
-            com.cordiact.app.context.ContextCompactionWorker.enqueue(this, sessionId)
+            kernel.emit(CONVERSATION_TURN_COMPLETED, sessionId).forEach {
+                Log.e(TAG, "Conversation turn observer failed", it)
+            }
         }
         // Registered here because the tool list is built from the shared registry, and the
         // delegation tools must be in it before the first turn assembles its specs.
@@ -697,7 +714,6 @@ class CordiActApplication : Application(), androidx.work.Configuration.Provider 
                         },
                     )
                 }
-            recordTurnGrants(envelope.context.sessionId, grants)
             val prompt = if (envelope.command == null) envelope.submittedText else envelope.commandInput
             val authoring = envelope.authoredPluginTurn?.takeIf {
                 envelope.command == null && it.isOpen && it.matches(envelope.context.workspaceId, envelope.context.sessionId)
@@ -743,6 +759,7 @@ class CordiActApplication : Application(), androidx.work.Configuration.Provider 
                     packageContext?.let { put("plugin_context_sources", org.json.JSONArray(it.sources)) }
                 }.toString(),
                 onUserMessagePersisted = {
+                    recordTurnGrants(envelope.context.sessionId, grants)
                     sessions.updateFirstUserTitleFromOriginal(envelope.context.sessionId, envelope.originalText)
                     packageContext?.let { envelope.onPackageContextSources?.invoke(it.sources) }
                     envelope.onUserMessagePersisted?.invoke()

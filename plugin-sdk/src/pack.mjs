@@ -48,9 +48,10 @@ export function packExtension(manifestPath) {
   }
   let agentEntries;
   if (agent !== undefined) {
-    requireKeys(agent, ['skills', 'context', 'beforeTool', 'subagents'], 'agent');
+    requireKeys(agent, ['skills', 'context', 'beforeTool', 'subagents', 'beforeTurn'], 'agent');
     const beforeTool = agent.beforeTool === undefined ? undefined : compileToolPolicies(root, agent.beforeTool);
     const subagents = agent.subagents === undefined ? undefined : validateSubagents(agent.subagents);
+    const beforeTurn = agent.beforeTurn === undefined ? undefined : compileTurnPolicy(root, agent.beforeTurn);
     if (agent.context !== undefined) {
       requireText(agent.context, 1024, 'Agent context', true);
       capabilities.push('agent.context.publish');
@@ -60,11 +61,12 @@ export function packExtension(manifestPath) {
       capabilities.push('agent.skill.publish');
     }
     if (beforeTool) capabilities.push('agent.tool-policy.publish');
+    if (beforeTurn) capabilities.push('agent.turn-policy.publish');
     if (subagents) capabilities.push('agent.subagent-preset.publish');
-    if (agent.context === undefined && agent.skills === undefined && beforeTool === undefined && subagents === undefined) {
+    if (agent.context === undefined && agent.skills === undefined && beforeTool === undefined && subagents === undefined && beforeTurn === undefined) {
       throw new Error('The agent section must declare a contribution.');
     }
-    agentEntries = { context: agent.context, skills: agent.skills, beforeTool, subagents };
+    agentEntries = { context: agent.context, skills: agent.skills, beforeTool, subagents, beforeTurn };
   }
   const providerEntries = providers === undefined ? undefined : compileProviders(root, providers);
   const workflowEntries = workflows === undefined ? undefined : compileWorkflows(root, workflows);
@@ -72,7 +74,7 @@ export function packExtension(manifestPath) {
   if (providerEntries?.search) capabilities.push('provider.search.publish');
   if (providerEntries?.model) capabilities.push('provider.model.publish');
   const output = JSON.stringify({
-    schemaVersion: client?.conversation ? 11 : agentEntries?.subagents ? 10 : workflowEntries ? 9 : agentEntries?.beforeTool ? 8 :
+    schemaVersion: agentEntries?.beforeTurn ? 12 : client?.conversation ? 11 : agentEntries?.subagents ? 10 : workflowEntries ? 9 : agentEntries?.beforeTool ? 8 :
       providerEntries?.model ? 7 : providerEntries?.search ? 6 : agentEntries ? 5 : compiled.length ? 4 : client?.workbenchPanel ? 3 : client ? 2 : 1,
     id, version, title, description,
     host: { api: 1, minVersion: '0.1.0' }, capabilities, tools: compiled, commands, client, agent: agentEntries, providers: providerEntries, workflows: workflowEntries,
@@ -153,6 +155,12 @@ function compileToolPolicies(root, policies) {
     return { name: policy.name, tools: policy.tools,
       source: compileEntry(root, policy.entry, 'return (input) => exports.default(JSON.parse(input));') };
   });
+}
+
+function compileTurnPolicy(root, policy) {
+  requireKeys(policy, ['name', 'entry'], 'before-turn policy');
+  if (!matches(policy.name, SLUG)) throw new Error('Invalid turn policy name.');
+  return { name: policy.name, source: compileEntry(root, policy.entry, 'return (input) => exports.default(JSON.parse(input));') };
 }
 
 function compileProviders(root, providers) {

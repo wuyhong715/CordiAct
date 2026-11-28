@@ -17,6 +17,8 @@
 
 `examples/web-fetch-policy.json` 演示工具前策略。`BeforeToolPolicy` 接收工具 ID、已声明参数的存在情况和参数数量，返回 `block` 或 `continue`。宿主独立完成工具授权和审批。
 
+[`examples/attachment-turn-policy.json`](examples/attachment-turn-policy.json) 演示回合准入。`BeforeTurnPolicy` 接收 `hasText` 和 `attachmentCount`，返回 `block` 或 `continue`。启用示例后，仅发送附件会被拦截，原草稿仍可编辑。
+
 `examples/normalize-workflow.json` 演示四步以内的文本工作流。工作流在工作区插件页由用户显式运行，使用现有 Job 列表、进度、取消和输出限制。
 
 [`examples/review-subagent.json`](examples/review-subagent.json) 演示纯文本子 Agent 预设。用户启用后，父 Agent 可通过 `list_children` 查看预设，并在 `delegate_task` 中传入 `preset: "review-subagent.review"`。

@@ -302,6 +302,7 @@ class BundledConversationPlugins private constructor(
     internal val toolResultCards = com.cordiact.app.experience.builtinToolResultDirectory()
     internal val packageAgentContributions = com.cordiact.core.plugin.PackageAgentContributions()
     internal val packageToolPolicies = com.cordiact.core.plugin.PackageToolPolicies()
+    internal val packageTurnPolicies = com.cordiact.core.plugin.PackageTurnPolicies()
     internal val packageModelContributions = com.cordiact.core.plugin.PackageModelContributions()
     internal val packageWorkflows by lazy {
         com.cordiact.core.plugin.PackageWorkflows(jobRegistry, java.util.concurrent.Executors.newFixedThreadPool(2) { task ->
@@ -343,6 +344,7 @@ class BundledConversationPlugins private constructor(
             scriptRuntime = scriptRuntime,
             agentContributions = packageAgentContributions,
             toolPolicies = packageToolPolicies,
+            turnPolicies = packageTurnPolicies,
             searchContributions = searchRegistry?.let { com.cordiact.core.plugin.PackageSearchContributions(it) },
             modelContributions = packageModelContributions,
             retireModelProvider = retireModelProvider,

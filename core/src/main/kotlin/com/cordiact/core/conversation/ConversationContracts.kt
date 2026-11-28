@@ -4,6 +4,7 @@ import com.cordiact.core.attachment.MessagePart
 import com.cordiact.core.attachment.MessageParts
 
 import com.cordiact.core.plugin.ManagedPlugin
+import com.cordiact.core.plugin.PluginEventKey
 import com.cordiact.core.plugin.PluginSpec
 import com.cordiact.core.plugin.PluginTarget
 import com.cordiact.core.tool.ToolHistoryReceipt
@@ -13,6 +14,9 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 /** Common typed model identity. Provider-specific configuration stays inside the adapter plugin. */
 data class ModelId(val providerId: String, val modelId: String)
+
+/** Post-turn notification for trusted host observers. The payload is the session ID. */
+val CONVERSATION_TURN_COMPLETED = PluginEventKey("conversation/turn-completed", String::class.java)
 
 data class ModelDescriptor(
     val id: ModelId,

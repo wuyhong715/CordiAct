@@ -18,6 +18,7 @@ import com.cordiact.core.plugin.PackageAgentContributions
 import com.cordiact.core.plugin.PackageSearchContributions
 import com.cordiact.core.plugin.PackageModelContributions
 import com.cordiact.core.plugin.PackageToolPolicies
+import com.cordiact.core.plugin.PackageTurnPolicies
 import com.cordiact.core.plugin.PackageWorkflows
 
 /**
@@ -41,6 +42,7 @@ class DeclarativePackagePlugin(
     private val retireModelProvider: (PackageModelContributions.Offer) -> Unit = {},
     private val toolPolicies: PackageToolPolicies? = null,
     private val workflows: PackageWorkflows? = null,
+    private val turnPolicies: PackageTurnPolicies? = null,
 ) : RuntimeAwarePlugin {
     override val spec: PluginSpec = extensionPackageSpec(manifest)
 
@@ -65,6 +67,11 @@ class DeclarativePackagePlugin(
             }
             if (!manifest.agent?.beforeTool.isNullOrEmpty()) {
                 checkNotNull(toolPolicies) { "Host does not provide package tool policies" }.register(
+                    context, manifest, checkNotNull(scriptRuntime) { "Isolated script runtime unavailable" }, admitted,
+                )
+            }
+            if (manifest.agent?.beforeTurn != null) {
+                checkNotNull(turnPolicies) { "Host does not provide package turn policies" }.register(
                     context, manifest, checkNotNull(scriptRuntime) { "Isolated script runtime unavailable" }, admitted,
                 )
             }

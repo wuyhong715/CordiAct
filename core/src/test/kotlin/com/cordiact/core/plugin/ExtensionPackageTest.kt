@@ -10,6 +10,27 @@ import kotlin.test.assertTrue
 
 class ExtensionPackageTest {
     @Test
+    fun `turn policy requires schema twelve and explicit capability`() {
+        val json = """
+            {"schemaVersion":12,"id":"turn-policy","version":"1.0.0","title":"Policy","description":"Review turns",
+            "host":{"api":1,"minVersion":"0.1.0"},"capabilities":["agent.turn-policy.publish","ui.conversation.publish"],
+            "tools":[],"commands":[],"agent":{"beforeTurn":{"name":"check-turn","source":"(_) => 'continue'"}},
+            "client":{"conversation":{"messages":[{"event":"user.message","title":"Review","lines":["Ready"]}]}}}
+        """.trimIndent()
+        val manifest = ExtensionPackageSource.compile(json.encodeToByteArray())
+        assertEquals("check-turn", manifest.agent?.beforeTurn?.name)
+        assertNotNull(manifest.client?.conversation)
+        assertEquals(PluginTarget.ANDROID_ISOLATED_JS, extensionPackageSpec(manifest).target)
+        for (invalid in listOf(
+            json.replace("\"schemaVersion\":12", "\"schemaVersion\":11"),
+            json.replace("\"agent.turn-policy.publish\",", ""),
+            json.replace("\"schemaVersion\":12", "\"schemaVersion\":13"),
+        )) {
+            assertFailsWith<IllegalArgumentException> { ExtensionPackageSource.compile(invalid.encodeToByteArray()) }
+        }
+    }
+
+    @Test
     fun `valid package compiles tools commands and digest`() {
         val manifest = ExtensionPackageSource.compile(source())
         assertEquals("quick-notes", manifest.id)
@@ -120,7 +141,7 @@ class ExtensionPackageTest {
             "empty client" to text(v2Source(client = "{}")),
             "version one client" to validV1.replaceFirst("{", "{\"client\": $validClient,"),
             "version one UI capability" to validV1.replace("\"tool.publish\"", "\"tool.publish\", \"ui.settings.publish\""),
-            "unsupported schema" to validV2.replace("\"schemaVersion\": 2", "\"schemaVersion\": 12"),
+            "unsupported schema" to validV2.replace("\"schemaVersion\": 2", "\"schemaVersion\": 13"),
             "fractional schema" to validV2.replace("\"schemaVersion\": 2", "\"schemaVersion\": 2.0"),
             "string schema" to validV2.replace("\"schemaVersion\": 2", "\"schemaVersion\": \"2\""),
             "host API 2" to validV2.replace("\"api\": 1", "\"api\": 2"),

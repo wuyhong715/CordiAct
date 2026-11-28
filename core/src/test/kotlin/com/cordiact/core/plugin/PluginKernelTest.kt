@@ -4,11 +4,46 @@ import kotlin.test.*
 
 class PluginKernelTest {
     private val text = ServiceKey("text", String::class.java)
+    private val turn = PluginEventKey("turn", String::class.java)
     private fun plugin(required: Set<ServiceKey<*>> = emptySet(), start: (PluginContext) -> Unit) =
         object : ContextPlugin {
             override val requiredServices = required
             override fun start(context: PluginContext) = start(context)
         }
+
+    @Test fun `typed events follow exact scope and are withdrawn with the plugin`() {
+        val kernel = PluginKernel()
+        val seen = mutableListOf<String>()
+        val workspace = PluginInstanceId("listener", "workspace")
+        kernel.register(workspace, plugin { it.on(turn) { event -> seen += event } })
+        kernel.enable(workspace)
+        kernel.emit(turn, "local", workspaceId = "workspace")
+        kernel.emit(turn, "foreign", workspaceId = "other")
+        assertEquals(listOf("local"), seen)
+        kernel.disable(workspace)
+        kernel.emit(turn, "after", workspaceId = "workspace")
+        assertEquals(listOf("local"), seen)
+    }
+
+    @Test fun `event failures are independent and withdrawal skips a pending listener`() {
+        val kernel = PluginKernel()
+        val first = PluginInstanceId("first")
+        val retiring = PluginInstanceId("retiring")
+        val last = PluginInstanceId("last")
+        val failure = IllegalStateException("listener")
+        val seen = mutableListOf<String>()
+        kernel.register(first, plugin {
+            it.on(turn) {
+                kernel.disable(retiring)
+                throw failure
+            }
+        })
+        kernel.register(retiring, plugin { it.on(turn) { event -> seen += "retired:$event" } })
+        kernel.register(last, plugin { it.on(turn) { event -> seen += event } })
+        listOf(first, retiring, last).forEach(kernel::enable)
+        assertEquals(listOf<Exception>(failure), kernel.emit(turn, "finished"))
+        assertEquals(listOf("finished"), seen)
+    }
 
     @Test fun `dependencies wait stop consumers first and restart`() {
         val kernel = PluginKernel()

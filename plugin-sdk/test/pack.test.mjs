@@ -115,3 +115,13 @@ test('packs message subscriptions and cards for the package own tools', () => {
   assert.equal(packed.client.conversation.messages[0].event, 'assistant.message');
   assert.equal(packed.client.conversation.toolResults[0].tool, packed.tools[0].name);
 });
+
+test('packs a before-turn policy with its own capability', () => {
+  const path = fileURLToPath(new URL('../examples/attachment-turn-policy.json', import.meta.url));
+  const packed = JSON.parse(packExtension(path));
+  assert.equal(packed.schemaVersion, 12);
+  assert.deepEqual(packed.capabilities, ['agent.turn-policy.publish']);
+  const invoke = runInNewContext(packed.agent.beforeTurn.source);
+  assert.equal(invoke(JSON.stringify({ hasText: false, attachmentCount: 1 })), 'block');
+  assert.equal(invoke(JSON.stringify({ hasText: true, attachmentCount: 1 })), 'continue');
+});

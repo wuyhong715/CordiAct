@@ -557,6 +557,7 @@ private fun ManifestDetails(manifest: ExtensionPackageManifest) {
             ExtensionPackageCapability.SEARCH_PROVIDER_PUBLISH -> "在工作区发布隔离搜索服务"
             ExtensionPackageCapability.MODEL_PROVIDER_PUBLISH -> "在工作区发布可审查的模型声明"
             ExtensionPackageCapability.AGENT_TOOL_POLICY_PUBLISH -> "在当前工作区阻止指定工具调用"
+            ExtensionPackageCapability.AGENT_TURN_POLICY_PUBLISH -> "根据输入是否含文字及附件数量，阻止工作区中的对话回合"
             ExtensionPackageCapability.WORKFLOW_PUBLISH -> "提供由用户启动的隔离文本工作流"
             ExtensionPackageCapability.AGENT_SUBAGENT_PRESET_PUBLISH -> "提供工作区子 Agent 预设"
             ExtensionPackageCapability.UI_CONVERSATION_PUBLISH -> "为会话消息和本包工具结果提供展示"
@@ -586,6 +587,7 @@ private fun ManifestDetails(manifest: ExtensionPackageManifest) {
         agent.skills.forEach { skill -> Text("技能 ${manifest.id}.${skill.name}：${skill.description}") }
         agent.context?.let { Text("对话参考上下文\n$it") }
         agent.beforeTool.forEach { policy -> Text("工具前策略 ${policy.name} · ${policy.tools.joinToString("、")}") }
+        agent.beforeTurn?.let { Text("回合准入策略：${it.name}（Android 10+）") }
         agent.subagents.forEach { preset ->
             Text("子 Agent 预设 ${preset.title} · ${manifest.id}.${preset.name}")
             Text(preset.instructions)

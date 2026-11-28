@@ -11,6 +11,7 @@ export interface AgentContribution {
   skills?: readonly AgentSkill[];
   context?: string;
   beforeTool?: readonly BeforeToolDeclaration[];
+  beforeTurn?: BeforeTurnDeclaration;
   subagents?: readonly SubagentPresetDeclaration[];
 }
 
@@ -37,6 +38,10 @@ export interface BeforeToolRequest {
 }
 
 export type BeforeToolPolicy = (request: Readonly<BeforeToolRequest>) => 'continue' | 'block';
+
+export interface BeforeTurnDeclaration { name: string; entry: string }
+export interface BeforeTurnRequest { hasText: boolean; attachmentCount: number }
+export type BeforeTurnPolicy = (request: Readonly<BeforeTurnRequest>) => 'continue' | 'block';
 
 export interface SearchRequest {
   query: string;

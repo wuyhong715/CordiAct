@@ -5,6 +5,11 @@ data class ServiceKey<T : Any>(val name: String, val type: Class<T>) {
     init { require(name.isNotBlank()) }
 }
 
+/** A typed, scope-addressed event seam for trusted host plugins. */
+data class PluginEventKey<T : Any>(val name: String, val type: Class<T>) {
+    init { require(name.isNotBlank()) }
+}
+
 /** Exactly one visibility namespace. No implicit cross-workspace or cross-session fallback. */
 data class PluginInstanceId(val pluginId: String, val workspaceId: String? = null, val sessionId: String? = null) {
     init {
@@ -33,6 +38,7 @@ class PluginContext internal constructor(
     val scope: PluginScope,
     private val lookup: (ServiceKey<*>) -> Any?,
     private val publish: (ServiceKey<*>, Any) -> Unit,
+    private val subscribe: (PluginEventKey<*>, (Any) -> Unit) -> AutoCloseable,
     private val publicationActive: () -> Boolean,
 ) {
     /** Lock-free read for registries. A contribution is callable only after its start commits. */
@@ -47,6 +53,10 @@ class PluginContext internal constructor(
         require(key.type.isInstance(value)) { "Invalid service value for '${key.name}'" }
         publish(key, value)
     }
+
+    /** Register a typed listener owned by this plugin scope. It is removed during scope cleanup. */
+    fun <T : Any> on(key: PluginEventKey<T>, handler: (T) -> Unit): AutoCloseable =
+        subscribe(key) { handler(key.type.cast(it)) }
     fun effect(dispose: () -> Unit): AutoCloseable = scope.effect(dispose)
 }
 
@@ -78,6 +88,11 @@ class PluginKernel(
     private data class Address(val workspace: String?, val session: String?, val name: String)
     private val entries = linkedMapOf<PluginInstanceId, Entry>()
     private val bindings = linkedMapOf<Address, Pair<ServiceKey<*>, Binding>>()
+    private class EventBinding(val deliver: (Any) -> Unit, val isActive: () -> Boolean) {
+        @Volatile var registered = true
+    }
+    private val eventLock = Any()
+    private val eventBindings = linkedMapOf<Pair<Address, PluginEventKey<*>>, MutableList<EventBinding>>()
     private val started = mutableListOf<Entry>()
     private var transitioning = false
 
@@ -121,6 +136,26 @@ class PluginKernel(
     }
 
     @Synchronized fun statuses(): List<PluginInstanceStatus> = entries.keys.map(::status)
+
+    /**
+     * Dispatch in registration order in the exact namespace. Withdrawal prevents later dispatches;
+     * a handler already admitted may finish. Listener failures are returned independently.
+     */
+    fun <T : Any> emit(
+        key: PluginEventKey<T>, event: T, workspaceId: String? = null, sessionId: String? = null,
+    ): List<Exception> {
+        require(key.type.isInstance(event)) { "Invalid event value for '${key.name}'" }
+        val listeners = synchronized(eventLock) {
+            eventBindings[Address(workspaceId, sessionId, key.name) to key].orEmpty().toList()
+        }
+        return buildList {
+            for (listener in listeners) {
+                if (listener.registered && listener.isActive()) {
+                    try { listener.deliver(event) } catch (failure: Exception) { add(failure) }
+                }
+            }
+        }
+    }
 
     @Synchronized fun status(id: PluginInstanceId): PluginInstanceStatus {
         val entry = requireEntry(id)
@@ -204,6 +239,18 @@ class PluginKernel(
             bindings[address] = key to published
             scope.effect { synchronized(this) {
                 if (bindings[address]?.second === published) bindings.remove(address)
+            } }
+        } }, subscribe = { key, handler -> synchronized(this) {
+            check(entry.state == PluginInstanceState.STARTING && entry.publication === publication) {
+                "Subscribe to events only during this instance's start"
+            }
+            val address = Address(entry.id.workspaceId, entry.id.sessionId, key.name) to key
+            val binding = EventBinding(handler) { publication.active && scope.isOpen }
+            synchronized(eventLock) { eventBindings.getOrPut(address) { mutableListOf() }.add(binding) }
+            scope.effect { synchronized(eventLock) {
+                binding.registered = false
+                eventBindings[address]?.remove(binding)
+                if (eventBindings[address].isNullOrEmpty()) eventBindings.remove(address)
             } }
         } }, publicationActive = { publication.active })
         try {
