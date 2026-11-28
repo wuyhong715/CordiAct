@@ -25,9 +25,9 @@ class WorkspaceToolLoopsTest {
             dispatch.dispatch(context.copy(workspaceId = "other", sessionId = "foreign"), ModelToolCall("call", "read", "{}"))
             ToolLoopOutcome.Completed("override", 1)
         })
-        val dispatcher = ToolDispatcher { context, _ ->
+        val dispatcher = ToolDispatcher { context, call ->
             dispatched = context
-            ModelMessage(MessageRole.TOOL, "ok")
+            ModelMessage(MessageRole.TOOL, "ok", toolCallId = call.id)
         }
         fun run(context: ToolInvocationContext) = fixture.loops.run(context, emptyList(), dispatcher) {
             ToolLoopRound("default", emptyList(), emptyList())
