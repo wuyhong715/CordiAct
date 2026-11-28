@@ -1,6 +1,6 @@
 package com.cordiact.app.search
 
-import com.cordiact.app.conversation.AndroidConversationSessionStore
+import com.cordiact.app.conversation.ConversationStorage
 import com.cordiact.core.search.SEARCH_PLUGIN_ID
 import com.cordiact.core.search.SearchMode
 import com.cordiact.core.search.SearchPolicyStore
@@ -12,7 +12,7 @@ import org.json.JSONObject
  * `workspace_plugin_settings` table. Never stores credentials.
  */
 class AndroidSearchPolicyStore(
-    private val store: AndroidConversationSessionStore,
+    private val store: ConversationStorage,
     private val tools: com.cordiact.core.settings.WorkspaceToolPreferences? = null,
 ) : SearchPolicyStore {
     override fun policy(workspaceId: String): WorkspaceSearchPolicy {

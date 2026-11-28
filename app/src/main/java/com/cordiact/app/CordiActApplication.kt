@@ -4,7 +4,10 @@ import android.app.Application
 import android.util.Log
 import android.os.Process
 import com.cordiact.app.automation.AutomationRuntime
-import com.cordiact.app.conversation.AndroidConversationSessionStore
+import com.cordiact.app.conversation.AndroidConversationStorageProvider
+import com.cordiact.app.conversation.ConversationAttachmentStorage
+import com.cordiact.app.conversation.ConversationStorage
+import com.cordiact.app.conversation.ConversationStorageProvider
 import com.cordiact.app.conversation.BundledConversationPluginCatalog
 import com.cordiact.app.conversation.BundledConversationPlugins
 import com.cordiact.app.plugin.AndroidAuthoredPluginInstallStore
@@ -92,14 +95,14 @@ import com.cordiact.core.tool.ToolInvocationContext
 import com.cordiact.interaction.MutableFillValueStore
 
 /** Opens the plugin host, recovers durable state, then registers and enables core conversation plugins. */
-class CordiActApplication : Application(), androidx.work.Configuration.Provider {
+open class CordiActApplication : Application(), androidx.work.Configuration.Provider {
     // Supports on-demand initialization when AndroidX Startup is not installed by the host.
     override val workManagerConfiguration: androidx.work.Configuration
         get() = androidx.work.Configuration.Builder().build()
 
     lateinit var pluginLifecycle: AndroidPluginLifecycle
         private set
-    lateinit var conversationStore: AndroidConversationSessionStore
+    lateinit var conversationStore: ConversationStorage
         private set
     lateinit var conversationCatalog: BundledConversationPlugins
         private set
@@ -231,7 +234,7 @@ class CordiActApplication : Application(), androidx.work.Configuration.Provider 
     val fillValues: MutableFillValueStore
         get() = conversationCatalog.fillValueStore
     /** Attachment catalogue (drafts included) and the import pipeline, for the composer. */
-    val attachments: com.cordiact.app.attachment.AndroidAttachmentCatalog get() = conversationCatalog.attachmentCatalog
+    val attachments: ConversationAttachmentStorage get() = conversationCatalog.attachmentCatalog
     val attachmentImporter: com.cordiact.app.attachment.AndroidAttachmentImportService
         get() = conversationCatalog.attachmentImportService
 
@@ -525,6 +528,8 @@ class CordiActApplication : Application(), androidx.work.Configuration.Provider 
         }
     }
 
+    protected open fun conversationStorageProvider(): ConversationStorageProvider = AndroidConversationStorageProvider
+
     override fun onCreate() {
         super.onCreate()
         if (Process.isIsolated()) {
@@ -537,6 +542,7 @@ class CordiActApplication : Application(), androidx.work.Configuration.Provider 
         providerApiKeyStore = AndroidProviderApiKeyStore(this)
         conversationCatalog = BundledConversationPlugins.create(
             this,
+            storageProvider = conversationStorageProvider(),
             // Attachment access is audited in the same tamper-evident log as other security
             // events. The vault is resolved lazily, on the first attachment event.
             attachmentAudit = { event ->

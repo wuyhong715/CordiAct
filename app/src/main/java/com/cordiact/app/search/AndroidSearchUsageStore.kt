@@ -1,6 +1,6 @@
 package com.cordiact.app.search
 
-import com.cordiact.app.conversation.AndroidConversationSessionStore
+import com.cordiact.app.conversation.ConversationStorage
 import com.cordiact.core.search.SEARCH_PLUGIN_ID
 import com.cordiact.core.search.SearchUsageStore
 import java.time.YearMonth
@@ -12,7 +12,7 @@ import java.time.YearMonth
  * reset job, and an old key simply stops being read.
  */
 class AndroidSearchUsageStore(
-    private val store: AndroidConversationSessionStore,
+    private val store: ConversationStorage,
 ) : SearchUsageStore {
     override fun usedThisMonth(workspaceId: String): Int {
         val raw = store.pluginSetting(workspaceId, SEARCH_PLUGIN_ID, key()) ?: return 0

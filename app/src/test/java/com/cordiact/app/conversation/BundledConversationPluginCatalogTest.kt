@@ -86,6 +86,38 @@ class BundledConversationPluginCatalogTest {
     }
 
     @Test
+    fun nativeStorageProviderBindsOneStoreToWorkspaceSessionAndAttachmentConsumers() {
+        var opens = 0
+        var attachmentBindings = 0
+        val storage = object : ConversationStorage by conversationStore {
+            override fun attachments(
+                blobs: com.cordiact.core.attachment.AttachmentBlobStore,
+                audit: com.cordiact.core.attachment.AttachmentAuditSink,
+            ): ConversationAttachmentStorage {
+                attachmentBindings++
+                return conversationStore.attachments(blobs, audit)
+            }
+        }
+        val catalog = BundledConversationPlugins.create(context, storageProvider = { _, _ ->
+            opens++
+            storage
+        })
+        val plugins = catalog.create(stateLookup = object : ToolPluginStateLookup {
+            override fun state(pluginId: String) = manager.get(pluginId)?.state
+        })
+        plugins.forEach { manager.registerBundledSystem(it); manager.enable(it.spec.id) }
+        val workspace = catalog.workspaceManager.create("Provider workspace")
+        val sessions = plugins.filterIsInstance<SessionManagerService>().single()
+        val session = sessions.createSession(workspace.id, "Provider session")
+        sessions.appendMessage(session.id, com.cordiact.core.conversation.MessageRole.USER, "Persisted through the selected store")
+        assertEquals(session.id, conversationStore.list(workspace.id).single().id)
+        assertEquals("Persisted through the selected store", catalog.conversationStore.messages(session.id).single().content)
+        assertTrue(storage === catalog.conversationStore)
+        assertEquals(1, opens)
+        assertEquals(1, attachmentBindings)
+    }
+
+    @Test
     fun providerConfigurationPersistsWithoutApiCredentials() {
         val preferencesName = "model_provider_config"
         context.getSharedPreferences(preferencesName, Context.MODE_PRIVATE).edit().clear().commit()

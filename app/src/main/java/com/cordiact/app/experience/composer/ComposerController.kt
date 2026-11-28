@@ -16,7 +16,7 @@ import java.util.UUID
 class ComposerController(
     private val app: android.content.Context,
     private val scope: CoroutineScope,
-    private val catalogue: () -> com.cordiact.app.attachment.AndroidAttachmentCatalog,
+    private val catalogue: () -> com.cordiact.app.conversation.ConversationAttachmentStorage,
     private val importer: () -> com.cordiact.app.attachment.AndroidAttachmentImportService,
 ) {
     constructor(app: CordiActApplication, scope: CoroutineScope) : this(app, scope, { app.attachments }, { app.attachmentImporter })

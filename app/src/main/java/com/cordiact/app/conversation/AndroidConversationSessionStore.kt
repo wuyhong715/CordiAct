@@ -6,6 +6,9 @@ import android.database.Cursor
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 import com.cordiact.app.attachment.AttachmentDatabaseSchema
+import com.cordiact.app.attachment.AndroidAttachmentCatalog
+import com.cordiact.core.attachment.AttachmentAuditSink
+import com.cordiact.core.attachment.AttachmentBlobStore
 import com.cordiact.core.attachment.AttachmentErrorCode
 import com.cordiact.core.attachment.AttachmentException
 import com.cordiact.core.attachment.AttachmentId
@@ -14,22 +17,17 @@ import com.cordiact.core.attachment.MessagePart
 import com.cordiact.core.attachment.MessageParts
 import com.cordiact.core.attachment.MessagePartsJson
 import com.cordiact.core.context.CompactionRecord
-import com.cordiact.core.context.ContextCompactionStore
 import com.cordiact.core.conversation.ConversationMessage
 import com.cordiact.core.conversation.ConversationSession
-import com.cordiact.core.conversation.ConversationSessionStore
 import com.cordiact.core.conversation.MessageRole
 import com.cordiact.core.conversation.normalizeSessionTitle
 import com.cordiact.core.conversation.firstUserSentenceTitle
 import com.cordiact.core.conversation.SessionKind
 import com.cordiact.core.subagent.AgentRunRecord
-import com.cordiact.core.subagent.AgentRunStore
 import com.cordiact.core.subagent.ChildRunState
 import com.cordiact.core.workspace.DEFAULT_WORKSPACE_ID
 import com.cordiact.core.workspace.DEFAULT_WORKSPACE_NAME
 import com.cordiact.core.workspace.Workspace
-import com.cordiact.core.workspace.WorkspaceStore
-import com.cordiact.core.tool.MutableToolPreferenceStore
 import java.util.UUID
 
 /** Shared durable source of truth for Workspace and conversation records. */
@@ -37,8 +35,10 @@ class AndroidConversationSessionStore(
     context: Context,
     databaseName: String = DATABASE_NAME,
 ) : SQLiteOpenHelper(context.applicationContext, databaseName, null, DATABASE_VERSION),
-    ConversationSessionStore, WorkspaceStore, MutableToolPreferenceStore, AgentRunStore, ContextCompactionStore,
-    com.cordiact.core.jobs.JobStore {
+    ConversationStorage {
+
+    override fun attachments(blobs: AttachmentBlobStore, audit: AttachmentAuditSink): ConversationAttachmentStorage =
+        AndroidAttachmentCatalog(this, blobs, audit)
 
     /**
      * Foreign keys are off by default in SQLite; the attachment tables rely on `RESTRICT` to stop a
@@ -446,7 +446,7 @@ class AndroidConversationSessionStore(
     }
 
     /** Plugin-scoped Workspace setting. Secrets must never be stored here. */
-    fun pluginSetting(workspaceId: String, pluginId: String, key: String): String? = readableDatabase.query(
+    override fun pluginSetting(workspaceId: String, pluginId: String, key: String): String? = readableDatabase.query(
         TABLE_PLUGIN_SETTINGS,
         arrayOf(COL_SETTING_VALUE),
         "$COL_WORKSPACE_ID = ? AND $COL_PLUGIN_ID = ? AND $COL_SETTING_KEY = ?",
@@ -456,7 +456,7 @@ class AndroidConversationSessionStore(
         null,
     ).use { cursor -> if (cursor.moveToFirst()) cursor.getString(0) else null }
 
-    fun putPluginSetting(workspaceId: String, pluginId: String, key: String, value: String?) {
+    override fun putPluginSetting(workspaceId: String, pluginId: String, key: String, value: String?) {
         val db = writableDatabase
         val workspaceIsActive = db.query(
             TABLE_WORKSPACES,
