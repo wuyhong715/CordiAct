@@ -127,6 +127,10 @@ v9 要求 `workflow.publish` 和 `workflows` 中的一到四个工作流。每�
 
 `client.workbenchPanel.controls` 支持一到四个可展开区块，每项声明 `id`、`label`、`content` 和可选的 `initiallyExpanded`。包同时请求 `ui.workbench-panel.publish` 和 `ui.workbench-controls.publish`。可选的 `action` 引用同包 `sessionActions` 中的 ID，点击后将该动作的命令填入当前会话的空草稿，并切到会话供用户查看和发送。展开状态在同一个工作区的标签页和停靠面板间共享，重新启用时恢复声明默认值。使用 [SDK 示例](../../plugin-sdk/examples/interactive-workbench.json) 可直接打包。
 
+### 清单 v14 会话组件
+
+`client.components` 可为 `session.toolbar` 和 `composer.accessories` 各贡献一个菜单。使用 `text` 显示说明，使用 `label` 和 `children` 构建可展开组，或用 `action` 引用同包会话动作。每个菜单最多十二个节点、三层。工作区每个插槽最多同时接收两个扩展包组件。宿主按当前会话渲染，切换会话或停用时撤回旧菜单。命令按钮填入空草稿并返回会话，由用户确认是否发送。打包入口见 [SDK 示例](../../plugin-sdk/examples/session-components.json)。
+
 ## 安装、升级、回滚、迁移
 
 [ExtensionPackageInstaller](../../core/src/main/kotlin/com/cordiact/core/plugin/ExtensionPackageInstaller.kt) 只记录已验证的清单，不激活贡献：

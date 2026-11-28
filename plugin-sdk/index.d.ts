@@ -68,6 +68,18 @@ export interface WorkbenchControl {
   action?: string;
 }
 
+export type ClientComponentNode =
+  | { text: string }
+  | { action: string }
+  | { label: string; children: readonly ClientComponentNode[] };
+
+export interface ClientComponentDeclaration {
+  id: string;
+  slot: 'session.toolbar' | 'composer.accessories';
+  label: string;
+  nodes: readonly ClientComponentNode[];
+}
+
 export interface ModelProviderDeclaration {
   name: string;
   title: string;

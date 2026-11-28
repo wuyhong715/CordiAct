@@ -1,6 +1,7 @@
 package com.cordiact.interaction
 
 import com.cordiact.core.plugin.ExtensionPackageManifest
+import com.cordiact.core.plugin.ExtensionPackageComponent
 import com.cordiact.core.plugin.ExtensionPackageMessageEvent
 import com.cordiact.core.conversation.ToolHistoryFormat
 import com.cordiact.core.conversation.ToolHistoryProvenance
@@ -19,6 +20,7 @@ import kotlinx.coroutines.flow.asStateFlow
  */
 class WorkspaceClientContributions(
     private val commands: InteractionCommandRegistry,
+    private val publishComponent: ((PluginContext, SlotComponent, () -> Boolean) -> Unit)? = null,
     private val publishPanel: ((PluginContext, WorkbenchPanel, () -> Boolean) -> Unit)? = null,
 ) {
     class SettingsPage internal constructor(
@@ -35,6 +37,18 @@ class WorkspaceClientContributions(
         val context: InteractionContext,
         val action: SessionAction,
     )
+
+    class SlotComponent internal constructor(
+        val description: ExtensionPackageComponent,
+        private val workspaceId: String,
+        private val actions: Map<String, SessionAction>,
+        private val active: () -> Boolean,
+    ) {
+        fun offer(actionId: String, context: InteractionContext): SessionActionOffer? {
+            if (context.workspaceId != workspaceId || !active()) return null
+            return actions[actionId]?.let { SessionActionOffer(context, it) }
+        }
+    }
 
     class WorkbenchPanel internal constructor(
         val description: ExtensionPackageSettingsPage,
@@ -88,6 +102,7 @@ class WorkspaceClientContributions(
         val actions: List<SessionAction>,
         val messageNodes: Map<ExtensionPackageMessageEvent, MessageNode>,
         val toolResultCards: Map<ToolHistoryProvenance, ToolResultCard>,
+        val componentSlots: Set<com.cordiact.core.plugin.ExtensionPackageComponentSlot>,
         val active: () -> Boolean,
     )
 
@@ -137,6 +152,7 @@ class WorkspaceClientContributions(
                 ToolHistoryProvenance(instance.pluginId, "extension.${instance.pluginId}.${view.selector}",
                     ToolHistorySource.HOST_REGISTRATION, ToolHistoryFormat.BOUNDED_SUMMARY_V1, manifest.sha256) to ToolResultCard(view.title, view.lines)
             },
+            componentSlots = client.components.mapTo(linkedSetOf()) { it.slot },
             active = { context.isContributionActive() && admitted() },
         ), actionCommands)
         synchronized(lock) {
@@ -144,15 +160,23 @@ class WorkspaceClientContributions(
             require(registration.group.messageNodes.keys.all { event ->
                 registrations.values.count { it.group.workspaceId == workspace && event in it.group.messageNodes } < 4
             }) { "Too many package nodes for the same message event" }
+            require(registration.group.componentSlots.all { slot ->
+                registrations.values.count { it.group.workspaceId == workspace && slot in it.group.componentSlots } < 2
+            }) { "Too many package components for this slot" }
             registrations[instance] = registration
         }
         context.effect {
             synchronized(lock) { registrations.remove(instance, registration) }
             refreshAdmission()
         }
+        val actionsById = actions.associateBy { it.description.id }
         client.workbenchPanel?.let { panel ->
-            val publication = WorkbenchPanel(panel, workspace, actions.associateBy { it.description.id }, registration::isActive)
+            val publication = WorkbenchPanel(panel, workspace, actionsById, registration::isActive)
             checkNotNull(publishPanel) { "Host does not provide declarative workbench panels" }(context, publication, admitted)
+        }
+        client.components.forEach { component ->
+            val publication = SlotComponent(component, workspace, actionsById, registration::isActive)
+            checkNotNull(publishComponent) { "Host does not provide declarative slot components" }(context, publication, admitted)
         }
     }
 

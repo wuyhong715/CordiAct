@@ -23,6 +23,33 @@ import kotlin.test.assertTrue
 
 class WorkspaceClientContributionsTest {
     @Test
+    fun `slot components publish to their host and withdraw their draft action with the package`() {
+        val f = Fixture()
+        val json = """{
+            "schemaVersion":14,"id":"slot-pack","version":"1.0.0","title":"Slots","description":"Assistant controls",
+            "host":{"api":1,"minVersion":"0.1.0"},"capabilities":["command.publish","ui.session-action.publish","ui.components.publish"],
+            "tools":[],"commands":[{"name":"review-now","aliases":[],"description":"Review","text":"Review ready"}],
+            "client":{"sessionActions":[{"id":"show-review","label":"Add review","command":"review-now"}],"components":[
+                {"id":"header-help","slot":"session.toolbar","label":"Help","nodes":[{"text":"Review conversation"}]},
+                {"id":"draft-help","slot":"composer.accessories","label":"Review",
+                    "nodes":[{"label":"Commands","children":[{"action":"show-review"}]}]}
+            ]}
+        }""".trimIndent()
+        val page = f.packages.openPage("a")
+        val installed = f.install(page, json.byteInputStream())
+        assertTrue(f.components.isEmpty())
+        val enabled = assertIs<ExtensionPackageChange.Applied>(page.approveEnable(installed, true).commit()).record
+        assertEquals(listOf("session.toolbar", "composer.accessories"), f.components.map { it.description.slot.wireName })
+        val draft = f.components.last()
+        assertNull(draft.offer("show-review", f.b))
+        val offer = assertNotNull(draft.offer("show-review", f.a))
+        assertEquals("/review-now", f.catalog.draftInsertion(offer, f.a, "", false))
+        page.approveEnable(enabled, false).commit()
+        assertNull(draft.offer("show-review", f.a))
+        assertNull(f.catalog.draftInsertion(offer, f.a, "", false))
+    }
+
+    @Test
     fun `panel state is isolated and a retired panel cannot change state or offer its command`() {
         val f = Fixture()
         val json = """{
@@ -106,7 +133,8 @@ class WorkspaceClientContributionsTest {
         val commands = InteractionCommandRegistry { it in setOf(a, secondSession, b) }
         val tabs = TrustedWorkbenchTabs<String>()
         val panels = mutableMapOf<String, WorkspaceClientContributions.WorkbenchPanel>()
-        val catalog = WorkspaceClientContributions(commands) { context, panel, admitted ->
+        val components = mutableListOf<WorkspaceClientContributions.SlotComponent>()
+        val catalog = WorkspaceClientContributions(commands, publishComponent = { _, component, _ -> components += component }) { context, panel, admitted ->
             panels[requireNotNull(context.id.workspaceId)] = panel
             tabs.register(context, context.id.pluginId, panel.description.title, admitted = admitted)
         }

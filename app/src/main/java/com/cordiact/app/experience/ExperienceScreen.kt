@@ -266,6 +266,29 @@ private fun ExperienceContent(
         onDispose { viewLifecycle.removeObserver(observer) }
     }
     val canInsertSessionAction = !state.running && !state.stopping && composer.text.isEmpty() && composer.attachments.isEmpty()
+    fun insertPluginDraft(
+        offer: com.cordiact.interaction.WorkspaceClientContributions.SessionActionOffer,
+        stillVisible: () -> Boolean,
+        onInserted: () -> Unit,
+    ) {
+        val shownEpoch = viewEpoch
+        fun currentHost() = sameLoadedOwner() && !overview && viewEpoch == shownEpoch && stillVisible() &&
+            viewLifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED)
+        if (!currentHost()) return
+        sessionActionScope.launch {
+            try {
+                if (viewModel.insertSessionAction(offer, ::currentHost)) {
+                    promptToInsert = ""
+                    tabs.open(WorkTab.Session(offer.context.sessionId))
+                    onInserted()
+                }
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                if (currentHost()) viewModel.composerController.banner("无法验证会话动作，草稿未修改。")
+            }
+        }
+    }
     fun pluginHost(publication: PublishedTab, isLandscape: Boolean,
         onInspect: (ToolActivity) -> Unit, onArtifact: (String) -> Unit = {},
         isPresented: () -> Boolean = { tabs.active?.key == "p:${publication.id}" && publication in currentDisplayedTabs },
@@ -284,23 +307,9 @@ private fun ExperienceContent(
             offer: com.cordiact.interaction.WorkspaceClientContributions.SessionActionOffer,
             isStillVisible: () -> Boolean,
         ) {
-            val shownEpoch = viewEpoch
-            fun currentHost() = current() && !overview && viewEpoch == shownEpoch &&
-                offer.context.workspaceId == publication.owner.workspaceId && isStillVisible() &&
-                viewLifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED)
-            if (!currentHost()) return
-            sessionActionScope.launch {
-                try {
-                    if (viewModel.insertSessionAction(offer, ::currentHost)) {
-                        promptToInsert = ""
-                        tabs.open(WorkTab.Session(offer.context.sessionId))
-                    }
-                } catch (cancelled: kotlinx.coroutines.CancellationException) {
-                    throw cancelled
-                } catch (_: Exception) {
-                    if (currentHost()) viewModel.composerController.banner("无法验证会话动作，草稿未修改。")
-                }
-            }
+            insertPluginDraft(offer, {
+                current() && offer.context.workspaceId == publication.owner.workspaceId && isStillVisible()
+            }) {}
         }
     }
     val pluginWorkspace = state.workspace?.takeUnless { ownerPending || activeTab is WorkTab.Plugin }
@@ -337,12 +346,14 @@ private fun ExperienceContent(
             ) viewModel.newSession(tabWorkspace)
         })
         Row(verticalAlignment = Alignment.CenterVertically) {
-            clientSlots.Mount(ClientComponentSlot.SESSION_TOOLBAR, tabWorkspace, tabSession, landscape, create)
+            clientSlots.Mount(ClientComponentSlot.SESSION_TOOLBAR, tabWorkspace, tabSession, landscape,
+                canInsertAction = canInsertSessionAction && !state.archived, onInsertAction = ::insertPluginDraft, onCreateSession = create)
         }
     }
     val composerAccessories: @Composable () -> Unit = {
         if (!ownerPending && tabSession != null && tabWorkspace != null) {
-            clientSlots.Mount(ClientComponentSlot.COMPOSER_ACCESSORIES, tabWorkspace, tabSession, landscape)
+            clientSlots.Mount(ClientComponentSlot.COMPOSER_ACCESSORIES, tabWorkspace, tabSession, landscape,
+                canInsertAction = canInsertSessionAction && !state.archived, onInsertAction = ::insertPluginDraft)
         }
     }
     val workbench: @Composable () -> Unit = {

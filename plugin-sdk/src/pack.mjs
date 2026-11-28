@@ -22,9 +22,9 @@ export function packExtension(manifestPath) {
     throw new Error('Declare at least one contribution.');
   }
   if (client !== undefined) {
-    requireKeys(client, ['settingsPage', 'sessionActions', 'workbenchPanel', 'conversation'], 'client');
+    requireKeys(client, ['settingsPage', 'sessionActions', 'workbenchPanel', 'conversation', 'components'], 'client');
     if (client.settingsPage?.controls !== undefined) throw new Error('Controls are only available in workbench panels.');
-    if (!client.settingsPage && !client.sessionActions?.length && !client.workbenchPanel && client.conversation === undefined) {
+    if (!client.settingsPage && !client.sessionActions?.length && !client.workbenchPanel && client.conversation === undefined && client.components === undefined) {
       throw new Error('The client section must declare a contribution.');
     }
   }
@@ -47,6 +47,10 @@ export function packExtension(manifestPath) {
   if (panelControls !== undefined) {
     validatePanelControls(panelControls, client.sessionActions ?? []);
     capabilities.push('ui.workbench-controls.publish');
+  }
+  if (client?.components !== undefined) {
+    validateComponents(client.components, client.sessionActions ?? []);
+    capabilities.push('ui.components.publish');
   }
   if (client?.conversation !== undefined) {
     validateConversation(client.conversation, names);
@@ -80,13 +84,52 @@ export function packExtension(manifestPath) {
   if (providerEntries?.search) capabilities.push('provider.search.publish');
   if (providerEntries?.model) capabilities.push('provider.model.publish');
   const output = JSON.stringify({
-    schemaVersion: panelControls ? 13 : agentEntries?.beforeTurn ? 12 : client?.conversation ? 11 : agentEntries?.subagents ? 10 : workflowEntries ? 9 : agentEntries?.beforeTool ? 8 :
+    schemaVersion: client?.components ? 14 : panelControls ? 13 : agentEntries?.beforeTurn ? 12 : client?.conversation ? 11 : agentEntries?.subagents ? 10 : workflowEntries ? 9 : agentEntries?.beforeTool ? 8 :
       providerEntries?.model ? 7 : providerEntries?.search ? 6 : agentEntries ? 5 : compiled.length ? 4 : client?.workbenchPanel ? 3 : client ? 2 : 1,
     id, version, title, description,
     host: { api: 1, minVersion: '0.1.0' }, capabilities, tools: compiled, commands, client, agent: agentEntries, providers: providerEntries, workflows: workflowEntries,
   }, null, 2) + '\n';
   if (Buffer.byteLength(output) > MAX_PACKAGE_BYTES) throw new Error('Extension exceeds the 32 KiB package limit.');
   return output;
+}
+
+function validateComponents(components, actions) {
+  if (!Array.isArray(components) || components.length < 1 || components.length > 2) throw new Error('Declare one or two slot components.');
+  if (!Array.isArray(actions)) throw new Error('Session actions must be an array.');
+  const ids = new Set();
+  const slots = new Set();
+  for (const component of components) {
+    requireKeys(component, ['id', 'slot', 'label', 'nodes'], 'slot component');
+    if (!matches(component.id, SLUG) || ids.has(component.id)) throw new Error('Invalid or duplicate component ID.');
+    if (!['session.toolbar', 'composer.accessories'].includes(component.slot) || slots.has(component.slot)) {
+      throw new Error('Unknown or duplicate client component slot.');
+    }
+    ids.add(component.id);
+    slots.add(component.slot);
+    requireText(component.label, 120, 'component label');
+    let budget = 12;
+    function validateNodes(nodes, depth) {
+      if (!Array.isArray(nodes) || nodes.length < 1 || depth > 3) throw new Error('Invalid component node list or depth.');
+      for (const node of nodes) {
+        if (budget-- <= 0) throw new Error('Too many component nodes.');
+        requireKeys(node, ['text', 'action', 'label', 'children'], 'component node');
+        const keys = Object.keys(node);
+        if (keys.length === 1 && keys.includes('text')) {
+          requireText(node.text, 480, 'component text', true);
+        } else if (keys.length === 1 && keys.includes('action')) {
+          if (!matches(node.action, SLUG) || !actions.some(action => action?.id === node.action)) {
+            throw new Error('Component must name a session action from this package.');
+          }
+        } else if (keys.length === 2 && keys.includes('label') && keys.includes('children')) {
+          requireText(node.label, 120, 'component group label');
+          validateNodes(node.children, depth + 1);
+        } else {
+          throw new Error('Declare a text, action, or group component node.');
+        }
+      }
+    }
+    validateNodes(component.nodes, 1);
+  }
 }
 
 function validatePanelControls(controls, actions) {

@@ -552,6 +552,7 @@ private fun ManifestDetails(manifest: ExtensionPackageManifest) {
             ExtensionPackageCapability.UI_SESSION_ACTION_PUBLISH -> "在会话菜单中提供命令填入动作"
             ExtensionPackageCapability.UI_WORKBENCH_PANEL_PUBLISH -> "在工作台中显示面板"
             ExtensionPackageCapability.UI_WORKBENCH_CONTROLS_PUBLISH -> "提供可展开的工作台区块和草稿填入按钮"
+            ExtensionPackageCapability.UI_COMPONENTS_PUBLISH -> "在会话工具栏和输入区提供组件菜单"
             ExtensionPackageCapability.TOOL_SCRIPT_EXECUTE -> "在隔离进程中运行文本工具脚本"
             ExtensionPackageCapability.AGENT_SKILL_PUBLISH -> "在当前工作区发布 Agent 技能"
             ExtensionPackageCapability.AGENT_CONTEXT_PUBLISH -> "向前台对话提供 Agent 参考上下文"
@@ -588,6 +589,13 @@ private fun ManifestDetails(manifest: ExtensionPackageManifest) {
     manifest.client?.conversation?.let { views ->
         views.messages.forEach { view -> Text("消息节点 ${view.selector.wireName} · ${view.title}") }
         views.toolResults.forEach { view -> Text("工具结果卡 ${view.selector} · ${view.title}") }
+    }
+    manifest.client?.components?.forEach { component ->
+        val location = when (component.slot) {
+            com.cordiact.core.plugin.ExtensionPackageComponentSlot.SESSION_TOOLBAR -> "会话工具栏"
+            com.cordiact.core.plugin.ExtensionPackageComponentSlot.COMPOSER_ACCESSORIES -> "输入区"
+        }
+        Text("$location · ${component.label}")
     }
     manifest.agent?.let { agent ->
         agent.skills.forEach { skill -> Text("技能 ${manifest.id}.${skill.name}：${skill.description}") }

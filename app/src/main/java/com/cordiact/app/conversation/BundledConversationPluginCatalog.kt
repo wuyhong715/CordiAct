@@ -318,7 +318,13 @@ class BundledConversationPlugins private constructor(
     val toolContributions = com.cordiact.core.plugin.PluginToolContributions(registry)
 
     internal val workspaceClientContributions by lazy {
-        com.cordiact.interaction.WorkspaceClientContributions(interactionPlugin.commandRegistry) { context, panel, admitted ->
+        com.cordiact.interaction.WorkspaceClientContributions(interactionPlugin.commandRegistry, publishComponent = { context, component, admitted ->
+            val slot = when (component.description.slot) {
+                com.cordiact.core.plugin.ExtensionPackageComponentSlot.SESSION_TOOLBAR -> com.cordiact.app.experience.ClientComponentSlot.SESSION_TOOLBAR
+                com.cordiact.core.plugin.ExtensionPackageComponentSlot.COMPOSER_ACCESSORIES -> com.cordiact.app.experience.ClientComponentSlot.COMPOSER_ACCESSORIES
+            }
+            clientComponentSlots.register(context, slot, context.id.pluginId, com.cordiact.app.experience.PackageSlotComponent(component), admitted = admitted)
+        }) { context, panel, admitted ->
             val tab = com.cordiact.app.experience.tabs.DeclarativeWorkbenchTab(context.id.pluginId, panel)
             workbenchTabs.register(context, tab.id, tab, order = Int.MAX_VALUE, admitted = admitted)
         }
@@ -331,6 +337,7 @@ class BundledConversationPlugins private constructor(
         admissionChanged = {
             workspaceClientContributions.refreshAdmission()
             workbenchTabs.refresh()
+            clientComponentSlots.refresh()
             packageModelContributions.refresh()
         },
     ) { record, admitted ->

@@ -140,3 +140,18 @@ test('packs a stateful workbench panel and validates action references', context
   writeFileSync(path, JSON.stringify(draft));
   assert.throws(() => packExtension(path), /must name a session action/);
 });
+
+test('packs a component tree for both slots and rejects ambiguous nodes', context => {
+  const examplePath = fileURLToPath(new URL('../examples/session-components.json', import.meta.url));
+  const packed = JSON.parse(packExtension(examplePath));
+  assert.equal(packed.schemaVersion, 14);
+  assert.ok(packed.capabilities.includes('ui.components.publish'));
+  assert.deepEqual(packed.client.components.map(component => component.slot), ['session.toolbar', 'composer.accessories']);
+  const root = mkdtempSync(join(tmpdir(), 'cordiact-slot-sdk-'));
+  context.after(() => rmSync(root, { recursive: true, force: true }));
+  const draft = JSON.parse(readFileSync(examplePath, 'utf8'));
+  draft.client.components[1].nodes[0].text = 'ambiguous';
+  const path = join(root, 'invalid.json');
+  writeFileSync(path, JSON.stringify(draft));
+  assert.throws(() => packExtension(path), /Declare a text, action, or group/);
+});
