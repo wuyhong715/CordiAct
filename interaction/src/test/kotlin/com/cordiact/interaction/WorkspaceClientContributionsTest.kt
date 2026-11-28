@@ -23,6 +23,48 @@ import kotlin.test.assertTrue
 
 class WorkspaceClientContributionsTest {
     @Test
+    fun `panel state is isolated and a retired panel cannot change state or offer its command`() {
+        val f = Fixture()
+        val json = """{
+            "schemaVersion":13,"id":"panel-pack","version":"1.0.0","title":"Panel","description":"Panel actions",
+            "host":{"api":1,"minVersion":"0.1.0"},"capabilities":["command.publish","ui.session-action.publish",
+                "ui.workbench-panel.publish","ui.workbench-controls.publish"],
+            "tools":[],"commands":[{"name":"review-now","aliases":[],"description":"Review","text":"Review ready"}],
+            "client":{"sessionActions":[{"id":"show-review","label":"Add review","command":"review-now"}],
+                "workbenchPanel":{"title":"Panel","description":"Checklist",
+                "controls":[{"id":"review-step","label":"Review","content":"Check release","action":"show-review"}]}}
+        }""".trimIndent()
+        for (invalid in listOf(
+            json.replace("\"schemaVersion\":13", "\"schemaVersion\":12"),
+            json.replace("\"action\":\"show-review\"", "\"action\":\"wrong-action\""),
+        )) {
+            kotlin.test.assertFailsWith<IllegalArgumentException> {
+                com.cordiact.core.plugin.ExtensionPackageSource.compile(invalid.encodeToByteArray())
+            }
+        }
+        val a = f.packages.openPage("a")
+        val b = f.packages.openPage("b")
+        val installedA = f.install(a, json.byteInputStream())
+        val installedB = f.install(b, json.byteInputStream())
+        val enabled = assertIs<ExtensionPackageChange.Applied>(a.approveEnable(installedA, true).commit()).record
+        b.approveEnable(installedB, true).commit()
+        val panel = f.panels.getValue("a")
+        assertNull(panel.action("review-step", f.a))
+        panel.setExpanded("review-step", true)
+        assertTrue(f.panels.getValue("b").expanded.value.isEmpty())
+        assertNull(panel.action("review-step", f.b))
+        val offer = assertNotNull(panel.action("review-step", f.a))
+        assertEquals("/review-now", f.catalog.draftInsertion(offer, f.a, "", false))
+        val disabled = assertIs<ExtensionPackageChange.Applied>(a.approveEnable(enabled, false).commit()).record
+        panel.setExpanded("review-step", false)
+        assertEquals(setOf("review-step"), panel.expanded.value)
+        assertNull(panel.action("review-step", f.a))
+        a.approveEnable(disabled, true).commit()
+        assertTrue(f.panels.getValue("a").expanded.value.isEmpty())
+        assertNull(f.catalog.draftInsertion(offer, f.a, "", false))
+    }
+
+    @Test
     fun `message nodes and result cards are scoped and old tool results retain their own release identity`() {
         val f = Fixture()
         val page = f.packages.openPage("a")
@@ -63,8 +105,10 @@ class WorkspaceClientContributionsTest {
         val b = InteractionContext("b-1", "b")
         val commands = InteractionCommandRegistry { it in setOf(a, secondSession, b) }
         val tabs = TrustedWorkbenchTabs<String>()
+        val panels = mutableMapOf<String, WorkspaceClientContributions.WorkbenchPanel>()
         val catalog = WorkspaceClientContributions(commands) { context, panel, admitted ->
-            tabs.register(context, context.id.pluginId, panel.title, admitted = admitted)
+            panels[requireNotNull(context.id.workspaceId)] = panel
+            tabs.register(context, context.id.pluginId, panel.description.title, admitted = admitted)
         }
         val tools = InMemoryToolDefinitionRegistry()
         val kernel = PluginKernel(tabs::refresh)

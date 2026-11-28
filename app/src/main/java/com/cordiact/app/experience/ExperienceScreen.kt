@@ -255,6 +255,17 @@ private fun ExperienceContent(
         return true
     }
     fun openTrace(): Boolean = displayedTabs.firstOrNull { it.id == TraceTab.id }?.let(::openPublication) == true
+    val sessionActionScope = rememberCoroutineScope()
+    val viewLifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
+    var viewEpoch by remember(viewLifecycle) { mutableLongStateOf(0L) }
+    DisposableEffect(viewLifecycle) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_PAUSE) viewEpoch++
+        }
+        viewLifecycle.addObserver(observer)
+        onDispose { viewLifecycle.removeObserver(observer) }
+    }
+    val canInsertSessionAction = !state.running && !state.stopping && composer.text.isEmpty() && composer.attachments.isEmpty()
     fun pluginHost(publication: PublishedTab, isLandscape: Boolean,
         onInspect: (ToolActivity) -> Unit, onArtifact: (String) -> Unit = {},
         isPresented: () -> Boolean = { tabs.active?.key == "p:${publication.id}" && publication in currentDisplayedTabs },
@@ -268,6 +279,29 @@ private fun ExperienceContent(
             if (!current() || state.sidebar.none { ws -> ws.id == tabWorkspace && ws.sessions.any { it.id == sessionId && !it.isArchived } }) return
             viewModel.selectSession(sessionId) { tabs.open(WorkTab.Session(sessionId)) }
         }
+        override val canInsertPluginAction get() = canInsertSessionAction && !state.archived
+        override fun insertPluginAction(
+            offer: com.cordiact.interaction.WorkspaceClientContributions.SessionActionOffer,
+            isStillVisible: () -> Boolean,
+        ) {
+            val shownEpoch = viewEpoch
+            fun currentHost() = current() && !overview && viewEpoch == shownEpoch &&
+                offer.context.workspaceId == publication.owner.workspaceId && isStillVisible() &&
+                viewLifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED)
+            if (!currentHost()) return
+            sessionActionScope.launch {
+                try {
+                    if (viewModel.insertSessionAction(offer, ::currentHost)) {
+                        promptToInsert = ""
+                        tabs.open(WorkTab.Session(offer.context.sessionId))
+                    }
+                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    if (currentHost()) viewModel.composerController.banner("无法验证会话动作，草稿未修改。")
+                }
+            }
+        }
     }
     val pluginWorkspace = state.workspace?.takeUnless { ownerPending || activeTab is WorkTab.Plugin }
     val pluginOwner = pluginWorkspace?.let { workspace ->
@@ -278,19 +312,8 @@ private fun ExperienceContent(
     }
     val pluginDetailOwner = sessionPluginsOwner?.takeIf { it == pluginOwner }
     val sessionActions = remember(clientSnapshot, pluginOwner) { pluginOwner?.let(clientSnapshot::sessionActions).orEmpty() }
-    val sessionActionScope = rememberCoroutineScope()
-    val viewLifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
-    var viewEpoch by remember(viewLifecycle) { mutableLongStateOf(0L) }
-    DisposableEffect(viewLifecycle) {
-        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
-            if (event == androidx.lifecycle.Lifecycle.Event.ON_PAUSE) viewEpoch++
-        }
-        viewLifecycle.addObserver(observer)
-        onDispose { viewLifecycle.removeObserver(observer) }
-    }
     val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
     val keyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
-    val canInsertSessionAction = !state.running && !state.stopping && composer.text.isEmpty() && composer.attachments.isEmpty()
     if (editingLayoutFor != null && editingLayoutFor == tabWorkspace && !state.loading) {
         val workspace = checkNotNull(state.workspace)
         if (profiles != null) {

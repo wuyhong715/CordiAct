@@ -551,6 +551,7 @@ private fun ManifestDetails(manifest: ExtensionPackageManifest) {
             ExtensionPackageCapability.UI_SETTINGS_PUBLISH -> "在工作区设置中显示说明页"
             ExtensionPackageCapability.UI_SESSION_ACTION_PUBLISH -> "在会话菜单中提供命令填入动作"
             ExtensionPackageCapability.UI_WORKBENCH_PANEL_PUBLISH -> "在工作台中显示面板"
+            ExtensionPackageCapability.UI_WORKBENCH_CONTROLS_PUBLISH -> "提供可展开的工作台区块和草稿填入按钮"
             ExtensionPackageCapability.TOOL_SCRIPT_EXECUTE -> "在隔离进程中运行文本工具脚本"
             ExtensionPackageCapability.AGENT_SKILL_PUBLISH -> "在当前工作区发布 Agent 技能"
             ExtensionPackageCapability.AGENT_CONTEXT_PUBLISH -> "向前台对话提供 Agent 参考上下文"
@@ -578,6 +579,11 @@ private fun ManifestDetails(manifest: ExtensionPackageManifest) {
         Text("工作台面板：${panel.title}")
         Text(panel.description)
         panel.rows.forEach { Text("${it.label}：${it.value}") }
+        panel.controls.forEach { control ->
+            Text(control.label)
+            Text(control.content)
+            control.action?.let { Text("会话动作：$it") }
+        }
     }
     manifest.client?.conversation?.let { views ->
         views.messages.forEach { view -> Text("消息节点 ${view.selector.wireName} · ${view.title}") }

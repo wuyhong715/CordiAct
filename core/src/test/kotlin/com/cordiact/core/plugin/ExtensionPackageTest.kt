@@ -24,7 +24,7 @@ class ExtensionPackageTest {
         for (invalid in listOf(
             json.replace("\"schemaVersion\":12", "\"schemaVersion\":11"),
             json.replace("\"agent.turn-policy.publish\",", ""),
-            json.replace("\"schemaVersion\":12", "\"schemaVersion\":13"),
+            json.replace("\"schemaVersion\":12", "\"schemaVersion\":14"),
         )) {
             assertFailsWith<IllegalArgumentException> { ExtensionPackageSource.compile(invalid.encodeToByteArray()) }
         }
@@ -141,7 +141,7 @@ class ExtensionPackageTest {
             "empty client" to text(v2Source(client = "{}")),
             "version one client" to validV1.replaceFirst("{", "{\"client\": $validClient,"),
             "version one UI capability" to validV1.replace("\"tool.publish\"", "\"tool.publish\", \"ui.settings.publish\""),
-            "unsupported schema" to validV2.replace("\"schemaVersion\": 2", "\"schemaVersion\": 13"),
+            "unsupported schema" to validV2.replace("\"schemaVersion\": 2", "\"schemaVersion\": 14"),
             "fractional schema" to validV2.replace("\"schemaVersion\": 2", "\"schemaVersion\": 2.0"),
             "string schema" to validV2.replace("\"schemaVersion\": 2", "\"schemaVersion\": \"2\""),
             "host API 2" to validV2.replace("\"api\": 1", "\"api\": 2"),

@@ -60,6 +60,14 @@ export interface ConversationViews {
   toolResults?: readonly { tool: string; title: string; lines: readonly string[] }[];
 }
 
+export interface WorkbenchControl {
+  id: string;
+  label: string;
+  content: string;
+  initiallyExpanded?: boolean;
+  action?: string;
+}
+
 export interface ModelProviderDeclaration {
   name: string;
   title: string;

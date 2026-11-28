@@ -19,7 +19,7 @@ import kotlinx.coroutines.flow.asStateFlow
  */
 class WorkspaceClientContributions(
     private val commands: InteractionCommandRegistry,
-    private val publishPanel: ((PluginContext, ExtensionPackageSettingsPage, () -> Boolean) -> Unit)? = null,
+    private val publishPanel: ((PluginContext, WorkbenchPanel, () -> Boolean) -> Unit)? = null,
 ) {
     class SettingsPage internal constructor(
         val ownerPluginId: String,
@@ -35,6 +35,31 @@ class WorkspaceClientContributions(
         val context: InteractionContext,
         val action: SessionAction,
     )
+
+    class WorkbenchPanel internal constructor(
+        val description: ExtensionPackageSettingsPage,
+        private val workspaceId: String,
+        private val actions: Map<String, SessionAction>,
+        private val active: () -> Boolean,
+    ) {
+        private val expandedIds = MutableStateFlow<Set<String>>(
+            Collections.unmodifiableSet(description.controls.filter { it.initiallyExpanded }.mapTo(linkedSetOf()) { it.id }),
+        )
+        val expanded = expandedIds.asStateFlow()
+
+        @Synchronized fun setExpanded(id: String, expanded: Boolean) {
+            if (!active() || description.controls.none { it.id == id }) return
+            expandedIds.value = Collections.unmodifiableSet(
+                if (expanded) expandedIds.value + id else expandedIds.value - id,
+            )
+        }
+
+        fun action(id: String, context: InteractionContext): SessionActionOffer? {
+            if (!active() || context.workspaceId != workspaceId || id !in expanded.value) return null
+            val actionId = description.controls.firstOrNull { it.id == id }?.action ?: return null
+            return actions[actionId]?.let { SessionActionOffer(context, it) }
+        }
+    }
 
     data class MessageNode(val source: String, val card: ToolResultCard)
 
@@ -126,7 +151,8 @@ class WorkspaceClientContributions(
             refreshAdmission()
         }
         client.workbenchPanel?.let { panel ->
-            checkNotNull(publishPanel) { "Host does not provide declarative workbench panels" }(context, panel, admitted)
+            val publication = WorkbenchPanel(panel, workspace, actions.associateBy { it.description.id }, registration::isActive)
+            checkNotNull(publishPanel) { "Host does not provide declarative workbench panels" }(context, publication, admitted)
         }
     }
 

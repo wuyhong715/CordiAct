@@ -123,6 +123,10 @@ v9 要求 `workflow.publish` 和 `workflows` 中的一到四个工作流。每�
 
 在 `agent.beforeTurn` 中声明一个带 `name` 和 `source` 的策略，并请求 `agent.turn-policy.publish`。每个工作区最多启用四条策略，宿主按包 ID 顺序执行。用户在前台提交模型回合时，宿主在消息入库前用隔离脚本检查 `{hasText, attachmentCount}`。脚本返回 `continue` 或 `block`，看不到正文、附件内容或会话标识。拦截、脚本错误或执行期间策略换代会拒绝本次提交。成功准入后，宿主照常执行模型与工具授权。后台唤醒、子 Agent 和本地命令保留原有路径。
 
+### 清单 v13 工作台交互
+
+`client.workbenchPanel.controls` 支持一到四个可展开区块，每项声明 `id`、`label`、`content` 和可选的 `initiallyExpanded`。包同时请求 `ui.workbench-panel.publish` 和 `ui.workbench-controls.publish`。可选的 `action` 引用同包 `sessionActions` 中的 ID，点击后将该动作的命令填入当前会话的空草稿，并切到会话供用户查看和发送。展开状态在同一个工作区的标签页和停靠面板间共享，重新启用时恢复声明默认值。使用 [SDK 示例](../../plugin-sdk/examples/interactive-workbench.json) 可直接打包。
+
 ## 安装、升级、回滚、迁移
 
 [ExtensionPackageInstaller](../../core/src/main/kotlin/com/cordiact/core/plugin/ExtensionPackageInstaller.kt) 只记录已验证的清单，不激活贡献：

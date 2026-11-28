@@ -125,3 +125,18 @@ test('packs a before-turn policy with its own capability', () => {
   assert.equal(invoke(JSON.stringify({ hasText: false, attachmentCount: 1 })), 'block');
   assert.equal(invoke(JSON.stringify({ hasText: true, attachmentCount: 1 })), 'continue');
 });
+
+test('packs a stateful workbench panel and validates action references', context => {
+  const examplePath = fileURLToPath(new URL('../examples/interactive-workbench.json', import.meta.url));
+  const packed = JSON.parse(packExtension(examplePath));
+  assert.equal(packed.schemaVersion, 13);
+  assert.ok(packed.capabilities.includes('ui.workbench-controls.publish'));
+  assert.equal(packed.client.workbenchPanel.controls[0].action, 'insert-review');
+  const root = mkdtempSync(join(tmpdir(), 'cordiact-panel-sdk-'));
+  context.after(() => rmSync(root, { recursive: true, force: true }));
+  const draft = JSON.parse(readFileSync(examplePath, 'utf8'));
+  draft.client.workbenchPanel.controls[0].action = 'unknown-action';
+  const path = join(root, 'invalid.json');
+  writeFileSync(path, JSON.stringify(draft));
+  assert.throws(() => packExtension(path), /must name a session action/);
+});

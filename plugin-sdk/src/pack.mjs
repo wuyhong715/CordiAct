@@ -23,6 +23,7 @@ export function packExtension(manifestPath) {
   }
   if (client !== undefined) {
     requireKeys(client, ['settingsPage', 'sessionActions', 'workbenchPanel', 'conversation'], 'client');
+    if (client.settingsPage?.controls !== undefined) throw new Error('Controls are only available in workbench panels.');
     if (!client.settingsPage && !client.sessionActions?.length && !client.workbenchPanel && client.conversation === undefined) {
       throw new Error('The client section must declare a contribution.');
     }
@@ -42,6 +43,11 @@ export function packExtension(manifestPath) {
   if (client?.settingsPage) capabilities.push('ui.settings.publish');
   if (client?.sessionActions?.length) capabilities.push('ui.session-action.publish');
   if (client?.workbenchPanel) capabilities.push('ui.workbench-panel.publish');
+  const panelControls = client?.workbenchPanel?.controls;
+  if (panelControls !== undefined) {
+    validatePanelControls(panelControls, client.sessionActions ?? []);
+    capabilities.push('ui.workbench-controls.publish');
+  }
   if (client?.conversation !== undefined) {
     validateConversation(client.conversation, names);
     capabilities.push('ui.conversation.publish');
@@ -74,13 +80,32 @@ export function packExtension(manifestPath) {
   if (providerEntries?.search) capabilities.push('provider.search.publish');
   if (providerEntries?.model) capabilities.push('provider.model.publish');
   const output = JSON.stringify({
-    schemaVersion: agentEntries?.beforeTurn ? 12 : client?.conversation ? 11 : agentEntries?.subagents ? 10 : workflowEntries ? 9 : agentEntries?.beforeTool ? 8 :
+    schemaVersion: panelControls ? 13 : agentEntries?.beforeTurn ? 12 : client?.conversation ? 11 : agentEntries?.subagents ? 10 : workflowEntries ? 9 : agentEntries?.beforeTool ? 8 :
       providerEntries?.model ? 7 : providerEntries?.search ? 6 : agentEntries ? 5 : compiled.length ? 4 : client?.workbenchPanel ? 3 : client ? 2 : 1,
     id, version, title, description,
     host: { api: 1, minVersion: '0.1.0' }, capabilities, tools: compiled, commands, client, agent: agentEntries, providers: providerEntries, workflows: workflowEntries,
   }, null, 2) + '\n';
   if (Buffer.byteLength(output) > MAX_PACKAGE_BYTES) throw new Error('Extension exceeds the 32 KiB package limit.');
   return output;
+}
+
+function validatePanelControls(controls, actions) {
+  if (!Array.isArray(controls) || controls.length < 1 || controls.length > 4) throw new Error('Declare one to four workbench controls.');
+  if (!Array.isArray(actions)) throw new Error('Session actions must be an array.');
+  const ids = new Set();
+  for (const control of controls) {
+    requireKeys(control, ['id', 'label', 'content', 'initiallyExpanded', 'action'], 'workbench control');
+    if (!matches(control.id, SLUG) || ids.has(control.id)) throw new Error('Invalid or duplicate workbench control ID.');
+    ids.add(control.id);
+    requireText(control.label, 120, 'workbench control label');
+    requireText(control.content, 480, 'workbench control content', true);
+    if (control.initiallyExpanded !== undefined && typeof control.initiallyExpanded !== 'boolean') {
+      throw new Error('Workbench initial expansion must be a boolean.');
+    }
+    if (control.action !== undefined && (!matches(control.action, SLUG) || !actions.some(action => action?.id === control.action))) {
+      throw new Error('Workbench control must name a session action from this package.');
+    }
+  }
 }
 
 function validateConversation(conversation, toolNames) {
