@@ -328,6 +328,23 @@ private fun ExperienceContent(
     }
     BackHandler(!landscape && pluginDetailOwner != null && !overview, onBack = closeSessionPluginDetail)
     BackHandler(inspected != null && !overview) { inspected = null }
+    val clientSlots = settingsApp.conversationCatalog.clientComponentSlots
+    val toolbarComponents: @Composable () -> Unit = {
+        val create: (() -> Unit)? = if (state.loading || switchPending || overview) null else ({
+            val current = viewModel.state.value
+            if (!current.loading && !overview && requestedTab == null && loadingTab == null &&
+                current.workspace?.id == tabWorkspace && current.sessionId == tabSession
+            ) viewModel.newSession(tabWorkspace)
+        })
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            clientSlots.Mount(ClientComponentSlot.SESSION_TOOLBAR, tabWorkspace, tabSession, landscape, create)
+        }
+    }
+    val composerAccessories: @Composable () -> Unit = {
+        if (!ownerPending && tabSession != null && tabWorkspace != null) {
+            clientSlots.Mount(ClientComponentSlot.COMPOSER_ACCESSORIES, tabWorkspace, tabSession, landscape)
+        }
+    }
     val workbench: @Composable () -> Unit = {
         if (landscape) {
             val activity = rememberWorkbenchActivity(settingsApp, state.workspace?.id, state.sessionId, state.runningSessionIds)
@@ -382,6 +399,7 @@ private fun ExperienceContent(
                         onSendLocal = { if (requestedTab != null || loadingTab != null) false else viewModel.sendLocal(it) },
                         prepareLocal = prepareLocal,
                         commandRevision = clientSnapshot,
+                        accessories = composerAccessories,
                     )
                 },
                 sessionPluginDetail = if (pluginDetailOwner != null) {
@@ -390,6 +408,7 @@ private fun ExperienceContent(
                 onCloseSessionPluginDetail = closeSessionPluginDetail,
                 tabPublication = activePublication,
                 resultCardFor = resultCardFor,
+                toolbarComponents = toolbarComponents,
                 docked = if (dockedTabs.isEmpty()) null else { modifier, inspect, artifact ->
                     DockedWorkbenchPanels(dockedTabs, selectedDockId, { selectedDockId = it }, modifier) { publication, isPresented ->
                         publication.content.Content(state, pluginHost(publication, true, inspect, artifact, isPresented))
@@ -414,10 +433,8 @@ private fun ExperienceContent(
                             if (state.turns.none { it.tools.isNotEmpty() } || !openTrace()) showOverview(true)
                         },
                         onApprovals = openApprovals,
-                    ) {
-                        IconButton(onClick = { viewModel.newSession(state.workspace?.id) }, enabled = !state.loading,
-                            modifier = Modifier.testTag("new-tab")) { AppGlyph(GlyphName.Plus, "新对话标签") }
-                    }
+                        trailing = toolbarComponents,
+                    )
                     com.cordiact.app.experience.tabs.TabStrip(state, tabs, displayedTabs, ::openPublication,
                         onClose = { if (!switchPending && !state.loading) tabs.close(it) }, modifier = Modifier.padding(top = 4.dp, bottom = 2.dp),
                         onSelect = { requestedTab = it; closeSessionPluginDetail() }, displayedKey = committedKey,
@@ -492,6 +509,7 @@ private fun ExperienceContent(
                                 },
                                 prepareLocal = prepareLocal.takeUnless { ownerPending },
                                 commandRevision = clientSnapshot,
+                                accessories = composerAccessories,
                             )
                         }
                     },

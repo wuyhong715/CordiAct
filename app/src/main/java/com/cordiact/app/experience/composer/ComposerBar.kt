@@ -42,6 +42,7 @@ internal fun ComposerBar(state: ExperienceState, composer: ComposerState, contro
     onSendLocal: ((PreparedInteraction) -> Boolean)? = null,
     prepareLocal: ((String, InteractionContext) -> PreparedInteraction?)? = null,
     commandRevision: Any? = null,
+    accessories: @Composable () -> Unit = {},
 ) {
     var waiting by remember(state.sessionId) { mutableStateOf(false) }
     var confirmLocal by remember(state.sessionId) { mutableStateOf(false) }
@@ -172,6 +173,7 @@ internal fun ComposerBar(state: ExperienceState, composer: ComposerState, contro
             BoxWithConstraints(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp)) {
                 val iconOnly = maxWidth < 410.dp || maxEditorLines < 3
                 Column {
+                    accessories()
                     if (composer.attachments.isNotEmpty()) AttachmentTray(composer.attachments,
                         if (state.running) null else controller::remove, if (state.running) null else controller::retry)
                     if (maxEditorLines < 3) {
@@ -209,6 +211,7 @@ internal fun ComposerBar(state: ExperienceState, composer: ComposerState, contro
         com.cordiact.app.experience.FrostedSurface(radius = 28.dp,
             modifier = Modifier.fillMaxWidth().animateContentSize(tween(duration))) {
             Column(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp)) {
+                accessories()
                 AnimatedVisibility(composer.attachments.isNotEmpty(), enter = expandVertically(tween(duration)) + fadeIn(), exit = shrinkVertically(tween(duration)) + fadeOut()) {
                     AttachmentTray(composer.attachments, if (state.running) null else controller::remove, if (state.running) null else controller::retry)
                 }

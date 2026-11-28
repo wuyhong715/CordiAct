@@ -1,7 +1,7 @@
 package com.cordiact.core.plugin
 
-/** Keys compare by name AND JVM type; a name cannot be rebound to a different type in a scope. */
-data class ServiceKey<T : Any>(val name: String, val type: Class<T>) {
+/** Scope-local by default. An application-wide key can only be published by a global instance. */
+data class ServiceKey<T : Any>(val name: String, val type: Class<T>, val applicationWide: Boolean = false) {
     init { require(name.isNotBlank()) }
 }
 
@@ -164,7 +164,8 @@ class PluginKernel(
     }
 
     private fun requireEntry(id: PluginInstanceId) = checkNotNull(entries[id]) { "Unknown instance: $id" }
-    private fun address(entry: Entry, key: ServiceKey<*>) = Address(entry.id.workspaceId, entry.id.sessionId, key.name)
+    private fun address(entry: Entry, key: ServiceKey<*>) =
+        if (key.applicationWide) Address(null, null, key.name) else Address(entry.id.workspaceId, entry.id.sessionId, key.name)
     private fun binding(entry: Entry, key: ServiceKey<*>): Binding? = bindings[address(entry, key)]
         ?.takeIf { it.first == key && it.second.owner.state == PluginInstanceState.ACTIVE }?.second
 
@@ -233,6 +234,7 @@ class PluginKernel(
             binding(entry, key)?.value
         } }, publish = { key, value -> synchronized(this) {
             check(entry.state == PluginInstanceState.STARTING) { "Publish services only during start" }
+            require(!key.applicationWide || entry.id.workspaceId == null) { "Only global plugins can publish '${key.name}'" }
             val address = address(entry, key)
             check(address !in bindings) { "Service '${key.name}' already provided in this scope" }
             val published = Binding(entry, value)

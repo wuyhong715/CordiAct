@@ -299,6 +299,7 @@ class BundledConversationPlugins private constructor(
 
     /** Shared trusted-code runtime; durable lifecycle and approval remain authoritative. */
     internal val workbenchTabs = com.cordiact.interaction.TrustedWorkbenchTabs<com.cordiact.app.experience.tabs.TabContributor>()
+    internal val clientComponentSlots = com.cordiact.app.experience.ClientComponentSlots()
     internal val toolResultCards = com.cordiact.app.experience.builtinToolResultDirectory()
     internal val packageAgentContributions = com.cordiact.core.plugin.PackageAgentContributions()
     internal val packageToolPolicies = com.cordiact.core.plugin.PackageToolPolicies()
@@ -311,6 +312,7 @@ class BundledConversationPlugins private constructor(
     }
     val pluginKernel = com.cordiact.core.plugin.PluginKernel {
         workbenchTabs.refresh()
+        clientComponentSlots.refresh()
         toolResultCards.refresh()
     }
     val toolContributions = com.cordiact.core.plugin.PluginToolContributions(registry)
@@ -584,7 +586,7 @@ class BundledConversationPlugins private constructor(
             modelProviderRegistryPlugin,
             interactionPlugin,
             bundledDeclarativePackage,
-            com.cordiact.app.experience.tabs.BuiltinWorkbenchTabs(pluginKernel, workbenchTabs),
+            com.cordiact.app.experience.tabs.BuiltinWorkbenchTabs(pluginKernel, workbenchTabs, clientComponentSlots),
             com.cordiact.app.experience.BuiltinToolResultCards(pluginKernel, toolResultCards),
         ) + extraPlugins
     }
