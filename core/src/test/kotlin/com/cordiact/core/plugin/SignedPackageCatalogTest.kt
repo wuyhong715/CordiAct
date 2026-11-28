@@ -49,9 +49,9 @@ class SignedPackageCatalogTest {
         val verified = catalog.verifyLocalArtifact(ExtensionPackageArtifact.decode(alphaBytes))
         assertEquals("alpha-note", verified.artifact.manifest.id)
         assertEquals("alpha-key", verified.sourceReceipt.keyId)
-        val changed = artifact("alpha-note", "1.2.3").replace(
+        val changed = artifact("alpha-note", "1.2.3").decodeToString().replace(
             "literal", "changed",
-        ).toByteArray()
+        ).encodeToByteArray()
         assertFails { catalog.verifyLocalArtifact(ExtensionPackageArtifact.decode(changed)) }
         acceptIndex(revision = 2, rows = release("alpha-note", "1.2.4", hash(alphaBytes)))
         assertFails { catalog.verifyLocalArtifact(ExtensionPackageArtifact.decode(alphaBytes)) }
