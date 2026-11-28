@@ -25,6 +25,7 @@ import com.cordiact.core.workbench.WorkbenchAccent
 import com.cordiact.core.workbench.WorkbenchPanel
 import com.cordiact.core.workbench.WorkbenchProfile
 import com.cordiact.core.workbench.WorkbenchTheme
+import com.cordiact.core.plugin.ExtensionPackageRecord
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -36,6 +37,8 @@ internal fun WorkbenchLayoutEditor(
     library: WorkbenchProfiles,
     publications: List<PublishedTab>,
     onSave: suspend (WorkbenchProfiles) -> Unit,
+    loadPackages: suspend () -> List<ExtensionPackageRecord>,
+    enablePackages: suspend (List<ExtensionPackageRecord>) -> Boolean,
     onBack: () -> Unit,
 ) {
     val resolver = LocalContext.current.contentResolver
@@ -47,13 +50,20 @@ internal fun WorkbenchLayoutEditor(
     var busy by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf<String?>(null) }
     var pendingExport by rememberSaveable { mutableStateOf<String?>(null) }
+    var importedProfile by rememberSaveable { mutableStateOf<String?>(null) }
+    val requirements = remember(importedProfile) { importedProfile?.let(WorkbenchProfileFile::decodePortable)?.packages.orEmpty() }
+    var installed by remember { mutableStateOf<List<ExtensionPackageRecord>>(emptyList()) }
     val panels = draft.editorPanels(titles.keys.toList())
 
-    fun changeDraft(id: String?, profile: WorkbenchProfile) {
+    fun changeDraft(id: String?, profile: WorkbenchProfile, preservePackages: Boolean = false) {
         selectedId = id
         draft = profile
         name = profile.name
         status = null
+        if (!preservePackages) {
+            importedProfile = null
+            installed = emptyList()
+        }
     }
 
     fun runEdit(failure: String, block: suspend () -> Unit) {
@@ -77,10 +87,13 @@ internal fun WorkbenchLayoutEditor(
         if (uri == null) return@rememberLauncherForActivityResult
         runEdit("无法读取布局文件，请检查格式和版本。") {
             val imported = withContext(Dispatchers.IO) {
-                checkNotNull(resolver.openInputStream(uri)).use(WorkbenchProfileFile::read)
+                checkNotNull(resolver.openInputStream(uri)).use(WorkbenchProfileFile::readPortable)
             }
-            changeDraft(null, imported)
-            status = "已载入预览，保存后应用。"
+            val current = if (imported.packages.isNullOrEmpty()) emptyList() else loadPackages()
+            changeDraft(null, imported.layout)
+            importedProfile = imported.packages?.let { WorkbenchProfileFile.encodePortable(imported) }
+            installed = current
+            status = "已载入方案预览。"
         }
     }
     val createDocument = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
@@ -93,7 +106,7 @@ internal fun WorkbenchLayoutEditor(
                     it.write(exported.toByteArray(Charsets.UTF_8))
                 }
             }
-            status = "布局已导出。"
+            status = "工作台方案已导出。"
         }
     }
 
@@ -101,7 +114,7 @@ internal fun WorkbenchLayoutEditor(
         runEdit("无法保存布局，请检查存储后重试。") {
             val next = library.apply(id, draft.copy(name = name.trim()))
             onSave(next)
-            changeDraft(next.selectedId, next.selected)
+            changeDraft(next.selectedId, next.selected, preservePackages = true)
             status = "已应用布局。"
         }
     }
@@ -194,12 +207,48 @@ internal fun WorkbenchLayoutEditor(
                 Row {
                     TextButton(onClick = { openDocument.launch(arrayOf("application/json", "text/plain")) }, enabled = !busy && hasRoom) { Text("导入 JSON") }
                     TextButton(onClick = {
-                        pendingExport = WorkbenchProfileFile.encode(draft.copy(name = name.trim()))
-                        createDocument.launch("cordiact-layout.json")
-                    }, enabled = !busy && validName) { Text("导出 JSON") }
+                        runEdit("无法读取当前工作区的插件选择。") {
+                            val packages = loadPackages().filter { it.enableIntent }
+                                .map { WorkbenchPackageRequirement.from(it) }.sortedBy { it.id }
+                            pendingExport = WorkbenchProfileFile.encodePortable(PortableWorkbenchProfile(draft.copy(name = name.trim()), packages))
+                            createDocument.launch("cordiact-workbench.json")
+                        }
+                    }, enabled = !busy && validName) { Text("导出方案") }
                     TextButton(enabled = !busy, onClick = { changeDraft(WorkbenchProfiles.CLASSIC, WorkbenchProfiles.presets.getValue(WorkbenchProfiles.CLASSIC)) }) {
                         Text("载入默认布局")
                     }
+                }
+            }
+            if (requirements.isNotEmpty()) {
+                item {
+                    Text("方案中的插件", style = MaterialTheme.typography.titleMedium, modifier = Modifier.semantics { heading() })
+                    val matched = requirements.map { requirement ->
+                        val current = installed.firstOrNull { it.manifest.id == requirement.id }
+                        Text("${requirement.id} ${requirement.version} · " + when {
+                            current == null -> "未安装"
+                            WorkbenchPackageRequirement.from(current) != requirement -> "版本、内容或来源不匹配"
+                            current.enableIntent -> "已选择启用"
+                            else -> "可启用"
+                        })
+                        current?.takeIf { WorkbenchPackageRequirement.from(it) == requirement }
+                    }
+                    val disabled = matched.filterNotNull().filterNot { it.enableIntent }
+                    TextButton(enabled = !busy && matched.all { it != null } && disabled.isNotEmpty(), onClick = {
+                        runEdit("未能完成插件启用，请刷新确认当前状态。") {
+                            val finished = try {
+                                enablePackages(matched.filterNotNull())
+                            } catch (cancelled: CancellationException) {
+                                throw cancelled
+                            } catch (_: Exception) {
+                                false
+                            }
+                            installed = loadPackages()
+                            status = if (finished) "已提交方案中的插件启用选择。" else "启用中止，已刷新插件清单。"
+                        }
+                    }) { Text("启用匹配插件") }
+                    TextButton(enabled = !busy, onClick = {
+                        runEdit("无法刷新插件清单。") { installed = loadPackages() }
+                    }) { Text("刷新插件清单") }
                 }
             }
             item {

@@ -56,6 +56,7 @@ CordiAct 不缺「插件」这个概念，也不缺插件内核。当前缺口�
 | Provider seams | v6 搜索服务、v7 模型服务 | 搜索脚本隔离运行，模型端点由宿主审批和协议适配 |
 | Tool loop provider | 可信插件可为工作区注册 `ToolLoopService`，前台对话和子 Agent 共用该选择 | 单次回合绑定精确注册，撤回后结束旧回合，后续回合重新选择。工具调用仍经过宿主调度和审批 |
 | Conversation storage provider | Android 原生装配在启动时选择 `ConversationStorageProvider`，工作区、会话、附件、任务及压缩记录共用该存储 | 默认使用现有 SQLite。替代实现需维护跨记录一致性并负责已有数据迁移 |
+| Portable workspace profile | 工作台方案 JSON 包含布局与已选择插件的版本、摘要和签发来源。导入后预览目标工作区的匹配状态 | 用户可启用已安装且精确匹配的版本。启用沿用本地批准和运行检查，布局单独保存，文件不包含制品或凭据 |
 | Agent hooks / policy | v8 工具前策略、v10 子 Agent 预设 | 策略隔离运行，宿主保留最终授权与回合控制 |
 | Jobs / workflows | v9 文本工作流 | 使用现有 Job Registry，支持取消、进度、输出和撤回 |
 | Bundles / distribution | 本地 JSON、SDK 打包器、APK 目录和自管签名目录 | CDX1 签名根、索引、摘要和独立租约 |

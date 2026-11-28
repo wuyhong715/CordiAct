@@ -47,6 +47,7 @@ import com.cordiact.app.experience.tabs.TraceTab
 import com.cordiact.app.experience.tabs.WorkbenchLayoutEditor
 import com.cordiact.app.experience.tabs.WorkbenchProfiles
 import com.cordiact.app.experience.tabs.WorkbenchProfileStore
+import com.cordiact.app.experience.tabs.matchesWorkbenchPreview
 import com.cordiact.core.workbench.PanelPlacement
 import com.cordiact.core.workbench.WorkbenchTheme
 import com.cordiact.interaction.InteractionContext
@@ -327,7 +328,28 @@ private fun ExperienceContent(
         val workspace = checkNotNull(state.workspace)
         if (profiles != null) {
             key(workspace.id) {
-                WorkbenchLayoutEditor(workspace.name, profiles, availableTabs, onSaveLayout) { editingLayoutFor = null }
+                WorkbenchLayoutEditor(
+                    workspace.name, profiles, availableTabs, onSaveLayout,
+                    loadPackages = {
+                        withContext(Dispatchers.IO) {
+                            check(viewModel.state.value.workspace?.id == workspace.id)
+                            settingsApp.workspaceExtensionPackages.openPage(workspace.id).use { it.list() }
+                        }
+                    },
+                    enablePackages = { preview ->
+                        kotlinx.coroutines.runInterruptible(Dispatchers.IO) {
+                            settingsApp.workspaceExtensionPackages.openPage(workspace.id).use { page ->
+                                val latest = page.list().associateBy { it.manifest.id }
+                                if (preview.any { latest[it.manifest.id]?.matchesWorkbenchPreview(it) != true }) return@use false
+                                val changes = preview.filterNot { it.enableIntent }.map { page.approveEnable(it, true) }
+                                changes.all { change ->
+                                    check(viewModel.state.value.workspace?.id == workspace.id)
+                                    change.commit() !is com.cordiact.core.plugin.ExtensionPackageChange.Rejected
+                                }
+                            }
+                        }
+                    },
+                ) { editingLayoutFor = null }
             }
             return
         }
