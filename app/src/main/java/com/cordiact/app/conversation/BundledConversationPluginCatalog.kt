@@ -502,7 +502,7 @@ class BundledConversationPlugins private constructor(
             references = attachmentCatalog,
             audit = attachmentAudit,
         )
-        val modelAdapter = ModelAdapterPlugin()
+        val modelAdapter = ModelAdapterPlugin(pluginKernel)
         modelProviderRegistryPlugin = ModelProviderRegistryPlugin(
             modelAdapter,
             providerCredentialFor,

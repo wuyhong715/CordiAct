@@ -3,14 +3,18 @@ package com.cordiact.core.conversation
 import com.cordiact.core.attachment.MessagePart
 import com.cordiact.core.attachment.MessageParts
 
+import com.cordiact.core.plugin.ContextManagedPlugin
+import com.cordiact.core.plugin.ContextPlugin
 import com.cordiact.core.plugin.ManagedPlugin
+import com.cordiact.core.plugin.PluginContext
+import com.cordiact.core.plugin.PluginKernel
+import com.cordiact.core.plugin.ServiceKey
 import com.cordiact.core.plugin.PluginEventKey
 import com.cordiact.core.plugin.PluginSpec
 import com.cordiact.core.plugin.PluginTarget
 import com.cordiact.core.tool.ToolHistoryReceipt
 import com.cordiact.core.workspace.WorkspaceSessionResolver
 import java.util.UUID
-import java.util.concurrent.atomic.AtomicBoolean
 
 /** Common typed model identity. Provider-specific configuration stays inside the adapter plugin. */
 data class ModelId(val providerId: String, val modelId: String)
@@ -471,15 +475,44 @@ fun sessionManagerPluginSpec() = PluginSpec(
     dependencies = setOf(com.cordiact.core.workspace.WORKSPACE_MANAGER_PLUGIN_ID),
 )
 
+/** Trusted ContextPlugin API for publishing a concrete model implementation. */
+fun interface ModelBackendContributions {
+    fun register(context: PluginContext, backend: ModelBackend): AutoCloseable
+}
+
+val MODEL_BACKEND_CONTRIBUTIONS =
+    ServiceKey("conversation.model-backends", ModelBackendContributions::class.java)
+
 /** Lifecycle-managed, protected system plugin. Provider plugins register backends through the host. */
-class ModelAdapterPlugin : ManagedPlugin, ModelAdapterService {
+class ModelAdapterPlugin(kernel: PluginKernel? = null) : ManagedPlugin, ModelAdapterService {
     /** Optional local accounting observer. Must not throw or block model delivery. */
     @Volatile var usageObserver: ((ModelUsage) -> Unit)? = null
     override val spec = modelAdapterPluginSpec()
-    private data class OwnedBackend(val ownerPluginId: String, val backend: ModelBackend)
+    private class OwnedBackend(
+        val ownerPluginId: String, val providerId: String, val backend: ModelBackend, val active: () -> Boolean,
+    )
     private val backends = linkedMapOf<String, OwnedBackend>()
-    private val activeCalls = linkedMapOf<String, Pair<String, ModelCall>>()
-    @Volatile private var enabled = false
+    private val activeCalls = linkedMapOf<String, PendingCall>()
+    private var enabled = false
+
+    private val bridge = kernel?.let {
+        ContextManagedPlugin(spec, it, object : ContextPlugin {
+            override fun start(context: PluginContext) {
+                context.provide(MODEL_BACKEND_CONTRIBUTIONS, ModelBackendContributions { owner, backend ->
+                    check(context.isContributionActive()) { "Model backend registry is no longer active" }
+                    require(owner.id.workspaceId == null) { "Native model backends are registered at application scope" }
+                    owner.scope.requireOpen()
+                    val binding = addBackend(owner.id.pluginId, backend, owner::isContributionActive)
+                    try {
+                        owner.effect { withdrawBackend(binding) }
+                    } catch (failure: Exception) {
+                        withdrawBackend(binding)
+                        throw failure
+                    }
+                })
+            }
+        })
+    }
 
     private class ScopedBackends(val owns: (String) -> Boolean, val resolve: (ModelGenerationRequest) -> ModelBackend?)
     @Volatile private var scopedBackends: ScopedBackends? = null
@@ -488,110 +521,183 @@ class ModelAdapterPlugin : ManagedPlugin, ModelAdapterService {
         scopedBackends = ScopedBackends(owns, resolver)
     }
 
+    /** Host-managed providers receive a handle for the exact backend they attached. */
+    fun attachBackend(ownerPluginId: String, backend: ModelBackend): AutoCloseable {
+        val binding = addBackend(ownerPluginId, backend, active = null)
+        return AutoCloseable { withdrawBackend(binding) }
+    }
+
     @Synchronized
-    fun attachBackend(ownerPluginId: String, backend: ModelBackend) {
+    private fun addBackend(ownerPluginId: String, backend: ModelBackend, active: (() -> Boolean)?): OwnedBackend {
         check(enabled) { "Model Adapter plugin is not enabled" }
         require(ownerPluginId.isNotBlank()) { "Backend owner plugin id is required" }
-        require(backend.providerId.isNotBlank()) { "Provider id is required" }
-        require(backend.providerId.matches(Regex("[a-z0-9][a-z0-9._-]{1,127}"))) { "Invalid provider id" }
+        val providerId = backend.providerId
+        require(providerId.matches(Regex("[a-z0-9][a-z0-9._-]{1,127}"))) { "Invalid provider id" }
         val descriptors = backend.models()
-        require(descriptors.all { it.id.providerId == backend.providerId && it.id.modelId.isNotBlank() }) {
-            "Backend '${backend.providerId}' returned invalid model descriptors"
+        require(descriptors.all { it.id.providerId == providerId && it.id.modelId.isNotBlank() }) {
+            "Backend '$providerId' returned invalid model descriptors"
         }
-        val previous = backends[backend.providerId]
-        check(previous == null || (previous.ownerPluginId == ownerPluginId && previous.backend === backend)) {
-            "A backend for provider '${backend.providerId}' is already attached"
+        val previous = backends[providerId]
+        if (previous != null) {
+            check(active == null && previous.ownerPluginId == ownerPluginId && previous.backend === backend) {
+                "A backend for provider '$providerId' is already attached"
+            }
+            return previous
         }
-        backends[backend.providerId] = OwnedBackend(ownerPluginId, backend)
+        return OwnedBackend(ownerPluginId, providerId, backend, active ?: { true }).also { backends[providerId] = it }
     }
 
-    @Synchronized
     fun detachBackend(ownerPluginId: String, providerId: String) {
-        // Provider ownership is expected to be verified by the plugin host before this call.
-        val binding = backends[providerId] ?: return
-        check(binding.ownerPluginId == ownerPluginId) { "Plugin '$ownerPluginId' does not own provider '$providerId'" }
-        backends.remove(providerId)
-        cancelCallsForProvider(providerId)
+        val binding = synchronized(this) {
+            backends[providerId]?.also {
+                check(it.ownerPluginId == ownerPluginId) { "Plugin '$ownerPluginId' does not own provider '$providerId'" }
+            }
+        } ?: return
+        withdrawBackend(binding)
     }
 
-    override fun onEnable() { enabled = true }
+    private fun withdrawBackend(binding: OwnedBackend) {
+        val calls = synchronized(this) {
+            if (!backends.remove(binding.providerId, binding)) return
+            activeCalls.values.filter { it.binding === binding }
+        }
+        calls.forEach(PendingCall::retire)
+    }
+
+    override fun onRegister() { bridge?.onRegister() }
+
+    override fun onEnable() {
+        synchronized(this) { enabled = true }
+        try {
+            // Recovery rebinds durable system records without calling onRegister again.
+            onRegister()
+            bridge?.onEnable()
+        } catch (failure: Exception) {
+            onDisable()
+            throw failure
+        }
+    }
 
     override fun onDisable() {
-        enabled = false
         val calls = synchronized(this) {
+            enabled = false
             backends.clear()
-            activeCalls.values.map { it.second }.also { activeCalls.clear() }
+            activeCalls.values.toList()
         }
-        calls.forEach { runCatching { it.cancel() } }
+        try { bridge?.onDisable() } finally { calls.forEach(PendingCall::retire) }
     }
 
-    override fun onUninstall() = onDisable()
+    override fun onUninstall() {
+        try { onDisable() } finally { bridge?.onUninstall() }
+    }
 
-    @Synchronized
     override fun models(): List<ModelDescriptor> {
-        check(enabled) { "Model Adapter plugin is not enabled" }
-        return backends.values.flatMap { it.backend.models() }.distinctBy { it.id }
+        val snapshot = synchronized(this) {
+            check(enabled) { "Model Adapter plugin is not enabled" }
+            backends.values.toList()
+        }
+        return snapshot.filter { current(it) }.flatMap { binding ->
+            binding.backend.models().takeIf { current(binding) }.orEmpty()
+        }.distinctBy { it.id }
+    }
+
+    private fun current(binding: OwnedBackend?): Boolean = synchronized(this) {
+        enabled && (binding == null || (backends[binding.providerId] === binding && binding.active()))
     }
 
     override fun generate(request: ModelGenerationRequest, onEvent: (ModelEvent) -> Unit): ModelCall {
-        val backend = synchronized(this) {
-            if (!enabled) {
-                onEvent(ModelEvent.Failed("plugin_disabled", "Model Adapter is not enabled"))
-                return ModelCall {}
-            }
-            backends[request.model.providerId]?.backend
-        }
-        val scope = scopedBackends
-        val selected = if (scope?.owns?.invoke(request.model.providerId) == true) scope.resolve(request) else backend
-        if (selected == null) {
-            onEvent(ModelEvent.Failed("provider_unavailable", "No adapter is available for '${request.model.providerId}'"))
+        fun fail(code: String, message: String): ModelCall {
+            onEvent(ModelEvent.Failed(code, message))
             return ModelCall {}
+        }
+        if (!current(null)) return fail("plugin_disabled", "Model Adapter is not enabled")
+        val scope = scopedBackends
+        val scoped = scope?.owns?.invoke(request.model.providerId) == true
+        val binding = if (scoped) null else synchronized(this) { backends[request.model.providerId] }
+        val selected = if (scoped) scope?.resolve?.invoke(request) else binding?.takeIf { current(it) }?.backend
+        if (selected == null) {
+            return fail("provider_unavailable", "No adapter is available for '${request.model.providerId}'")
         }
         if (selected.models().none { it.id == request.model }) {
-            onEvent(ModelEvent.Failed("model_unavailable", "Model '${request.model.modelId}' is not available"))
-            return ModelCall {}
+            return fail("model_unavailable", "Model '${request.model.modelId}' is not available")
         }
-        val callId = UUID.randomUUID().toString()
-        val startedAt = System.currentTimeMillis()
-        val observer = usageObserver
-        val terminal = AtomicBoolean(false)
-        fun finish(status: ModelUsage.Status, completed: ModelEvent.Completed? = null): Boolean {
-            if (!terminal.compareAndSet(false, true)) return false
-            synchronized(this) { activeCalls.remove(callId) }
-            if (observer != null) runCatching {
-                observer(ModelUsage(callId, request.workspaceId, request.sessionId, request.model, startedAt, status,
-                    completed?.inputTokens?.takeIf { it >= 0 }, completed?.outputTokens?.takeIf { it >= 0 }))
-            }
-            return true
+        val pending = PendingCall(binding, request, onEvent)
+        val admitted = synchronized(this) {
+            if (!current(binding)) false else { activeCalls[pending.id] = pending; true }
         }
-        return try {
-            val delegate = selected.generate(request) { event ->
-                when (event) {
-                    is ModelEvent.Completed -> if (finish(ModelUsage.Status.COMPLETED, event)) onEvent(event)
-                    is ModelEvent.Failed -> if (finish(ModelUsage.Status.FAILED)) onEvent(event)
-                    else -> if (!terminal.get()) onEvent(event)
-                }
-            }
-            val tracked = ModelCall { if (finish(ModelUsage.Status.CANCELLED)) delegate.cancel() }
-            val cancel = synchronized(this) {
-                if (enabled && !terminal.get()) { activeCalls[callId] = request.model.providerId to tracked; false }
-                else !terminal.get()
-            }
-            if (cancel) tracked.cancel()
-            tracked
+        if (!admitted) return fail("provider_unavailable", "Model provider is no longer available")
+        try {
+            if (current(binding)) pending.attach(selected.generate(request, pending::deliver)) else pending.retire()
         } catch (failure: Exception) {
-            if (finish(ModelUsage.Status.FAILED)) {
-                onEvent(ModelEvent.Failed("provider_error", failure.message ?: "Model request failed", retryable = true))
-            }
-            ModelCall {}
+            pending.deliver(ModelEvent.Failed("provider_error", failure.message ?: "Model request failed", retryable = true))
         }
+        return ModelCall(pending::cancel)
     }
 
-    private fun cancelCallsForProvider(providerId: String) {
-        val calls = synchronized(this) {
-            activeCalls.filterValues { it.first == providerId }.keys.toList().mapNotNull { activeCalls.remove(it)?.second }
+    private inner class PendingCall(
+        val binding: OwnedBackend?,
+        private val request: ModelGenerationRequest,
+        private val onEvent: (ModelEvent) -> Unit,
+    ) {
+        val id = UUID.randomUUID().toString()
+        private val startedAt = System.currentTimeMillis()
+        private val observer = usageObserver
+        private var terminal = false
+        private var cancelOnAttach = false
+        private var delegate: ModelCall? = null
+
+        fun attach(call: ModelCall) {
+            val cancel = synchronized(this) {
+                if (terminal) cancelOnAttach else { delegate = call; false }
+            }
+            if (cancel) runCatching { call.cancel() }
+            if (!current(binding)) retire()
         }
-        calls.forEach { runCatching { it.cancel() } }
+
+        fun deliver(event: ModelEvent) {
+            val cancel = synchronized(this) {
+                if (terminal) return
+                if (!current(binding)) {
+                    finish(ModelUsage.Status.CANCELLED, revokedEvent())
+                } else {
+                    when (event) {
+                        is ModelEvent.Completed -> finish(ModelUsage.Status.COMPLETED, event)
+                        is ModelEvent.Failed -> finish(ModelUsage.Status.FAILED, event)
+                        else -> onEvent(event)
+                    }
+                    null
+                }
+            }
+            cancel?.let { runCatching { it.cancel() } }
+        }
+
+        fun retire() = stop(revokedEvent())
+        fun cancel() = stop(null)
+
+        private fun stop(event: ModelEvent?) {
+            val call = synchronized(this) {
+                if (terminal) return
+                finish(ModelUsage.Status.CANCELLED, event)
+            }
+            call?.let { runCatching { it.cancel() } }
+        }
+
+        private fun finish(status: ModelUsage.Status, event: ModelEvent?): ModelCall? {
+            terminal = true
+            cancelOnAttach = status == ModelUsage.Status.CANCELLED
+            synchronized(this@ModelAdapterPlugin) { activeCalls.remove(id) }
+            val call = delegate
+            delegate = null
+            val completed = event as? ModelEvent.Completed
+            if (observer != null) runCatching {
+                observer(ModelUsage(id, request.workspaceId, request.sessionId, request.model, startedAt, status,
+                    completed?.inputTokens?.takeIf { it >= 0 }, completed?.outputTokens?.takeIf { it >= 0 }))
+            }
+            event?.let { runCatching { onEvent(it) } }
+            return call
+        }
+
+        private fun revokedEvent() = ModelEvent.Failed("provider_revoked", "Model provider was withdrawn")
     }
 }
 

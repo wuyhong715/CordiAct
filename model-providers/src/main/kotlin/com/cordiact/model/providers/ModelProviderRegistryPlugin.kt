@@ -75,7 +75,7 @@ class ModelProviderRegistryPlugin(
             put(config.providerId, config.duplicate(models = config.models.toList()))
         }
     }
-    private val backends = linkedMapOf<String, ConfigurableModelBackend>()
+    private val backends = linkedMapOf<String, AutoCloseable>()
     @Volatile private var enabled = false
 
     @Synchronized
@@ -228,8 +228,10 @@ class ModelProviderRegistryPlugin(
             attachmentPolicy = attachmentPolicy,
         )
         try {
-            adapter.attachBackend(spec.id, backend)
-            backends[config.providerId] = backend
+            val registration = adapter.attachBackend(spec.id, backend)
+            backends[config.providerId] = AutoCloseable {
+                try { registration.close() } finally { backend.close() }
+            }
         } catch (failure: Exception) {
             backend.close()
             throw failure
@@ -237,12 +239,7 @@ class ModelProviderRegistryPlugin(
     }
 
     private fun detach(providerId: String) {
-        val backend = backends.remove(providerId) ?: return
-        try {
-            adapter.detachBackend(spec.id, providerId)
-        } finally {
-            backend.close()
-        }
+        backends.remove(providerId)?.close()
     }
 
     private companion object {
