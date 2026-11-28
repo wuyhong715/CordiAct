@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "baselineCommit": "d4d51535fbf16717bd086774b003e61d054a5ef9",
+  "capabilities": [
+    {
+      "id": "mobile-native",
+      "status": "implemented",
+      "executionTarget": "mobile-native",
+      "evidence": ["Tool Manager policy tests", "Android CI build"]
+    },
+    {
+      "id": "mobile-cordis",
+      "status": "poc-only",
+      "executionTarget": "mobile-cordis",
+      "evidence": ["QuickJS-NG fixed-script PoC", "isolated-service instrumentation"]
+    },
+    {
+      "id": "harness-hosted",
+      "status": "contract-only",
+      "executionTarget": "harness-hosted",
+      "evidence": ["deepseek-harness contract tests", "Node pipe and loopback TLS tests"]
+    }
+  ]
+}

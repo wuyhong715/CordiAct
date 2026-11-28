@@ -6,6 +6,16 @@ CordiAct 是一个原生 Android、以工作区为中心的行动运行时：对
 
 仓库不是早期的空架构阶段。`app` 已包含可编译的 Android 应用与 Compose 体验层；`core` 负责工作区、会话、工具、审批与执行契约；`model-providers` 负责多协议模型适配；`subagent` 负责后台子 Agent。当前版本以源码和 GitHub Actions 构建为准，真机端到端验收见本文末尾。
 
+## 架构治理
+
+下一阶段开发遵循[架构治理基线](docs/architecture/governance-baseline.md)和[治理验证清单](docs/testing/governance-checklist.md)。提交前先运行：
+
+```sh
+python3 tools/check-architecture-governance.py
+```
+
+该检查验证模块边界、能力状态和治理文件，不替代 JVM、Android、模拟器、真机或远端互操作验证。完整治理审计见仓库根目录的[技术栈与架构治理方案](CordiAct-技术栈与架构治理方案.md)。
+
 ## 模块
 
 - `app`：Android 应用、Compose UI、工具插件（文件、屏幕、SSH、Termux、浏览器等）
