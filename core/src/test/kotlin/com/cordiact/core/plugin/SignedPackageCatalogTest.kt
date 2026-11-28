@@ -43,6 +43,20 @@ class SignedPackageCatalogTest {
         assertFails { catalog.select("alpha", "beta-note", "2.0.0") }
     }
 
+    @Test fun `local artifact verification binds reserved namespace to active index digest`() {
+        acceptTrust()
+        acceptIndex()
+        val verified = catalog.verifyLocalArtifact(ExtensionPackageArtifact.decode(alphaBytes))
+        assertEquals("alpha-note", verified.artifact.manifest.id)
+        assertEquals("alpha-key", verified.sourceReceipt.keyId)
+        val changed = artifact("alpha-note", "1.2.3").replace(
+            "literal", "changed",
+        ).toByteArray()
+        assertFails { catalog.verifyLocalArtifact(ExtensionPackageArtifact.decode(changed)) }
+        acceptIndex(revision = 2, rows = release("alpha-note", "1.2.4", hash(alphaBytes)))
+        assertFails { catalog.verifyLocalArtifact(ExtensionPackageArtifact.decode(alphaBytes)) }
+    }
+
     @Test fun `tampering wrong signing key wrong namespace and unrecognized fields cannot replace a valid index`() {
         acceptTrust()
         acceptIndex()

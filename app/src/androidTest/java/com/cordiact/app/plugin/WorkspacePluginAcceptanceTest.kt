@@ -23,6 +23,8 @@ import com.cordiact.core.plugin.PackageTurnRejected
 import com.cordiact.core.plugin.PluginState
 import com.cordiact.core.plugin.WorkspaceExtensionPackages
 import com.cordiact.core.plugin.WorkspacePackageRuntime
+import com.cordiact.core.plugin.CatalogSource
+import com.cordiact.core.plugin.SignedPackageCatalog
 import com.cordiact.core.security.EffectiveSecurityProfile
 import com.cordiact.core.security.Principal
 import com.cordiact.core.security.SecurityContext
@@ -78,6 +80,36 @@ class WorkspacePluginAcceptanceTest {
                         }
                     } finally {
                         plugins.asReversed().forEach { it.onDisable() }
+                    }
+                }
+            }
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test fun signedNamespaceRejectsLocalImportWhenCatalogHasNoMatchingDigest() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val root = Files.createTempDirectory(context.cacheDir.toPath(), "signed-local-test").toFile()
+        val packageContext = object : ContextWrapper(context) {
+            override fun getApplicationContext() = this
+            override fun getNoBackupFilesDir() = File(root, "no_backup")
+        }
+        try {
+            AndroidConversationSessionStore(context, File(root, "conversations.sqlite").absolutePath).use { sessionsStore ->
+                AndroidExtensionPackageStore(packageContext).use { packagesStore ->
+                    val catalog = BundledConversationPlugins.create(sessionsStore, File(root, "workspace"))
+                    val rootKey = java.security.KeyPairGenerator.getInstance("EC").apply {
+                        initialize(java.security.spec.ECGenParameterSpec("secp256r1"))
+                    }.generateKeyPair()
+                    val signed = SignedPackageCatalog(rootKey.public, listOf(CatalogSource("alpha", java.net.URI("https://alpha.example/"), "alpha-")))
+                    val extension = ExtensionPackageInstaller(packagesStore,
+                        signedCatalog = signed, reservedSourceId = { it.startsWith("alpha-") })
+                    val service = WorkspaceExtensionPackages(extension, { EffectiveSecurityProfile.fullAccess(it) })
+                    service.resume(Any())
+                    val workspace = catalog.workspaceManager.create("Signed local")
+                    service.openPage(workspace.id).use { page ->
+                        assertThrows(IllegalArgumentException::class.java) { page.preview(LOCAL_RESERVED_MANIFEST.byteInputStream()) }
                     }
                 }
             }
@@ -178,6 +210,11 @@ class WorkspacePluginAcceptanceTest {
                 "components":[{"id":"review-menu","slot":"composer.accessories","label":"Package review","nodes":[
                   {"label":"Review group","children":[{"action":"insert-review"}]}]}]}
             }
+        """.trimIndent()
+        val LOCAL_RESERVED_MANIFEST = """
+            {"schemaVersion":1,"id":"alpha-local","version":"1.0.0","title":"Reserved","description":"Reserved",
+             "host":{"api":1,"minVersion":"0.1.0"},"capabilities":["tool.publish"],"tools":[
+             {"name":"show","description":"Show","kind":"static_text","text":"local"}],"commands":[]}
         """.trimIndent()
     }
 }
