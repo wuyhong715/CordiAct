@@ -4,6 +4,7 @@ import androidx.compose.runtime.Composable
 import com.cordiact.app.experience.ExperienceState
 import com.cordiact.app.experience.GlyphName
 import com.cordiact.app.experience.model.ToolActivity
+import com.cordiact.interaction.WorkspaceClientContributions
 
 /** What a plugin page may ask of the shell. Kept tiny on purpose: shells evolve, plugins should not break. */
 interface TabHost {
@@ -11,6 +12,8 @@ interface TabHost {
     fun inspect(step: ToolActivity)
     fun inspectArtifact(id: String)
     fun openSession(sessionId: String)
+    val canInsertPluginAction: Boolean get() = false
+    fun insertPluginAction(offer: WorkspaceClientContributions.SessionActionOffer, isStillVisible: () -> Boolean) = Unit
 }
 
 /**

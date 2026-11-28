@@ -6,6 +6,7 @@ import android.util.JsonReader
 import android.util.JsonToken
 import android.util.JsonWriter
 import com.cordiact.core.security.SecurityDigests
+import com.cordiact.core.plugin.ExtensionPackageRecord
 import com.cordiact.core.workbench.PanelPlacement
 import com.cordiact.core.workbench.WorkbenchAccent
 import com.cordiact.core.workbench.WorkbenchPanel
@@ -121,16 +122,54 @@ internal class WorkbenchProfileStore(context: Context) {
     }
 }
 
+internal data class WorkbenchPackageRequirement(
+    val id: String,
+    val version: String,
+    val sha256: String,
+    val source: String? = null,
+    val publisher: String? = null,
+) {
+    init {
+        require(id.matches(Regex("[a-z][a-z0-9-]{1,23}")))
+        require(version.matches(Regex("[0-9]{1,6}\\.[0-9]{1,6}\\.[0-9]{1,6}")))
+        require(sha256.matches(Regex("[a-f0-9]{64}")))
+        require((source == null) == (publisher == null))
+        require(listOfNotNull(source, publisher).all { it.matches(Regex("[a-z][a-z0-9-]{0,31}")) })
+    }
+
+    companion object {
+        fun from(record: ExtensionPackageRecord) = WorkbenchPackageRequirement(
+            record.manifest.id, record.manifest.version, record.manifest.sha256,
+            record.sourceReceipt?.sourceId, record.sourceReceipt?.publisherId,
+        )
+    }
+}
+
+internal data class PortableWorkbenchProfile(val layout: WorkbenchProfile, val packages: List<WorkbenchPackageRequirement>? = null) {
+    init {
+        require(packages == null || (packages.size <= 32 && packages.map { it.id }.distinct().size == packages.size))
+    }
+}
+
+internal fun ExtensionPackageRecord.matchesWorkbenchPreview(record: ExtensionPackageRecord): Boolean =
+    workspaceId == record.workspaceId && installationId == record.installationId && enableIntent == record.enableIntent &&
+        WorkbenchPackageRequirement.from(this) == WorkbenchPackageRequirement.from(record)
+
 internal object WorkbenchProfileFile {
-    private const val MAX_BYTES = 16 * 1024
+    private const val MAX_BYTES = 32 * 1024
 
-    fun read(input: InputStream): WorkbenchProfile = decode(readWorkbenchText(input, MAX_BYTES))
+    fun read(input: InputStream): WorkbenchProfile = decode(readWorkbenchText(input, 16 * 1024))
 
-    fun encode(profile: WorkbenchProfile): String = StringWriter().also { text ->
+    fun readPortable(input: InputStream): PortableWorkbenchProfile = decodePortable(readWorkbenchText(input, MAX_BYTES))
+
+    fun encode(profile: WorkbenchProfile): String = encodePortable(PortableWorkbenchProfile(profile))
+
+    fun encodePortable(portable: PortableWorkbenchProfile): String = StringWriter().also { text ->
+        val profile = portable.layout
         JsonWriter(text).use { json ->
             json.setIndent("  ")
             json.beginObject()
-            json.name("version").value(1L)
+            json.name("version").value(if (portable.packages == null) 1L else 2L)
             json.name("name").value(profile.name)
             json.name("theme").value(profile.theme.name)
             json.name("accent").value(profile.accent.name)
@@ -142,17 +181,35 @@ internal object WorkbenchProfileFile {
                 json.endObject()
             }
             json.endArray()
+            portable.packages?.let { packages ->
+                json.name("packages").beginArray()
+                packages.forEach { requirement ->
+                    json.beginObject()
+                    json.name("id").value(requirement.id)
+                    json.name("version").value(requirement.version)
+                    json.name("sha256").value(requirement.sha256)
+                    if (requirement.source != null) {
+                        json.name("source").value(requirement.source)
+                        json.name("publisher").value(requirement.publisher)
+                    }
+                    json.endObject()
+                }
+                json.endArray()
+            }
             json.endObject()
         }
     }.toString()
 
-    fun decode(text: String): WorkbenchProfile = JsonReader(StringReader(text)).use { json ->
+    fun decode(text: String): WorkbenchProfile = decodePortable(text).also { require(it.packages == null) }.layout
+
+    fun decodePortable(text: String): PortableWorkbenchProfile = JsonReader(StringReader(text)).use { json ->
         json.isLenient = false
         var version: String? = null
         var name: String? = null
         var theme: WorkbenchTheme? = null
         var accent: WorkbenchAccent? = null
         var panels: List<WorkbenchPanel>? = null
+        var packages: List<WorkbenchPackageRequirement>? = null
         json.readObject { field ->
             when (field) {
                 "version" -> {
@@ -163,11 +220,30 @@ internal object WorkbenchProfileFile {
                 "theme" -> theme = WorkbenchTheme.valueOf(json.requireString())
                 "accent" -> accent = WorkbenchAccent.valueOf(json.requireString())
                 "panels" -> panels = json.readPanels()
+                "packages" -> packages = json.readPackages()
                 else -> error("Unknown workbench profile field")
             }
         }
-        require(version == "1" && json.peek() == JsonToken.END_DOCUMENT)
-        WorkbenchProfile(requireNotNull(name), requireNotNull(theme), requireNotNull(accent), requireNotNull(panels))
+        require(version == if (packages == null) "1" else "2")
+        require(json.peek() == JsonToken.END_DOCUMENT)
+        PortableWorkbenchProfile(
+            WorkbenchProfile(requireNotNull(name), requireNotNull(theme), requireNotNull(accent), requireNotNull(panels)), packages,
+        )
+    }
+
+    private fun JsonReader.readPackages(): List<WorkbenchPackageRequirement> = buildList {
+        beginArray()
+        while (hasNext()) {
+            require(size < 32) { "Too many workbench packages" }
+            val fields = mutableMapOf<String, String>()
+            readObject { field ->
+                require(field in setOf("id", "version", "sha256", "source", "publisher"))
+                fields[field] = requireString()
+            }
+            add(WorkbenchPackageRequirement(fields.getValue("id"), fields.getValue("version"), fields.getValue("sha256"),
+                fields["source"], fields["publisher"]))
+        }
+        endArray()
     }
 
     private fun JsonReader.readPanels(): List<WorkbenchPanel> = buildList {

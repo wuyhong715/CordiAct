@@ -11,6 +11,7 @@ export interface AgentContribution {
   skills?: readonly AgentSkill[];
   context?: string;
   beforeTool?: readonly BeforeToolDeclaration[];
+  beforeTurn?: BeforeTurnDeclaration;
   subagents?: readonly SubagentPresetDeclaration[];
 }
 
@@ -38,6 +39,10 @@ export interface BeforeToolRequest {
 
 export type BeforeToolPolicy = (request: Readonly<BeforeToolRequest>) => 'continue' | 'block';
 
+export interface BeforeTurnDeclaration { name: string; entry: string }
+export interface BeforeTurnRequest { hasText: boolean; attachmentCount: number }
+export type BeforeTurnPolicy = (request: Readonly<BeforeTurnRequest>) => 'continue' | 'block';
+
 export interface SearchRequest {
   query: string;
   maxResults: number;
@@ -53,6 +58,26 @@ export type SearchProvider = (request: Readonly<SearchRequest>) => SearchResult;
 export interface ConversationViews {
   messages?: readonly { event: 'user.message' | 'assistant.message'; title: string; lines: readonly string[] }[];
   toolResults?: readonly { tool: string; title: string; lines: readonly string[] }[];
+}
+
+export interface WorkbenchControl {
+  id: string;
+  label: string;
+  content: string;
+  initiallyExpanded?: boolean;
+  action?: string;
+}
+
+export type ClientComponentNode =
+  | { text: string }
+  | { action: string }
+  | { label: string; children: readonly ClientComponentNode[] };
+
+export interface ClientComponentDeclaration {
+  id: string;
+  slot: 'session.toolbar' | 'composer.accessories';
+  label: string;
+  nodes: readonly ClientComponentNode[];
 }
 
 export interface ModelProviderDeclaration {

@@ -360,6 +360,13 @@ class SignedPackageCatalog private constructor(
     /** A host-reserved prefix remains reserved even when its publisher is revoked or unavailable. */
     internal fun controlsPackageId(id: String): Boolean = sources.values.any { id.startsWith(it.packagePrefix) }
 
+    internal fun verifyLocalArtifact(artifact: ExtensionPackageArtifact): Verified {
+        val manifest = artifact.manifest
+        val source = sources.values.singleOrNull { manifest.id.startsWith(it.packagePrefix) }
+            ?: error("CATALOG_PACKAGE_SOURCE_NOT_FOUND")
+        return verify(select(source.id, manifest.id, manifest.version), artifact.copySource())
+    }
+
     fun verify(selection: Selection, bytes: ByteArray): Verified {
         synchronized(this) { checkSelection(selection) }
         require(bytes.size in 1..ExtensionPackageSource.MAX_SOURCE_BYTES) { INVALID }

@@ -2,6 +2,12 @@
 
 用同一次 Android CI 生成的 APK 和版本提交记录。以下是待执行的真机手册，不是通过报告。不要在非测试工作区或生产对话中操作。Android 测试分别覆盖 [Compose 导航入口](../../app/src/test/java/com/cordiact/app/experience/ui/ConversationSidebarTest.kt)、[预览确认](../../app/src/test/java/com/cordiact/app/experience/ui/WorkspacePackagePromptTest.kt)、[SQLite](../../app/src/test/java/com/cordiact/app/plugin/AndroidExtensionPackageStoreTest.kt)和 [真实 App 装配](../../app/src/test/java/com/cordiact/app/conversation/BundledConversationPluginCatalogTest.kt)。最后一项不调用外部模型；真机还要检查真正的前台对话和系统文件选择。
 
+## APK 自动验收
+
+Android Actions 的 API 29／35 仪器任务运行 [WorkspacePluginAcceptanceTest](../../app/src/androidTest/java/com/cordiact/app/plugin/WorkspacePluginAcceptanceTest.kt)。测试在临时 SQLite 中安装并启用 v14 扩展包，通过隔离进程实际执行工具、回合准入和工作流，再点击 Compose 组件菜单并验证草稿动作。切换工作区和停用插件后，验证组件撤回及旧注册失效。
+
+在装有同次 Actions 应用 APK 和测试 APK 的 Android 设备上，可用 `adb shell am instrument -w -e class com.cordiact.app.plugin.WorkspacePluginAcceptanceTest com.cordiact.app.test/androidx.test.runner.AndroidJUnitRunner` 单独执行。系统文件选择、发布签名和升级保留按下面的手动验收记录。
+
 ## 样例
 
 将以下纯文本保存为 `checkpoint.json`，放到系统文件选择器可选的本地目录。不要把私人数据写入样例。

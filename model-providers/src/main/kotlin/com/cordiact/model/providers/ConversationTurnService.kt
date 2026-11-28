@@ -32,6 +32,7 @@ import com.cordiact.core.conversation.ModelToolSpec
 import com.cordiact.core.conversation.ToolHistoryProvenance
 import com.cordiact.core.conversation.TurnNotice
 import com.cordiact.core.conversation.TurnNoticeSource
+import com.cordiact.core.plugin.PackageTurnRejected
 import com.cordiact.core.tool.ToolInvocationContext
 import com.cordiact.core.toolloop.ToolDispatcher
 import com.cordiact.core.toolloop.ToolLoopOutcome
@@ -75,6 +76,7 @@ class ConversationTurnService(
     private val summaryModelResolver: ((ModelId) -> ModelId?)? = null,
     /** Host-only one-shot transport for an approved plaintext credential result. */
     private val sensitivePayloads: com.cordiact.core.security.SensitivePayloadRegistry? = null,
+    private val beforeUserTurn: ((workspaceId: String, hasText: Boolean, attachmentCount: Int) -> Unit)? = null,
 ) {
     /** Owns "should I compact, and how", so this service only decides *when* to ask. */
     private val activeCompactionModel = ThreadLocal<ModelId>()
@@ -209,7 +211,7 @@ class ConversationTurnService(
             return submit(sessionId, model, text, emptyList(), parameters, systemContext, parts, onUserMessagePersisted, userMetadataJson, onEvent)
         }
         require(text.isNotBlank() || parts.isNotEmpty()) { "Message must not be blank" }
-        requireNotNull(sessions.getSession(sessionId)) { "Session does not exist" }
+        val session = requireNotNull(sessions.getSession(sessionId)) { "Session does not exist" }
         check(activeSessions.add(sessionId)) { "A model turn is already active for this Session" }
 
         val run = ToolTurnRun(toolContext.authoredPluginTurn)
@@ -289,6 +291,8 @@ class ConversationTurnService(
             onModelCallStarted?.invoke(controller)
             check(!terminal.get()) { "Turn cancelled" }
             val pending = notices?.pending(sessionId).orEmpty()
+            checkUserTurn(session.workspaceId, text, parts)
+            check(!terminal.get()) { "Turn cancelled" }
             appendUserMessage(sessionId, text, parts, userMetadataJson)
             onUserMessagePersisted?.invoke()
             val initial = buildProjectedHistory(sessionId, model, systemContext, pending, onEvent)
@@ -348,7 +352,12 @@ class ConversationTurnService(
             run.closeAuthoring()
             run.round.getAndSet(null)?.cancel()
             if (activeCallsBySession.remove(sessionId, controller)) activeSessions.remove(sessionId)
-            onEvent(ModelEvent.Failed(if (terminal.get()) "turn_cancelled" else "tool_loop_error", error.message ?: "Tool loop failed"))
+            val code = when {
+                terminal.get() -> "turn_cancelled"
+                error is PackageTurnRejected -> "turn_blocked"
+                else -> "tool_loop_error"
+            }
+            onEvent(ModelEvent.Failed(code, error.message ?: "Tool loop failed"))
         } finally {
             terminal.set(true)
             run.closeAuthoring()
@@ -592,6 +601,13 @@ class ConversationTurnService(
         sessions.appendMessageWithParts(sessionId, MessageRole.USER, MessageParts.plainText(normalized), normalized, metadataJson)
     }
 
+    private fun checkUserTurn(workspaceId: String, text: String, parts: List<MessagePart>) {
+        val check = beforeUserTurn ?: return
+        val textParts = parts.filterIsInstance<MessagePart.Text>()
+        val hasText = if (textParts.isEmpty()) text.isNotBlank() else textParts.any { it.text.isNotBlank() }
+        check(workspaceId, hasText, parts.size - textParts.size)
+    }
+
     private fun runTurn(
         sessionId: String,
         model: ModelId,
@@ -606,6 +622,16 @@ class ConversationTurnService(
     ): ModelCall {
         val session = requireNotNull(sessions.getSession(sessionId)) { "Session does not exist" }
         check(activeSessions.add(sessionId)) { "A model turn is already active for this Session" }
+        if (userText != null) {
+            try {
+                checkUserTurn(session.workspaceId, userText, userParts)
+            } catch (failure: Exception) {
+                activeSessions.remove(sessionId)
+                if (failure !is PackageTurnRejected) throw failure
+                onEvent(ModelEvent.Failed("turn_blocked", requireNotNull(failure.message)))
+                return ModelCall {}
+            }
+        }
         val terminal = AtomicBoolean(false)
         val callbackLock = Any()
         val reply = StringBuilder()

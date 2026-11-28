@@ -1,5 +1,10 @@
 package com.cordiact.core.conversation
 
+import com.cordiact.core.plugin.ContextPlugin
+import com.cordiact.core.plugin.PluginContext
+import com.cordiact.core.plugin.PluginInstanceId
+import com.cordiact.core.plugin.PluginInstanceState
+import com.cordiact.core.plugin.PluginKernel
 import com.cordiact.core.workspace.Workspace
 import com.cordiact.core.workspace.WorkspaceSessionResolver
 import kotlin.test.Test
@@ -9,6 +14,54 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class ConversationPluginsTest {
+    @Test
+    fun contextBackendWaitsForAdapterAndWithdrawsAnInFlightGeneration() {
+        val kernel = PluginKernel()
+        val adapter = ModelAdapterPlugin(kernel)
+        val owner = PluginInstanceId("provider.test")
+        val events = mutableListOf<ModelEvent>()
+        var lateCancel = false
+        val backend = object : ModelBackend {
+            override val providerId = "test-provider"
+            override fun models() = listOf(ModelDescriptor(request().model, "Test"))
+            override fun generate(request: ModelGenerationRequest, onEvent: (ModelEvent) -> Unit): ModelCall {
+                kernel.disable(owner)
+                onEvent(ModelEvent.Delta("stale output"))
+                onEvent(ModelEvent.Completed())
+                return ModelCall { lateCancel = true }
+            }
+        }
+        kernel.register(owner, object : ContextPlugin {
+            override val requiredServices = setOf(MODEL_BACKEND_CONTRIBUTIONS)
+            override fun start(context: PluginContext) {
+                context.service(MODEL_BACKEND_CONTRIBUTIONS).register(context, backend)
+            }
+        })
+        kernel.enable(owner)
+        assertEquals(PluginInstanceState.WAITING, kernel.status(owner).state)
+        adapter.onEnable()
+        assertEquals(backend.models(), adapter.models())
+        adapter.generate(request(), events::add)
+        assertTrue(lateCancel)
+        assertEquals(listOf("provider_revoked"), events.map { (it as ModelEvent.Failed).code })
+        assertTrue(adapter.models().isEmpty())
+        val replacement = FakeBackend(backend.providerId)
+        adapter.attachBackend("provider.replacement", replacement)
+        events.clear()
+        adapter.generate(request(), events::add)
+        assertEquals(listOf(ModelEvent.Delta("Hello"), ModelEvent.Completed(2, 1)), events)
+    }
+
+    @Test
+    fun staleBackendHandleCannotRemoveReplacement() {
+        val adapter = ModelAdapterPlugin().apply { onEnable() }
+        val first = adapter.attachBackend("provider.test", FakeBackend("test-provider"))
+        adapter.detachBackend("provider.test", "test-provider")
+        val replacement = FakeBackend("test-provider")
+        adapter.attachBackend("provider.test", replacement)
+        first.close()
+        assertEquals(listOf(replacement.descriptor), adapter.models())
+    }
     @Test
     fun modelAdapterRoutesGenerationAndEnforcesBackendOwnership() {
         val plugin = ModelAdapterPlugin()

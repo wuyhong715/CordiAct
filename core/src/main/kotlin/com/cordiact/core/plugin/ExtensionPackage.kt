@@ -35,6 +35,9 @@ enum class ExtensionPackageCapability(val wireName: String) {
     WORKFLOW_PUBLISH("workflow.publish"),
     AGENT_SUBAGENT_PRESET_PUBLISH("agent.subagent-preset.publish"),
     UI_CONVERSATION_PUBLISH("ui.conversation.publish"),
+    AGENT_TURN_POLICY_PUBLISH("agent.turn-policy.publish"),
+    UI_WORKBENCH_CONTROLS_PUBLISH("ui.workbench-controls.publish"),
+    UI_COMPONENTS_PUBLISH("ui.components.publish"),
 }
 
 /** One host-executed tool. [operation] is null for a fixed-text tool. */
@@ -65,7 +68,22 @@ data class ExtensionPackageClient(
     val sessionActions: List<ExtensionPackageSessionAction> = emptyList(),
     val workbenchPanel: ExtensionPackageSettingsPage? = null,
     val conversation: ExtensionPackageConversation? = null,
+    val components: List<ExtensionPackageComponent> = emptyList(),
 )
+
+enum class ExtensionPackageComponentSlot(val wireName: String) {
+    SESSION_TOOLBAR("session.toolbar"), COMPOSER_ACCESSORIES("composer.accessories"),
+}
+
+data class ExtensionPackageComponent(
+    val id: String, val slot: ExtensionPackageComponentSlot, val label: String, val nodes: List<ExtensionPackageComponentNode>,
+)
+
+sealed interface ExtensionPackageComponentNode {
+    data class Text(val text: String) : ExtensionPackageComponentNode
+    data class Action(val action: String) : ExtensionPackageComponentNode
+    data class Group(val label: String, val children: List<ExtensionPackageComponentNode>) : ExtensionPackageComponentNode
+}
 
 enum class ExtensionPackageMessageEvent(val wireName: String) { USER("user.message"), ASSISTANT("assistant.message") }
 
@@ -80,9 +98,18 @@ data class ExtensionPackageSettingsPage(
     val title: String,
     val description: String,
     val rows: List<ExtensionPackageSettingsRow> = emptyList(),
+    val controls: List<ExtensionPackagePanelControl> = emptyList(),
 )
 
 data class ExtensionPackageSettingsRow(val label: String, val value: String)
+
+data class ExtensionPackagePanelControl(
+    val id: String,
+    val label: String,
+    val content: String,
+    val initiallyExpanded: Boolean,
+    val action: String? = null,
+)
 
 /** [command] is the primary name of a command from this package, without a leading slash. */
 data class ExtensionPackageSessionAction(val id: String, val label: String, val command: String)
@@ -92,6 +119,7 @@ data class ExtensionPackageAgent(
     val context: String? = null,
     val beforeTool: List<ExtensionPackageToolPolicy> = emptyList(),
     val subagents: List<ExtensionPackageSubagent> = emptyList(),
+    val beforeTurn: ExtensionPackageTurnPolicy? = null,
 )
 
 data class ExtensionPackageSubagent(val name: String, val title: String, val instructions: String, val tools: Set<String>)
@@ -99,6 +127,7 @@ data class ExtensionPackageSubagent(val name: String, val title: String, val ins
 data class ExtensionPackageSkill(val name: String, val description: String, val body: String)
 
 data class ExtensionPackageToolPolicy(val name: String, val tools: Set<String>, val script: String)
+data class ExtensionPackageTurnPolicy(val name: String, val script: String)
 
 data class ExtensionPackageWorkflow(val name: String, val title: String, val steps: List<ExtensionPackageWorkflowStep>)
 
@@ -141,7 +170,7 @@ fun extensionPackageSpec(manifest: ExtensionPackageManifest): PluginSpec = Plugi
     id = "pkg.${manifest.id}",
     version = manifest.version,
     target = if (manifest.tools.any { it.script != null } || manifest.searchProviders.isNotEmpty() ||
-        !manifest.agent?.beforeTool.isNullOrEmpty() || manifest.workflows.isNotEmpty())
+        !manifest.agent?.beforeTool.isNullOrEmpty() || manifest.agent?.beforeTurn != null || manifest.workflows.isNotEmpty())
         PluginTarget.ANDROID_ISOLATED_JS else PluginTarget.ANDROID_NATIVE,
     requestedCapabilities = manifest.capabilities.mapTo(linkedSetOf()) { it.wireName },
     config = manifest.sha256,
@@ -299,7 +328,19 @@ object ExtensionPackageSource {
         val hasSubagents = !agent?.subagents.isNullOrEmpty()
         require((!hasSubagents || compiledSchema >= 10) && (compiledSchema != 10 || hasSubagents)) { "Subagent presets require schema version 10 or later" }
         val conversation = client?.conversation
-        require((conversation != null) == (compiledSchema == 11)) { "Conversation views require schema version 11" }
+        require((conversation == null || compiledSchema >= 11) && (compiledSchema != 11 || conversation != null)) {
+            "Conversation views require schema version 11 or later"
+        }
+        val hasTurnPolicy = agent?.beforeTurn != null
+        require((!hasTurnPolicy || compiledSchema >= 12) && (compiledSchema != 12 || hasTurnPolicy)) {
+            "Before-turn policy requires schema version 12 or later"
+        }
+        val hasPanelControls = !client?.workbenchPanel?.controls.isNullOrEmpty()
+        require((!hasPanelControls || compiledSchema >= 13) && (compiledSchema != 13 || hasPanelControls)) {
+            "Workbench controls require schema version 13 or later"
+        }
+        val hasComponents = !client?.components.isNullOrEmpty()
+        require(hasComponents == (compiledSchema == 14)) { "Slot components require schema version 14" }
         require(fields.size == 9 + listOfNotNull(client, agent, providers, workflows.takeIf { it.isNotEmpty() }).size) { "Missing package field" }
         val compiledTools = Collections.unmodifiableList(requireNotNull(tools))
         val compiledCommands = Collections.unmodifiableList(requireNotNull(commands))
@@ -335,6 +376,12 @@ object ExtensionPackageSource {
         require(required.contains(ExtensionPackageCapability.UI_WORKBENCH_PANEL_PUBLISH) == (client?.workbenchPanel != null)) {
             "ui.workbench-panel.publish must exactly match the workbenchPanel declaration"
         }
+        require(required.contains(ExtensionPackageCapability.UI_WORKBENCH_CONTROLS_PUBLISH) == hasPanelControls) {
+            "ui.workbench-controls.publish must exactly match the workbench controls"
+        }
+        require(required.contains(ExtensionPackageCapability.UI_COMPONENTS_PUBLISH) == hasComponents) {
+            "ui.components.publish must exactly match the component declaration"
+        }
         require(required.contains(ExtensionPackageCapability.UI_CONVERSATION_PUBLISH) == (conversation != null)) {
             "ui.conversation.publish must exactly match the conversation declaration"
         }
@@ -349,6 +396,9 @@ object ExtensionPackageSource {
         }
         require(required.contains(ExtensionPackageCapability.AGENT_TOOL_POLICY_PUBLISH) == hasToolPolicy) {
             "agent.tool-policy.publish must exactly match the beforeTool declaration"
+        }
+        require(required.contains(ExtensionPackageCapability.AGENT_TURN_POLICY_PUBLISH) == hasTurnPolicy) {
+            "agent.turn-policy.publish must exactly match the beforeTurn declaration"
         }
         require(required.contains(ExtensionPackageCapability.WORKFLOW_PUBLISH) == workflows.isNotEmpty()) {
             "workflow.publish must exactly match the workflow declaration"
@@ -366,6 +416,21 @@ object ExtensionPackageSource {
             require(client.sessionActions.all { action -> compiledCommands.any { it.name == action.command } }) {
                 "Session action must name a primary command from this package"
             }
+            require(client.workbenchPanel?.controls.orEmpty().all { control ->
+                control.action == null || client.sessionActions.any { it.id == control.action }
+            }) { "Workbench control must name a session action from this package" }
+            fun validateComponentActions(nodes: List<ExtensionPackageComponentNode>) {
+                nodes.forEach { node ->
+                    when (node) {
+                        is ExtensionPackageComponentNode.Action -> require(client.sessionActions.any { it.id == node.action }) {
+                            "Component must name a session action from this package"
+                        }
+                        is ExtensionPackageComponentNode.Group -> validateComponentActions(node.children)
+                        is ExtensionPackageComponentNode.Text -> Unit
+                    }
+                }
+            }
+            client.components.forEach { validateComponentActions(it.nodes) }
         }
         return ExtensionPackageManifest(
             schemaVersion = compiledSchema,
@@ -402,6 +467,9 @@ object ExtensionPackageSource {
             "9" -> 9
             "10" -> 10
             "11" -> 11
+            "12" -> 12
+            "13" -> 13
+            "14" -> 14
             else -> throw IllegalArgumentException("Unsupported package schema version")
         }
     }
@@ -553,17 +621,36 @@ object ExtensionPackageSource {
         var context: String? = null
         var beforeTool: List<ExtensionPackageToolPolicy> = emptyList()
         var subagents: List<ExtensionPackageSubagent> = emptyList()
+        var beforeTurn: ExtensionPackageTurnPolicy? = null
         reader.readClientObject("agent") { field ->
             when (field) {
                 "skills" -> skills = readSkills(reader)
                 "context" -> context = reader.readString().validatedText(MAX_CONTEXT_BYTES, multiline = true, error = "Invalid agent context")
                 "beforeTool" -> beforeTool = readToolPolicies(reader)
                 "subagents" -> subagents = readSubagents(reader)
+                "beforeTurn" -> beforeTurn = readTurnPolicy(reader)
                 else -> throw IllegalArgumentException("Unknown package agent field")
             }
         }
-        require(skills.isNotEmpty() || context != null || beforeTool.isNotEmpty() || subagents.isNotEmpty()) { "Package agent must declare a contribution" }
-        return ExtensionPackageAgent(skills, context, beforeTool, subagents)
+        require(skills.isNotEmpty() || context != null || beforeTool.isNotEmpty() || subagents.isNotEmpty() || beforeTurn != null) {
+            "Package agent must declare a contribution"
+        }
+        return ExtensionPackageAgent(skills, context, beforeTool, subagents, beforeTurn)
+    }
+
+    private fun readTurnPolicy(reader: JsonReader): ExtensionPackageTurnPolicy {
+        var name: String? = null
+        var script: String? = null
+        reader.readClientObject("before-turn policy") { field ->
+            when (field) {
+                "name" -> name = reader.readString().also { validateSlug(it, "Invalid turn policy name") }
+                "source" -> script = reader.readString().validatedText(
+                    PACKAGE_SCRIPT_MAX_SOURCE_BYTES, multiline = true, error = "Invalid turn policy script",
+                )
+                else -> throw IllegalArgumentException("Unknown before-turn policy field")
+            }
+        }
+        return ExtensionPackageTurnPolicy(requireNotNull(name), requireNotNull(script))
     }
 
     private fun readSubagents(reader: JsonReader): List<ExtensionPackageSubagent> {
@@ -666,19 +753,90 @@ object ExtensionPackageSource {
         var sessionActions: List<ExtensionPackageSessionAction> = emptyList()
         var workbenchPanel: ExtensionPackageSettingsPage? = null
         var conversation: ExtensionPackageConversation? = null
+        var components: List<ExtensionPackageComponent> = emptyList()
         reader.readClientObject("client") { field ->
             when (field) {
                 "settingsPage" -> settingsPage = readSettingsPage(reader)
                 "sessionActions" -> sessionActions = readSessionActions(reader)
-                "workbenchPanel" -> workbenchPanel = readSettingsPage(reader, "workbench panel")
+                "workbenchPanel" -> workbenchPanel = readSettingsPage(reader, "workbench panel", allowControls = true)
                 "conversation" -> conversation = readConversation(reader)
+                "components" -> components = readComponents(reader)
                 else -> throw IllegalArgumentException("Unknown package client field")
             }
         }
-        require(settingsPage != null || sessionActions.isNotEmpty() || workbenchPanel != null || conversation != null) {
+        require(settingsPage != null || sessionActions.isNotEmpty() || workbenchPanel != null || conversation != null || components.isNotEmpty()) {
             "Package client must declare a contribution"
         }
-        return ExtensionPackageClient(settingsPage, sessionActions, workbenchPanel, conversation)
+        return ExtensionPackageClient(settingsPage, sessionActions, workbenchPanel, conversation, components)
+    }
+
+    private fun readComponents(reader: JsonReader): List<ExtensionPackageComponent> {
+        require(reader.peek() == JsonToken.BEGIN_ARRAY) { "Slot components must be an array" }
+        val components = mutableListOf<ExtensionPackageComponent>()
+        reader.beginArray()
+        while (reader.hasNext()) {
+            require(components.size < 2) { "Too many slot components" }
+            var id: String? = null
+            var slot: ExtensionPackageComponentSlot? = null
+            var label: String? = null
+            var nodes: List<ExtensionPackageComponentNode>? = null
+            var budget = 12
+            reader.readClientObject("slot component") { field ->
+                when (field) {
+                    "id" -> id = reader.readString().also { validateSlug(it, "Invalid component ID") }
+                    "slot" -> {
+                        val wire = reader.readString()
+                        slot = requireNotNull(ExtensionPackageComponentSlot.entries.find { it.wireName == wire }) {
+                            "Unknown client component slot"
+                        }
+                    }
+                    "label" -> label = reader.readClientText(MAX_TITLE_BYTES, "component label")
+                    "nodes" -> nodes = readComponentNodes(reader, 1) {
+                        require(budget-- > 0) { "Too many component nodes" }
+                    }
+                    else -> throw IllegalArgumentException("Unknown slot component field")
+                }
+            }
+            val component = ExtensionPackageComponent(requireNotNull(id), requireNotNull(slot), requireNotNull(label), requireNotNull(nodes))
+            require(components.none { it.id == component.id || it.slot == component.slot }) { "Duplicate component ID or slot" }
+            components += component
+        }
+        reader.endArray()
+        require(components.isNotEmpty()) { "Declare at least one slot component" }
+        return Collections.unmodifiableList(components)
+    }
+
+    private fun readComponentNodes(reader: JsonReader, depth: Int, consumeNode: () -> Unit): List<ExtensionPackageComponentNode> {
+        require(depth <= 3) { "Component groups nested too deeply" }
+        require(reader.peek() == JsonToken.BEGIN_ARRAY) { "Component nodes must be an array" }
+        val nodes = mutableListOf<ExtensionPackageComponentNode>()
+        reader.beginArray()
+        while (reader.hasNext()) {
+            consumeNode()
+            var text: String? = null
+            var action: String? = null
+            var label: String? = null
+            var children: List<ExtensionPackageComponentNode>? = null
+            reader.readClientObject("component node") { field ->
+                when (field) {
+                    "text" -> text = reader.readString().validatedText(MAX_DESCRIPTION_BYTES, multiline = true, error = "Invalid component text")
+                    "action" -> action = reader.readString().also { validateSlug(it, "Invalid component action ID") }
+                    "label" -> label = reader.readClientText(MAX_TITLE_BYTES, "component group label")
+                    "children" -> children = readComponentNodes(reader, depth + 1, consumeNode)
+                    else -> throw IllegalArgumentException("Unknown component node field")
+                }
+            }
+            nodes += when {
+                text != null && action == null && label == null && children == null -> ExtensionPackageComponentNode.Text(requireNotNull(text))
+                action != null && text == null && label == null && children == null -> ExtensionPackageComponentNode.Action(requireNotNull(action))
+                label != null && children != null && text == null && action == null ->
+                    ExtensionPackageComponentNode.Group(requireNotNull(label), requireNotNull(children))
+                else -> throw IllegalArgumentException("Declare a text, action, or group component node")
+            }
+        }
+        reader.endArray()
+        require(nodes.isNotEmpty()) { "Component nodes must not be empty" }
+        return Collections.unmodifiableList(nodes)
     }
 
     private fun readConversation(reader: JsonReader): ExtensionPackageConversation {
@@ -733,10 +891,11 @@ object ExtensionPackageSource {
         return Collections.unmodifiableList(views)
     }
 
-    private fun readSettingsPage(reader: JsonReader, name: String = "settings page"): ExtensionPackageSettingsPage {
+    private fun readSettingsPage(reader: JsonReader, name: String = "settings page", allowControls: Boolean = false): ExtensionPackageSettingsPage {
         var title: String? = null
         var description: String? = null
         var rows: List<ExtensionPackageSettingsRow> = emptyList()
+        var controls: List<ExtensionPackagePanelControl> = emptyList()
         reader.readClientObject(name) { field ->
             when (field) {
                 "title" -> title = reader.readClientText(MAX_TITLE_BYTES, "$name title")
@@ -752,6 +911,10 @@ object ExtensionPackageSource {
                     reader.endArray()
                     rows = Collections.unmodifiableList(values)
                 }
+                "controls" -> {
+                    require(allowControls) { "Controls are only available in workbench panels" }
+                    controls = readPanelControls(reader)
+                }
                 else -> throw IllegalArgumentException("Unknown package $name field")
             }
         }
@@ -759,7 +922,44 @@ object ExtensionPackageSource {
             title = requireNotNull(title) { "Missing package $name title" },
             description = requireNotNull(description) { "Missing package $name description" },
             rows = rows,
+            controls = controls,
         )
+    }
+
+    private fun readPanelControls(reader: JsonReader): List<ExtensionPackagePanelControl> {
+        require(reader.peek() == JsonToken.BEGIN_ARRAY) { "Workbench controls must be an array" }
+        val controls = mutableListOf<ExtensionPackagePanelControl>()
+        val ids = mutableSetOf<String>()
+        reader.beginArray()
+        while (reader.hasNext()) {
+            require(controls.size < 4) { "Too many workbench controls" }
+            var id: String? = null
+            var label: String? = null
+            var content: String? = null
+            var initiallyExpanded = false
+            var action: String? = null
+            reader.readClientObject("workbench control") { field ->
+                when (field) {
+                    "id" -> id = reader.readString().also {
+                        validateSlug(it, "Invalid workbench control ID")
+                        require(ids.add(it)) { "Duplicate workbench control ID" }
+                    }
+                    "label" -> label = reader.readClientText(MAX_TITLE_BYTES, "workbench control label")
+                    "content" -> content = reader.readString().validatedText(MAX_DESCRIPTION_BYTES, multiline = true,
+                        error = "Invalid workbench control content")
+                    "initiallyExpanded" -> {
+                        require(reader.peek() == JsonToken.BOOLEAN) { "Workbench initial expansion must be a boolean" }
+                        initiallyExpanded = reader.nextBoolean()
+                    }
+                    "action" -> action = reader.readString().also { validateSlug(it, "Invalid workbench action ID") }
+                    else -> throw IllegalArgumentException("Unknown package workbench control field")
+                }
+            }
+            controls += ExtensionPackagePanelControl(requireNotNull(id), requireNotNull(label), requireNotNull(content), initiallyExpanded, action)
+        }
+        reader.endArray()
+        require(controls.isNotEmpty()) { "Declare at least one workbench control" }
+        return Collections.unmodifiableList(controls)
     }
 
     private fun readSettingsRow(reader: JsonReader): ExtensionPackageSettingsRow {

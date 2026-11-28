@@ -1,0 +1,22 @@
+{
+  "id": "session-components",
+  "version": "1.0.0",
+  "title": "会话检查组件",
+  "description": "在工具栏显示检查说明，从输入区填入本包的命令。",
+  "commands": [
+    { "name": "review-session", "aliases": [], "description": "查看检查项", "text": "确认上下文、目标和验收条件。" }
+  ],
+  "client": {
+    "sessionActions": [
+      { "id": "insert-review", "label": "填入检查命令", "command": "review-session" }
+    ],
+    "components": [
+      { "id": "review-entry", "slot": "session.toolbar", "label": "会话检查", "nodes": [
+        { "label": "检查项", "children": [{ "text": "核对当前会话的目标及上下文。" }] }
+      ] },
+      { "id": "review-draft", "slot": "composer.accessories", "label": "检查命令", "nodes": [
+        { "action": "insert-review" }
+      ] }
+    ]
+  }
+}

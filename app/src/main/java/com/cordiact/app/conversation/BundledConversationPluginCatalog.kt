@@ -50,7 +50,6 @@ import com.cordiact.core.tool.ToolValue
 import com.cordiact.core.tool.ToolValueType
 import com.cordiact.core.tool.ToolExecutor
 import com.cordiact.core.tool.toolManagerPluginSpec
-import com.cordiact.app.attachment.AndroidAttachmentCatalog
 import com.cordiact.app.attachment.AndroidAttachmentImportService
 import com.cordiact.app.attachment.AndroidImageNormalizer
 import com.cordiact.core.attachment.LocalAttachmentBlobStore
@@ -154,6 +153,7 @@ object BundledConversationPluginCatalog {
     private val trustedSpecs = setOf(
         workspaceManagerPluginSpec(),
         toolManagerPluginSpec(),
+        com.cordiact.core.toolloop.toolLoopPluginSpec(),
         fileManagerPluginSpec(),
         skillPluginSpec(),
         modelAdapterPluginSpec(),
@@ -193,7 +193,7 @@ object BundledConversationPluginCatalog {
 
 /** Creates one shared Workspace/session database and injects the same Workspace service into Session Manager. */
 class BundledConversationPlugins private constructor(
-    val conversationStore: AndroidConversationSessionStore,
+    val conversationStore: ConversationStorage,
     val workspacePlugin: WorkspaceManagerPlugin,
     val fileManagerPlugin: FileManagerPlugin,
     private val registry: InMemoryToolDefinitionRegistry,
@@ -206,7 +206,7 @@ class BundledConversationPlugins private constructor(
     private val configuredSearchApiKeys: AndroidSearchApiKeyStore? = null,
     private val spillStoreDir: File? = null,
     /** Workspace-scoped attachment metadata over private blob storage. */
-    val attachmentCatalog: AndroidAttachmentCatalog,
+    val attachmentCatalog: ConversationAttachmentStorage,
     /** Copies picked `content://` items into the attachment store. */
     val attachmentImportService: AndroidAttachmentImportService,
     /** Audit trail for attachment import/read/send decisions. */
@@ -299,9 +299,11 @@ class BundledConversationPlugins private constructor(
 
     /** Shared trusted-code runtime; durable lifecycle and approval remain authoritative. */
     internal val workbenchTabs = com.cordiact.interaction.TrustedWorkbenchTabs<com.cordiact.app.experience.tabs.TabContributor>()
+    internal val clientComponentSlots = com.cordiact.app.experience.ClientComponentSlots()
     internal val toolResultCards = com.cordiact.app.experience.builtinToolResultDirectory()
     internal val packageAgentContributions = com.cordiact.core.plugin.PackageAgentContributions()
     internal val packageToolPolicies = com.cordiact.core.plugin.PackageToolPolicies()
+    internal val packageTurnPolicies = com.cordiact.core.plugin.PackageTurnPolicies()
     internal val packageModelContributions = com.cordiact.core.plugin.PackageModelContributions()
     internal val packageWorkflows by lazy {
         com.cordiact.core.plugin.PackageWorkflows(jobRegistry, java.util.concurrent.Executors.newFixedThreadPool(2) { task ->
@@ -310,12 +312,19 @@ class BundledConversationPlugins private constructor(
     }
     val pluginKernel = com.cordiact.core.plugin.PluginKernel {
         workbenchTabs.refresh()
+        clientComponentSlots.refresh()
         toolResultCards.refresh()
     }
     val toolContributions = com.cordiact.core.plugin.PluginToolContributions(registry)
 
     internal val workspaceClientContributions by lazy {
-        com.cordiact.interaction.WorkspaceClientContributions(interactionPlugin.commandRegistry) { context, panel, admitted ->
+        com.cordiact.interaction.WorkspaceClientContributions(interactionPlugin.commandRegistry, publishComponent = { context, component, admitted ->
+            val slot = when (component.description.slot) {
+                com.cordiact.core.plugin.ExtensionPackageComponentSlot.SESSION_TOOLBAR -> com.cordiact.app.experience.ClientComponentSlot.SESSION_TOOLBAR
+                com.cordiact.core.plugin.ExtensionPackageComponentSlot.COMPOSER_ACCESSORIES -> com.cordiact.app.experience.ClientComponentSlot.COMPOSER_ACCESSORIES
+            }
+            clientComponentSlots.register(context, slot, context.id.pluginId, com.cordiact.app.experience.PackageSlotComponent(component), admitted = admitted)
+        }) { context, panel, admitted ->
             val tab = com.cordiact.app.experience.tabs.DeclarativeWorkbenchTab(context.id.pluginId, panel)
             workbenchTabs.register(context, tab.id, tab, order = Int.MAX_VALUE, admitted = admitted)
         }
@@ -328,6 +337,7 @@ class BundledConversationPlugins private constructor(
         admissionChanged = {
             workspaceClientContributions.refreshAdmission()
             workbenchTabs.refresh()
+            clientComponentSlots.refresh()
             packageModelContributions.refresh()
         },
     ) { record, admitted ->
@@ -343,6 +353,7 @@ class BundledConversationPlugins private constructor(
             scriptRuntime = scriptRuntime,
             agentContributions = packageAgentContributions,
             toolPolicies = packageToolPolicies,
+            turnPolicies = packageTurnPolicies,
             searchContributions = searchRegistry?.let { com.cordiact.core.plugin.PackageSearchContributions(it) },
             modelContributions = packageModelContributions,
             retireModelProvider = retireModelProvider,
@@ -500,7 +511,7 @@ class BundledConversationPlugins private constructor(
             references = attachmentCatalog,
             audit = attachmentAudit,
         )
-        val modelAdapter = ModelAdapterPlugin()
+        val modelAdapter = ModelAdapterPlugin(pluginKernel)
         modelProviderRegistryPlugin = ModelProviderRegistryPlugin(
             modelAdapter,
             providerCredentialFor,
@@ -582,7 +593,7 @@ class BundledConversationPlugins private constructor(
             modelProviderRegistryPlugin,
             interactionPlugin,
             bundledDeclarativePackage,
-            com.cordiact.app.experience.tabs.BuiltinWorkbenchTabs(pluginKernel, workbenchTabs),
+            com.cordiact.app.experience.tabs.BuiltinWorkbenchTabs(pluginKernel, workbenchTabs, clientComponentSlots),
             com.cordiact.app.experience.BuiltinToolResultCards(pluginKernel, toolResultCards),
         ) + extraPlugins
     }
@@ -592,9 +603,10 @@ class BundledConversationPlugins private constructor(
             context: Context,
             attachmentAudit: com.cordiact.core.attachment.AttachmentAuditSink =
                 com.cordiact.core.attachment.NoopAttachmentAuditSink,
+            storageProvider: ConversationStorageProvider = AndroidConversationStorageProvider,
         ): BundledConversationPlugins {
-            val store = AndroidConversationSessionStore(context)
             val privateRoot = File(context.noBackupFilesDir, "cordiact")
+            val store = storageProvider.open(context, privateRoot)
             val providerKeys = AndroidProviderApiKeyStore(context)
             val providerConfigs = AndroidModelProviderConfigStore(context)
             // Preserve an existing installation; a fresh install has no phantom model provider.
@@ -618,7 +630,7 @@ class BundledConversationPlugins private constructor(
         }
 
         fun create(
-            store: AndroidConversationSessionStore,
+            store: ConversationStorage,
             privateRoot: File,
             providerConfigStore: ModelProviderConfigStore = InMemoryModelProviderConfigStore(),
             providerCredentialFor: ((String) -> ApiKeyProvider)? = null,
@@ -635,7 +647,7 @@ class BundledConversationPlugins private constructor(
             val workspace = WorkspaceManagerPlugin(store, privateRoot)
             val fileManager = FileManagerPlugin(workspace, AndroidWorkspaceFileBackend())
             val attachmentBlobs = LocalAttachmentBlobStore(File(privateRoot, "attachments"))
-            val attachmentCatalog = AndroidAttachmentCatalog(store, attachmentBlobs, audit = attachmentAudit)
+            val attachmentCatalog = store.attachments(attachmentBlobs, attachmentAudit)
             val attachmentImportService = AndroidAttachmentImportService(
                 context = context,
                 blobs = attachmentBlobs,

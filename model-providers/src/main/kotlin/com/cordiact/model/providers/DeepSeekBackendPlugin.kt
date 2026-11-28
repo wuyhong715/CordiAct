@@ -40,11 +40,9 @@ class DeepSeekBackendPlugin(
         val scope = PluginScope()
         resources = scope
         try {
-            adapter.attachBackend(spec.id, backend)
-            // Only acquire cleanup ownership after attach succeeds: a conflicting owner must
-            // never have its backend detached by our failed initialization.
-            scope.effect { adapter.detachBackend(spec.id, backend.providerId) }
+            val registration = adapter.attachBackend(spec.id, backend)
             scope.effect { backend.cancelActiveCalls() }
+            scope.own(registration)
         } catch (failure: Exception) {
             try { scope.close(); resources = null } catch (cleanup: Exception) { failure.addSuppressed(cleanup) }
             throw failure

@@ -18,6 +18,8 @@ jobs:
           test -f README.md
           test -f LICENSE
           test -f docs/ARCHITECTURE.md
+      - name: Check architecture governance baseline
+        run: python3 tools/check-architecture-governance.py
 
   plugin-sdk:
     runs-on: ubuntu-latest

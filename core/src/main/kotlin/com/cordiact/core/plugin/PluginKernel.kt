@@ -1,7 +1,12 @@
 package com.cordiact.core.plugin
 
-/** Keys compare by name AND JVM type; a name cannot be rebound to a different type in a scope. */
-data class ServiceKey<T : Any>(val name: String, val type: Class<T>) {
+/** Scope-local by default. An application-wide key can only be published by a global instance. */
+data class ServiceKey<T : Any>(val name: String, val type: Class<T>, val applicationWide: Boolean = false) {
+    init { require(name.isNotBlank()) }
+}
+
+/** A typed, scope-addressed event seam for trusted host plugins. */
+data class PluginEventKey<T : Any>(val name: String, val type: Class<T>) {
     init { require(name.isNotBlank()) }
 }
 
@@ -33,6 +38,7 @@ class PluginContext internal constructor(
     val scope: PluginScope,
     private val lookup: (ServiceKey<*>) -> Any?,
     private val publish: (ServiceKey<*>, Any) -> Unit,
+    private val subscribe: (PluginEventKey<*>, (Any) -> Unit) -> AutoCloseable,
     private val publicationActive: () -> Boolean,
 ) {
     /** Lock-free read for registries. A contribution is callable only after its start commits. */
@@ -47,6 +53,10 @@ class PluginContext internal constructor(
         require(key.type.isInstance(value)) { "Invalid service value for '${key.name}'" }
         publish(key, value)
     }
+
+    /** Register a typed listener owned by this plugin scope. It is removed during scope cleanup. */
+    fun <T : Any> on(key: PluginEventKey<T>, handler: (T) -> Unit): AutoCloseable =
+        subscribe(key) { handler(key.type.cast(it)) }
     fun effect(dispose: () -> Unit): AutoCloseable = scope.effect(dispose)
 }
 
@@ -78,6 +88,11 @@ class PluginKernel(
     private data class Address(val workspace: String?, val session: String?, val name: String)
     private val entries = linkedMapOf<PluginInstanceId, Entry>()
     private val bindings = linkedMapOf<Address, Pair<ServiceKey<*>, Binding>>()
+    private class EventBinding(val deliver: (Any) -> Unit, val isActive: () -> Boolean) {
+        @Volatile var registered = true
+    }
+    private val eventLock = Any()
+    private val eventBindings = linkedMapOf<Pair<Address, PluginEventKey<*>>, MutableList<EventBinding>>()
     private val started = mutableListOf<Entry>()
     private var transitioning = false
 
@@ -122,6 +137,26 @@ class PluginKernel(
 
     @Synchronized fun statuses(): List<PluginInstanceStatus> = entries.keys.map(::status)
 
+    /**
+     * Dispatch in registration order in the exact namespace. Withdrawal prevents later dispatches;
+     * a handler already admitted may finish. Listener failures are returned independently.
+     */
+    fun <T : Any> emit(
+        key: PluginEventKey<T>, event: T, workspaceId: String? = null, sessionId: String? = null,
+    ): List<Exception> {
+        require(key.type.isInstance(event)) { "Invalid event value for '${key.name}'" }
+        val listeners = synchronized(eventLock) {
+            eventBindings[Address(workspaceId, sessionId, key.name) to key].orEmpty().toList()
+        }
+        return buildList {
+            for (listener in listeners) {
+                if (listener.registered && listener.isActive()) {
+                    try { listener.deliver(event) } catch (failure: Exception) { add(failure) }
+                }
+            }
+        }
+    }
+
     @Synchronized fun status(id: PluginInstanceId): PluginInstanceStatus {
         val entry = requireEntry(id)
         return PluginInstanceStatus(id, entry.state,
@@ -129,7 +164,8 @@ class PluginKernel(
     }
 
     private fun requireEntry(id: PluginInstanceId) = checkNotNull(entries[id]) { "Unknown instance: $id" }
-    private fun address(entry: Entry, key: ServiceKey<*>) = Address(entry.id.workspaceId, entry.id.sessionId, key.name)
+    private fun address(entry: Entry, key: ServiceKey<*>) =
+        if (key.applicationWide) Address(null, null, key.name) else Address(entry.id.workspaceId, entry.id.sessionId, key.name)
     private fun binding(entry: Entry, key: ServiceKey<*>): Binding? = bindings[address(entry, key)]
         ?.takeIf { it.first == key && it.second.owner.state == PluginInstanceState.ACTIVE }?.second
 
@@ -198,12 +234,25 @@ class PluginKernel(
             binding(entry, key)?.value
         } }, publish = { key, value -> synchronized(this) {
             check(entry.state == PluginInstanceState.STARTING) { "Publish services only during start" }
+            require(!key.applicationWide || entry.id.workspaceId == null) { "Only global plugins can publish '${key.name}'" }
             val address = address(entry, key)
             check(address !in bindings) { "Service '${key.name}' already provided in this scope" }
             val published = Binding(entry, value)
             bindings[address] = key to published
             scope.effect { synchronized(this) {
                 if (bindings[address]?.second === published) bindings.remove(address)
+            } }
+        } }, subscribe = { key, handler -> synchronized(this) {
+            check(entry.state == PluginInstanceState.STARTING && entry.publication === publication) {
+                "Subscribe to events only during this instance's start"
+            }
+            val address = Address(entry.id.workspaceId, entry.id.sessionId, key.name) to key
+            val binding = EventBinding(handler) { publication.active && scope.isOpen }
+            synchronized(eventLock) { eventBindings.getOrPut(address) { mutableListOf() }.add(binding) }
+            scope.effect { synchronized(eventLock) {
+                binding.registered = false
+                eventBindings[address]?.remove(binding)
+                if (eventBindings[address].isNullOrEmpty()) eventBindings.remove(address)
             } }
         } }, publicationActive = { publication.active })
         try {

@@ -4,7 +4,10 @@ import android.app.Application
 import android.util.Log
 import android.os.Process
 import com.cordiact.app.automation.AutomationRuntime
-import com.cordiact.app.conversation.AndroidConversationSessionStore
+import com.cordiact.app.conversation.AndroidConversationStorageProvider
+import com.cordiact.app.conversation.ConversationAttachmentStorage
+import com.cordiact.app.conversation.ConversationStorage
+import com.cordiact.app.conversation.ConversationStorageProvider
 import com.cordiact.app.conversation.BundledConversationPluginCatalog
 import com.cordiact.app.conversation.BundledConversationPlugins
 import com.cordiact.app.plugin.AndroidAuthoredPluginInstallStore
@@ -32,6 +35,10 @@ import com.cordiact.core.plugin.AuthoredPluginReceipt
 import com.cordiact.core.plugin.AuthoredPluginTurn
 import com.cordiact.core.security.AccessEnvelope
 import com.cordiact.core.security.EffectiveSecurityProfile
+import com.cordiact.core.conversation.CONVERSATION_TURN_COMPLETED
+import com.cordiact.core.plugin.ContextPlugin
+import com.cordiact.core.plugin.PluginContext
+import com.cordiact.core.plugin.PluginInstanceId
 import com.cordiact.core.plugin.PluginKernel
 import com.cordiact.core.plugin.AuthoredPluginRuntime
 import com.cordiact.core.plugin.PluginManagerService
@@ -53,6 +60,8 @@ import com.cordiact.interaction.InteractionModelSubmitter
 import com.cordiact.interaction.MentionType
 import com.cordiact.app.tool.AndroidToolDispatcher
 import com.cordiact.core.toolloop.ToolLoopPlugin
+import com.cordiact.core.toolloop.TOOL_LOOP_CONTRIBUTIONS
+import com.cordiact.core.toolloop.WorkspaceToolLoops
 import com.cordiact.core.conversation.ModelToolSpec
 import com.cordiact.core.subagent.ChildNotice
 import com.cordiact.core.subagent.ChildToolPlanner
@@ -86,14 +95,14 @@ import com.cordiact.core.tool.ToolInvocationContext
 import com.cordiact.interaction.MutableFillValueStore
 
 /** Opens the plugin host, recovers durable state, then registers and enables core conversation plugins. */
-class CordiActApplication : Application(), androidx.work.Configuration.Provider {
+open class CordiActApplication : Application(), androidx.work.Configuration.Provider {
     // Supports on-demand initialization when AndroidX Startup is not installed by the host.
     override val workManagerConfiguration: androidx.work.Configuration
         get() = androidx.work.Configuration.Builder().build()
 
     lateinit var pluginLifecycle: AndroidPluginLifecycle
         private set
-    lateinit var conversationStore: AndroidConversationSessionStore
+    lateinit var conversationStore: ConversationStorage
         private set
     lateinit var conversationCatalog: BundledConversationPlugins
         private set
@@ -225,7 +234,7 @@ class CordiActApplication : Application(), androidx.work.Configuration.Provider 
     val fillValues: MutableFillValueStore
         get() = conversationCatalog.fillValueStore
     /** Attachment catalogue (drafts included) and the import pipeline, for the composer. */
-    val attachments: com.cordiact.app.attachment.AndroidAttachmentCatalog get() = conversationCatalog.attachmentCatalog
+    val attachments: ConversationAttachmentStorage get() = conversationCatalog.attachmentCatalog
     val attachmentImporter: com.cordiact.app.attachment.AndroidAttachmentImportService
         get() = conversationCatalog.attachmentImportService
 
@@ -290,6 +299,7 @@ class CordiActApplication : Application(), androidx.work.Configuration.Provider 
         )
     }
 
+    private val toolLoops = WorkspaceToolLoops()
     private val toolLoopPlugin by lazy {
         ToolLoopPlugin(
             limits = com.cordiact.core.toolloop.ToolLoopLimits(
@@ -305,7 +315,7 @@ class CordiActApplication : Application(), androidx.work.Configuration.Provider 
                     runCatching { backgroundSubagents.acknowledgeNotices(sessionId, delivered.map { it.sourceId }) }
                 }
             },
-        ).apply { onEnable() }
+        )
     }
 
     /**
@@ -360,7 +370,7 @@ class CordiActApplication : Application(), androidx.work.Configuration.Provider 
             model = request.model,
             text = request.prompt,
             tools = request.tools,
-            toolLoop = toolLoopPlugin,
+            toolLoop = toolLoops,
             dispatcher = toolDispatcher,
             toolContext = request.context,
             systemContext = request.systemContext,
@@ -518,6 +528,8 @@ class CordiActApplication : Application(), androidx.work.Configuration.Provider 
         }
     }
 
+    protected open fun conversationStorageProvider(): ConversationStorageProvider = AndroidConversationStorageProvider
+
     override fun onCreate() {
         super.onCreate()
         if (Process.isIsolated()) {
@@ -530,6 +542,7 @@ class CordiActApplication : Application(), androidx.work.Configuration.Provider 
         providerApiKeyStore = AndroidProviderApiKeyStore(this)
         conversationCatalog = BundledConversationPlugins.create(
             this,
+            storageProvider = conversationStorageProvider(),
             // Attachment access is audited in the same tamper-evident log as other security
             // events. The vault is resolved lazily, on the first attachment event.
             attachmentAudit = { event ->
@@ -659,12 +672,25 @@ class CordiActApplication : Application(), androidx.work.Configuration.Provider 
                 }
             },
             sensitivePayloads = credentialRuntime.sensitivePayloads,
+            beforeUserTurn = conversationCatalog.packageTurnPolicies::check,
         )
-        // A finished turn is the cheapest moment to think about the next one: the summary can be
-        // prepared while nobody is waiting, and installed only if it still applies.
+        val kernel = conversationCatalog.pluginKernel
+        val turnObserver = PluginInstanceId("core.turn-observer")
+        kernel.register(turnObserver, object : ContextPlugin {
+            override fun start(context: PluginContext) {
+                context.on(CONVERSATION_TURN_COMPLETED) {
+                    synchronized(transcriptChanges) { transcriptChanges.value++ }
+                }
+                context.on(CONVERSATION_TURN_COMPLETED) { sessionId ->
+                    com.cordiact.app.context.ContextCompactionWorker.enqueue(this@CordiActApplication, sessionId)
+                }
+            }
+        })
+        kernel.enable(turnObserver)
         turnService.onTurnCompleted = { sessionId ->
-            synchronized(transcriptChanges) { transcriptChanges.value++ }
-            com.cordiact.app.context.ContextCompactionWorker.enqueue(this, sessionId)
+            kernel.emit(CONVERSATION_TURN_COMPLETED, sessionId).forEach {
+                Log.e(TAG, "Conversation turn observer failed", it)
+            }
         }
         // Registered here because the tool list is built from the shared registry, and the
         // delegation tools must be in it before the first turn assembles its specs.
@@ -697,7 +723,6 @@ class CordiActApplication : Application(), androidx.work.Configuration.Provider 
                         },
                     )
                 }
-            recordTurnGrants(envelope.context.sessionId, grants)
             val prompt = if (envelope.command == null) envelope.submittedText else envelope.commandInput
             val authoring = envelope.authoredPluginTurn?.takeIf {
                 envelope.command == null && it.isOpen && it.matches(envelope.context.workspaceId, envelope.context.sessionId)
@@ -730,7 +755,7 @@ class CordiActApplication : Application(), androidx.work.Configuration.Provider 
                 model = modelId,
                 text = prompt,
                 tools = availableToolSpecs(envelope.context.workspaceId, modelId, envelope.context.sessionId, toolContext.allowsPluginAuthoring),
-                toolLoop = toolLoopPlugin,
+                toolLoop = toolLoops,
                 dispatcher = toolDispatcher,
                 toolContext = toolContext,
                 parameters = parameters,
@@ -743,6 +768,7 @@ class CordiActApplication : Application(), androidx.work.Configuration.Provider 
                     packageContext?.let { put("plugin_context_sources", org.json.JSONArray(it.sources)) }
                 }.toString(),
                 onUserMessagePersisted = {
+                    recordTurnGrants(envelope.context.sessionId, grants)
                     sessions.updateFirstUserTitleFromOriginal(envelope.context.sessionId, envelope.originalText)
                     packageContext?.let { envelope.onPackageContextSources?.invoke(it.sources) }
                     envelope.onUserMessagePersisted?.invoke()
@@ -759,7 +785,16 @@ class CordiActApplication : Application(), androidx.work.Configuration.Provider 
             override val spec: PluginSpec = com.cordiact.core.plugin.authoredPluginHostSpec()
         }
         com.cordiact.core.plugin.registerAuthoredPluginTool(conversationCatalog.toolRegistry, authoredPlugins)
-        val systemPlugins = plugins + automationRuntime.plugins() + sandboxManagerPlugin + subagentRuntime + orchestrationPlugin + backgroundSubagents + pluginManagerPlugin + authoredPluginHost
+        val loopRuntime = com.cordiact.core.plugin.ContextManagedPlugin(toolLoopPlugin.spec, kernel, object : ContextPlugin {
+            override fun start(context: PluginContext) {
+                toolLoopPlugin.onEnable()
+                context.effect(toolLoopPlugin::onDisable)
+                context.provide(TOOL_LOOP_CONTRIBUTIONS, toolLoops)
+                toolLoops.register(context, toolLoopPlugin)
+            }
+        })
+        loopRuntime.onRegister()
+        val systemPlugins = plugins + loopRuntime + automationRuntime.plugins() + sandboxManagerPlugin + subagentRuntime + orchestrationPlugin + backgroundSubagents + pluginManagerPlugin + authoredPluginHost
         bundledDiagnosticPlugins = systemPlugins.filter { BundledConversationPluginCatalog.verifier.isTrustedBundled(it.spec) }
         systemPlugins.forEach(::registerAndEnableSystemPlugin)
         com.cordiact.app.automation.tasks.registerAutomationTaskTools(

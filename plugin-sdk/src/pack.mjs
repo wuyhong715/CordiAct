@@ -22,8 +22,9 @@ export function packExtension(manifestPath) {
     throw new Error('Declare at least one contribution.');
   }
   if (client !== undefined) {
-    requireKeys(client, ['settingsPage', 'sessionActions', 'workbenchPanel', 'conversation'], 'client');
-    if (!client.settingsPage && !client.sessionActions?.length && !client.workbenchPanel && client.conversation === undefined) {
+    requireKeys(client, ['settingsPage', 'sessionActions', 'workbenchPanel', 'conversation', 'components'], 'client');
+    if (client.settingsPage?.controls !== undefined) throw new Error('Controls are only available in workbench panels.');
+    if (!client.settingsPage && !client.sessionActions?.length && !client.workbenchPanel && client.conversation === undefined && client.components === undefined) {
       throw new Error('The client section must declare a contribution.');
     }
   }
@@ -42,15 +43,25 @@ export function packExtension(manifestPath) {
   if (client?.settingsPage) capabilities.push('ui.settings.publish');
   if (client?.sessionActions?.length) capabilities.push('ui.session-action.publish');
   if (client?.workbenchPanel) capabilities.push('ui.workbench-panel.publish');
+  const panelControls = client?.workbenchPanel?.controls;
+  if (panelControls !== undefined) {
+    validatePanelControls(panelControls, client.sessionActions ?? []);
+    capabilities.push('ui.workbench-controls.publish');
+  }
+  if (client?.components !== undefined) {
+    validateComponents(client.components, client.sessionActions ?? []);
+    capabilities.push('ui.components.publish');
+  }
   if (client?.conversation !== undefined) {
     validateConversation(client.conversation, names);
     capabilities.push('ui.conversation.publish');
   }
   let agentEntries;
   if (agent !== undefined) {
-    requireKeys(agent, ['skills', 'context', 'beforeTool', 'subagents'], 'agent');
+    requireKeys(agent, ['skills', 'context', 'beforeTool', 'subagents', 'beforeTurn'], 'agent');
     const beforeTool = agent.beforeTool === undefined ? undefined : compileToolPolicies(root, agent.beforeTool);
     const subagents = agent.subagents === undefined ? undefined : validateSubagents(agent.subagents);
+    const beforeTurn = agent.beforeTurn === undefined ? undefined : compileTurnPolicy(root, agent.beforeTurn);
     if (agent.context !== undefined) {
       requireText(agent.context, 1024, 'Agent context', true);
       capabilities.push('agent.context.publish');
@@ -60,11 +71,12 @@ export function packExtension(manifestPath) {
       capabilities.push('agent.skill.publish');
     }
     if (beforeTool) capabilities.push('agent.tool-policy.publish');
+    if (beforeTurn) capabilities.push('agent.turn-policy.publish');
     if (subagents) capabilities.push('agent.subagent-preset.publish');
-    if (agent.context === undefined && agent.skills === undefined && beforeTool === undefined && subagents === undefined) {
+    if (agent.context === undefined && agent.skills === undefined && beforeTool === undefined && subagents === undefined && beforeTurn === undefined) {
       throw new Error('The agent section must declare a contribution.');
     }
-    agentEntries = { context: agent.context, skills: agent.skills, beforeTool, subagents };
+    agentEntries = { context: agent.context, skills: agent.skills, beforeTool, subagents, beforeTurn };
   }
   const providerEntries = providers === undefined ? undefined : compileProviders(root, providers);
   const workflowEntries = workflows === undefined ? undefined : compileWorkflows(root, workflows);
@@ -72,13 +84,71 @@ export function packExtension(manifestPath) {
   if (providerEntries?.search) capabilities.push('provider.search.publish');
   if (providerEntries?.model) capabilities.push('provider.model.publish');
   const output = JSON.stringify({
-    schemaVersion: client?.conversation ? 11 : agentEntries?.subagents ? 10 : workflowEntries ? 9 : agentEntries?.beforeTool ? 8 :
+    schemaVersion: client?.components ? 14 : panelControls ? 13 : agentEntries?.beforeTurn ? 12 : client?.conversation ? 11 : agentEntries?.subagents ? 10 : workflowEntries ? 9 : agentEntries?.beforeTool ? 8 :
       providerEntries?.model ? 7 : providerEntries?.search ? 6 : agentEntries ? 5 : compiled.length ? 4 : client?.workbenchPanel ? 3 : client ? 2 : 1,
     id, version, title, description,
     host: { api: 1, minVersion: '0.1.0' }, capabilities, tools: compiled, commands, client, agent: agentEntries, providers: providerEntries, workflows: workflowEntries,
   }, null, 2) + '\n';
   if (Buffer.byteLength(output) > MAX_PACKAGE_BYTES) throw new Error('Extension exceeds the 32 KiB package limit.');
   return output;
+}
+
+function validateComponents(components, actions) {
+  if (!Array.isArray(components) || components.length < 1 || components.length > 2) throw new Error('Declare one or two slot components.');
+  if (!Array.isArray(actions)) throw new Error('Session actions must be an array.');
+  const ids = new Set();
+  const slots = new Set();
+  for (const component of components) {
+    requireKeys(component, ['id', 'slot', 'label', 'nodes'], 'slot component');
+    if (!matches(component.id, SLUG) || ids.has(component.id)) throw new Error('Invalid or duplicate component ID.');
+    if (!['session.toolbar', 'composer.accessories'].includes(component.slot) || slots.has(component.slot)) {
+      throw new Error('Unknown or duplicate client component slot.');
+    }
+    ids.add(component.id);
+    slots.add(component.slot);
+    requireText(component.label, 120, 'component label');
+    let budget = 12;
+    function validateNodes(nodes, depth) {
+      if (!Array.isArray(nodes) || nodes.length < 1 || depth > 3) throw new Error('Invalid component node list or depth.');
+      for (const node of nodes) {
+        if (budget-- <= 0) throw new Error('Too many component nodes.');
+        requireKeys(node, ['text', 'action', 'label', 'children'], 'component node');
+        const keys = Object.keys(node);
+        if (keys.length === 1 && keys.includes('text')) {
+          requireText(node.text, 480, 'component text', true);
+        } else if (keys.length === 1 && keys.includes('action')) {
+          if (!matches(node.action, SLUG) || !actions.some(action => action?.id === node.action)) {
+            throw new Error('Component must name a session action from this package.');
+          }
+        } else if (keys.length === 2 && keys.includes('label') && keys.includes('children')) {
+          requireText(node.label, 120, 'component group label');
+          validateNodes(node.children, depth + 1);
+        } else {
+          throw new Error('Declare a text, action, or group component node.');
+        }
+      }
+    }
+    validateNodes(component.nodes, 1);
+  }
+}
+
+function validatePanelControls(controls, actions) {
+  if (!Array.isArray(controls) || controls.length < 1 || controls.length > 4) throw new Error('Declare one to four workbench controls.');
+  if (!Array.isArray(actions)) throw new Error('Session actions must be an array.');
+  const ids = new Set();
+  for (const control of controls) {
+    requireKeys(control, ['id', 'label', 'content', 'initiallyExpanded', 'action'], 'workbench control');
+    if (!matches(control.id, SLUG) || ids.has(control.id)) throw new Error('Invalid or duplicate workbench control ID.');
+    ids.add(control.id);
+    requireText(control.label, 120, 'workbench control label');
+    requireText(control.content, 480, 'workbench control content', true);
+    if (control.initiallyExpanded !== undefined && typeof control.initiallyExpanded !== 'boolean') {
+      throw new Error('Workbench initial expansion must be a boolean.');
+    }
+    if (control.action !== undefined && (!matches(control.action, SLUG) || !actions.some(action => action?.id === control.action))) {
+      throw new Error('Workbench control must name a session action from this package.');
+    }
+  }
 }
 
 function validateConversation(conversation, toolNames) {
@@ -153,6 +223,12 @@ function compileToolPolicies(root, policies) {
     return { name: policy.name, tools: policy.tools,
       source: compileEntry(root, policy.entry, 'return (input) => exports.default(JSON.parse(input));') };
   });
+}
+
+function compileTurnPolicy(root, policy) {
+  requireKeys(policy, ['name', 'entry'], 'before-turn policy');
+  if (!matches(policy.name, SLUG)) throw new Error('Invalid turn policy name.');
+  return { name: policy.name, source: compileEntry(root, policy.entry, 'return (input) => exports.default(JSON.parse(input));') };
 }
 
 function compileProviders(root, providers) {

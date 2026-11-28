@@ -115,3 +115,43 @@ test('packs message subscriptions and cards for the package own tools', () => {
   assert.equal(packed.client.conversation.messages[0].event, 'assistant.message');
   assert.equal(packed.client.conversation.toolResults[0].tool, packed.tools[0].name);
 });
+
+test('packs a before-turn policy with its own capability', () => {
+  const path = fileURLToPath(new URL('../examples/attachment-turn-policy.json', import.meta.url));
+  const packed = JSON.parse(packExtension(path));
+  assert.equal(packed.schemaVersion, 12);
+  assert.deepEqual(packed.capabilities, ['agent.turn-policy.publish']);
+  const invoke = runInNewContext(packed.agent.beforeTurn.source);
+  assert.equal(invoke(JSON.stringify({ hasText: false, attachmentCount: 1 })), 'block');
+  assert.equal(invoke(JSON.stringify({ hasText: true, attachmentCount: 1 })), 'continue');
+});
+
+test('packs a stateful workbench panel and validates action references', context => {
+  const examplePath = fileURLToPath(new URL('../examples/interactive-workbench.json', import.meta.url));
+  const packed = JSON.parse(packExtension(examplePath));
+  assert.equal(packed.schemaVersion, 13);
+  assert.ok(packed.capabilities.includes('ui.workbench-controls.publish'));
+  assert.equal(packed.client.workbenchPanel.controls[0].action, 'insert-review');
+  const root = mkdtempSync(join(tmpdir(), 'cordiact-panel-sdk-'));
+  context.after(() => rmSync(root, { recursive: true, force: true }));
+  const draft = JSON.parse(readFileSync(examplePath, 'utf8'));
+  draft.client.workbenchPanel.controls[0].action = 'unknown-action';
+  const path = join(root, 'invalid.json');
+  writeFileSync(path, JSON.stringify(draft));
+  assert.throws(() => packExtension(path), /must name a session action/);
+});
+
+test('packs a component tree for both slots and rejects ambiguous nodes', context => {
+  const examplePath = fileURLToPath(new URL('../examples/session-components.json', import.meta.url));
+  const packed = JSON.parse(packExtension(examplePath));
+  assert.equal(packed.schemaVersion, 14);
+  assert.ok(packed.capabilities.includes('ui.components.publish'));
+  assert.deepEqual(packed.client.components.map(component => component.slot), ['session.toolbar', 'composer.accessories']);
+  const root = mkdtempSync(join(tmpdir(), 'cordiact-slot-sdk-'));
+  context.after(() => rmSync(root, { recursive: true, force: true }));
+  const draft = JSON.parse(readFileSync(examplePath, 'utf8'));
+  draft.client.components[1].nodes[0].text = 'ambiguous';
+  const path = join(root, 'invalid.json');
+  writeFileSync(path, JSON.stringify(draft));
+  assert.throws(() => packExtension(path), /Declare a text, action, or group/);
+});

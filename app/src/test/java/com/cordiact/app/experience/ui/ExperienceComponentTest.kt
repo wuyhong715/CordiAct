@@ -49,6 +49,58 @@ class ExperienceComponentTest {
         ExperienceTheme { Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) { Box(Modifier.fillMaxSize()) { block() } } }
     }
 
+    @Test fun clientComponentsMountInTheirSlotAndWithdrawWithTheirPlugin() {
+        val slots = ClientComponentSlots()
+        val kernel = com.cordiact.core.plugin.PluginKernel(slots::refresh)
+        val provider = com.cordiact.core.plugin.PluginInstanceId("component-host")
+        val contributor = com.cordiact.core.plugin.PluginInstanceId("component-test", "workspace")
+        var selectedWorkspace by mutableStateOf("workspace")
+        var disposed = 0
+        var created = 0
+        var staleAction: (() -> Unit)? = null
+        kernel.register(provider, object : com.cordiact.core.plugin.ContextPlugin {
+            override fun start(context: com.cordiact.core.plugin.PluginContext) = context.provide(CLIENT_COMPONENT_SLOTS, slots)
+        })
+        kernel.register(contributor, object : com.cordiact.core.plugin.ContextPlugin {
+            override val requiredServices = setOf(CLIENT_COMPONENT_SLOTS)
+            override fun start(context: com.cordiact.core.plugin.PluginContext) {
+                context.service(CLIENT_COMPONENT_SLOTS).register(context, ClientComponentSlot.SESSION_TOOLBAR, "demo", object : ClientComponent {
+                    @Composable override fun Content(host: ClientComponentHost) {
+                        DisposableEffect(host.sessionId) { onDispose { disposed++ } }
+                        SideEffect { staleAction = host::createSession }
+                        androidx.compose.material3.TextButton(onClick = host::createSession) {
+                            androidx.compose.material3.Text("Plugin action")
+                        }
+                    }
+                })
+            }
+        })
+        kernel.enable(contributor)
+        kernel.enable(provider)
+        content {
+            Column {
+                slots.Mount(ClientComponentSlot.SESSION_TOOLBAR, selectedWorkspace, "session", false) { created++ }
+                slots.Mount(ClientComponentSlot.COMPOSER_ACCESSORIES, selectedWorkspace, "session", false)
+            }
+        }
+        compose.onNodeWithText("Plugin action").performClick()
+        assertEquals(1, created)
+        val previous = checkNotNull(staleAction)
+        compose.runOnIdle { selectedWorkspace = "other" }
+        compose.onNodeWithText("Plugin action").assertDoesNotExist()
+        compose.runOnIdle { previous() }
+        assertEquals(1, created)
+        compose.runOnIdle { selectedWorkspace = "workspace" }
+        compose.onNodeWithText("Plugin action").assertExists()
+        compose.runOnIdle {
+            kernel.disable(provider)
+            staleAction?.invoke()
+        }
+        compose.onNodeWithText("Plugin action").assertDoesNotExist()
+        assertEquals(1, created)
+        assertEquals(2, disposed)
+    }
+
     @Composable
     private fun composer(state: ExperienceState, send: (String) -> Boolean, stop: () -> Unit) {
         val app = org.robolectric.RuntimeEnvironment.getApplication()

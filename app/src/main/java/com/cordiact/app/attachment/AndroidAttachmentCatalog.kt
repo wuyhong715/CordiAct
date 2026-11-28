@@ -35,8 +35,7 @@ import com.cordiact.core.attachment.AttachmentId
 import com.cordiact.core.attachment.AttachmentRendition
 import com.cordiact.core.attachment.AttachmentState
 import com.cordiact.core.attachment.AttachmentBlobStore
-import com.cordiact.core.attachment.AttachmentCatalog
-import com.cordiact.core.attachment.AttachmentReferenceIndex
+import com.cordiact.app.conversation.ConversationAttachmentStorage
 import java.io.InputStream
 import java.security.MessageDigest
 
@@ -51,7 +50,7 @@ class AndroidAttachmentCatalog(
     private val blobs: AttachmentBlobStore,
     private val audit: AttachmentAuditSink = NoopAttachmentAuditSink,
     private val now: () -> Long = System::currentTimeMillis,
-) : AttachmentCatalog, AttachmentReferenceIndex {
+) : ConversationAttachmentStorage {
 
     private fun database(): SQLiteDatabase = helper.writableDatabase
 
@@ -369,7 +368,7 @@ class AndroidAttachmentCatalog(
      * Draft references are separate from message parts: removing a card must not affect anything
      * already sent, and committing the draft turns these rows into message parts.
      */
-    fun addDraftAttachment(
+    override fun addDraftAttachment(
         draftId: String,
         workspaceId: String,
         sessionId: String?,
@@ -407,7 +406,7 @@ class AndroidAttachmentCatalog(
         }
     }
 
-    fun draftAttachments(draftId: String): List<AttachmentDescriptor> = database().query(
+    override fun draftAttachments(draftId: String): List<AttachmentDescriptor> = database().query(
         "${AttachmentDatabaseSchema.TABLE_DRAFT_ATTACHMENTS} d JOIN $TABLE_ATTACHMENTS a " +
             "ON a.$COL_ATTACHMENT_ID = d.$COL_ATTACHMENT_ID",
         ATTACHMENT_COLUMNS.let { columns -> Array(columns.size) { "a.${columns[it]}" } },
@@ -420,7 +419,7 @@ class AndroidAttachmentCatalog(
         buildList { while (cursor.moveToNext()) add(cursor.toDescriptor()) }
     }
 
-    fun removeDraftAttachment(draftId: String, attachmentId: AttachmentId): Boolean = database().delete(
+    override fun removeDraftAttachment(draftId: String, attachmentId: AttachmentId): Boolean = database().delete(
         AttachmentDatabaseSchema.TABLE_DRAFT_ATTACHMENTS,
         "${AttachmentDatabaseSchema.COL_DRAFT_ID} = ? AND $COL_ATTACHMENT_ID = ?",
         arrayOf(draftId, attachmentId.value),
@@ -448,7 +447,7 @@ class AndroidAttachmentCatalog(
     }
 
     /** References left by deleted sessions must not pin blobs forever. Live drafts never expire. */
-    fun pruneDeletedSessionDrafts(): Int = database().delete(
+    override fun pruneDeletedSessionDrafts(): Int = database().delete(
         AttachmentDatabaseSchema.TABLE_DRAFT_ATTACHMENTS,
         "${AttachmentDatabaseSchema.COL_SESSION_ID} IS NOT NULL AND " +
             "${AttachmentDatabaseSchema.COL_SESSION_ID} NOT IN (SELECT session_id FROM conversation_sessions)",

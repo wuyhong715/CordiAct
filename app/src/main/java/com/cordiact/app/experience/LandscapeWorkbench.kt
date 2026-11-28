@@ -51,6 +51,7 @@ internal fun LandscapeWorkbench(
     tabPublication: Any? = null,
     resultCardFor: (ToolActivity) -> com.cordiact.interaction.ToolResultCard? = { null },
     docked: (@Composable (Modifier, (ToolActivity) -> Unit, (String) -> Unit) -> Unit)? = null,
+    toolbarComponents: (@Composable () -> Unit)? = null,
 ) {
     val colors = MaterialTheme.colorScheme
     val backdrop = remember { HazeState() }
@@ -133,7 +134,8 @@ internal fun LandscapeWorkbench(
                 StatusKey(GlyphName.Bolt, "后台任务", activity.jobs.count { it.active }, visibleDetail == Detail.JOBS) {
                     toggleInspector(Detail.JOBS)
                 }
-                IconButton(onClick = onNew, enabled = !state.loading && pendingSessionId == null) {
+                if (toolbarComponents != null) toolbarComponents()
+                else IconButton(onClick = onNew, enabled = !state.loading && pendingSessionId == null) {
                     AppGlyph(GlyphName.Plus, "新对话")
                 }
             }

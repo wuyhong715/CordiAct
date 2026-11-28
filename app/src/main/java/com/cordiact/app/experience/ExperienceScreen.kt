@@ -47,6 +47,7 @@ import com.cordiact.app.experience.tabs.TraceTab
 import com.cordiact.app.experience.tabs.WorkbenchLayoutEditor
 import com.cordiact.app.experience.tabs.WorkbenchProfiles
 import com.cordiact.app.experience.tabs.WorkbenchProfileStore
+import com.cordiact.app.experience.tabs.matchesWorkbenchPreview
 import com.cordiact.core.workbench.PanelPlacement
 import com.cordiact.core.workbench.WorkbenchTheme
 import com.cordiact.interaction.InteractionContext
@@ -255,6 +256,40 @@ private fun ExperienceContent(
         return true
     }
     fun openTrace(): Boolean = displayedTabs.firstOrNull { it.id == TraceTab.id }?.let(::openPublication) == true
+    val sessionActionScope = rememberCoroutineScope()
+    val viewLifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
+    var viewEpoch by remember(viewLifecycle) { mutableLongStateOf(0L) }
+    DisposableEffect(viewLifecycle) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_PAUSE) viewEpoch++
+        }
+        viewLifecycle.addObserver(observer)
+        onDispose { viewLifecycle.removeObserver(observer) }
+    }
+    val canInsertSessionAction = !state.running && !state.stopping && composer.text.isEmpty() && composer.attachments.isEmpty()
+    fun insertPluginDraft(
+        offer: com.cordiact.interaction.WorkspaceClientContributions.SessionActionOffer,
+        stillVisible: () -> Boolean,
+        onInserted: () -> Unit,
+    ) {
+        val shownEpoch = viewEpoch
+        fun currentHost() = sameLoadedOwner() && !overview && viewEpoch == shownEpoch && stillVisible() &&
+            viewLifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED)
+        if (!currentHost()) return
+        sessionActionScope.launch {
+            try {
+                if (viewModel.insertSessionAction(offer, ::currentHost)) {
+                    promptToInsert = ""
+                    tabs.open(WorkTab.Session(offer.context.sessionId))
+                    onInserted()
+                }
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                if (currentHost()) viewModel.composerController.banner("无法验证会话动作，草稿未修改。")
+            }
+        }
+    }
     fun pluginHost(publication: PublishedTab, isLandscape: Boolean,
         onInspect: (ToolActivity) -> Unit, onArtifact: (String) -> Unit = {},
         isPresented: () -> Boolean = { tabs.active?.key == "p:${publication.id}" && publication in currentDisplayedTabs },
@@ -268,6 +303,15 @@ private fun ExperienceContent(
             if (!current() || state.sidebar.none { ws -> ws.id == tabWorkspace && ws.sessions.any { it.id == sessionId && !it.isArchived } }) return
             viewModel.selectSession(sessionId) { tabs.open(WorkTab.Session(sessionId)) }
         }
+        override val canInsertPluginAction get() = canInsertSessionAction && !state.archived
+        override fun insertPluginAction(
+            offer: com.cordiact.interaction.WorkspaceClientContributions.SessionActionOffer,
+            isStillVisible: () -> Boolean,
+        ) {
+            insertPluginDraft(offer, {
+                current() && offer.context.workspaceId == publication.owner.workspaceId && isStillVisible()
+            }) {}
+        }
     }
     val pluginWorkspace = state.workspace?.takeUnless { ownerPending || activeTab is WorkTab.Plugin }
     val pluginOwner = pluginWorkspace?.let { workspace ->
@@ -278,24 +322,34 @@ private fun ExperienceContent(
     }
     val pluginDetailOwner = sessionPluginsOwner?.takeIf { it == pluginOwner }
     val sessionActions = remember(clientSnapshot, pluginOwner) { pluginOwner?.let(clientSnapshot::sessionActions).orEmpty() }
-    val sessionActionScope = rememberCoroutineScope()
-    val viewLifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
-    var viewEpoch by remember(viewLifecycle) { mutableLongStateOf(0L) }
-    DisposableEffect(viewLifecycle) {
-        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
-            if (event == androidx.lifecycle.Lifecycle.Event.ON_PAUSE) viewEpoch++
-        }
-        viewLifecycle.addObserver(observer)
-        onDispose { viewLifecycle.removeObserver(observer) }
-    }
     val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
     val keyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
-    val canInsertSessionAction = !state.running && !state.stopping && composer.text.isEmpty() && composer.attachments.isEmpty()
     if (editingLayoutFor != null && editingLayoutFor == tabWorkspace && !state.loading) {
         val workspace = checkNotNull(state.workspace)
         if (profiles != null) {
             key(workspace.id) {
-                WorkbenchLayoutEditor(workspace.name, profiles, availableTabs, onSaveLayout) { editingLayoutFor = null }
+                WorkbenchLayoutEditor(
+                    workspace.name, profiles, availableTabs, onSaveLayout,
+                    loadPackages = {
+                        withContext(Dispatchers.IO) {
+                            check(viewModel.state.value.workspace?.id == workspace.id)
+                            settingsApp.workspaceExtensionPackages.openPage(workspace.id).use { it.list() }
+                        }
+                    },
+                    enablePackages = { preview ->
+                        kotlinx.coroutines.runInterruptible(Dispatchers.IO) {
+                            settingsApp.workspaceExtensionPackages.openPage(workspace.id).use { page ->
+                                val latest = page.list().associateBy { it.manifest.id }
+                                if (preview.any { latest[it.manifest.id]?.matchesWorkbenchPreview(it) != true }) return@use false
+                                val changes = preview.filterNot { it.enableIntent }.map { page.approveEnable(it, true) }
+                                changes.all { change ->
+                                    check(viewModel.state.value.workspace?.id == workspace.id)
+                                    change.commit() !is com.cordiact.core.plugin.ExtensionPackageChange.Rejected
+                                }
+                            }
+                        }
+                    },
+                ) { editingLayoutFor = null }
             }
             return
         }
@@ -305,6 +359,25 @@ private fun ExperienceContent(
     }
     BackHandler(!landscape && pluginDetailOwner != null && !overview, onBack = closeSessionPluginDetail)
     BackHandler(inspected != null && !overview) { inspected = null }
+    val clientSlots = settingsApp.conversationCatalog.clientComponentSlots
+    val toolbarComponents: @Composable () -> Unit = {
+        val create: (() -> Unit)? = if (state.loading || switchPending || overview) null else ({
+            val current = viewModel.state.value
+            if (!current.loading && !overview && requestedTab == null && loadingTab == null &&
+                current.workspace?.id == tabWorkspace && current.sessionId == tabSession
+            ) viewModel.newSession(tabWorkspace)
+        })
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            clientSlots.Mount(ClientComponentSlot.SESSION_TOOLBAR, tabWorkspace, tabSession, landscape,
+                canInsertAction = canInsertSessionAction && !state.archived, onInsertAction = ::insertPluginDraft, onCreateSession = create)
+        }
+    }
+    val composerAccessories: @Composable () -> Unit = {
+        if (!ownerPending && tabSession != null && tabWorkspace != null) {
+            clientSlots.Mount(ClientComponentSlot.COMPOSER_ACCESSORIES, tabWorkspace, tabSession, landscape,
+                canInsertAction = canInsertSessionAction && !state.archived, onInsertAction = ::insertPluginDraft)
+        }
+    }
     val workbench: @Composable () -> Unit = {
         if (landscape) {
             val activity = rememberWorkbenchActivity(settingsApp, state.workspace?.id, state.sessionId, state.runningSessionIds)
@@ -359,6 +432,7 @@ private fun ExperienceContent(
                         onSendLocal = { if (requestedTab != null || loadingTab != null) false else viewModel.sendLocal(it) },
                         prepareLocal = prepareLocal,
                         commandRevision = clientSnapshot,
+                        accessories = composerAccessories,
                     )
                 },
                 sessionPluginDetail = if (pluginDetailOwner != null) {
@@ -367,6 +441,7 @@ private fun ExperienceContent(
                 onCloseSessionPluginDetail = closeSessionPluginDetail,
                 tabPublication = activePublication,
                 resultCardFor = resultCardFor,
+                toolbarComponents = toolbarComponents,
                 docked = if (dockedTabs.isEmpty()) null else { modifier, inspect, artifact ->
                     DockedWorkbenchPanels(dockedTabs, selectedDockId, { selectedDockId = it }, modifier) { publication, isPresented ->
                         publication.content.Content(state, pluginHost(publication, true, inspect, artifact, isPresented))
@@ -391,10 +466,8 @@ private fun ExperienceContent(
                             if (state.turns.none { it.tools.isNotEmpty() } || !openTrace()) showOverview(true)
                         },
                         onApprovals = openApprovals,
-                    ) {
-                        IconButton(onClick = { viewModel.newSession(state.workspace?.id) }, enabled = !state.loading,
-                            modifier = Modifier.testTag("new-tab")) { AppGlyph(GlyphName.Plus, "新对话标签") }
-                    }
+                        trailing = toolbarComponents,
+                    )
                     com.cordiact.app.experience.tabs.TabStrip(state, tabs, displayedTabs, ::openPublication,
                         onClose = { if (!switchPending && !state.loading) tabs.close(it) }, modifier = Modifier.padding(top = 4.dp, bottom = 2.dp),
                         onSelect = { requestedTab = it; closeSessionPluginDetail() }, displayedKey = committedKey,
@@ -469,6 +542,7 @@ private fun ExperienceContent(
                                 },
                                 prepareLocal = prepareLocal.takeUnless { ownerPending },
                                 commandRevision = clientSnapshot,
+                                accessories = composerAccessories,
                             )
                         }
                     },

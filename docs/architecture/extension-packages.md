@@ -119,6 +119,18 @@ v9 要求 `workflow.publish` 和 `workflows` 中的一到四个工作流。每�
 
 宿主从实时会话和历史记录投影这些节点，同时保留原消息与工具摘要。消息节点根据当前工作区启用的包展示，工具结果卡绑定精确制品。插件停用后附加节点撤回，换版时旧制品的结果回退到原摘要。此投影使用事件类型与宿主记录的身份字段，可用 SDK 打包[会话检查节点示例](../../plugin-sdk/examples/conversation-views.json)。
 
+### 清单 v12 回合准入
+
+在 `agent.beforeTurn` 中声明一个带 `name` 和 `source` 的策略，并请求 `agent.turn-policy.publish`。每个工作区最多启用四条策略，宿主按包 ID 顺序执行。用户在前台提交模型回合时，宿主在消息入库前用隔离脚本检查 `{hasText, attachmentCount}`。脚本返回 `continue` 或 `block`，看不到正文、附件内容或会话标识。拦截、脚本错误或执行期间策略换代会拒绝本次提交。成功准入后，宿主照常执行模型与工具授权。后台唤醒、子 Agent 和本地命令保留原有路径。
+
+### 清单 v13 工作台交互
+
+`client.workbenchPanel.controls` 支持一到四个可展开区块，每项声明 `id`、`label`、`content` 和可选的 `initiallyExpanded`。包同时请求 `ui.workbench-panel.publish` 和 `ui.workbench-controls.publish`。可选的 `action` 引用同包 `sessionActions` 中的 ID，点击后将该动作的命令填入当前会话的空草稿，并切到会话供用户查看和发送。展开状态在同一个工作区的标签页和停靠面板间共享，重新启用时恢复声明默认值。使用 [SDK 示例](../../plugin-sdk/examples/interactive-workbench.json) 可直接打包。
+
+### 清单 v14 会话组件
+
+`client.components` 可为 `session.toolbar` 和 `composer.accessories` 各贡献一个菜单。使用 `text` 显示说明，使用 `label` 和 `children` 构建可展开组，或用 `action` 引用同包会话动作。每个菜单最多十二个节点、三层。工作区每个插槽最多同时接收两个扩展包组件。宿主按当前会话渲染，切换会话或停用时撤回旧菜单。命令按钮填入空草稿并返回会话，由用户确认是否发送。打包入口见 [SDK 示例](../../plugin-sdk/examples/session-components.json)。
+
 ## 安装、升级、回滚、迁移
 
 [ExtensionPackageInstaller](../../core/src/main/kotlin/com/cordiact/core/plugin/ExtensionPackageInstaller.kt) 只记录已验证的清单，不激活贡献：

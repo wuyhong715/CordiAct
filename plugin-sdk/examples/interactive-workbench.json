@@ -1,0 +1,21 @@
+{
+  "id": "interactive-workbench",
+  "version": "1.0.0",
+  "title": "发布检查",
+  "description": "在工作台查看发布检查项，并将命令放入当前会话草稿。",
+  "commands": [
+    { "name": "release-review", "aliases": [], "description": "查看发布提示", "text": "核对测试结果、版本号和发布说明。" }
+  ],
+  "client": {
+    "sessionActions": [
+      { "id": "insert-review", "label": "填入发布检查命令", "command": "release-review" }
+    ],
+    "workbenchPanel": {
+      "title": "发布检查",
+      "description": "展开区块查看检查项。",
+      "controls": [
+        { "id": "release-step", "label": "发布准备", "content": "确认变更、构建工件和回滚版本。", "action": "insert-review" }
+      ]
+    }
+  }
+}

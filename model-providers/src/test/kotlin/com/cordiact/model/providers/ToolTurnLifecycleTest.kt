@@ -2,9 +2,19 @@ package com.cordiact.model.providers
 
 import com.cordiact.core.action.ApprovalRequest
 import com.cordiact.core.action.DefaultApprovalGateway
+import com.cordiact.core.attachment.AttachmentId
+import com.cordiact.core.attachment.Interpretation
+import com.cordiact.core.attachment.MessagePart
 import com.cordiact.core.conversation.*
 import com.cordiact.core.plugin.AuthoredPluginForeground
 import com.cordiact.core.plugin.PluginState
+import com.cordiact.core.plugin.ContextPlugin
+import com.cordiact.core.plugin.ExtensionPackageSource
+import com.cordiact.core.plugin.PackageScriptSession
+import com.cordiact.core.plugin.PackageTurnPolicies
+import com.cordiact.core.plugin.PluginContext
+import com.cordiact.core.plugin.PluginInstanceId
+import com.cordiact.core.plugin.PluginKernel
 import com.cordiact.core.security.SensitivePayload
 import com.cordiact.core.tool.*
 import com.cordiact.core.toolloop.*
@@ -32,6 +42,71 @@ class ToolTurnLifecycleTest {
     private val spec = listOf(ModelToolSpec("read", "read", "{}"))
     private fun loop() = ToolLoopPlugin().apply { onEnable() }
     private fun toolResult(call: ModelToolCall) = ModelMessage(MessageRole.TOOL, "ok", toolCallId = call.id, toolName = call.name)
+
+    @Test fun `package policy vetoes both user entry paths and drops a decision from a withdrawn generation`() {
+        val manifest = ExtensionPackageSource.compile("""
+            {"schemaVersion":12,"id":"turn-policy","version":"1.0.0","title":"Policy","description":"Review turns",
+            "host":{"api":1,"minVersion":"0.1.0"},"capabilities":["agent.turn-policy.publish"],"tools":[],"commands":[],
+            "agent":{"beforeTurn":{"name":"check-turn","source":"(_) => 'block'"}}}
+        """.trimIndent().encodeToByteArray())
+        val kernel = PluginKernel()
+        val owner = PluginInstanceId("pkg.turn-policy", "ws")
+        val policies = PackageTurnPolicies()
+        val frames = mutableListOf<String>()
+        var withdraw = false
+        kernel.register(owner, object : ContextPlugin {
+            override fun start(context: PluginContext) {
+                policies.register(context, manifest, {
+                    object : PackageScriptSession {
+                        override fun evaluate(source: ByteArray, input: ByteArray): ByteArray {
+                            frames += input.decodeToString()
+                            if (withdraw) kernel.disable(owner)
+                            return (if (withdraw) "continue" else "block").encodeToByteArray()
+                        }
+                        override fun close() = Unit
+                    }
+                }, admitted = { true })
+            }
+        })
+        kernel.enable(owner)
+        val sessions = Sessions()
+        val events = mutableListOf<ModelEvent>()
+        var generated = 0
+        val adapter = object : ModelAdapterService {
+            override fun models() = emptyList<ModelDescriptor>()
+            override fun generate(request: ModelGenerationRequest, onEvent: (ModelEvent) -> Unit): ModelCall {
+                generated++
+                onEvent(ModelEvent.Delta("answer"))
+                onEvent(ModelEvent.Completed())
+                return ModelCall {}
+            }
+        }
+        val service = ConversationTurnService(sessions, adapter, beforeUserTurn = policies::check)
+        val model = ModelId("p", "m")
+        val dispatcher = ToolDispatcher { _, _ -> error("Policy test must not run tools") }
+        fun submit(tools: List<ModelToolSpec>, parts: List<MessagePart> = emptyList()) =
+            service.submitWithTools("s", model, if (parts.isEmpty()) "private prompt" else "", tools, loop(), dispatcher,
+                ToolInvocationContext("ws", sessionId = "s"), parts = parts, onEvent = events::add)
+
+        policies.check("foreign", hasText = false, attachmentCount = 1)
+        assertTrue(frames.isEmpty())
+        submit(spec)
+        submit(emptyList(), listOf(MessagePart.Attachment(AttachmentId("fixture"), Interpretation.LOCAL_ONLY)))
+        withdraw = true
+        submit(spec)
+        assertEquals(listOf(
+            """{"hasText":true,"attachmentCount":0}""", """{"hasText":false,"attachmentCount":1}""",
+            """{"hasText":true,"attachmentCount":0}""",
+        ), frames)
+        assertEquals(List(3) { "turn_blocked" }, events.filterIsInstance<ModelEvent.Failed>().map { it.code })
+        assertTrue(sessions.stored.isEmpty())
+        assertEquals(0, generated)
+        assertFalse(service.isTurnActive("s"))
+
+        submit(spec)
+        assertEquals(1, generated)
+        assertEquals(listOf("private prompt", "answer"), sessions.stored.map { it.content })
+    }
 
     @Test fun `completed is emitted once after tools and persistence with summed usage`() {
         val sessions = Sessions()
